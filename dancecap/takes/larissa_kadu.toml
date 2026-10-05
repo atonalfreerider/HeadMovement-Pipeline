@@ -1,0 +1,12 @@
+# Larissa & Kadu demo: 9 phone recordings around a studio floor (08 duplicates 09 with overlays).
+name = "larissa_kadu"
+source_dir = "../../dances/Larissa-Kadu-demo"
+alignment = "../../prototype/larissa_kadu/alignment.json"   # affine audio clocks, reference = 06-Demo-John.mp4
+exclude = ["08"]
+
+# reference seconds analysed in detail; all 9 recordings overlap 29.97-68.51
+window = [56.0, 62.0]
+
+# sparse snapshots of the static room, spread across the overlap so handheld cameras contribute many viewpoints
+keyframe_span = [30.0, 68.0]
+keyframe_step = 4.0
