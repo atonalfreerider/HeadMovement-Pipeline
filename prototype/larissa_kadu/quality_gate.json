@@ -1,0 +1,29 @@
+{
+  "status": "failed_visual_quality",
+  "selected_reference": "06-Demo-John.mp4",
+  "selected_reference_seconds": [
+    58,
+    62
+  ],
+  "maximum_overlap_seconds": [
+    29.97133470205688,
+    68.508973804989
+  ],
+  "unique_views_used": 8,
+  "mamma_ready": false,
+  "unity_validated_asset": false,
+  "dense_reconstruction": false,
+  "observations": [
+    "Two-frame test contains distorted and duplicated limbs",
+    "Four-timestamp test contains duplicated dancers and inconsistent room geometry",
+    "Floating dark regions; letterboxing may contribute",
+    "Mirror reflection errors have not been isolated from other geometry errors"
+  ],
+  "verification": [
+    "All eight input clips: 96 decoded frames, 24 fps, 448x784",
+    "Both novel MP4s and comparison: 96 decoded frames, 24 fps",
+    "Audio synthetic known lag recovered correctly",
+    "Contact sheets inspected at reference seconds 38,48,58",
+    "Source/render and temporal novel-view contact sheets inspected"
+  ]
+}

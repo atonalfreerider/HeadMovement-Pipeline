@@ -1,0 +1,937 @@
+{
+  "reference": "06-Demo-John.mp4",
+  "convention": "reference_time = slope * source_time + offset",
+  "sources": [
+    {
+      "id": "01",
+      "name": "01-Demo-Ali.mp4",
+      "duration": 183.458378,
+      "numbered": true,
+      "slope": 1.000214012828979,
+      "offset": 1.584352529897566,
+      "anchors": [
+        {
+          "source_start": 2.0,
+          "reference_start": 3.597875,
+          "offset": 1.5978750000000002,
+          "confidence": 3.4614995435966036,
+          "inlier": true,
+          "residual_seconds": 0.013094444444476494
+        },
+        {
+          "source_start": 23.202,
+          "reference_start": 24.751875,
+          "offset": 1.5498749999999966,
+          "confidence": 3.870097364314842,
+          "inlier": true,
+          "residual_seconds": -0.0394430555555374
+        },
+        {
+          "source_start": 44.404,
+          "reference_start": 46.017125,
+          "offset": 1.6131249999999966,
+          "confidence": 3.4373200243293396,
+          "inlier": true,
+          "residual_seconds": 0.01926944444445411
+        },
+        {
+          "source_start": 65.60600000000001,
+          "reference_start": 67.252375,
+          "offset": 1.646374999999992,
+          "confidence": 3.749598381889233,
+          "inlier": true,
+          "residual_seconds": 0.04798194444443027
+        },
+        {
+          "source_start": 86.808,
+          "reference_start": 88.38425,
+          "offset": 1.5762499999999875,
+          "confidence": 3.0039209353329372,
+          "inlier": true,
+          "residual_seconds": -0.02668055555558624
+        },
+        {
+          "source_start": 108.01,
+          "reference_start": 109.563625,
+          "offset": 1.5536249999999967,
+          "confidence": 4.048949606342694,
+          "inlier": true,
+          "residual_seconds": -0.0538430555555891
+        },
+        {
+          "source_start": 129.21200000000002,
+          "reference_start": 130.867875,
+          "offset": 1.6558749999999804,
+          "confidence": 4.969150200330669,
+          "inlier": true,
+          "residual_seconds": 0.04386944444439678
+        },
+        {
+          "source_start": 150.41400000000002,
+          "reference_start": 152.026875,
+          "offset": 1.612874999999974,
+          "confidence": 4.176996305481921,
+          "inlier": true,
+          "residual_seconds": -0.0036680555556074523
+        },
+        {
+          "source_start": 171.616,
+          "reference_start": 173.2365,
+          "offset": 1.6204999999999927,
+          "confidence": 5.024856964726676,
+          "inlier": true,
+          "residual_seconds": -0.0005805555556150921
+        }
+      ],
+      "accepted": true,
+      "max_residual_seconds": 0.0538430555555891,
+      "anchor_inliers": 9
+    },
+    {
+      "id": "02",
+      "name": "02-Demo-Tina.mp4",
+      "duration": 178.494983,
+      "numbered": true,
+      "slope": 0.9999672867995658,
+      "offset": 4.19100709306753,
+      "anchors": [
+        {
+          "source_start": 2.0,
+          "reference_start": 6.16425,
+          "offset": 4.16425,
+          "confidence": 4.321212582600547,
+          "inlier": true,
+          "residual_seconds": -0.026691666666661007
+        },
+        {
+          "source_start": 22.5701875,
+          "reference_start": 26.79025,
+          "offset": 4.220062500000001,
+          "confidence": 4.10748486554129,
+          "inlier": true,
+          "residual_seconds": 0.029793749999996066
+        },
+        {
+          "source_start": 43.140375,
+          "reference_start": 47.351125,
+          "offset": 4.210750000000004,
+          "confidence": 3.800913362159358,
+          "inlier": true,
+          "residual_seconds": 0.021154166666654817
+        },
+        {
+          "source_start": 63.710562499999995,
+          "reference_start": 67.871125,
+          "offset": 4.160562500000012,
+          "confidence": 4.1445367463227205,
+          "inlier": true,
+          "residual_seconds": -0.028360416666686206
+        },
+        {
+          "source_start": 84.28075,
+          "reference_start": 88.475625,
+          "offset": 4.194874999999996,
+          "confidence": 2.628887910659676,
+          "inlier": true,
+          "residual_seconds": 0.006624999999957026
+        },
+        {
+          "source_start": 104.8509375,
+          "reference_start": 109.0265,
+          "offset": 4.175562499999998,
+          "confidence": 5.681369792485122,
+          "inlier": true,
+          "residual_seconds": -0.012014583333382234
+        },
+        {
+          "source_start": 125.42112499999999,
+          "reference_start": 129.628125,
+          "offset": 4.207000000000022,
+          "confidence": 3.9753926438383838,
+          "inlier": true,
+          "residual_seconds": 0.02009583333330056
+        },
+        {
+          "source_start": 145.9913125,
+          "reference_start": 150.16675,
+          "offset": 4.175437500000015,
+          "confidence": 4.928592476134115,
+          "inlier": true,
+          "residual_seconds": -0.010793750000061664
+        },
+        {
+          "source_start": 166.5615,
+          "reference_start": 170.74725,
+          "offset": 4.185750000000013,
+          "confidence": 4.004038605916061,
+          "inlier": true,
+          "residual_seconds": 0.0001916666666090805
+        }
+      ],
+      "accepted": true,
+      "max_residual_seconds": 0.029793749999996066,
+      "anchor_inliers": 9
+    },
+    {
+      "id": "03",
+      "name": "03-Demo-Mao.mp4",
+      "duration": 179.995,
+      "numbered": true,
+      "slope": 0.9999681316329175,
+      "offset": 5.424772070067522,
+      "anchors": [
+        {
+          "source_start": 2.0,
+          "reference_start": 7.4065,
+          "offset": 5.4065,
+          "confidence": 4.977504261804966,
+          "inlier": true,
+          "residual_seconds": -0.01820833333335692
+        },
+        {
+          "source_start": 22.755953125,
+          "reference_start": 28.20775,
+          "offset": 5.451796874999999,
+          "confidence": 4.6093024603217865,
+          "inlier": true,
+          "residual_seconds": 0.027749999999976183
+        },
+        {
+          "source_start": 43.51190625,
+          "reference_start": 48.963625,
+          "offset": 5.451718749999998,
+          "confidence": 4.5397464115596415,
+          "inlier": true,
+          "residual_seconds": 0.02833333333331467
+        },
+        {
+          "source_start": 64.267859375,
+          "reference_start": 69.65925,
+          "offset": 5.391390625,
+          "confidence": 4.016140410594258,
+          "inlier": true,
+          "residual_seconds": -0.03133333333335031
+        },
+        {
+          "source_start": 85.0238125,
+          "reference_start": 90.432125,
+          "offset": 5.408312499999994,
+          "confidence": 3.284906140301038,
+          "inlier": true,
+          "residual_seconds": -0.013750000000030127
+        },
+        {
+          "source_start": 105.77976562500001,
+          "reference_start": 111.198,
+          "offset": 5.418234374999983,
+          "confidence": 3.549075719398759,
+          "inlier": true,
+          "residual_seconds": -0.003166666666700735
+        },
+        {
+          "source_start": 126.53571875,
+          "reference_start": 131.962125,
+          "offset": 5.426406249999985,
+          "confidence": 4.74229575121877,
+          "inlier": true,
+          "residual_seconds": 0.005666666666627407
+        },
+        {
+          "source_start": 147.29167187500002,
+          "reference_start": 152.703,
+          "offset": 5.411328124999983,
+          "confidence": 3.9302418448443404,
+          "inlier": true,
+          "residual_seconds": -0.008750000000020464
+        },
+        {
+          "source_start": 168.047625,
+          "reference_start": 173.4805,
+          "offset": 5.432874999999996,
+          "confidence": 4.9737393228791635,
+          "inlier": true,
+          "residual_seconds": 0.013458333333318251
+        }
+      ],
+      "accepted": true,
+      "max_residual_seconds": 0.03133333333335031,
+      "anchor_inliers": 9
+    },
+    {
+      "id": "04",
+      "name": "04-Demo-Tony.mp4",
+      "duration": 59.742189,
+      "numbered": true,
+      "slope": 1.0000267246245604,
+      "offset": 8.76518821741755,
+      "anchors": [
+        {
+          "source_start": 2.0,
+          "reference_start": 10.757625,
+          "offset": 8.757625,
+          "confidence": 6.392178286641822,
+          "inlier": true,
+          "residual_seconds": -0.007616666666670824
+        },
+        {
+          "source_start": 7.729734375,
+          "reference_start": 16.51075,
+          "offset": 8.781015625000002,
+          "confidence": 5.275524253066149,
+          "inlier": true,
+          "residual_seconds": 0.01562083333332609
+        },
+        {
+          "source_start": 13.45946875,
+          "reference_start": 22.217125,
+          "offset": 8.75765625,
+          "confidence": 5.097073031283887,
+          "inlier": true,
+          "residual_seconds": -0.0078916666666764
+        },
+        {
+          "source_start": 19.189203125,
+          "reference_start": 27.947,
+          "offset": 8.757796875,
+          "confidence": 6.228656052193874,
+          "inlier": true,
+          "residual_seconds": -0.007904166666680368
+        },
+        {
+          "source_start": 24.9189375,
+          "reference_start": 33.676875,
+          "offset": 8.757937500000004,
+          "confidence": 5.300397773762983,
+          "inlier": true,
+          "residual_seconds": -0.007916666666680783
+        },
+        {
+          "source_start": 30.648671874999998,
+          "reference_start": 39.430125,
+          "offset": 8.781453124999999,
+          "confidence": 4.5078141275596035,
+          "inlier": true,
+          "residual_seconds": 0.015445833333309622
+        },
+        {
+          "source_start": 36.37840625,
+          "reference_start": 45.16,
+          "offset": 8.781593749999999,
+          "confidence": 4.3631612280195355,
+          "inlier": true,
+          "residual_seconds": 0.015433333333305654
+        },
+        {
+          "source_start": 42.108140625,
+          "reference_start": 50.867375,
+          "offset": 8.759234375000005,
+          "confidence": 4.038755837579038,
+          "inlier": true,
+          "residual_seconds": -0.007079166666684955
+        },
+        {
+          "source_start": 47.837875,
+          "reference_start": 56.59625,
+          "offset": 8.758375000000001,
+          "confidence": 4.346700075150215,
+          "inlier": true,
+          "residual_seconds": -0.008091666666693698
+        }
+      ],
+      "accepted": true,
+      "max_residual_seconds": 0.01562083333332609,
+      "anchor_inliers": 9
+    },
+    {
+      "id": "05",
+      "name": "05-Demo-Liudmyla.mp4",
+      "duration": 185.151667,
+      "numbered": true,
+      "slope": 1.0001779083574824,
+      "offset": 8.419217099951721,
+      "anchors": [
+        {
+          "source_start": 2.0,
+          "reference_start": 10.4315,
+          "offset": 8.4315,
+          "confidence": 4.56430616592521,
+          "inlier": true,
+          "residual_seconds": 0.011927083333313604
+        },
+        {
+          "source_start": 23.400296875,
+          "reference_start": 31.838875,
+          "offset": 8.438578125000003,
+          "confidence": 6.373522242610199,
+          "inlier": true,
+          "residual_seconds": 0.015197916666650713
+        },
+        {
+          "source_start": 44.80059375,
+          "reference_start": 53.1885,
+          "offset": 8.38790625,
+          "confidence": 4.988514696109091,
+          "inlier": true,
+          "residual_seconds": -0.03928125000002325
+        },
+        {
+          "source_start": 66.200890625,
+          "reference_start": 74.640875,
+          "offset": 8.439984374999995,
+          "confidence": 4.637247623868207,
+          "inlier": true,
+          "residual_seconds": 0.00898958333330313
+        },
+        {
+          "source_start": 87.6011875,
+          "reference_start": 96.03175,
+          "offset": 8.430562500000008,
+          "confidence": 4.054373076591484,
+          "inlier": true,
+          "residual_seconds": -0.004239583333344399
+        },
+        {
+          "source_start": 109.00148437499999,
+          "reference_start": 117.429,
+          "offset": 8.427515625000012,
+          "confidence": 6.560397049823184,
+          "inlier": true,
+          "residual_seconds": -0.01109375000001478
+        },
+        {
+          "source_start": 130.40178125,
+          "reference_start": 138.864875,
+          "offset": 8.463093750000013,
+          "confidence": 5.083758615964629,
+          "inlier": true,
+          "residual_seconds": 0.020677083333339397
+        },
+        {
+          "source_start": 151.80207812499998,
+          "reference_start": 160.246125,
+          "offset": 8.444046875000026,
+          "confidence": 4.459120139912415,
+          "inlier": true,
+          "residual_seconds": -0.0021770833333221162
+        },
+        {
+          "source_start": 173.202375,
+          "reference_start": 54.943375,
+          "offset": -118.25899999999999,
+          "confidence": 1.704311050744888,
+          "inlier": false,
+          "residual_seconds": -126.70903125000001
+        }
+      ],
+      "accepted": true,
+      "max_residual_seconds": 0.03928125000002325,
+      "anchor_inliers": 8
+    },
+    {
+      "id": "06",
+      "name": "06-Demo-John.mp4",
+      "duration": 185.525233,
+      "numbered": true,
+      "slope": 1.0,
+      "offset": 0.0,
+      "anchors": [],
+      "accepted": true,
+      "max_residual_seconds": 0.0
+    },
+    {
+      "id": "07",
+      "name": "07-Demo-Natalie.mp4",
+      "duration": 129.168333,
+      "numbered": true,
+      "slope": 1.0002007045271346,
+      "offset": 29.97133470205688,
+      "anchors": [
+        {
+          "source_start": 2.0,
+          "reference_start": 31.95125,
+          "offset": 29.95125,
+          "confidence": 4.730113033362039,
+          "inlier": true,
+          "residual_seconds": -0.020486111111146954
+        },
+        {
+          "source_start": 16.402390625,
+          "reference_start": 46.411,
+          "offset": 30.008609375000002,
+          "confidence": 3.9171252295726275,
+          "inlier": true,
+          "residual_seconds": 0.03398263888885822
+        },
+        {
+          "source_start": 30.804781249999998,
+          "reference_start": 60.726375,
+          "offset": 29.92159375,
+          "confidence": 3.3311666208045367,
+          "inlier": true,
+          "residual_seconds": -0.05592361111114741
+        },
+        {
+          "source_start": 45.207171875,
+          "reference_start": 75.250125,
+          "offset": 30.042953124999997,
+          "confidence": 4.254938874132061,
+          "inlier": true,
+          "residual_seconds": 0.06254513888885072
+        },
+        {
+          "source_start": 59.609562499999996,
+          "reference_start": 89.602,
+          "offset": 29.99243750000001,
+          "confidence": 2.84692891623212,
+          "inlier": true,
+          "residual_seconds": 0.009138888888855945
+        },
+        {
+          "source_start": 74.01195312499999,
+          "reference_start": 103.967625,
+          "offset": 29.955671875000007,
+          "confidence": 5.050669610684085,
+          "inlier": true,
+          "residual_seconds": -0.03051736111113712
+        },
+        {
+          "source_start": 88.41434375,
+          "reference_start": 118.423625,
+          "offset": 30.00928125,
+          "confidence": 4.905262036951283,
+          "inlier": true,
+          "residual_seconds": 0.020201388888864358
+        },
+        {
+          "source_start": 102.816734375,
+          "reference_start": 132.772125,
+          "offset": 29.955390624999993,
+          "confidence": 4.745269764390583,
+          "inlier": true,
+          "residual_seconds": -0.03657986111116429
+        },
+        {
+          "source_start": 117.21912499999999,
+          "reference_start": 147.231625,
+          "offset": 30.012500000000017,
+          "confidence": 4.222993557604747,
+          "inlier": true,
+          "residual_seconds": 0.01763888888888232
+        }
+      ],
+      "accepted": true,
+      "max_residual_seconds": 0.06254513888885072,
+      "anchor_inliers": 9
+    },
+    {
+      "id": "08",
+      "name": "SaveInsta.App - 3229808766692924452_20971593899.mp4",
+      "duration": 60.040717,
+      "numbered": false,
+      "slope": 0.9993130544993662,
+      "offset": 10.219071113223485,
+      "anchors": [
+        {
+          "source_start": 2.0,
+          "reference_start": 12.208875,
+          "offset": 10.208875,
+          "confidence": 6.243458393137851,
+          "inlier": true,
+          "residual_seconds": -0.00882222222221607
+        },
+        {
+          "source_start": 7.753125,
+          "reference_start": 17.962,
+          "offset": 10.208874999999999,
+          "confidence": 5.714643515658919,
+          "inlier": true,
+          "residual_seconds": -0.004870138888882991
+        },
+        {
+          "source_start": 13.50625,
+          "reference_start": 23.726375,
+          "offset": 10.220125000000001,
+          "confidence": 4.128342950100136,
+          "inlier": true,
+          "residual_seconds": 0.010331944444448737
+        },
+        {
+          "source_start": 19.259375,
+          "reference_start": 29.477375,
+          "offset": 10.218,
+          "confidence": 3.939745889793727,
+          "inlier": true,
+          "residual_seconds": 0.012159027777784104
+        },
+        {
+          "source_start": 25.0125,
+          "reference_start": 35.231,
+          "offset": 10.218500000000002,
+          "confidence": 4.489398844138066,
+          "inlier": true,
+          "residual_seconds": 0.016611111111117793
+        },
+        {
+          "source_start": 30.765625,
+          "reference_start": 40.975625,
+          "offset": 10.21,
+          "confidence": 3.6494919774586854,
+          "inlier": true,
+          "residual_seconds": 0.012063194444451142
+        },
+        {
+          "source_start": 36.51875,
+          "reference_start": 46.646,
+          "offset": 10.127250000000004,
+          "confidence": 2.9877083896708556,
+          "inlier": true,
+          "residual_seconds": -0.06673472222221477
+        },
+        {
+          "source_start": 42.271875,
+          "reference_start": 52.474625,
+          "offset": 10.202750000000002,
+          "confidence": 6.446616214779928,
+          "inlier": true,
+          "residual_seconds": 0.012717361111121761
+        },
+        {
+          "source_start": 48.025,
+          "reference_start": 58.227625,
+          "offset": 10.202625000000005,
+          "confidence": 5.760433977064039,
+          "inlier": true,
+          "residual_seconds": 0.01654444444445602
+        }
+      ],
+      "accepted": true,
+      "max_residual_seconds": 0.06673472222221477,
+      "anchor_inliers": 9
+    },
+    {
+      "id": "09",
+      "name": "WhatsApp Video 2023-11-06 at 1.07.38 AM.mp4",
+      "duration": 73.293333,
+      "numbered": false,
+      "slope": 0.9999018163966615,
+      "offset": -3.119424168507627,
+      "anchors": [
+        {
+          "source_start": 2.0,
+          "reference_start": 61.745,
+          "offset": 59.745,
+          "confidence": 2.029362802226064,
+          "inlier": false,
+          "residual_seconds": 62.8646205357143
+        },
+        {
+          "source_start": 9.418984375,
+          "reference_start": 6.28825,
+          "offset": -3.130734375000001,
+          "confidence": 6.170698517946467,
+          "inlier": true,
+          "residual_seconds": -0.010385416666648162
+        },
+        {
+          "source_start": 16.83796875,
+          "reference_start": 13.70725,
+          "offset": -3.1307187500000015,
+          "confidence": 4.537066355433931,
+          "inlier": true,
+          "residual_seconds": -0.009641369047598047
+        },
+        {
+          "source_start": 24.256953125000003,
+          "reference_start": 21.1375,
+          "offset": -3.1194531250000033,
+          "confidence": 4.40720151090469,
+          "inlier": true,
+          "residual_seconds": 0.0023526785714480525
+        },
+        {
+          "source_start": 31.675937500000003,
+          "reference_start": 28.554875,
+          "offset": -3.1210625000000043,
+          "confidence": 3.874231654399425,
+          "inlier": true,
+          "residual_seconds": 0.0014717261904984014
+        },
+        {
+          "source_start": 39.094921875000004,
+          "reference_start": 36.017125,
+          "offset": -3.077796875000004,
+          "confidence": 4.384372434341922,
+          "inlier": true,
+          "residual_seconds": 0.045465773809546306
+        },
+        {
+          "source_start": 46.513906250000005,
+          "reference_start": 43.38425,
+          "offset": -3.1296562500000036,
+          "confidence": 4.076893100739334,
+          "inlier": true,
+          "residual_seconds": -0.005665178571405249
+        },
+        {
+          "source_start": 53.932890625000006,
+          "reference_start": 50.796,
+          "offset": -3.1368906250000066,
+          "confidence": 7.392553623434339,
+          "inlier": true,
+          "residual_seconds": -0.012171130952360443
+        },
+        {
+          "source_start": 61.35187500000001,
+          "reference_start": 58.215,
+          "offset": -3.1368750000000034,
+          "confidence": 6.463354921744355,
+          "inlier": true,
+          "residual_seconds": -0.011427083333302335
+        }
+      ],
+      "accepted": true,
+      "max_residual_seconds": 0.045465773809546306,
+      "anchor_inliers": 8
+    }
+  ],
+  "intervals": [
+    {
+      "start": -3.119424168507627,
+      "end": 0.0,
+      "cameras": [
+        "09"
+      ],
+      "count": 1,
+      "numbered_count": 0
+    },
+    {
+      "start": 0.0,
+      "end": 1.584352529897566,
+      "cameras": [
+        "06",
+        "09"
+      ],
+      "count": 2,
+      "numbered_count": 1
+    },
+    {
+      "start": 1.584352529897566,
+      "end": 4.19100709306753,
+      "cameras": [
+        "01",
+        "06",
+        "09"
+      ],
+      "count": 3,
+      "numbered_count": 2
+    },
+    {
+      "start": 4.19100709306753,
+      "end": 5.424772070067522,
+      "cameras": [
+        "01",
+        "02",
+        "06",
+        "09"
+      ],
+      "count": 4,
+      "numbered_count": 3
+    },
+    {
+      "start": 5.424772070067522,
+      "end": 8.419217099951721,
+      "cameras": [
+        "01",
+        "02",
+        "03",
+        "06",
+        "09"
+      ],
+      "count": 5,
+      "numbered_count": 4
+    },
+    {
+      "start": 8.419217099951721,
+      "end": 8.76518821741755,
+      "cameras": [
+        "01",
+        "02",
+        "03",
+        "05",
+        "06",
+        "09"
+      ],
+      "count": 6,
+      "numbered_count": 5
+    },
+    {
+      "start": 8.76518821741755,
+      "end": 10.219071113223485,
+      "cameras": [
+        "01",
+        "02",
+        "03",
+        "04",
+        "05",
+        "06",
+        "09"
+      ],
+      "count": 7,
+      "numbered_count": 6
+    },
+    {
+      "start": 10.219071113223485,
+      "end": 29.97133470205688,
+      "cameras": [
+        "01",
+        "02",
+        "03",
+        "04",
+        "05",
+        "06",
+        "08",
+        "09"
+      ],
+      "count": 8,
+      "numbered_count": 6
+    },
+    {
+      "start": 29.97133470205688,
+      "end": 68.508973804989,
+      "cameras": [
+        "01",
+        "02",
+        "03",
+        "04",
+        "05",
+        "06",
+        "07",
+        "08",
+        "09"
+      ],
+      "count": 9,
+      "numbered_count": 7
+    },
+    {
+      "start": 68.508973804989,
+      "end": 70.16671262795776,
+      "cameras": [
+        "01",
+        "02",
+        "03",
+        "05",
+        "06",
+        "07",
+        "08",
+        "09"
+      ],
+      "count": 8,
+      "numbered_count": 6
+    },
+    {
+      "start": 70.16671262795776,
+      "end": 70.21854341282551,
+      "cameras": [
+        "01",
+        "02",
+        "03",
+        "05",
+        "06",
+        "07",
+        "08"
+      ],
+      "count": 7,
+      "numbered_count": 6
+    },
+    {
+      "start": 70.21854341282551,
+      "end": 159.1655923712524,
+      "cameras": [
+        "01",
+        "02",
+        "03",
+        "05",
+        "06",
+        "07"
+      ],
+      "count": 6,
+      "numbered_count": 6
+    },
+    {
+      "start": 159.1655923712524,
+      "end": 182.68015095091215,
+      "cameras": [
+        "01",
+        "02",
+        "03",
+        "05",
+        "06"
+      ],
+      "count": 5,
+      "numbered_count": 5
+    },
+    {
+      "start": 182.68015095091215,
+      "end": 185.08199297637324,
+      "cameras": [
+        "01",
+        "03",
+        "05",
+        "06"
+      ],
+      "count": 4,
+      "numbered_count": 4
+    },
+    {
+      "start": 185.08199297637324,
+      "end": 185.41403592333452,
+      "cameras": [
+        "03",
+        "05",
+        "06"
+      ],
+      "count": 3,
+      "numbered_count": 3
+    },
+    {
+      "start": 185.41403592333452,
+      "end": 185.525233,
+      "cameras": [
+        "05",
+        "06"
+      ],
+      "count": 2,
+      "numbered_count": 2
+    },
+    {
+      "start": 185.525233,
+      "end": 193.6038241289128,
+      "cameras": [
+        "05"
+      ],
+      "count": 1,
+      "numbered_count": 1
+    }
+  ],
+  "max_count": 9,
+  "maximum_overlap": [
+    {
+      "start": 29.97133470205688,
+      "end": 68.508973804989,
+      "cameras": [
+        "01",
+        "02",
+        "03",
+        "04",
+        "05",
+        "06",
+        "07",
+        "08",
+        "09"
+      ],
+      "count": 9,
+      "numbered_count": 7
+    }
+  ],
+  "warning": "Unnumbered files may duplicate cameras. Audio propagation and A/V offset still require visual verification."
+}

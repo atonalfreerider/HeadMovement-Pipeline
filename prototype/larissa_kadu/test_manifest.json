@@ -1,0 +1,104 @@
+{
+  "reference": "06-Demo-John.mp4",
+  "reference_start": 58,
+  "reference_end": 62,
+  "maximum_overlap_reference": [
+    29.97133470205688,
+    68.508973804989
+  ],
+  "fps": 24,
+  "frame_count": 96,
+  "width": 448,
+  "height": 784,
+  "cameras": [
+    {
+      "id": "01",
+      "source": "01-Demo-Ali.mp4",
+      "source_start_seconds": 56.403576381156576,
+      "source_end_seconds": 60.402720513007424,
+      "slope": 1.000214012828979,
+      "offset": 1.584352529897566,
+      "clip": "prototype\\larissa_kadu\\clips\\cam01.mp4",
+      "numbered_counterclockwise": true
+    },
+    {
+      "id": "02",
+      "source": "02-Demo-Tina.mp4",
+      "source_start_seconds": 53.810753228888366,
+      "source_end_seconds": 57.810884085970855,
+      "slope": 0.9999672867995658,
+      "offset": 4.19100709306753,
+      "clip": "prototype\\larissa_kadu\\clips\\cam02.mp4",
+      "numbered_counterclockwise": true
+    },
+    {
+      "id": "03",
+      "source": "03-Demo-Mao.mp4",
+      "source_start_seconds": 52.576903469992324,
+      "source_end_seconds": 56.577030947523156,
+      "slope": 0.9999681316329175,
+      "offset": 5.424772070067522,
+      "clip": "prototype\\larissa_kadu\\clips\\cam03.mp4",
+      "numbered_counterclockwise": true
+    },
+    {
+      "id": "04",
+      "source": "04-Demo-Tony.mp4",
+      "source_start_seconds": 49.23349603588509,
+      "source_end_seconds": 53.233389140243595,
+      "slope": 1.0000267246245604,
+      "offset": 8.76518821741755,
+      "clip": "prototype\\larissa_kadu\\clips\\cam04.mp4",
+      "numbered_counterclockwise": true
+    },
+    {
+      "id": "05",
+      "source": "05-Demo-Liudmyla.mp4",
+      "source_start_seconds": 49.57196363342108,
+      "source_end_seconds": 53.57125212657416,
+      "slope": 1.0001779083574824,
+      "offset": 8.419217099951721,
+      "clip": "prototype\\larissa_kadu\\clips\\cam05.mp4",
+      "numbered_counterclockwise": true
+    },
+    {
+      "id": "06",
+      "source": "06-Demo-John.mp4",
+      "source_start_seconds": 58.0,
+      "source_end_seconds": 62.0,
+      "slope": 1.0,
+      "offset": 0.0,
+      "clip": "prototype\\larissa_kadu\\clips\\cam06.mp4",
+      "numbered_counterclockwise": true
+    },
+    {
+      "id": "07",
+      "source": "07-Demo-Natalie.mp4",
+      "source_start_seconds": 28.02304094676103,
+      "source_end_seconds": 32.02223828974938,
+      "slope": 1.0002007045271346,
+      "offset": 29.97133470205688,
+      "clip": "prototype\\larissa_kadu\\clips\\cam07.mp4",
+      "numbered_counterclockwise": true
+    },
+    {
+      "id": "09",
+      "source": "WhatsApp Video 2023-11-06 at 1.07.38 AM.mp4",
+      "source_start_seconds": 61.12542568305679,
+      "source_end_seconds": 65.125818456034,
+      "slope": 0.9999018163966615,
+      "offset": -3.119424168507627,
+      "clip": "prototype\\larissa_kadu\\clips\\cam09.mp4",
+      "numbered_counterclockwise": false
+    }
+  ],
+  "excluded": {
+    "08": "Appears to duplicate camera 09, with overlaid text and upscaling."
+  },
+  "caveats": [
+    "Audio alignment has residual uncertainty of roughly one or two video frames.",
+    "Handheld camera motion, optical/digital zoom, mirror reflections retained.",
+    "Camera 09 is unnumbered; its room ordering is unspecified.",
+    "Letterboxing preserves full field of view; no dancers have been masked."
+  ]
+}
