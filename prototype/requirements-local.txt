@@ -1,0 +1,13 @@
+# Added over the existing mamma Python 3.11 / torch 2.5.1+cu124 environment.
+# This is not a standalone lockfile for every inherited MAMMA dependency.
+numpy==1.26.4
+plyfile==1.1
+gsplat==1.5.3
+jaxtyping==0.3.11
+e3nn==0.6.0
+ninja==1.13.2
+evo==1.37.1
+pycolmap==4.2.1
+pillow_heif==1.8.0
+moviepy==1.0.3
+addict==2.4.0

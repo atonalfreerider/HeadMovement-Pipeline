@@ -1,0 +1,28 @@
+# Workspace repo: tracks pipeline code and small manifests only.
+# Nested repos (head-movement, mamma, beat_this), third-party code (external/), body-model
+# files (smplx/), footage (dances/, carlos-aline-spin/), venvs and generated outputs stay out.
+/*
+!/.gitignore
+!/README.md
+!/atlas_bridge/
+!/dancecap/
+!/prototype/
+
+**/__pycache__/
+*.pyc
+
+/atlas_bridge/sessions/*/work/
+
+# dancecap: code, configs and tests; run outputs live under work/ (ignored)
+/dancecap/work/
+/dancecap/weights/
+
+# prototype: scripts, patches and small JSON evidence only
+/prototype/*
+!/prototype/*.py
+!/prototype/*.patch
+!/prototype/*.cmd
+!/prototype/*.txt
+!/prototype/larissa_kadu/
+/prototype/larissa_kadu/*
+!/prototype/larissa_kadu/*.json

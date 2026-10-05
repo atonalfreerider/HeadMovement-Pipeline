@@ -1,0 +1,51 @@
+diff --git a/src/model/encoder/backbone/backbone_da3.py b/src/model/encoder/backbone/backbone_da3.py
+index bf2ca85..dfc55cf 100644
+--- a/src/model/encoder/backbone/backbone_da3.py
++++ b/src/model/encoder/backbone/backbone_da3.py
+@@ -159,7 +159,10 @@ class BackboneDA3(Backbone):
+             f"depth-anything/{cfg.backbone_checkpoint_name.upper()}"
+         )
+         TemporalVisionTransformer.from_vit(model_full.model.backbone.pretrained)
+-        self._aggregator = model_full.model.backbone.to(torch.bfloat16)
++        # Turing (RTX 2080 Ti) has no native BF16 support. Keep FP32 for
++        # numerically stable inference there; use upstream BF16 on newer GPUs.
++        dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float32
++        self._aggregator = model_full.model.backbone.to(dtype)
+         self._camera_head = model_full.model.cam_dec
+         self._camera_enc = model_full.model.cam_enc
+         self._depth_head = model_full.model.head
+@@ -184,7 +187,7 @@ class BackboneDA3(Backbone):
+         num_cameras: int,
+     ) -> list[LayerTokens]:
+         tokens, _ = self._aggregator(
+-            image.to(torch.bfloat16),
++            image.to(next(self._aggregator.parameters()).dtype),
+             cam_token=cam_token,
+             export_feat_layers=self.cfg.intermediate_layer_idx,
+             timestamps=timestamps if self.cfg.backbone_temporal_encoding else None,
+diff --git a/src/model/encoder/backbone/types.py b/src/model/encoder/backbone/types.py
+index 8c9b50a..344c219 100644
+--- a/src/model/encoder/backbone/types.py
++++ b/src/model/encoder/backbone/types.py
+@@ -35,7 +35,7 @@ class Backbone(nn.Module, ABC):
+ 
+     @property
+     def dtype(self) -> torch.dtype:
+-        return torch.bfloat16
++        return next(self.parameters()).dtype
+ 
+     @abstractmethod
+     def normalize(
+diff --git a/src/model/encoder/encoder.py b/src/model/encoder/encoder.py
+index 6d6448a..04c70ae 100644
+--- a/src/model/encoder/encoder.py
++++ b/src/model/encoder/encoder.py
+@@ -190,7 +190,7 @@ class EncoderNoPo4D(Encoder[EncoderNoPo4DCfg]):
+ 
+         # Run the backbone with its precision context
+         device_type = scene_input.image.device.type
+-        with torch.autocast(device_type, enabled=True, dtype=self._dtype):
++        with torch.autocast(device_type, enabled=self._dtype != torch.float32, dtype=self._dtype):
+             layers_tokens = self._run_backbone(scene_input)
+ 
+         # Predict heads output in full precision
