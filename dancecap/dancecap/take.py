@@ -50,7 +50,7 @@ class Take:
         path = Path(path)
         if not path.suffix:
             path = PACKAGE_ROOT / "takes" / f"{path}.toml"
-        cfg = tomllib.loads(path.read_text())
+        cfg = tomllib.loads(path.read_text(encoding="utf-8"))
         root = (path.parent / cfg["source_dir"]).resolve() if not Path(cfg["source_dir"]).is_absolute() \
             else Path(cfg["source_dir"])
         alignment = json.loads(((path.parent / cfg["alignment"]).resolve()).read_text())
