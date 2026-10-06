@@ -32,7 +32,7 @@ from .take import PACKAGE_ROOT
 
 LEDGER = PACKAGE_ROOT / "work" / "runpod" / "ledger.json"
 SSH_KEY = Path.home() / ".ssh" / "runpod_dancecap"
-DEFAULT_CAP = 10.0
+DEFAULT_CAP = 30.0  # raised by the user 2026-10-06 (was $10)
 # preferred 80 GB GPUs, cheapest first; availability changes, so status/gpus shows what's live
 GPU_PREFERENCE = ["NVIDIA A100-SXM4-80GB", "NVIDIA A100 80GB PCIe", "NVIDIA H100 80GB HBM3", "NVIDIA H100 NVL",
                   "NVIDIA H100 PCIe"]
@@ -165,9 +165,9 @@ class Pod:
 
 def _pod_ssh(pod_json: dict) -> tuple[str, int]:
     """Public IP + mapped port 22 from a pod record."""
-    for p in (pod_json.get("runtime") or {}).get("ports") or pod_json.get("ports") or []:
-        if isinstance(p, dict) and int(p.get("privatePort", 0)) == 22 and p.get("isIpPublic", True):
-            return p["ip"], int(p["publicPort"])
+    found = _direct_ssh(pod_json)
+    if found:
+        return found
     info = _ctl("ssh", "info", pod_json["id"])
     host = info.get("ip") or info.get("host")
     port = info.get("port")
@@ -178,11 +178,13 @@ def _pod_ssh(pod_json: dict) -> tuple[str, int]:
 
 @contextlib.contextmanager
 def pod_session(name: str, max_minutes: float, gpus: list[str] | None = None, image: str = DEFAULT_IMAGE,
-                disk_gb: int = 80, clouds: list[str] | None = None, start_timeout_min: float = 6):
+                disk_gb: int = 80, clouds: list[str] | None = None, start_timeout_min: float = 6,
+                max_start_attempts: int = 2):
     """Create a pod, yield it, and always delete it. Refuses to start if the budget can't cover max_minutes."""
     ensure_ssh_key()
     last_err = None
     pod = None
+    attempts = 0
     for gpu, cloud in [(g, c) for c in (clouds or CLOUDS) for g in (gpus or GPU_PREFERENCE)]:
         price = gpu_price(gpu, cloud)
         if price is None:
@@ -192,8 +194,9 @@ def pod_session(name: str, max_minutes: float, gpus: list[str] | None = None, im
         if need > remaining():
             raise BudgetError(f"{gpu}: {max_minutes + start_timeout_min:.0f} min at ${price:.2f}/h = ${need:.2f} > "
                               f"remaining ${remaining():.2f} of the ${cap():.2f} cap")
+        # 22/tcp must be requested at creation: without it Runpod gives only its ssh proxy, which can't scp
         args = ["pod", "create", "--name", f"dancecap-{name}", "--image", image, "--gpu-id", gpu,
-                "--container-disk-in-gb", str(disk_gb), "--cloud-type", cloud]
+                "--container-disk-in-gb", str(disk_gb), "--cloud-type", cloud, "--ports", "22/tcp"]
         if cloud == "COMMUNITY":
             args.append("--public-ip")
         try:
@@ -213,8 +216,11 @@ def pod_session(name: str, max_minutes: float, gpus: list[str] | None = None, im
         pod = _wait_running(pod_id, start_timeout_min * 60)
         if pod:
             break
-        last_err = RuntimeError(f"{gpu} ({cloud}) container did not start in {start_timeout_min:.0f} min")
-        _delete(pod_id, reason="container did not start")
+        last_err = RuntimeError(f"{gpu} ({cloud}) not reachable over direct ssh in {start_timeout_min:.0f} min")
+        _delete(pod_id, reason="not reachable over direct ssh")
+        attempts += 1
+        if attempts >= max_start_attempts:  # don't walk the whole GPU list paying for start-ups
+            break
     if not pod:
         raise RuntimeError(f"no 80 GB GPU pod could be started: {last_err}")
 
@@ -247,13 +253,37 @@ def _record(pod_id: str, name: str, gpu: str, cloud: str, cost: float, max_minut
 def _wait_running(pod_id: str, timeout_s: float) -> dict | None:
     """Poll until the container runs and port 22 is publicly mapped; None on timeout (caller deletes the pod)."""
     deadline = time.time() + timeout_s
+    last = None
     while time.time() < deadline:
         p = _ctl("pod", "get", pod_id, check=False)
         if isinstance(p, dict):
-            ports = (p.get("runtime") or {}).get("ports") or []
-            if any(isinstance(x, dict) and int(x.get("privatePort", 0)) == 22 and x.get("isIpPublic") for x in ports):
+            last = p
+            if _direct_ssh(p):
                 return p
         time.sleep(10)
+    if last:  # say why, so a running-but-unreachable pod isn't mistaken for one that never started
+        rt = last.get("runtime") or {}
+        print(f"[runpod] {pod_id}: status={last.get('status') or last.get('desiredStatus')} "
+              f"uptime={rt.get('uptime')} ports={json.dumps(rt.get('ports'))[:300]} ssh={json.dumps(last.get('ssh'))[:200]}")
+    return None
+
+
+def _direct_ssh(pod_json: dict) -> tuple[str, int] | None:
+    """(public ip, port) mapped to the container's port 22, from either REST shape, or None."""
+    ssh = pod_json.get("ssh") or {}
+    direct = ssh.get("direct")  # REST v2 / MCP shape
+    if isinstance(direct, dict) and direct.get("host") and direct.get("port"):
+        return direct["host"], int(direct["port"])
+    if ssh.get("ip") and ssh.get("port") and not str(ssh["ip"]).startswith("100."):  # runpodctl pod get shape
+        return ssh["ip"], int(ssh["port"])
+    for x in (pod_json.get("runtime") or {}).get("ports") or []:
+        if not isinstance(x, dict):
+            continue
+        private = x.get("private", x.get("privatePort"))
+        public = x.get("public", x.get("publicPort"))
+        is_public = x.get("isIpPublic", str(x.get("type", "")).lower() == "tcp")
+        if private is not None and int(private) == 22 and public and is_public:
+            return x["ip"], int(public)
     return None
 
 
