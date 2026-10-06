@@ -11,6 +11,14 @@ window = [56.0, 62.0]
 keyframe_span = [30.0, 68.0]
 keyframe_step = 4.0
 
+# Dance metadata (user 2026-10-06): data is siloed by level; the title is the reaction "Leader + Follower x Song".
+[dance]
+level = "professional"          # professional | intermediate | novice
+category = "demo"               # demo | lesson | jack_and_jill
+song = "Ficar Sem Você (feat. Urias)"
+artist = "Davi Sabbag"
+song_file = "../../dances/Larissa-Kadu-demo/Ficar Sem Você.mp3"   # studio track supplied by the user (not for any repo)
+
 # Dancer facts supplied by the user (2026-10-05). Stature = standing height to the crown, barefoot-equivalent
 # unknown (they dance in sneakers, ~2-3 cm sole). Used for metric scale (cameras) and SMPL-X shape checks.
 # Body masses not supplied: physics estimates them from SMPL-X volume and flags +-10%.
