@@ -208,3 +208,32 @@ def route_lesson_command(text: str, lesson_state: dict | None = None, act_thresh
 
     out.confidence = min(confidences) if confidences else 0.0
     return out
+
+
+# ---------------------------------------------------------------------------
+# dancer role cross-check (dancers stage)
+# ---------------------------------------------------------------------------
+
+LEAD_DESCRIPTION = "black t-shirt, jeans, shaved head"
+FOLLOW_DESCRIPTION = "long red hair, white crop top, light ripped jeans"
+
+
+def judge_roles(cams: dict[str, dict[str, dict]]) -> dict[str, tuple[str, float]]:
+    """Select (never generate) which of two measured candidates matches the lead's clothing description.
+
+    cams: {cam: {"A": descriptors, "B": descriptors}} where descriptors are code-measured colour facts
+    (colour names + HSV medians + red-pixel fraction above the shoulders). Only clothing/hair colour is
+    compared; nothing else about the people is asked or inferred. Returns {cam: ("A"|"B"|"unclear", p)}.
+    """
+    state = {"lead_clothing": LEAD_DESCRIPTION, "partner_clothing": FOLLOW_DESCRIPTION,
+             "measurement_notes": "top/trousers = median brightness of the pixels (black < dark < medium < light "
+                                  "< white); red_above_shoulders = share of saturated red pixels around the head",
+             "cameras": cams}
+    q = {f"cam_{c}": Choice(
+        instructions=f"In camera {c}, which measured candidate's colours match the clothing description "
+                     f"'{LEAD_DESCRIPTION}' (the other should match '{FOLLOW_DESCRIPTION}')?",
+        criteria={"A": "candidate A matches the black t-shirt / jeans description",
+                  "B": "candidate B matches the black t-shirt / jeans description",
+                  "unclear": "the measurements do not distinguish them"}) for c in cams}
+    r = client().system_one(state=state, questions=q)
+    return {c: (r.choices[f"cam_{c}"].choice, float(r.choices[f"cam_{c}"].confidence)) for c in cams}

@@ -48,10 +48,9 @@ def body_pose(t: np.ndarray, role: str) -> np.ndarray:
         for j, g in ((6, 0.12), (9, 0.18), (12, 0.2), (15, 0.25)):
             _set(pose, j, 0, g * np.sin(a))
             _set(pose, j, 2, g * np.cos(a))
-    side = 1.0 if role == "lead" else -1.0
     _set(pose, 16, 1, -0.9)
     _set(pose, 16, 2, -0.9)
-    _set(pose, 18, 1, -0.9 * side)
+    _set(pose, 18, 1, -0.9)  # left elbow flexion (+y would hyperextend the arm backwards)
     _set(pose, 17, 1, 1.1)
     _set(pose, 17, 2, 0.5)
     _set(pose, 19, 1, 1.2)
