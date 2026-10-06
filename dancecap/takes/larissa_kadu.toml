@@ -10,3 +10,18 @@ window = [56.0, 62.0]
 # sparse snapshots of the static room, spread across the overlap so handheld cameras contribute many viewpoints
 keyframe_span = [30.0, 68.0]
 keyframe_step = 4.0
+
+# Dancer facts supplied by the user (2026-10-05). Stature = standing height to the crown, barefoot-equivalent
+# unknown (they dance in sneakers, ~2-3 cm sole). Used for metric scale (cameras) and SMPL-X shape checks.
+# Body masses not supplied: physics estimates them from SMPL-X volume and flags +-10%.
+[dancers.lead]
+name = "Kadu"
+pid = 1
+stature_m = 1.727   # 5'8"
+description = "black t-shirt, jeans, shaved head"
+
+[dancers.follow]
+name = "Larissa"
+pid = 2
+stature_m = 1.651   # 5'5"
+description = "long red hair, white crop top, light ripped jeans, white sneakers"
