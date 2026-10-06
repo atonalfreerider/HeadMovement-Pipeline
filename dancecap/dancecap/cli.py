@@ -76,6 +76,8 @@ def main(argv=None):
     sp.add_argument("--window-only", action="store_true")
     sp.add_argument("--keyframes-only", action="store_true")
     sp.set_defaults(fn=cmd_ingest)
+    sp = sub.add_parser("synthetic", help="synthetic two-dancer SMPL-X take with ground truth (work/synthetic)")
+    sp.set_defaults(fn=lambda a: __import__("dancecap.synthetic", fromlist=["main"]).main())
     sp = sub.add_parser("ask", help="natural-language lesson control -> hm_* Unity commands (TypeSafe)")
     sp.add_argument("text")
     sp.add_argument("--run", action="store_true", help="read hm_state and execute in the open Unity editor")
