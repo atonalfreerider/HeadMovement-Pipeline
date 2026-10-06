@@ -4,7 +4,7 @@ Basic GPU work (YOLO, ma_2d inference, beats, Unity) stays local; anything that 
 2080 Ti for a long time runs on a rented 80 GB GPU here.
 
 Safety and cost rules (user decisions, 2026-10-06):
-- Spending cap (default $10, override with DANCECAP_RUNPOD_CAP) enforced from work/runpod/ledger.json BEFORE a pod
+- Spending cap (default $30, override with DANCECAP_RUNPOD_CAP) enforced from work/runpod/ledger.json BEFORE a pod
   is created: remaining budget must cover cost_per_hour x max_minutes.
 - Every pod gets two kill switches: an on-pod timer (`sleep N; runpodctl remove pod $RUNPOD_POD_ID`, using the
   pod-scoped key Runpod injects) and a local `finally:` delete. The ledger is updated on delete.
@@ -85,9 +85,13 @@ def _save_ledger(rows: list[dict]) -> None:
 
 
 def spent() -> float:
+    """Spend so far: a closed row's recorded/reconciled cost if present, else price x lifetime (open rows keep accruing)."""
     now = time.time()
     total = 0.0
     for r in ledger():
+        if r.get("deleted_ts") and r.get("cost") is not None:
+            total += float(r["cost"])
+            continue
         end = r.get("deleted_ts") or now  # a pod still alive keeps costing
         total += r["cost_per_hr"] * max(0.0, end - r["created_ts"]) / 3600
     return total
