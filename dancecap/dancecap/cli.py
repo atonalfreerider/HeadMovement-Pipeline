@@ -21,6 +21,21 @@ import json
 from .take import Take
 
 
+def cmd_remote(a):
+    from . import remote
+    if a.action == "status":
+        print(json.dumps(remote.status(), indent=1))
+    elif a.action == "gpus":
+        rows = []
+        for g in remote.gpu_list():
+            mem = g.get("memoryInGb") or g.get("memory") or 0
+            if mem and float(mem) >= 80:
+                rows.append(g)
+        print(json.dumps(rows, indent=1))
+    elif a.action == "cleanup":
+        print("deleted:", remote.cleanup_orphans())
+
+
 def cmd_ingest(a):
     from .ingest import ingest_keyframes, ingest_window
     take = Take.load(a.take)
@@ -340,6 +355,9 @@ def main(argv=None):
     sp.add_argument("--instants", type=int, default=6)
     sp.set_defaults(fn=lambda a: [print(f"[review] {p}") for p in __import__("dancecap.review", fromlist=["render"])
                                   .render(Take.load(a.take), a.instants)])
+    sp = sub.add_parser("remote", help="Runpod offload: status | gpus | cleanup (budget-capped, auto-deleting pods)")
+    sp.add_argument("action", choices=["status", "gpus", "cleanup"])
+    sp.set_defaults(fn=cmd_remote)
     sp = sub.add_parser("cameras", help="static-room SfM (ALIKED+LightGlue, COLMAP) + per-frame pose/zoom of every camera")
     sp.add_argument("take")
     sp.add_argument("--cams")
