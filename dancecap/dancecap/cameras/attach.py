@@ -21,7 +21,12 @@ without parallax - points near infinity, no usable floor, camera "translations" 
 ROTATIONS and focal lengths are still precise (self-calibration from rotation). Then the camera centre is held
 constant (hand shake of a few cm is ignored) and only Rs (3) + C (3) are solved from the dancers:
     R_main(i) = R_sub(i) Rs^T,   t_main(i) = -R_main(i) C.
-The pipeline tries both and keeps the one with the lower dancer reprojection error.
+With the building's vertical measured in the sub-model frame (vertical vanishing points, vertical.py), Rs is
+constrained to map it onto the main frame's vertical exactly: tilt/roll from the building, yaw + C from the dancers.
+
+The pipeline tries the variants, rejects implausible Sim3 solutions (sim3_plausible), and keeps the one with the
+lowest TEMPORAL HOLD-OUT dancer error (fit on alternating 0.5 s blocks, test on the others) among those that agree
+with the building's vertical.
 """
 from __future__ import annotations
 
@@ -189,8 +194,12 @@ def solve_sim3(R_sub, t_sub, K, k1, fidx, X, uv, w, floor_sub=None, floor_main=N
 
 def _rot_reproj(x, R_sub, K, k1, fidx, X, uv):
     Rs = Rotation.from_rotvec(x[:3]).as_matrix()
+    return _rot_reproj_R(Rs, x[3:6], R_sub, K, k1, fidx, X, uv)
+
+
+def _rot_reproj_R(Rs, C, R_sub, K, k1, fidx, X, uv):
     R_m = R_sub @ Rs.T
-    Xc = np.einsum("nij,nj->ni", R_m[fidx], X - x[3:6])
+    Xc = np.einsum("nij,nj->ni", R_m[fidx], X - C)
     z = Xc[:, 2]
     vis = z > 0.05
     zs = np.where(vis, z, 1.0)
@@ -202,29 +211,127 @@ def _rot_reproj(x, R_sub, K, k1, fidx, X, uv):
     return r
 
 
+def align_vectors(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Smallest rotation R with R a = b (unit vectors)."""
+    a, b = a / np.linalg.norm(a), b / np.linalg.norm(b)
+    v = np.cross(a, b)
+    s, c = np.linalg.norm(v), float(np.dot(a, b))
+    if s < 1e-12:
+        if c > 0:
+            return np.eye(3)
+        p = np.cross(a, [1.0, 0, 0] if abs(a[0]) < 0.9 else [0, 1.0, 0])
+        return Rotation.from_rotvec(np.pi * p / np.linalg.norm(p)).as_matrix()
+    return Rotation.from_rotvec(v / s * np.arctan2(s, c)).as_matrix()
+
+
 def solve_rotonly(R_sub, K, k1, fidx, X, uv, w, up_main: np.ndarray | None = None, huber_px: float = 6.0,
-                  n_yaw: int = 8) -> dict:
-    """Rotation-only attach: (Rs, C) from the dancers; multi-start over yaw about the main up axis."""
+                  n_yaw: int = 8, vertical: tuple[np.ndarray, np.ndarray] | None = None) -> dict:
+    """Rotation-only attach: (Rs, C) from the dancers; multi-start over yaw about the main up axis.
+
+    vertical = (u_sub, u_main): the architecture vertical measured in the sub-model frame (vertical vanishing
+    points of the camera's own frames, see vertical.py) and in the main frame. Then Rs u_sub = u_main is imposed
+    EXACTLY (Rs = Rot(u_main, yaw) A, A the smallest rotation u_sub -> u_main): tilt and roll come from the
+    building, and the dancers only fix yaw + camera centre (4 dof instead of 6) - dancer keypoints alone
+    constrain roll/tilt weakly (cam05 was 4-5 deg off)."""
     t0 = np.zeros((len(R_sub), 3))
     try:
         Rs0, C_m0, _ = init_rotation(R_sub, t0, K, fidx, X, uv)
         C0 = np.median(C_m0, 0)
     except ValueError:
         Rs0, C0 = np.eye(3), X.mean(0) + np.array([0, 0, -5.0])
-    axis = up_main if up_main is not None else np.array([0, 1.0, 0])
+    cen = X.mean(0)
     best = None
-    fun = lambda x: (_rot_reproj(x, R_sub, K, k1, fidx, X, uv) * w[:, None]).ravel()  # noqa: E731
-    for yaw in np.linspace(0, 2 * np.pi, n_yaw, endpoint=False):
-        Ry = Rotation.from_rotvec(axis * yaw)
-        # rotate the camera about the dancers' centre: orientation and centre move together
-        cen = X.mean(0)
-        Rs_i = Ry.as_matrix() @ Rs0
-        C_i = cen + Ry.apply(C0 - cen)
-        x0 = np.r_[Rotation.from_matrix(Rs_i).as_rotvec(), C_i]
-        r = least_squares(fun, x0, loss="huber", f_scale=huber_px, max_nfev=300)
-        if best is None or r.cost < best.cost:
-            best = r
-    e = np.linalg.norm(_rot_reproj(best.x, R_sub, K, k1, fidx, X, uv), axis=1)
-    return {"Rs": Rotation.from_rotvec(best.x[:3]).as_matrix(), "C": best.x[3:6], "median_px": float(np.median(e)),
-            "p90_px": float(np.percentile(e, 90)), "n_obs": int(len(e)), "inlier_frac_10px": float((e < 10).mean()),
-            "frames_used": int(len(np.unique(fidx))), "starts": n_yaw}
+    if vertical is not None:
+        u_sub, u_main = (np.asarray(v, float) / np.linalg.norm(v) for v in vertical)
+        A = align_vectors(u_sub, u_main)
+        # yaw of the PnP initialisation about u_main
+        B = Rs0 @ A.T  # ~ Rot(u_main, yaw0) if PnP tilt were right
+        e1 = np.cross(u_main, [1.0, 0, 0] if abs(u_main[0]) < 0.9 else [0, 1.0, 0])
+        e1 /= np.linalg.norm(e1)
+        b = B @ e1 - np.dot(B @ e1, u_main) * u_main
+        yaw0 = np.arctan2(np.dot(np.cross(e1, b), u_main), np.dot(e1, b))
+
+        def Rs_of(yaw):
+            return Rotation.from_rotvec(u_main * yaw).as_matrix() @ A
+        fun = lambda x: (_rot_reproj_R(Rs_of(x[0]), x[1:4], R_sub, K, k1, fidx, X, uv) * w[:, None]).ravel()  # noqa
+        for dy in np.linspace(0, 2 * np.pi, n_yaw, endpoint=False):
+            Ry = Rotation.from_rotvec(u_main * dy)
+            C_i = cen + Ry.apply(C0 - cen)
+            r = least_squares(fun, np.r_[yaw0 + dy, C_i], loss="huber", f_scale=huber_px, max_nfev=300)
+            if best is None or r.cost < best.cost:
+                best = r
+        Rs, C = Rs_of(best.x[0]), best.x[1:4]
+    else:
+        axis = up_main if up_main is not None else np.array([0, 1.0, 0])
+        fun = lambda x: (_rot_reproj(x, R_sub, K, k1, fidx, X, uv) * w[:, None]).ravel()  # noqa: E731
+        for yaw in np.linspace(0, 2 * np.pi, n_yaw, endpoint=False):
+            Ry = Rotation.from_rotvec(axis * yaw)
+            # rotate the camera about the dancers' centre: orientation and centre move together
+            Rs_i = Ry.as_matrix() @ Rs0
+            C_i = cen + Ry.apply(C0 - cen)
+            x0 = np.r_[Rotation.from_matrix(Rs_i).as_rotvec(), C_i]
+            r = least_squares(fun, x0, loss="huber", f_scale=huber_px, max_nfev=300)
+            if best is None or r.cost < best.cost:
+                best = r
+        Rs, C = Rotation.from_rotvec(best.x[:3]).as_matrix(), best.x[3:6]
+    e = np.linalg.norm(_rot_reproj_R(Rs, C, R_sub, K, k1, fidx, X, uv), axis=1)
+    out = {"Rs": Rs, "C": C, "median_px": float(np.median(e)),
+           "p90_px": float(np.percentile(e, 90)), "n_obs": int(len(e)), "inlier_frac_10px": float((e < 10).mean()),
+           "frames_used": int(len(np.unique(fidx))), "starts": n_yaw, "vertical_constraint": vertical is not None}
+    if vertical is not None:
+        out["vertical_err_deg"] = float(np.degrees(np.arccos(np.clip(np.dot(Rs @ u_sub, u_main), -1, 1))))
+    return out
+
+
+def rotonly_errors(sol: dict, R_sub, K, k1, fidx, X, uv) -> np.ndarray:
+    return np.linalg.norm(_rot_reproj_R(sol["Rs"], sol["C"], R_sub, K, k1, fidx, X, uv), axis=1)
+
+
+def holdout(solve, errors, fidx: np.ndarray, t_frames: np.ndarray, block_s: float = 0.5) -> dict:
+    """Temporal hold-out of an attach: fit on alternating `block_s` blocks, test on the others (both ways).
+
+    solve(sel) -> solution fitted on observations sel; errors(sol, sel) -> (n,) px errors on observations sel.
+    Returns the TEST errors (median/p90 over both folds) - a validation, unlike the fit residual."""
+    blk = np.floor((t_frames[fidx] - t_frames.min()) / block_s).astype(int) % 2
+    test = []
+    folds = {}
+    for k in (0, 1):
+        tr, te = blk == k, blk != k
+        if tr.sum() < 30 or te.sum() < 30:
+            continue
+        sol = solve(tr)
+        e = errors(sol, te)
+        test.append(e)
+        folds[f"fit_on_{'even' if k == 0 else 'odd'}"] = {"train_median_px": round(float(np.median(errors(sol, tr))), 2),
+                                                         "test_median_px": round(float(np.median(e)), 2)}
+    if not test:
+        return {"n": 0}
+    e = np.concatenate(test)
+    return {"n": int(len(e)), "median_px": round(float(np.median(e)), 2), "p90_px": round(float(np.percentile(e, 90)), 2),
+            "block_s": block_s, "folds": folds}
+
+
+def sim3_errors(sol: dict, R_sub, t_sub, K, k1, fidx, X, uv) -> np.ndarray:
+    x = np.r_[Rotation.from_matrix(sol["Rs"]).as_rotvec(), np.log(sol["s"]), sol["T"]]
+    return np.linalg.norm(_reproj(x, R_sub, t_sub, K, k1, fidx, X, uv), axis=1)
+
+
+def sim3_plausible(sol: dict, R_sub, t_sub, floor_sub, floor_main, s_world: float, max_normal_deg: float = 2.0,
+                   height_m: tuple[float, float] = (0.2, 2.5), max_extent_m: float = 3.0) -> tuple[bool, str]:
+    """Guard against degenerate Sim3 attaches (seen: cam06 converged to s = 0.005 with a 6.5 deg floor error).
+
+    Rejects a solution whose floor normal disagrees by > max_normal_deg, whose implied camera height above the
+    main floor (world metres, s_world = main SfM -> world scale) is outside height_m, or whose camera centres spread
+    over more than max_extent_m during the window (a handheld phone at a seat)."""
+    if sol.get("floor_normal_err_deg") is not None and sol["floor_normal_err_deg"] > max_normal_deg:
+        return False, f"floor normal error {sol['floor_normal_err_deg']:.1f} deg > {max_normal_deg}"
+    C_s = -np.einsum("fji,fj->fi", R_sub, t_sub)
+    C_m = sol["s"] * C_s @ sol["Rs"].T + sol["T"]
+    n_m, d_m = floor_main
+    hgt = float(np.median(C_m @ n_m - d_m)) * s_world
+    if not height_m[0] <= hgt <= height_m[1]:
+        return False, f"camera height {hgt:.2f} m outside {height_m}"
+    ext = 2 * float(np.percentile(np.linalg.norm(C_m - np.median(C_m, 0), axis=1), 95)) * s_world
+    if ext > max_extent_m:
+        return False, f"camera centre extent {ext:.1f} m > {max_extent_m}"
+    return True, ""

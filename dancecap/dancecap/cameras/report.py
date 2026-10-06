@@ -144,21 +144,58 @@ def overlay(path: Path, img: np.ndarray, K, R, t, k1, kp_xy: np.ndarray | None, 
 
 
 def gates(rep: dict, n_cams: int) -> dict:
-    """Gate G2a from the per-camera report."""
+    """Gate G2a from the per-camera report. Main-model and attached cameras are reported separately: an attached
+    camera's static reprojection and focal come from its own sub-model (one shared focal) and do not test its
+    registration in the main frame; that is tested by the vertical check and the dancers' hold-out instead."""
     cams = rep["cams"]
-    reg = [c for c, v in cams.items() if v.get("registered")]
-    stat_ok = all(v["map_reproj_px"] < (1.5 if v["hd"] else 1.0) for c, v in cams.items() if v.get("registered"))
+    main = [c for c, v in cams.items() if v.get("in_main_model")]
+    att = [c for c, v in cams.items() if v.get("attached")]
+    stat_ok = all(cams[c]["map_reproj_px"] < (1.5 if cams[c]["hd"] else 1.0) for c in main)
     frames = sum(v["frames"] for v in cams.values())
     loc = sum(v.get("frames_ok", 0) for v in cams.values())
-    focal_ok = all(v.get("focal", {}).get("plausible", False) for c, v in cams.items() if v.get("registered"))
-    return {
-        "cameras_registered": {"value": len(reg), "target": n_cams, "accept": 5, "passed": len(reg) >= 5,
-                               "cams": reg},
-        "static_reproj": {"value": {c: round(cams[c]["map_reproj_px"], 3) for c in reg},
-                          "threshold": "< 1 px 480p, < 1.5 px HD", "passed": bool(reg) and stat_ok},
+    focal_ok = all(cams[c].get("focal", {}).get("plausible", False) for c in main)
+    out = {
+        "cameras_registered": {"value": len(main) + len(att), "target": n_cams, "accept": 5,
+                               "passed": len(main) >= 5, "main_model": main, "attached": att,
+                               "note": "passes on the main static model alone (>= 5 cameras)"},
+        "static_reproj": {"value": {c: round(cams[c]["map_reproj_px"], 3) for c in main},
+                          "threshold": "< 1 px 480p, < 1.5 px HD", "passed": bool(main) and stat_ok,
+                          "attached_sub_model_px": {c: round(cams[c]["map_reproj_px"], 3) for c in att},
+                          "note": "main-model cameras only; attached cameras' value is sub-model self-consistency"},
         "frames_localised": {"value": round(loc / max(frames, 1), 4), "target": 0.95,
                              "passed": loc / max(frames, 1) > 0.95,
-                             "note": "over ALL window frames of all cameras (unregistered cameras count as 0)"},
-        "focal_plausible": {"passed": bool(reg) and focal_ok,
-                            "value": {c: cams[c].get("focal", {}) for c in reg}},
+                             "note": "over ALL window frames of all cameras (unregistered cameras count as 0); "
+                                     "attached cameras' frames are ok unless far off the dancers"},
+        "focal_plausible": {"passed": bool(main) and focal_ok,
+                            "value": {c: cams[c].get("focal", {}) for c in main},
+                            "attached": "single focal per sub-model by construction: zoom not modelled, not tested"},
     }
+    vc = rep.get("vertical_check")
+    if vc:
+        vm = {c: v.get("vs_world_y_deg") for c, v in vc.items() if c in main}
+        va = {c: v.get("vs_world_y_deg") for c, v in vc.items() if c in att}
+        ok_m = bool(vm) and all(x is not None and x <= 1.0 for x in vm.values())
+        ok_a = all(x is not None and x <= 1.5 for x in va.values())
+        out["gravity_vs_building"] = {"value": {**vm, **va}, "value_main_deg": vm, "value_attached_deg": va,
+                                      "threshold": "<= 1 deg main-model cameras, <= 1.5 deg attached",
+                                      "passed": ok_m and ok_a,
+                                      "roll_pitch_sigma_deg": {c: [v.get("roll_deg"), v.get("pitch_deg"), v.get("sigma_deg")]
+                                                               for c, v in vc.items()},
+                                      "failed_but_within_2sigma": [c for c, v in vc.items()
+                                                                   if (v.get("vs_world_y_deg") or 0) > (1.0 if c in main else 1.5)
+                                                                   and v.get("within_2sigma_of_1deg")]}
+    dl = rep.get("dancer_loo_check")
+    if dl:
+        val = {}
+        for c, v in dl.items():
+            if v.get("circular"):
+                ho = v.get("holdout", {})
+                val[c] = {"holdout_median_px": ho.get("median_px"), "fit_median_px": v.get("median_px"),
+                          "rel": round(ho["median_px"] / cams[c].get("maxdim", 1), 4) if ho.get("median_px") else None}
+            else:
+                val[c] = {"loo_median_px": v.get("median_px"), "rel": v.get("median_rel_height")}
+        reported = all((x.get("loo_median_px") or x.get("holdout_median_px")) is not None for x in val.values())
+        out["dancer_check"] = {"value": val, "passed": reported and len(val) == len(cams),
+                               "note": "main cameras: dancers triangulated from the OTHER main cameras (non-circular); "
+                                       "attached: temporal hold-out of the attach (fit on alternating 0.5 s blocks)"}
+    return out

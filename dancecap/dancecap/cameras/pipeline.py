@@ -135,15 +135,67 @@ def stage_loc(work: Path, recs: dict, F: Features, ls: LocSettings, ms: MapSetti
     return out
 
 
+VERTICAL_VERSION = 3  # bump to invalidate cameras/cache/vertical_*.pkl after a change in vertical.py
+
+
+def _file_key(*paths: Path) -> list:
+    return [[str(p.name), p.stat().st_mtime_ns, p.stat().st_size] if p.exists() else [str(p.name), None]
+            for p in paths]
+
+
+def _cached(path: Path, key, compute):
+    """pickle cache with an explicit key (inputs' mtimes + settings + code version)."""
+    import pickle
+    if path.exists():
+        try:
+            d = pickle.loads(path.read_bytes())
+            if d.get("key") == key:
+                return d["value"]
+        except Exception:  # noqa: BLE001 - stale/corrupt cache: recompute
+            pass
+    v = compute()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(pickle.dumps({"key": key, "value": v}))
+    return v
+
+
+def _frame_step(t: np.ndarray, dt_s: float = 0.1) -> int:
+    return max(1, int(round(dt_s / max(np.median(np.diff(t)), 1e-3))))
+
+
+def main_vertical(work: Path, tracks: dict, main_cams: list[str]) -> dict:
+    """Architecture vertical of the main-model cameras (SfM frame): per-camera pooled vertical vanishing points
+    + robust fusion (vertical.py). Cached in cameras/cache/vertical_main.pkl, keyed by the raw localisation files."""
+    from .vertical import camera_verticals, fuse
+    cams = [c for c in sorted(main_cams) if c in tracks]
+    up = np.concatenate([-tracks[c]["R"][tracks[c]["ok"], 1, :] for c in cams]).mean(0)
+    up /= np.linalg.norm(up)
+    cache = work / "cameras" / "cache"
+    key = {"v": VERTICAL_VERSION, "cams": cams, "files": _file_key(*[cache / f"loc_{c}.npz" for c in cams])}
+
+    def compute():
+        per = {}
+        for c in cams:
+            tr = tracks[c]
+            per[c] = camera_verticals(work, c, tr, up, step=_frame_step(tr["t"]))
+            p = per[c]["pooled"]
+            print(f"[cameras] vertical {c}: " + ("none" if p is None else
+                  f"{p['n_segments']} segments in {p['n_frames']} frames, sigma {p['sigma_deg']:.2f} deg"), flush=True)
+        return {"per": per, "fused": fuse(per, cams), "up_cameras": up}
+    return _cached(cache / "vertical_main.pkl", key, compute)
+
+
 def stage_attach(work: Path, recs: dict, F: Features, ls: LocSettings, ms: MapSettings, cams: list[str],
                  sigma_s: float, max_reproj_px: float, statures: tuple[dict, str]) -> dict:
     """Cameras missing from the main model: localise against their own sub-model, then place that sub-model in
-    the main frame with the dancers' keypoints (attach.py). Writes loc_<cam>.npz in the MAIN SfM frame."""
+    the main frame (attach.py). Tilt/roll come from the building's vertical (vertical vanishing points of the
+    camera's own frames vs the main cameras'), yaw + centre from the dancers' keypoints triangulated by the MAIN
+    cameras. Writes loc_<cam>.npz in the MAIN SfM frame + attach_<cam>.npz (per-frame dancer residual)."""
     import pycolmap
 
-    import pickle
-
-    from .attach import compose, floor_in_model, observations, solve_rotonly, solve_sim3
+    from .attach import (compose, floor_in_model, holdout, observations, rotonly_errors, sim3_errors,
+                         sim3_plausible, solve_rotonly, solve_sim3)
+    from .vertical import angle_deg, camera_verticals
     from .world import dancer_keypoints, triangulate_dancers
     from scipy.spatial.transform import Rotation
     main = load_model(work)
@@ -158,39 +210,47 @@ def stage_attach(work: Path, recs: dict, F: Features, ls: LocSettings, ms: MapSe
         if (d / "images.bin").exists():
             m = pycolmap.Reconstruction(str(d))
             subs.append((d.parent.name, m, model_cams(m)))
-    main_tracks = stage_smooth(work, [c for c in cams if c in reg], sigma_s, max_reproj_px, write=False)
+    main_cams = [c for c in cams if c in reg]
+    main_tracks = stage_smooth(work, main_cams, sigma_s, max_reproj_px, write=False)
+    vert = main_vertical(work, main_tracks, main_cams)
+    u_main = np.asarray(vert["fused"]["u"])
     dancers3d = grid = floor_main = None
     for cam in missing:
         cand = [(n, m, mc) for n, m, mc in subs if mc.get(cam, 0) >= 3]
         if not cand:
             info[cam] = {"attached": False, "reason": "no sub-model contains this camera"}
             print(f"[cameras] {cam}: no sub-model -> unregistered")
+            (work / "cameras" / "cache" / f"loc_{cam}.npz").unlink(missing_ok=True)
             continue
         name, sub, mc = max(cand, key=lambda x: x[2][cam])
         frames = [r for r in recs[cam] if r.kind == "win"]
         meta = json.loads((work / "frames" / cam / "frames.json").read_text())
         w, h = int(meta["width"]), int(meta["height"])
-        cache = work / "cameras" / "cache" / f"locsub_{cam}.pkl"
         sub_bin = work / "cameras" / "sfm_work" / name / "best" / "images.bin"
-        if cache.exists() and cache.stat().st_mtime > sub_bin.stat().st_mtime:
-            poses = pickle.loads(cache.read_bytes())
-        else:
-            single = len({im.camera_id for im in sub.images.values()}) == 1
-            L = Localizer(F, sub, images, LocSettings(**{**ls.__dict__, "fix_focal": single}))
+        single = len({im.camera_id for im in sub.images.values()}) == 1
+        ls_sub = LocSettings(**{**ls.__dict__, "fix_focal": single})
+        loc_key = {"sub": _file_key(sub_bin), "settings": dict(sorted(ls_sub.__dict__.items())),
+                   "frames": [r.name for r in frames]}
+
+        def localise():
+            L = Localizer(F, sub, images, ls_sub)
             with gpu.exclusive(f"cameras-attach-{cam}"):
-                poses = localize_camera(L, frames, w, h)
-            cache.write_bytes(pickle.dumps(poses))
+                return localize_camera(L, frames, w, h)
+        poses = _cached(work / "cameras" / "cache" / f"locsub_{cam}.pkl", loc_key, localise)
         ok = np.array([p.ok for p in poses])
         print(f"[cameras] {cam}: {ok.sum()}/{len(frames)} frames localised in sub-model {name} {mc}", flush=True)
         if ok.sum() < 10:
             info[cam] = {"attached": False, "reason": f"only {int(ok.sum())} frames localised in sub-model {name}"}
+            (work / "cameras" / "cache" / f"loc_{cam}.npz").unlink(missing_ok=True)
             continue
-        if dancers3d is None:
+        if dancers3d is None:  # dancers from the MAIN cameras only (attached cameras never feed each other)
             dancers3d, grid = triangulate_dancers(work, main_tracks, kps=tuple(range(17)), return_grid=True)
             pts_main = np.array([p.xyz for p in main.points3D.values()]).reshape(-1, 3)
-            pre = bootstrap(main_tracks, triangulate_dancers(work, main_tracks), pts_main, *statures)
+            pre = bootstrap(main_tracks, triangulate_dancers(work, main_tracks), pts_main, *statures,
+                            up_cams=main_cams, vertical=vert["fused"])
             Rw = np.asarray(pre["R"])
             floor_main = (Rw[1], -float(pre["t"][1]) / pre["s"])  # world y = 0  <=>  R[1].X = -t_y / s
+            s_world = float(pre["s"])
         sub_R, sub_C = [], []
         for im in sub.images.values():
             if im.has_pose:
@@ -209,17 +269,50 @@ def stage_attach(work: Path, recs: dict, F: Features, ls: LocSettings, ms: MapSe
         f = np.where(ok, f, np.interp(t, t[ok], f[ok]))
         K = _K(f, w, h)
         k1 = np.array([p.k1 for p in poses])
+        # the building's vertical in the SUB-model frame (this camera's own frames)
+        vkey = {"v": VERTICAL_VERSION, "loc": loc_key}
+        vs = _cached(work / "cameras" / "cache" / f"vertical_sub_{cam}.pkl", vkey,
+                     lambda: camera_verticals(work, cam, {"K": K, "k1": k1, "R": R_sub, "ok": ok}, up_s,
+                                              step=_frame_step(t)))
+        u_sub = vs["pooled"]["u"] if vs["pooled"] is not None and vs["pooled"]["n_segments"] >= 30 else None
         kp2d = dancer_keypoints(work, cam, len(frames))
         fidx, X, uv, wt = observations(kp2d, t, ok, dancers3d, grid)
         if len(fidx) < 50:
             info[cam] = {"attached": False, "reason": f"only {len(fidx)} dancer keypoint observations"}
+            (work / "cameras" / "cache" / f"loc_{cam}.npz").unlink(missing_ok=True)
             continue
-        sols = {"rotation-only": solve_rotonly(R_sub, K, k1, fidx, X, uv, wt, up_main=floor_main[0])}
-        floor_ok = fl is not None and np.degrees(np.arccos(min(1.0, abs(float(fl[0] @ up_s))))) < 10
+        vconstr = (u_sub, u_main) if u_sub is not None else None
+        rot_err = lambda sol, sel: rotonly_errors(sol, R_sub, K, k1, fidx[sel], X[sel], uv[sel])  # noqa: E731
+        sols, ho = {}, {}
+        if vconstr is not None:
+            sols["rotation-only+vertical"] = solve_rotonly(R_sub, K, k1, fidx, X, uv, wt, vertical=vconstr)
+            ho["rotation-only+vertical"] = holdout(
+                lambda sel: solve_rotonly(R_sub, K, k1, fidx[sel], X[sel], uv[sel], wt[sel], vertical=vconstr),
+                rot_err, fidx, t)
+        sols["rotation-only"] = solve_rotonly(R_sub, K, k1, fidx, X, uv, wt, up_main=floor_main[0])
+        ho["rotation-only"] = holdout(
+            lambda sel: solve_rotonly(R_sub, K, k1, fidx[sel], X[sel], uv[sel], wt[sel], up_main=floor_main[0]),
+            rot_err, fidx, t)
+        floor_ok = bool(fl is not None and np.degrees(np.arccos(min(1.0, abs(float(fl[0] @ up_s))))) < 10)
+        rejected = {}
         if floor_ok:
-            sols["sim3+floor"] = solve_sim3(R_sub, t_sub, K, k1, fidx, X, uv, wt, floor_sub=floor_sub,
-                                            floor_main=floor_main)
-        kind = min(sols, key=lambda k: sols[k]["median_px"])
+            sol = solve_sim3(R_sub, t_sub, K, k1, fidx, X, uv, wt, floor_sub=floor_sub, floor_main=floor_main)
+            okp, why = sim3_plausible(sol, R_sub, t_sub, floor_sub, floor_main, s_world)
+            if okp:
+                sols["sim3+floor"] = sol
+                ho["sim3+floor"] = holdout(
+                    lambda sel: solve_sim3(R_sub, t_sub, K, k1, fidx[sel], X[sel], uv[sel], wt[sel],
+                                           floor_sub=floor_sub, floor_main=floor_main),
+                    lambda s_, sel: sim3_errors(s_, R_sub, t_sub, K, k1, fidx[sel], X[sel], uv[sel]), fidx, t)
+            else:
+                rejected["sim3+floor"] = {"reason": why, "s": sol["s"], "median_px": sol["median_px"],
+                                          "floor_normal_err_deg": sol.get("floor_normal_err_deg")}
+        for k, sol in sols.items():
+            sol["vertical_err_deg"] = (angle_deg(sol["Rs"] @ u_sub, u_main) if u_sub is not None else None)
+            sol["holdout"] = ho[k]
+        # choice: candidates whose tilt agrees with the building (when measurable), then the lowest HOLD-OUT error
+        pool = [k for k in sols if u_sub is None or sols[k]["vertical_err_deg"] <= 1.5] or list(sols)
+        kind = min(pool, key=lambda k: sols[k]["holdout"].get("median_px", np.inf))
         sol = sols[kind]
         C_sub = -np.einsum("fji,fj->fi", R_sub, t_sub)
         if kind == "sim3+floor":
@@ -239,17 +332,30 @@ def stage_attach(work: Path, recs: dict, F: Features, ls: LocSettings, ms: MapSe
             if p.ok:
                 p.source = "attach"
         _save_raw(work / "cameras" / "cache" / f"loc_{cam}.npz", frames, poses)
+        e = (rotonly_errors(sol, R_sub, K, k1, fidx, X, uv) if kind != "sim3+floor"
+             else sim3_errors(sol, R_sub, t_sub, K, k1, fidx, X, uv))
+        per_frame = np.full(len(frames), np.nan)
+        for i in np.unique(fidx):
+            per_frame[i] = np.median(e[fidx == i])
+        np.savez(work / "cameras" / "cache" / f"attach_{cam}.npz", dancer_px=per_frame, method=kind)
+        u_sub_main = sol["Rs"] @ u_sub if u_sub is not None else None
         info[cam] = {"attached": True, "method": kind, "sub_model": name, "sub_model_cams": mc,
                      "sub_model_reproj_px": float(sub.compute_mean_reprojection_error()),
-                     "sub_floor": {"found": fl is not None, "inliers": fl[2] if fl else 0, "usable": floor_ok},
+                     "sub_floor": {"found": fl is not None, "inliers": int(fl[2]) if fl else 0, "usable": floor_ok},
+                     "vertical_sub": None if vs["pooled"] is None else
+                     {k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in vs["pooled"].items()},
+                     "vertical_vs_main_deg": (angle_deg(u_sub_main, u_main) if u_sub_main is not None else None),
                      "candidates": {k: {kk: (round(vv, 3) if isinstance(vv, float) else vv) for kk, vv in v.items()
                                         if kk not in ("Rs", "T", "C")} for k, v in sols.items()},
-                     "dancer_reproj_median_px": sol["median_px"], "dancer_reproj_p90_px": sol["p90_px"],
+                     "rejected": rejected,
+                     "dancer_fit_median_px": sol["median_px"], "dancer_fit_p90_px": sol["p90_px"],
+                     "dancer_holdout": sol["holdout"],
                      "dancer_obs": sol["n_obs"], "frames_used": sol["frames_used"],
-                     "camera_centre_sfm": (sol["C"].tolist() if kind == "rotation-only" else None)}
-        print(f"[cameras] {cam}: attached ({kind}, floor in sub-model: {'usable' if floor_ok else 'no'}): "
-              + ", ".join(f"{k} median {v['median_px']:.1f}px p90 {v['p90_px']:.1f}" for k, v in sols.items()),
-              flush=True)
+                     "camera_centre_sfm": (sol["C"].tolist() if kind != "sim3+floor" else None)}
+        print(f"[cameras] {cam}: attached ({kind}); " + "; ".join(
+            f"{k}: fit {v['median_px']:.1f}px, hold-out {v['holdout'].get('median_px', float('nan')):.1f}px, "
+            f"vertical err {v['vertical_err_deg'] if v['vertical_err_deg'] is None else round(v['vertical_err_deg'], 2)}"
+            for k, v in sols.items()) + (f"; rejected {list(rejected)}" if rejected else ""), flush=True)
     return info
 
 
@@ -278,7 +384,7 @@ def reproj_cv(R, t, K, k1, xyz, xy) -> np.ndarray:
 
 
 def stage_smooth(work: Path, cams: list[str], sigma_s: float, max_reproj_px: float,
-                 write: bool = True) -> dict[str, dict]:
+                 write: bool = True, attach_bad_px: float = 60.0) -> dict[str, dict]:
     """Raw localisation -> smoothed tracks -> cameras/<cam>.npz (SfM frame). Returns track dicts."""
     tracks = {}
     for cam in cams:
@@ -313,14 +419,23 @@ def stage_smooth(work: Path, cams: list[str], sigma_s: float, max_reproj_px: flo
                 e_s = e_r
             rp[i] = e_s
         ok = ok_raw & (np.nan_to_num(rp, nan=1e9) <= max_reproj_px)
+        attached = bool(np.any(d["source"] == "attach"))
+        if attached:  # reproj_px of an attached camera is its SUB-MODEL consistency; the main-frame check is the
+            # dancers' residual (attach_<cam>.npz): frames far off the dancers are not trusted
+            ap = work / "cameras" / "cache" / f"attach_{cam}.npz"
+            if ap.exists():
+                dpx = np.load(ap)["dancer_px"]
+                lim = max(attach_bad_px, 3.0 * float(np.nanmedian(dpx)))
+                ok &= ~(np.nan_to_num(dpx, nan=0.0) > lim)
         n_in = np.where(ok, d["n_inliers"], 0).astype(np.int32)
         if write:
             np.savez(work / "cameras" / f"{cam}.npz", t=d["t"], K=K, R=R_out, tvec=t_out, dist=k1, ok=ok,
-                     reproj_px=rp, n_inliers=n_in)
+                     reproj_px=rp, n_inliers=n_in, attached=np.bool_(attached))
         C_out = -np.einsum("fji,fj->fi", R_out, t_out)
         tracks[cam] = {"t": d["t"], "K": K, "k1": k1, "R": R_out, "tvec": t_out, "ok": ok, "C": C_out,
                        "f": f_out, "f_raw": d["f"], "raw_used": int(raw_used.sum()), "ok_raw": ok_raw, "reproj_px": rp, "reproj_raw": d["reproj_px"],
                        "n_inliers": d["n_inliers"], "source": d["source"], "w": w, "h": h, "maxdim": max(w, h),
+                       "attached": attached,
                        "outliers": int(sm["outlier"].sum())}
     return tracks
 
@@ -388,13 +503,18 @@ def run(take: Take, cams: list[str] | None = None, stages: tuple[str, ...] = STA
     sim3 = None
     sim3_p = out / "world_from_sfm.json"
     dancers = None
+    main_cams = sorted(c for c in model_cams(model) if c in tracks)  # world axes from the main model only
     if "world" in stages and tracks:
-        dancers = triangulate_dancers(work, tracks)
+        main_tr = {c: tracks[c] for c in main_cams}
+        dancers = triangulate_dancers(work, main_tr)  # attached cameras were fitted TO these: never feed them back
         st, src = statures_from_take(take.cfg)
-        main_cams = sorted(model_cams(model))  # world axes from the main model only (attached cams are coarser)
-        sim3 = bootstrap(tracks, dancers, pts, st, src, x_cam="06" if "06" in main_cams else main_cams[0],
-                         up_cams=main_cams)
-        sim3_p.write_text(json.dumps(sim3, indent=1))
+        vert = main_vertical(work, main_tr, main_cams)
+        sim3 = bootstrap(main_tr, dancers, pts, st, src, x_cam="06" if "06" in main_cams else main_cams[0],
+                         up_cams=main_cams, vertical=vert["fused"])
+        sim3["diagnostics"]["room_metric_check"] = room_check(work, main_tr, pts, vert, sim3)
+        if sim3_p.exists():  # keep the previous world frame for comparison (world_from_sfm.prev.json)
+            shutil.copyfile(sim3_p, out / "world_from_sfm.prev.json")
+        sim3_p.write_text(json.dumps(sim3, indent=1, default=_np))
         np.savez(out / "cache" / "dancers_sfm.npz",
                  **{f"{r}_{k}": v for r, d in dancers.items() for k, v in d.items()})
         print(f"[cameras] world_from_sfm: s={sim3['s']:.4f} ({sim3['scale_source']}); {sim3['gravity_source']}; "
@@ -409,6 +529,8 @@ def run(take: Take, cams: list[str] | None = None, stages: tuple[str, ...] = STA
 
 
 def _np(o):
+    if isinstance(o, np.bool_):
+        return bool(o)
     if isinstance(o, (np.integer,)):
         return int(o)
     if isinstance(o, (np.floating,)):
@@ -418,17 +540,26 @@ def _np(o):
     return str(o)
 
 
-def dancer_check(work: Path, tracks: dict, cams: list[str], qa_dir: Path | None = None) -> dict:
-    """Independent check of every camera: dancers' COCO keypoints triangulated from the OTHER cameras
-    (leave-one-out) and reprojected into this camera's ok frames. Static-feature errors cannot show a camera
-    that registered at a consistent but wrong place; this does (expect ~5-15 px from keypoint noise + sync)."""
+def dancer_check(work: Path, tracks: dict, cams: list[str], qa_dir: Path | None = None,
+                 main_cams: list[str] | None = None, attach: dict | None = None) -> dict:
+    """Check of every camera against the dancers: COCO keypoints triangulated from the OTHER MAIN-MODEL cameras
+    (leave-one-out; attached cameras never vote, because they were fitted to the main cameras' dancers) and
+    reprojected into this camera's ok frames. Static-feature errors cannot show a camera that registered at a
+    consistent but wrong place; this does (expect ~5-15 px from keypoint noise + sync).
+
+    Main-model cameras: non-circular (their poses come from static features only). Attached cameras: the same
+    number is the attach FIT residual (circular); the validation is the attach's temporal hold-out
+    (attach.<cam>.dancer_holdout), copied here as `holdout`. Per-frame medians -> `per_frame` (F,), NaN without
+    observations."""
     from .attach import observations
     from .world import dancer_keypoints
+    main_cams = sorted(tracks) if main_cams is None else main_cams
+    attach = attach or {}
     out = {}
     for cam in cams:
-        if cam not in tracks or len(tracks) < 3:
+        others = {c: v for c, v in tracks.items() if c != cam and c in main_cams}
+        if cam not in tracks or len(others) < 2:
             continue
-        others = {c: v for c, v in tracks.items() if c != cam}
         d3, grid = triangulate_dancers(work, others, kps=tuple(range(5, 17)), return_grid=True)
         tr = tracks[cam]
         kp2d = dancer_keypoints(work, cam, len(tr["t"]))
@@ -437,10 +568,12 @@ def dancer_check(work: Path, tracks: dict, cams: list[str], qa_dir: Path | None 
             out[cam] = {"n": int(len(fidx))}
             continue
         e, proj = [], {}
+        pf = np.full(len(tr["t"]), np.nan)
         for f in np.unique(fidx):
             sel = fidx == f
             p, vis = qa.project_cv(X[sel], tr["K"][f], tr["R"][f], tr["tvec"][f], tr["k1"][f])
             e.append(np.where(vis, np.linalg.norm(p - uv[sel], axis=1), 1e4))
+            pf[f] = float(np.median(e[-1]))
             proj[int(f)] = (p, uv[sel])
         e = np.concatenate(e)
         if qa_dir is not None:  # overlay on the frame with the most keypoints: detected (green) vs LOO (magenta)
@@ -457,10 +590,248 @@ def dancer_check(work: Path, tracks: dict, cams: list[str], qa_dir: Path | None 
             cv2.putText(img, f"cam {cam} f{f}: dancers from other cams (magenta) vs detected (green)", (8, int(24 * sz)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45 * sz, (255, 255, 255), max(1, int(sz)))
             cv2.imwrite(str(qa_dir / f"dancers_loo_{cam}.jpg"), img, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        circ = cam not in main_cams
         out[cam] = {"n": int(len(e)), "median_px": round(float(np.median(e)), 2),
                     "p90_px": round(float(np.percentile(e, 90)), 2),
-                    "median_rel_height": round(float(np.median(e)) / tr["maxdim"], 4)}
+                    "median_rel_height": round(float(np.median(e)) / tr["maxdim"], 4),
+                    "triangulated_from": sorted(others), "circular": circ,
+                    "kind": "attach fit residual (circular)" if circ else "leave-one-out (non-circular)",
+                    "per_frame": pf, "_proj": proj}
+        if circ and attach.get(cam, {}).get("dancer_holdout"):
+            out[cam]["holdout"] = attach[cam]["dancer_holdout"]
     return out
+
+
+
+def room_check(work: Path, main_tracks: dict, pts: np.ndarray, vert: dict, sim3: dict) -> dict:
+    """Is the reconstruction metric around the room, and which plane disagrees with gravity?
+
+    The building's dominant horizontal edge directions (vanishing points of non-vertical segments, pooled over
+    the main cameras in the SfM frame) and its largest wall planes (sparse points) are compared with the adopted
+    gravity (world Y), the dancers' ankle plane and the sparse floor near the dancers. Under any affine distortion
+    horizontal edges stay parallel to the floor; edges perpendicular to world Y but not to the floor normal mean
+    the FLOOR PATCH is mis-reconstructed, not the room."""
+    from .vertical import angle_deg, horizontal_directions, pooled_normals, wall_planes
+    Rw = np.asarray(sim3["R"])
+    y = Rw[1]
+    cams = sorted(main_tracks)
+    cache = work / "cameras" / "cache"
+    key = {"v": VERTICAL_VERSION, "files": _file_key(*[cache / f"loc_{c}.npz" for c in cams])}
+
+    def compute():
+        N, W = [], []
+        for c in cams:
+            tr = main_tracks[c]
+            n, w = pooled_normals(work, c, tr, list(range(0, len(tr["t"]), 4 * _frame_step(tr["t"]))), y)
+            N.append(n), W.append(w)
+        return np.concatenate(N), np.concatenate(W)
+    N, W = _cached(cache / "horizontal_main.pkl", key, compute)
+    hd = horizontal_directions(N, W, y, n_dirs=3)
+    diag = sim3["diagnostics"]
+    others = {"ankle_plane": diag.get("ankle_plane_normal_sfm"), "sfm_floor_plane": diag.get("sfm_floor_normal_sfm")}
+    out = {"horizontal_edges": [], "walls": []}
+    for h in hd:
+        e = {"segments": h["n_segments"], "elevation_vs_world_y_deg": round(h["elev_vs_u_deg"], 3),
+             "dir_world": (Rw @ h["d"]).round(4).tolist()}
+        for name, nv in others.items():
+            if nv is not None:
+                e[f"elevation_vs_{name}_deg"] = round(abs(90 - angle_deg(h["d"], np.asarray(nv))), 3)
+        out["horizontal_edges"].append(e)
+    if len(hd) >= 2:
+        out["angle_between_first_two_deg"] = round(angle_deg(hd[0]["d"], hd[1]["d"]), 2)
+    for wpl in wall_planes(pts, y, float(sim3["s"]), n_planes=4):
+        out["walls"].append({"inliers": wpl["inliers"], "tilt_vs_world_y_deg": round(wpl["tilt_from_vertical_deg"], 3),
+                             "normal_world": (Rw @ wpl["n"]).round(4).tolist(),
+                             **{f"tilt_vs_{name}_deg": round(abs(90 - angle_deg(wpl["n"], np.asarray(nv))), 3)
+                                for name, nv in others.items() if nv is not None}})
+    return out
+
+
+def vertical_check(work: Path, tracks: dict, sim3: dict | None, main_cams: list[str]) -> dict:
+    """Per camera (main AND attached, exported poses): the building's vertical from the camera's own frames vs the
+    world Y axis (gate: <= 1 deg for main-model cameras, ~1.5 deg for attached ones)."""
+    from .vertical import angle_deg, camera_verticals, fuse
+    if sim3 is None:
+        return {}
+    y = np.asarray(sim3["R"])[1]
+    cache = work / "cameras" / "cache"
+    out = {}
+    for c in sorted(tracks):
+        tr = tracks[c]
+        key = {"v": VERTICAL_VERSION, "files": _file_key(cache / f"loc_{c}.npz", work / "cameras" / f"{c}.npz")}
+        d = None
+        if c in main_cams and (cache / "vertical_main.pkl").exists():  # same frames as the fusion: reuse
+            import pickle
+            vm = pickle.loads((cache / "vertical_main.pkl").read_bytes()).get("value") or {}
+            d = vm.get("per", {}).get(c)
+        if d is None:
+            d = _cached(cache / f"vertical_check_{c}.pkl", key,
+                        lambda: camera_verticals(work, c, tr, y, step=_frame_step(tr["t"])))
+        if d["pooled"] is None:
+            out[c] = {"measured": False}
+            continue
+        f = fuse({c: d}, [c])
+        # split into roll (in the image plane: precise) and pitch (towards the optical axis: weak for a narrow FOV)
+        Rm = tr["R"][int(np.nonzero(tr["ok"])[0][tr["ok"].sum() // 2])] if tr["ok"].any() else tr["R"][0]
+        v, p = Rm @ d["pooled"]["u"], Rm @ y
+        roll = float(np.degrees(np.arctan2(v[0], -v[1]) - np.arctan2(p[0], -p[1])))
+        pitch = float(np.degrees(np.arctan2(v[2], -v[1]) - np.arctan2(p[2], -p[1])))
+        sg = max(d["pooled"]["sigma_deg"], np.nan_to_num(d["pooled"].get("sigma_frames_deg", np.nan), nan=0.0))
+        ang = angle_deg(d["pooled"]["u"], y)
+        out[c] = {"measured": True, "vs_world_y_deg": round(ang, 3), "roll_deg": round(roll, 3),
+                  "pitch_deg": round(pitch, 3), "sigma_deg": round(float(sg), 3),
+                  "within_2sigma_of_1deg": bool(ang <= 1.0 + 2 * sg),
+                  "segments": d["pooled"]["n_segments"], "frames": d["pooled"]["n_frames"], "main_model": c in main_cams,
+                  "per_frame_spread_deg": f["cams"][c].get("per_frame", {}).get("spread_deg_median"),
+                  "f_over_maxdim": round(float(np.median(tr["f"]) / tr["maxdim"]), 3)}
+    return out
+
+
+def vertical_review(work: Path, tracks: dict, sim3: dict, sim3_old: dict | None, path: Path,
+                    cams: list[str] | None = None, check: dict | None = None, height: int = 900,
+                    per_row: int = 4) -> Path:
+    """review/cameras_vertical_check.jpg: per camera one frame (the one with the most usable vertical edges among
+    a few) with the wall/door/window/pillar segments used for the vertical (yellow) and plumb lines through the
+    longest of them: NEW world up (green) and the previous world up (red, if any)."""
+    import cv2
+
+    from .vertical import angle_deg, draw_check, frame_vertical
+    y = np.asarray(sim3["R"])[1]
+    y_old = np.asarray(sim3_old["R"])[1] if sim3_old is not None else None
+    check = check or {}
+    tiles = []
+    for c in cams or sorted(tracks):
+        tr = tracks[c]
+        meta = json.loads((work / "frames" / c / "frames.json").read_text())
+        okf = np.nonzero(tr["ok"])[0]
+        if not len(okf):
+            continue
+        best = None
+        for q in (0.2, 0.4, 0.6, 0.8):
+            i = int(okf[int(q * (len(okf) - 1))])
+            img = cv2.imread(str(work / "frames" / c / meta["frames"][i]["file"]))
+            mp = work / "people_masks" / c / (Path(meta["frames"][i]["file"]).stem + ".png")
+            mask = cv2.imread(str(mp), cv2.IMREAD_GRAYSCALE) if mp.exists() else None
+            res = frame_vertical(img, mask, tr["K"][i], float(tr["k1"][i]), tr["R"][i] @ y, return_segments=True)
+            n = 0 if res is None else int(res["seg_used"].sum())
+            if best is None or n > best[0]:
+                best = (n, i, img, mask, res)
+        n, i, img, mask, res = best
+        R, K, k1 = tr["R"][i], tr["K"][i], float(tr["k1"][i])
+        lines = {"new": (R @ y, (0, 230, 0))}
+        if y_old is not None:
+            lines["old"] = (R @ y_old, (40, 40, 255))
+        seg, used = (res["seg"], res["seg_used"]) if res is not None else (np.zeros((0, 4)), np.zeros(0, bool))
+        im = draw_check(img, seg, used, K, k1, lines, mask)
+        im = cv2.resize(im, (int(round(im.shape[1] * height / im.shape[0])), height), interpolation=cv2.INTER_AREA)
+        how = "attached" if tr.get("attached") else "main model"
+        vc = check.get(c, {})
+        txt = [(f"cam {c} ({how}) f{i}", (255, 255, 255))]
+        if vc.get("vs_world_y_deg") is not None:
+            txt.append((f"building vs new up: {vc['vs_world_y_deg']:.2f} deg", (0, 230, 0)))
+        if y_old is not None:
+            txt.append((f"old up: {angle_deg(y, y_old):.1f} deg off", (80, 80, 255)))
+        if res is not None:
+            txt.append((f"this frame: {n} edges, {angle_deg(res['v'], R @ y):.2f} deg", (0, 230, 255)))
+        for k, (tx, col) in enumerate(txt):
+            org = (8, 30 + 28 * k)
+            cv2.putText(im, tx, org, cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 5, cv2.LINE_AA)
+            cv2.putText(im, tx, org, cv2.FONT_HERSHEY_SIMPLEX, 0.7, col, 2, cv2.LINE_AA)
+        tiles.append(im)
+    rows = [tiles[k:k + per_row] for k in range(0, len(tiles), per_row)]
+    W = max(sum(t.shape[1] for t in r) + 6 * (len(r) - 1) for r in rows)
+    out_rows = []
+    for r in rows:
+        parts = []
+        for t in r:
+            parts += [t, np.full((height, 6, 3), 255, np.uint8)]
+        row = np.hstack(parts[:-1])
+        if row.shape[1] < W:
+            row = np.hstack([row, np.zeros((height, W - row.shape[1], 3), np.uint8)])
+        out_rows += [row, np.full((6, W, 3), 255, np.uint8)]
+    sheet = np.vstack(out_rows[:-1])
+    banner = np.full((80, W, 3), 30, np.uint8)
+    for k, tx in enumerate(["Gravity check - yellow: vertical edges used (walls, doors, windows, pillars; people darkened).",
+                            "Green: NEW world up (building vertical). Red: OLD world up (dancers' ankle plane). "
+                            "A correct up runs along the yellow edges."]):
+        cv2.putText(banner, tx, (10, 30 + 34 * k), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(path), np.vstack([banner, sheet]), [cv2.IMWRITE_JPEG_QUALITY, 90])
+    return path
+
+
+def attach_review(work: Path, tracks: dict, sim3: dict, projs: dict, cams: list[str], path: Path, dl: dict,
+                  n_frames: int = 3, height: int = 640) -> Path:
+    """review/cameras_attach_check.jpg: attached cameras (and one main-model camera for comparison), a few frames
+    each: the dancers' keypoints detected in this camera (green crosses) vs the same keypoints triangulated by the
+    OTHER main-model cameras and projected with this camera's pose (magenta circles, line = residual); 1 m floor
+    grid of the world frame (cyan, orange = x/z axes); world up plumb lines (green)."""
+    import cv2
+
+    from .vertical import _plumb
+    s, Rw, tw = float(sim3["s"]), np.asarray(sim3["R"]), np.asarray(sim3["t"])
+    y = Rw[1]
+    rows = []
+    for c in cams:
+        tr, pr = tracks[c], projs.get(c, {})
+        if not pr:
+            continue
+        meta = json.loads((work / "frames" / c / "frames.json").read_text())
+        fr = sorted(pr)
+        pick = [fr[int(q * (len(fr) - 1))] for q in np.linspace(0.1, 0.9, n_frames)]
+        tiles = []
+        for f in pick:
+            img = cv2.imread(str(work / "frames" / c / meta["frames"][f]["file"]))
+            K, R, t, k1 = tr["K"][f], tr["R"][f], tr["tvec"][f], float(tr["k1"][f])
+            th = max(1, round(max(img.shape[:2]) / 700))
+            for a in np.arange(-6, 6.01, 1.0):
+                for line in (np.stack([np.full(61, a), np.zeros(61), np.linspace(-6, 6, 61)], 1),
+                             np.stack([np.linspace(-6, 6, 61), np.zeros(61), np.full(61, a)], 1)):
+                    uv, vis = qa.project_cv((line - tw) @ Rw / s, K, R, t, k1)
+                    for p, q, v1, v2 in zip(uv[:-1], uv[1:], vis[:-1], vis[1:]):
+                        if v1 and v2 and np.all(np.abs(p) < 1e4) and np.all(np.abs(q) < 1e4):
+                            cv2.line(img, tuple(int(x) for x in p), tuple(int(x) for x in q),
+                                     (255, 255, 0) if a != 0 else (0, 165, 255), th, cv2.LINE_AA)
+            h_, w_ = img.shape[:2]
+            for ax in np.linspace(0.1, 0.9, 5):
+                pl = _plumb(np.array([ax * w_, 0.3 * h_]), R @ y, K, k1, length=2.0, n=30)
+                pl = pl[(np.abs(pl) < 1e5).all(1)]
+                if len(pl) > 1:
+                    cv2.polylines(img, [pl.astype(np.int32)], False, (0, 220, 0), th, cv2.LINE_AA)
+            p, uv = pr[f]
+            for (px, py), (ux, uy) in zip(p, uv):
+                if abs(px) < 1e4 and abs(py) < 1e4:
+                    cv2.line(img, (int(ux), int(uy)), (int(px), int(py)), (255, 0, 255), th, cv2.LINE_AA)
+                    cv2.circle(img, (int(px), int(py)), 4 * th, (255, 0, 255), th, cv2.LINE_AA)
+                cv2.drawMarker(img, (int(ux), int(uy)), (0, 255, 0), cv2.MARKER_CROSS, 8 * th, 2 * th)
+            e = np.linalg.norm(p - uv, axis=1)
+            im = cv2.resize(img, (int(round(w_ * height / h_)), height), interpolation=cv2.INTER_AREA)
+            how = "attached" if tr.get("attached") else "main model"
+            for k, (tx, col) in enumerate([(f"cam {c} ({how}) f{f}", (255, 255, 255)),
+                                           (f"dancers: median {np.median(e):.0f} px", (255, 0, 255))]):
+                cv2.putText(im, tx, (6, 24 + 24 * k), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 4, cv2.LINE_AA)
+                cv2.putText(im, tx, (6, 24 + 24 * k), cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, 2, cv2.LINE_AA)
+            tiles.append(im)
+        v = dl.get(c, {})
+        ho = v.get("holdout", {})
+        lab = (f"cam {c}: " + (f"attach hold-out {ho.get('median_px')} px (fit {v.get('median_px')} px)" if v.get("circular")
+                               else f"leave-one-out {v.get('median_px')} px (non-circular)"))
+        row = np.hstack(tiles)
+        bar = np.full((34, row.shape[1], 3), 40, np.uint8)
+        cv2.putText(bar, lab, (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+        rows.append(np.vstack([bar, row]))
+    W = max(r.shape[1] for r in rows)
+    sheet = np.vstack([np.hstack([r, np.zeros((r.shape[0], W - r.shape[1], 3), np.uint8)]) for r in rows])
+    ban = np.full((70, W, 3), 25, np.uint8)
+    for k, tx in enumerate(["Attach check - green +: dancers' keypoints detected in this camera; magenta o: the same keypoints",
+                            "triangulated by the OTHER main cameras, projected with this camera. Cyan: 1 m floor grid (y=0). Green lines: world up."]):
+        cv2.putText(ban, tx, (8, 28 + 30 * k), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (255, 255, 255), 2, cv2.LINE_AA)
+    out = np.vstack([ban, sheet])
+    if out.shape[1] > 3600:
+        out = cv2.resize(out, (3600, int(out.shape[0] * 3600 / out.shape[1])), interpolation=cv2.INTER_AREA)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(path), out, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    return path
 
 
 def _model_errors(model) -> dict[str, list[float]]:
@@ -501,10 +872,11 @@ def build_report(work: Path, cams, recs, model, tracks, pts, rgb, sim3, map_info
         meta = json.loads((work / "frames" / cam / "frames.json").read_text())
         hd = max(meta["width"], meta["height"]) >= 1280
         att = attach.get(cam, {})
-        e = {"registered": cam in reg or bool(att.get("attached")),
-             "how": "main model" if cam in reg else ("own sub-model + dancer Sim3 (attach)" if att.get("attached")
-                                                     else "unregistered"),
-             "map_images": reg.get(cam, 0), "frames": len(win), "hd": hd,
+        e = {"registered": cam in reg or bool(att.get("attached")), "in_main_model": cam in reg,
+             "attached": bool(att.get("attached")),
+             "how": "main model" if cam in reg else (f"own sub-model + attach ({att.get('method')})"
+                                                     if att.get("attached") else "unregistered"),
+             "map_images": reg.get(cam, 0), "frames": len(win), "hd": hd, "maxdim": max(meta["width"], meta["height"]),
              "map": "sfm" if cam in reg else sub_of.get(cam, ""),
              "map_reproj_px": float(np.mean(per_img_err[cam])) if cam in per_img_err else float("nan"),
              "map_reproj_median_px": float(np.median(per_img_err[cam])) if cam in per_img_err else float("nan")}
@@ -531,8 +903,34 @@ def build_report(work: Path, cams, recs, model, tracks, pts, rgb, sim3, map_info
         cams_rep[cam] = e
     rep = {"cams": cams_rep, "settings": {"sigma_s": sigma_s, "max_reproj_px": max_reproj_px},
            "points3D": int(len(pts)), "map_mean_reproj_px": float(model.compute_mean_reprojection_error())}
+    main_cams = sorted(c for c in reg if c in tracks)
     if tracks:
-        rep["dancer_loo_check"] = dancer_check(work, tracks, cams, qa_dir)
+        dl = dancer_check(work, tracks, cams, qa_dir, main_cams=main_cams, attach=attach)
+        projs: dict = {}
+        for cam, v in dl.items():  # per-frame dancer residual into the contract file (additive key)
+            pf = v.pop("per_frame", None)
+            projs[cam] = v.pop("_proj", {})
+            npz = work / "cameras" / f"{cam}.npz"
+            if pf is not None and npz.exists():
+                d = dict(np.load(npz))
+                d["dancer_px"] = pf.astype(np.float32)
+                np.savez(npz, **d)
+        rep["dancer_loo_check"] = dl
+        if sim3 is not None:
+            rep["vertical_check"] = vertical_check(work, tracks, sim3, main_cams)
+            prev = work / "cameras_v1" / "world_from_sfm.json"  # backup of the previous version, if kept
+            prev = prev if prev.exists() else work / "cameras" / "world_from_sfm.prev.json"
+            old = json.loads(prev.read_text()) if prev.exists() else None
+            if old is not None and np.allclose(np.asarray(old["R"]), np.asarray(sim3["R"])):
+                old = None
+            rv = vertical_review(work, tracks, sim3, old, work / "review" / "cameras_vertical_check.jpg",
+                                 check=rep["vertical_check"])
+            rep.setdefault("qa_review", {})["vertical_check"] = str(rv)
+            att_cams = [c for c in cams if c in tracks and tracks[c].get("attached")]
+            if att_cams:
+                ra = attach_review(work, tracks, sim3, projs, att_cams + main_cams[:1],
+                                   work / "review" / "cameras_attach_check.jpg", dl)
+                rep["qa_review"]["attach_check"] = str(ra)
     rep["gates_G2a"] = qa.gates(rep, len(cams))
     # plots
     if tracks:

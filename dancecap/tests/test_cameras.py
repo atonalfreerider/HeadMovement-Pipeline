@@ -8,6 +8,7 @@ import json
 import sys
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -331,6 +332,184 @@ def test_focal_stats_zoom_vs_spike():
     assert not st3["plausible"] and st3["oscillation"] > 3
 
 
+def _room_segments(R, t, K, rng, n_vert=25, n_horiz=40, n_floor=30, noise_px=0.5):
+    """Pixel segments of a synthetic room (world Y up) seen by camera (R, t, K): vertical wall edges, horizontal
+    wall edges, and floor lines (horizontal, below the horizon) - the last are traps for a vertical estimator."""
+    segs, lab = [], []
+
+    def add(P0, P1, kind):
+        X = np.stack([P0, P1]) @ R.T + t
+        if (X[:, 2] < 0.5).any():
+            return
+        p = X[:, :2] / X[:, 2:] * K[0, 0] + K[:2, 2]
+        segs.append((p + rng.normal(0, noise_px, p.shape)).ravel())
+        lab.append(kind)
+    for _ in range(n_vert):  # pillars / door frames on the walls z = 8 and x = +-6, 0.5-3.5 m high
+        x, z = rng.uniform(-6, 6), 8.0
+        y0 = rng.uniform(0.5, 2.0)
+        add(np.array([x, y0, z]), np.array([x, y0 + rng.uniform(0.8, 1.5), z]), 0)
+    for _ in range(n_horiz):
+        y, z, x0 = rng.uniform(1.5, 3.5), 8.0, rng.uniform(-6, 4)
+        add(np.array([x0, y, z]), np.array([x0 + rng.uniform(0.5, 2), y, z]), 1)
+    for _ in range(n_floor):  # tape lines on the floor running away from the camera
+        x, z0 = rng.uniform(-2, 2), rng.uniform(2, 4)
+        add(np.array([x, 0.0, z0]), np.array([x + rng.uniform(-0.1, 0.1), 0.0, z0 + rng.uniform(1, 3)]), 2)
+    return np.array(segs), np.array(lab)
+
+
+def test_vertical_vanishing_point_and_horizon():
+    """Vertical from wall edges, robust to horizontal edges and to floor lines that look vertical in the image."""
+    from scipy.spatial.transform import Rotation
+    from dancecap.cameras.vertical import above_horizon, angle_deg, frame_vertical, segment_normals, vertical_from_segments
+    rng = np.random.default_rng(11)
+    K = np.array([[700.0, 0, 239.5], [0, 700, 431.5], [0, 0, 1]])
+    for roll, pitch in ((3.0, -12.0), (-6.0, -5.0), (1.0, -20.0)):
+        R0, t0 = _look_at(np.array([0.3, 1.5, -2.0]), np.array([0.0, 1.0, 6.0]))
+        Rr = Rotation.from_euler("zx", [roll, pitch + 10], degrees=True).as_matrix()
+        R = Rr @ R0
+        t = -R @ np.array([0.3, 1.5, -2.0])
+        seg, lab = _room_segments(R, t, K, rng)
+        _, _, P = segment_normals(seg, K)
+        v_true = R @ np.array([0, 1.0, 0])
+        prior = Rotation.from_rotvec(rng.normal(0, 1, 3) * np.radians(3.5)).as_matrix() @ v_true  # ~3-8 deg off
+        res = vertical_from_segments(seg, K, 0.0, prior)
+        assert res is not None and angle_deg(res["v"], v_true) < 0.3, (roll, pitch, angle_deg(prior, v_true))
+        # floor lines (vertical-looking in the image, horizontal in 3D) are never used
+        assert (lab == 2).sum() > 10 and not res["used"][lab == 2].any() and res["used"][lab == 0].sum() >= 6
+        assert not above_horizon(P, v_true)[lab == 2].any()
+    # image path: draw a synthetic frame with the segments and run LSD end to end
+    img = np.full((864, 480, 3), 200, np.uint8)
+    R, t = _look_at(np.array([0.0, 1.5, -2.0]), np.array([0.0, 1.0, 6.0]))
+    R = Rotation.from_euler("z", 4.0, degrees=True).as_matrix() @ R
+    t = -R @ np.array([0.0, 1.5, -2.0])
+    for s in _room_segments(R, t, K, np.random.default_rng(3), n_vert=30, noise_px=0.0)[0]:
+        q = np.round(s * 16).astype(int)  # sub-pixel endpoints (shift=4)
+        cv2.line(img, (q[0], q[1]), (q[2], q[3]), (20, 20, 20), 3, cv2.LINE_AA, shift=4)
+    res = frame_vertical(img, None, K, 0.0, R @ np.array([0, 1.0, 0.05]) / np.linalg.norm([0, 1, 0.05]))
+    assert res is not None and angle_deg(res["v"], R @ np.array([0, 1.0, 0])) < 0.5
+
+
+def test_horizontal_directions_detect_floor_tilt():
+    """Horizontal building edges are perpendicular to the true vertical (elevation ~ 0)."""
+    from dancecap.cameras.vertical import horizontal_directions, segment_normals
+    rng = np.random.default_rng(5)
+    K = np.array([[700.0, 0, 239.5], [0, 700, 431.5], [0, 0, 1]])
+    N, W = [], []
+    for k in range(6):
+        C = np.array([rng.uniform(-3, 3), 1.5, -2.0 - rng.uniform(0, 2)])
+        R, t = _look_at(C, np.array([rng.uniform(-1, 1), 1.0, 6.0]))
+        seg, _ = _room_segments(R, t, K, rng, n_vert=0, n_floor=0, n_horiz=60)
+        n, L, _ = segment_normals(seg, K)
+        N.append(n @ R), W.append(L)
+    hd = horizontal_directions(np.concatenate(N), np.concatenate(W), np.array([0, 1.0, 0]), n_dirs=1)
+    assert hd and hd[0]["elev_vs_u_deg"] < 0.2 and abs(abs(hd[0]["d"][0]) - 1) < 1e-3
+
+
+def test_bootstrap_with_architecture_vertical():
+    """Ankle plane tilted 5 deg against the building (mis-reconstructed floor patch): gravity = building vertical,
+    y = 0 still on the dancers' floor near the origin."""
+    from scipy.spatial.transform import Rotation
+    from dancecap.cameras.world import mode_1d
+    rng = np.random.default_rng(8)
+    stat = {"lead": 1.75, "follow": 1.65}
+    tilt = Rotation.from_euler("x", 5.0, degrees=True).as_matrix()  # the floor patch is rotated about x
+    T = 300
+    dancers = {}
+    for role, H in stat.items():
+        base = np.c_[rng.normal(0, 0.4, T), np.zeros(T), rng.normal(0, 0.4, T)]
+        ank_h = 0.039 * np.mean(list(stat.values())) + 0.025
+        ank = base + [0, ank_h, 0]
+        eye = base + np.c_[np.zeros(T), np.where(rng.random(T) < 0.3, 0.936 * H + 0.025, 0.8 * H), np.zeros(T)]
+        dancers[role] = {1: eye @ tilt.T, 2: eye @ tilt.T, 15: ank @ tilt.T, 16: (ank + [0.2, 0, 0]) @ tilt.T}
+    floor = np.c_[rng.uniform(-2.5, 2.5, 2000), np.zeros(2000), rng.uniform(-2.5, 2.5, 2000)] @ tilt.T
+    tracks = {}
+    for k, cam in enumerate(["06", "01", "02"]):
+        a = 2 * np.pi * k / 3
+        R, tv = _look_at(np.array([6 * np.cos(a), 1.4, 6 * np.sin(a)]), np.array([0, 1.0, 0]))
+        tracks[cam] = {"R": np.repeat(R[None], 10, 0), "tvec": np.repeat(tv[None], 10, 0), "ok": np.ones(10, bool)}
+    vert = {"u": np.array([0, 1.0, 0]), "n_cams": 3, "max_cam_deg": 0.4}
+    sim3 = bootstrap(tracks, dancers, floor, stat, "test", vertical=vert)
+    Rw = np.asarray(sim3["R"])
+    assert np.degrees(np.arccos(Rw[1, 1])) < 1e-6  # world Y = building vertical exactly
+    d = sim3["diagnostics"]
+    assert d["vertical"]["adopted"] and abs(d["vertical"]["vs_ankle_plane_deg"] - 5.0) < 1.0
+    near = apply(sim3, floor[np.linalg.norm(floor[:, [0, 2]], axis=1) < 0.5])
+    assert np.abs(np.median(near[:, 1])) < 0.02  # floor at y = 0 under the dancers
+    without = bootstrap(tracks, dancers, floor, stat, "test")
+    assert np.degrees(np.arccos(np.asarray(without["R"])[1, 1])) > 4.0  # old behaviour: follows the ankle plane
+    m, inl = mode_1d(np.r_[rng.normal(1.0, 0.01, 200), rng.uniform(-5, 5, 200)], 0.05)
+    assert abs(m - 1.0) < 0.005 and inl[:200].mean() > 0.9
+
+
+def test_attach_rotation_only_with_vertical():
+    """Weak roll/tilt from the dancers is fixed by the building's vertical seen in the sub-model frame."""
+    from scipy.spatial.transform import Rotation
+    from dancecap.cameras.attach import holdout, rotonly_errors, solve_rotonly
+    rng = np.random.default_rng(9)
+    Fn = 80
+    K = np.repeat(np.array([[[640.0, 0, 239.5], [0, 640, 319.5], [0, 0, 1]]]), Fn, 0)
+    C = np.array([-4.0, 1.0, 3.0])
+    R_m = np.array([_look_at(C, np.array([0.2 * np.sin(i / 15), 1.0, 0.2 * np.cos(i / 20)]))[0] for i in range(Fn)])
+    Rs = Rotation.from_rotvec([0.4, 1.3, -0.7]).as_matrix()
+    R_sub = R_m @ Rs
+    u_main = np.array([0.03, 0.999, -0.02])
+    u_main /= np.linalg.norm(u_main)
+    u_sub = Rs.T @ u_main  # what the vanishing points in the sub-model frame give
+    fidx, X, uv = [], [], []
+    t_m = -np.einsum("fij,j->fi", R_m, C)
+    for i in range(Fn):  # dancers bunched in a small area far away: tilt is weakly observed
+        P = rng.normal([0.3 * np.sin(i / 10), 1.0, 0.3 * np.cos(i / 13)], [0.15, 0.45, 0.15], (17, 3))
+        Xc = P @ R_m[i].T + t_m[i]
+        fidx += [i] * 17
+        X.append(P), uv.append(Xc[:, :2] / Xc[:, 2:] * 640 + [239.5, 319.5] + rng.normal(0, 8.0, (17, 2)))
+    fidx, X, uv = np.array(fidx), np.concatenate(X), np.concatenate(uv)
+    sol = solve_rotonly(R_sub, K, np.zeros(Fn), fidx, X, uv, np.ones(len(fidx)), vertical=(u_sub, u_main))
+    assert sol["vertical_err_deg"] < 1e-6
+    ang = np.degrees(np.linalg.norm(Rotation.from_matrix(sol["Rs"] @ Rs.T).as_rotvec()))
+    assert ang < 1.0 and np.linalg.norm(sol["C"] - C) < 0.3, (ang, sol["C"])  # yaw: from noisy dancers only
+    t_fr = np.arange(Fn) / 30.0
+    ho = holdout(lambda sel: solve_rotonly(R_sub, K, np.zeros(Fn), fidx[sel], X[sel], uv[sel], np.ones(sel.sum()),
+                                           vertical=(u_sub, u_main)),
+                 lambda s, sel: rotonly_errors(s, R_sub, K, np.zeros(Fn), fidx[sel], X[sel], uv[sel]), fidx, t_fr)
+    assert ho["n"] == len(fidx) and ho["median_px"] < 1.3 * sol["median_px"] + 1
+
+
+def test_sim3_plausibility_guard():
+    from dancecap.cameras.attach import sim3_plausible
+    Fn = 20
+    R_sub = np.repeat(np.eye(3)[None], Fn, 0)
+    C_s = np.c_[np.linspace(0, 0.1, Fn), np.full(Fn, 1.0), np.zeros(Fn)]
+    t_sub = -C_s
+    floor = (np.array([0, 1.0, 0]), 0.0)
+    good = {"Rs": np.eye(3), "s": 1.2, "T": np.zeros(3), "floor_normal_err_deg": 0.5}
+    assert sim3_plausible(good, R_sub, t_sub, floor, floor, 1.0)[0]
+    collapsed = {**good, "s": 0.005}
+    assert not sim3_plausible(collapsed, R_sub, t_sub, floor, floor, 1.0)[0]  # camera on the floor
+    tilted = {**good, "floor_normal_err_deg": 6.5}
+    assert not sim3_plausible(tilted, R_sub, t_sub, floor, floor, 1.0)[0]
+    huge = {**good, "s": 60.0, "T": np.array([0, -58.0, 0])}  # 1.2 m high but the centre wanders 6 m
+    assert not sim3_plausible(huge, R_sub, t_sub, floor, floor, 1.0)[0]
+
+
+def test_json_bool_encoding():
+    from dancecap.cameras.pipeline import _np
+    s = json.dumps({"a": np.bool_(True), "b": np.float32(1.5), "c": np.int64(3)}, default=_np)
+    assert json.loads(s) == {"a": True, "b": 1.5, "c": 3}
+
+
+def test_cache_key_invalidation():
+    import tempfile
+    from dancecap.cameras.pipeline import _cached
+    tmp_path = Path(tempfile.mkdtemp())
+    calls = []
+    f = lambda: calls.append(1) or len(calls)  # noqa: E731
+    p = tmp_path / "c.pkl"
+    assert _cached(p, {"a": 1}, f) == 1 and _cached(p, {"a": 1}, f) == 1
+    assert _cached(p, {"a": 2}, f) == 2  # settings changed -> recomputed
+    p.write_bytes(b"not a pickle")
+    assert _cached(p, {"a": 2}, f) == 3
+
+
 # ------------------------------------------------------------------ contract checks on real outputs
 def test_real_outputs_contract():
     out = WORK / "cameras"
@@ -349,11 +528,21 @@ def test_real_outputs_contract():
         assert d["reproj_px"].shape == (F,) and d["n_inliers"].shape == (F,)
         assert np.allclose(np.einsum("fij,fkj->fik", d["R"], d["R"]), np.eye(3), atol=1e-6)
         assert np.all(np.isfinite(d["R"])) and np.all(np.isfinite(d["tvec"])) and np.all(d["K"][:, 0, 0] > 0)
+        if "attached" in d.files:  # additive keys (cameras-fix): scalar bool + per-frame dancer residual
+            assert d["attached"].shape == () and d["attached"].dtype == bool
+        if "dancer_px" in d.files:
+            assert d["dancer_px"].shape == (F,)
     if (out / "world_from_sfm.json").exists():
         w = json.loads((out / "world_from_sfm.json").read_text())
         R = np.asarray(w["R"])
         assert w["s"] > 0 and np.allclose(R @ R.T, np.eye(3), atol=1e-6) and np.linalg.det(R) > 0
         assert {"gravity_source", "scale_source"} <= set(w)
+        if "vertical" in w["diagnostics"] and w["diagnostics"]["vertical"].get("adopted"):
+            assert "architecture vertical" in w["gravity_source"]
+    for cam, v in rep.get("cams", {}).items():  # labels and JSON booleans (no "True" strings)
+        if v.get("attached"):
+            assert v["how"].endswith(f"({v['attach']['method']})")
+            assert isinstance(v["attach"]["sub_floor"]["usable"], bool)
     assert EYE_MINUS_ANKLE > 0.8
 
 

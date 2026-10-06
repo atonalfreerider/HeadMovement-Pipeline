@@ -1,11 +1,15 @@
 """world_from_sfm bootstrap: gravity, floor, metric scale and origin from the cameras and the two dancers.
 
-  gravity  mean camera up vector (phones are held upright: -row 1 of R), refined by the plane through the
-           dancers' triangulated ankle keypoints (COCO 15/16, people/<cam>.npz, dancer boxes from
-           dancers/roles.json) - feet are on the floor most of the time, so the LOW ankle points are used.
-  floor    ankle plane lowered by the ankle-joint height (0.039 x stature + ~2.5 cm sneaker sole), then
-           refined by a RANSAC plane through the sparse SfM points near it when the floor has enough
-           texture (scuffs). Points far below the floor are mirror / glossy-floor reflections (counted).
+  gravity  the building's vertical (vertical vanishing points of the main-model cameras, vertical.py) when it is
+           available and consistent; it is checked against the mean camera up vector (phones are held upright:
+           -row 1 of R) and against the plane through the dancers' triangulated ankle keypoints (COCO 15/16,
+           people/<cam>.npz, dancer boxes from dancers/roles.json; the LOW ankle points). Fallback: ankle plane.
+           (larissa_kadu: the ankle plane and the sparse floor near the dancers are ~5 deg off the building
+           vertical, while the building's horizontal edges are perpendicular to it within 0.1 deg: the floor
+           patch, not the room, is what the reconstruction gets wrong - see report.json diagnostics.)
+  floor    ankle plane (normal = gravity) lowered by the ankle-joint height (0.039 x stature + ~2.5 cm sneaker
+           sole), then refined by the densest height band of the sparse SfM points near it within 3 m of the
+           dancers (scuffs). Points far below the floor are mirror / glossy-floor reflections (counted).
   scale    eye-above-ankle height of each dancer (90th percentile over the window = upright moments)
            vs 0.897 x stature (Drillis & Contini: eye 0.936 H, ankle 0.039 H). Statures come from
            takes/<take>.toml [dancers] (user supplied) or default to lead 1.75 / follow 1.65 m ("assumed").
@@ -175,9 +179,32 @@ def triangulate_dancers(work: Path, tracks: dict, grid_dt: float = 1 / 30, max_d
     return (out, grid) if return_grid else out
 
 
+def mode_1d(h: np.ndarray, width: float) -> tuple[float, np.ndarray]:
+    """Densest window of `width` in 1-D samples h -> (mean of the window's samples, inlier mask)."""
+    hs = np.sort(h)
+    j = np.searchsorted(hs, hs + width, side="right")
+    k = int(np.argmax(j - np.arange(len(hs))))
+    m = float(hs[k:j[k]].mean())
+    inl = np.abs(h - m) <= width / 2
+    for _ in range(3):  # re-centre the window on its mean
+        if not inl.any():
+            break
+        m = float(h[inl].mean())
+        inl = np.abs(h - m) <= width / 2
+    return m, inl
+
+
 def bootstrap(tracks: dict, dancers: dict, points: np.ndarray, statures: dict[str, float],
-              stature_source: str, x_cam: str = "06", up_cams: list[str] | None = None) -> dict:
-    """Compute the Sim3 (s, R, t) SfM -> world plus diagnostics."""
+              stature_source: str, x_cam: str = "06", up_cams: list[str] | None = None,
+              vertical: dict | None = None, max_vertical_vs_cameras_deg: float = 15.0,
+              floor_radius_m: float = 3.0) -> dict:
+    """Compute the Sim3 (s, R, t) SfM -> world plus diagnostics.
+
+    vertical: architecture vertical {"u": unit (SfM frame), "n_cams", "max_cam_deg", ...} (vertical.fuse). When
+    given and plausible (within max_vertical_vs_cameras_deg of the mean camera up, >= 2 cameras agreeing within
+    2 deg) it IS gravity: world Y = u. The ankle plane and the sparse floor then only set the floor OFFSET (normal
+    fixed to u, densest height band of the floor points within floor_radius_m of the dancers), and their own
+    tilts are recorded as diagnostics. Without it: gravity = normal of the dancers' ankle plane (old behaviour)."""
     ups = []
     for cam, tr in tracks.items():
         if up_cams is not None and cam not in up_cams:
@@ -195,13 +222,33 @@ def bootstrap(tracks: dict, dancers: dict, points: np.ndarray, statures: dict[st
     h = ank @ up_cam
     low = ank[h <= np.percentile(h, 40)]
     spread = np.percentile(h, 90) - np.percentile(h, 10)
-    n, d, inl = fit_plane(low, thr=max(0.05 * spread, 1e-6), prior_n=up_cam, max_angle_deg=25)
+    n_ank, d_ank, inl = fit_plane(low, thr=max(0.05 * spread, 1e-6), prior_n=up_cam, max_angle_deg=25)
     diag["ankle_plane_inliers"] = int(inl.sum())
-    diag["gravity_vs_cameras_deg"] = float(np.degrees(np.arccos(np.clip(np.dot(n, up_cam), -1, 1))))
+    diag["ankle_plane_vs_cameras_deg"] = _ang(n_ank, up_cam)
+    diag["ankle_plane_normal_sfm"] = n_ank.tolist()
+    n, d = n_ank, d_ank
     gravity_source = "ankle plane (dancers' triangulated low ankle keypoints), init mean camera up"
-    if diag["gravity_vs_cameras_deg"] > 15:  # implausible: phones are roughly upright
+    use_vertical = False
+    if vertical is not None:
+        u = np.asarray(vertical["u"], float)
+        u = u / np.linalg.norm(u) * (1 if np.dot(u, up_cam) >= 0 else -1)
+        diag["vertical"] = {"u": u.tolist(), "vs_cameras_up_deg": _ang(u, up_cam),
+                            "vs_ankle_plane_deg": _ang(u, n_ank),
+                            **{k: v for k, v in vertical.items() if k != "u"}}
+        use_vertical = (_ang(u, up_cam) <= max_vertical_vs_cameras_deg and vertical.get("n_cams", 0) >= 2
+                        and vertical.get("max_cam_deg", 99.0) <= 2.0)
+        diag["vertical"]["adopted"] = bool(use_vertical)
+        if use_vertical:
+            n = u
+            d, _ = mode_1d(low @ n, max(0.1 * spread, 1e-6))  # ankle plane offset, normal fixed
+            gravity_source = (f"architecture vertical: vertical vanishing points (LSD segments not below the "
+                              f"horizon, people masked) of {vertical.get('n_cams')} main-model cameras, fused "
+                              f"(cameras agree within {vertical.get('max_cam_deg', float('nan')):.2f} deg)")
+    if not use_vertical and diag["ankle_plane_vs_cameras_deg"] > 15:  # implausible: phones are roughly upright
         n, gravity_source = up_cam, "mean camera up vector (ankle plane disagreed by > 15 deg)"
         d = float(np.percentile(h, 20))
+    diag["gravity_vs_cameras_deg"] = _ang(n, up_cam)
+    diag["gravity_vs_ankle_plane_deg"] = _ang(n, n_ank)
 
     # scale from eye-above-ankle-plane heights
     scales = {}
@@ -226,17 +273,31 @@ def bootstrap(tracks: dict, dancers: dict, points: np.ndarray, statures: dict[st
     ankle_h = ANKLE_FRAC * np.mean(list(statures.values())) + SOLE_M
     d_floor = d - ankle_h / s
     floor_source = "ankle plane - ankle height"
+    centre = ank.mean(0)
     if points is not None and len(points) > 50:
         dist = (points @ n - d_floor) * s  # metres above floor
-        near = points[np.abs(dist) < 0.06]
+        sel = np.abs(dist) < 0.06
+        if use_vertical:
+            rad = np.linalg.norm((points - centre) - np.outer((points - centre) @ n, n), axis=1) * s
+            sel &= rad < floor_radius_m
+        near = points[sel]
         diag["sfm_points_near_floor"] = int(len(near))
         if len(near) > 100:
             n2, d2, inl2 = fit_plane(near, thr=0.015 / s, prior_n=n, max_angle_deg=6)
             off = (d2 - d_floor) * s
-            diag["sfm_floor_plane"] = {"inliers": int(inl2.sum()), "tilt_vs_ankle_deg":
-                                       float(np.degrees(np.arccos(np.clip(np.dot(n2, n), -1, 1)))),
-                                       "offset_vs_ankle_m": float(off)}
-            if inl2.sum() > 100 and abs(off) < 0.08:
+            diag["sfm_floor_normal_sfm"] = n2.tolist()
+            diag["sfm_floor_plane"] = {"inliers": int(inl2.sum()), "tilt_vs_gravity_deg": _ang(n2, n),
+                                       "tilt_vs_ankle_deg": _ang(n2, n_ank), "offset_vs_ankle_m": float(off)}
+            if use_vertical:
+                hf, inl_f = mode_1d(near @ n, 0.03 / s)
+                off_f = (hf - d_floor) * s
+                diag["sfm_floor_fixed_normal"] = {"inliers": int(inl_f.sum()), "offset_vs_ankle_m": float(off_f),
+                                                  "radius_m": floor_radius_m}
+                if inl_f.sum() > 100 and abs(off_f) < 0.08:
+                    d_floor = hf
+                    floor_source = (f"sparse SfM floor points within {floor_radius_m:g} m of the dancers, normal = "
+                                    "gravity (densest 3 cm height band; init: dancers' ankle plane)")
+            elif inl2.sum() > 100 and abs(off) < 0.08:
                 n, d_floor = n2, d2
                 floor_source = "RANSAC plane through sparse SfM floor points (init: dancers' ankle plane)"
         below = (points @ n - d_floor) * s < -0.15
@@ -247,8 +308,22 @@ def bootstrap(tracks: dict, dancers: dict, points: np.ndarray, statures: dict[st
     ank_low = ank[(ank @ n - d_floor) * s < 0.2]
     o = (ank_low if len(ank_low) else ank).mean(0)
     o = o - (np.dot(o, n) - d_floor) * n
+    lowa = (ank @ n - d_floor) * s  # how well y = 0 fits under the dancers (world metres)
+    lowa = lowa[lowa < np.percentile(lowa, 30)]
+    diag["low_ankle_height_m"] = {"p10": float(np.percentile(lowa, 10)), "median": float(np.median(lowa)),
+                                  "expected_ankle_joint": float(ankle_h)}
+    if points is not None and len(points) > 50:
+        hp = (points @ n - d_floor) * s
+        rp = np.linalg.norm((points - o) - np.outer((points - o) @ n, n), axis=1) * s
+        prof = {}
+        for r0, r1 in ((0, 1.5), (1.5, 3.0), (3.0, 5.0)):
+            m = (np.abs(hp) < 0.15) & (rp >= r0) & (rp < r1)
+            if m.sum() >= 20:
+                prof[f"{r0:g}-{r1:g}m"] = {"n": int(m.sum()), "median_height_m": float(np.median(hp[m])),
+                                           "mad_m": float(np.median(np.abs(hp[m] - np.median(hp[m]))))}
+        diag["floor_points_height_by_radius"] = prof
     # X axis from camera x_cam's mean right vector
-    good = [c for c in sorted(tracks) if tracks[c]["ok"].any()]
+    good = [c for c in sorted(tracks) if tracks[c]["ok"].any() and (up_cams is None or c in up_cams)]
     cam = x_cam if x_cam in good else good[0]
     r = tracks[cam]["R"][tracks[cam]["ok"], 0, :].mean(0)
     x = r - np.dot(r, n) * n
@@ -261,6 +336,10 @@ def bootstrap(tracks: dict, dancers: dict, points: np.ndarray, statures: dict[st
                             + ", ".join(f"{k} {v:.3f} m" for k, v in statures.items()) + ")",
             "floor_source": floor_source, "x_axis": f"camera {cam} mean right vector (horizontal)",
             "diagnostics": diag}
+
+
+def _ang(a: np.ndarray, b: np.ndarray) -> float:
+    return float(np.degrees(np.arccos(np.clip(np.dot(a, b) / np.linalg.norm(a) / np.linalg.norm(b), -1, 1))))
 
 
 def statures_from_take(cfg: dict) -> tuple[dict[str, float], str]:

@@ -15,13 +15,18 @@ Steps per camera (2D only - no cameras exist yet):
     forward and backward; re-anchored only at clean frames (track boxes IoU < 0.1, confident colour
     evidence) whose propagated mask drifted from the role-matched detection (IoU < 0.5). The raw SAM
     output is cached in dancers/cache/<cam>_sam.npz (--reuse-sam redoes steps 4-5 only).
- 4. identity verification: per-frame colour log-odds of the two MASKS against per-role galleries (medians
-    over non-embrace frames), abstaining during embraces (mask IoU > 0.3 or area collapse); keep/swap
-    Viterbi with a switching penalty worth ~5 frames of consistent evidence; swapped segments relabelled.
-    Pixels claimed by both objects go to the more confident one; tiny detached blobs are dropped.
- 5. outputs (CONTRACTS.md): masks/ (full), body/ (follow hair trimmed), hair/ (follow), roles.json,
-    report.json, qa/<cam>.mp4 overlay videos, qa/<cam>_sheet.jpg (one couple-cropped tile per reference
-    second) and qa/<cam>_dense.jpg (every 0.25 s).
+ 4. identity verification: per-frame colour log-odds of the two MASKS against per-role galleries taken
+    around the VERIFIED anchor frames (label + re-anchors; medians over non-embrace frames within 1-4 s, else
+    the label's descriptors - never SAM's majority labelling), abstaining during embraces (mask IoU > 0.3 or
+    area collapse); keep/swap Viterbi with a switching penalty worth ~5 frames of consistent evidence, pinned
+    to 'keep' at the anchors; swapped segments relabelled; cameras whose evidence contradicts the anchors
+    are flagged (report/roles identity_flags). Pixels claimed by both objects go to the more confident one;
+    small detached blobs (relative to the running-median area, not near a wrist/elbow) are dropped.
+ 5. outputs (CONTRACTS.md): masks/ (full), body/ (follow hair trimmed; dancers_hair: keypoint-anchored, raised
+    arms / face / hands stay body), hair/ (follow), roles.json, report.json, qa/<cam>.mp4 overlay videos,
+    qa/<cam>_sheet.jpg (one couple-cropped tile per reference second), qa/<cam>_dense.jpg (every 0.25 s) and
+    review/dancers_body_hair.jpg (full | body | hair on raised-arm and hair-whip frames).
+ With --reuse-sam and valid caches, neither the GPU lock nor SAM is touched.
 """
 from __future__ import annotations
 
@@ -34,7 +39,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .dancers_appearance import RuleConfig, colour_names, descriptors, lead_llr, red_hair_mask
+from .dancers_appearance import RuleConfig, colour_names, descriptors, lead_llr
+from .dancers_hair import HairColour, HairConfig, head_geom, split_hair  # noqa: F401  (split_hair re-exported)
 from .dancers_select import MISS, SelectConfig, candidate_tracks
 from .detect import iou_matrix
 from .take import Take
@@ -48,6 +54,7 @@ CUES = ("torso_v", "leg_v", "red")
 class DancersConfig:
     select: SelectConfig = field(default_factory=SelectConfig)
     rule: RuleConfig = field(default_factory=RuleConfig)
+    hair: HairConfig = field(default_factory=HairConfig)
     clean_iou: float = 0.1  # pair separated
     evidence_iou: float = 0.3  # boxes overlapping more than this: colour evidence abstains
     llr_clip: float = 2.0  # per-frame evidence cap for the keep/swap Viterbi
@@ -57,6 +64,10 @@ class DancersConfig:
     reanchor_gap: int = 8
     embrace_iou: float = 0.3
     area_collapse: float = 0.4  # area below this x the running median = collapsed (occluded / merged)
+    gallery_windows: tuple[float, ...] = (1.0, 2.0, 4.0)  # s around the verified anchors (grown until filled)
+    gallery_min: int = 5  # frames per cue a gallery window must provide, else the label's own descriptors
+    stray_frac: float = 0.02  # clean_mask: detached blobs < this x the running-median area may be dropped
+    kp_fill: int = 3  # frames: a follow without matched keypoints borrows the nearest frame's (hair split)
     tight_margin: float = 0.15  # QA: mask pixels allowed outside the pair's boxes grown by this fraction
     tight_max_out: float = 0.10
     qa_height: int = 960
@@ -128,13 +139,18 @@ def _state_costs(llr: np.ndarray, clip: float) -> np.ndarray:
     return np.stack([np.logaddexp(0, -e), np.logaddexp(0, e)], 1)
 
 
-def keep_swap_viterbi(llr: np.ndarray, clip: float = 2.0, switch_frames: float = 5.0) -> tuple[np.ndarray, np.ndarray]:
+def keep_swap_viterbi(llr: np.ndarray, clip: float = 2.0, switch_frames: float = 5.0,
+                      pinned=None) -> tuple[np.ndarray, np.ndarray]:
     """Two-state Viterbi {keep=0, swap=1} with a switching penalty worth `switch_frames` frames of capped
-    evidence; returns (states (F,) int, swap posterior (F,) from forward-backward with the same model)."""
+    evidence; returns (states (F,) int, swap posterior (F,) from forward-backward with the same model).
+    `pinned` frames (verified anchors) are forced to 'keep'."""
     c = _state_costs(llr, clip)
     f = len(c)
     if f == 0:
         return np.zeros(0, int), np.zeros(0)
+    for i in (pinned or ()):
+        if 0 <= int(i) < f:
+            c[int(i), 1] = 1e6
     pen = switch_frames * clip  # one frame of capped evidence moves the cost difference by `clip`
     trans = np.array([[0.0, pen], [pen, 0.0]])
     cost = c[0].copy()
@@ -296,6 +312,13 @@ def run_labels(take: Take, cams: list[str] | None = None, cfg: DancersConfig | N
     for c in cams:
         cam = Cam.load(work, c)
         tracks, ev, lab = labels_for_cam(cam, cfg)
+        old = labels.get(c, {})
+        if "typesafe" in old and not typesafe:  # keep the stored cross-check while it still describes this label
+            if (old.get("frame") == lab["frame"] and old.get("lead_box") == lab["lead_box"]
+                    and old.get("follow_box") == lab["follow_box"]):
+                lab["typesafe"] = old["typesafe"]
+            else:
+                print(f"[dancers] {c}: label changed - stored TypeSafe cross-check dropped (rerun with --typesafe)")
         labels[c] = lab
         np.savez_compressed(out / "candidates" / f"{c}.npz", idx=tracks["idx"], boxes=tracks["boxes"],
                             llr=ev["llr"], a_is_follow=ev["a_is_follow"], swap_post=ev["swap_post"],
@@ -307,7 +330,7 @@ def run_labels(take: Take, cams: list[str] | None = None, cfg: DancersConfig | N
         typesafe_crosscheck(labels, cams)
     path.write_text(json.dumps(labels, indent=1))
     final = load_labels(work)
-    for c in cams:
+    for c in sorted(final):  # the review sheet always shows every labelled camera, not just the rerun ones
         cam = Cam.load(work, c)
         tiles.append(review_tile(cam, final[c]))
     from .dancers_qa import grid
@@ -420,33 +443,107 @@ def save_sam_cache(path: Path, key: np.ndarray, res: dict) -> None:
                         check_stats=json.dumps(res.get("check_stats", {})))
 
 
-def load_sam_cache(path: Path, key: np.ndarray) -> dict | None:
+def sam_cache_valid(path: Path, key: np.ndarray) -> bool:
+    """True when dancers/cache/<cam>_sam.npz exists and was made for this label (reads only the key)."""
     if not path.exists():
+        return False
+    with np.load(path) as d:
+        k = d["key"]
+        return k.shape == key.shape and bool(np.allclose(k, key))
+
+
+def sam_cache_key(label: dict) -> np.ndarray:
+    return np.array([int(label["frame"]), *label["lead_box"], *label["follow_box"]], float)
+
+
+def load_sam_cache(path: Path, key: np.ndarray) -> dict | None:
+    if not sam_cache_valid(path, key):
         return None
     d = np.load(path)
-    if d["key"].shape != key.shape or not np.allclose(d["key"], key):
-        return None
     anchors = {int(r[0]): {1: r[1:5], 2: r[5:9]} for r in d["anchors"]}
     return {"probs": d["probs"], "anchors": anchors, "seconds": float(d["seconds"]),
             "frame_evals": int(d["frame_evals"]), "work_wh": tuple(int(v) for v in d["work_wh"]),
             "check_stats": json.loads(str(d["check_stats"]))}
 
 
-def match_kpts(cam: Cam, i: int, box: np.ndarray | None) -> np.ndarray | None:
-    """Keypoints of the detection that best overlaps a mask box (None if nothing overlaps)."""
+def match_kpts(cam: Cam, i: int, box: np.ndarray | None, mask: np.ndarray | None = None,
+               other: np.ndarray | None = None, min_iou: float = 0.3, kp_conf: float = 0.3) -> np.ndarray | None:
+    """Keypoints of the detection that best explains a dancer's mask (None if nothing fits).
+
+    Without a mask: the detection whose box best overlaps `box` (IoU > min_iou). With the mask, a candidate
+    is scored by box IoU + fraction of its confident keypoints inside the (slightly dilated) mask - fraction
+    inside the partner's mask (`other`), and rejected when fewer than half of them land on the mask - in an
+    embrace the partner's detection overlaps the box just as well but its keypoints sit on the partner."""
     if box is None:
         return None
     v = cam.people["valid"][i]
     if not v.any():
         return None
-    iou = iou_matrix(box[None], cam.people["boxes"][i][v])[0]
-    j = int(iou.argmax())
-    return cam.people["kpts"][i][v][j] if iou[j] > 0.3 else None
+    boxes, kps = cam.people["boxes"][i][v], cam.people["kpts"][i][v]
+    iou = iou_matrix(np.asarray(box, np.float32)[None], boxes)[0]
+    if mask is None:
+        j = int(iou.argmax())
+        return kps[j] if iou[j] > min_iou else None
+    h, w = mask.shape
+    r = max(3, int(0.02 * (box[3] - box[1])))
+    x0, y0 = max(0, int(box[0]) - r), max(0, int(box[1]) - r)  # dilate only around the mask (full-res cams)
+    x1, y1 = min(w, int(np.ceil(box[2])) + r), min(h, int(np.ceil(box[3])) + r)
+    own_roi = cv2.dilate(mask[y0:y1, x0:x1].astype(np.uint8),
+                         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))) > 0
+    best, best_s = None, -np.inf
+    for j in np.flatnonzero(iou > min_iou):
+        ok = kps[j, :, 2] > kp_conf
+        if ok.sum() < 3:
+            continue
+        x = np.clip(np.round(kps[j, ok, 0]).astype(int), 0, w - 1)
+        y = np.clip(np.round(kps[j, ok, 1]).astype(int), 0, h - 1)
+        inr = (x >= x0) & (x < x1) & (y >= y0) & (y < y1)
+        own = np.zeros(len(x), bool)
+        own[inr] = own_roi[y[inr] - y0, x[inr] - x0]
+        inside = float(own.mean())
+        if inside < 0.5:
+            continue
+        s = iou[j] + inside - (float((other[y, x] & ~own).mean()) if other is not None else 0.0)
+        if s > best_s:
+            best, best_s = j, s
+    return None if best is None else kps[best]
 
 
-def identity_evidence(cam: Cam, masks: np.ndarray, imgs: list[np.ndarray], cfg: DancersConfig) -> dict:
+def role_kpts(cam: Cam, masks: np.ndarray, fill: int = 0) -> list[list[np.ndarray | None]]:
+    """[frame][role] keypoints matched to the final lead/follow masks (F, 2, H, W). With fill > 0 a frame
+    without a match borrows the nearest matched frame within `fill` frames, shifted by the mask-box motion."""
+    f = len(masks)
+    out = [[match_kpts(cam, i, mask_box(masks[i, k]), masks[i, k], masks[i, 1 - k]) for k in range(2)]
+           for i in range(f)]
+    if fill <= 0:
+        return out
+    filled = [list(r) for r in out]
+    for i in range(f):
+        for k in range(2):
+            if out[i][k] is not None or not masks[i, k].any():
+                continue
+            for d in sorted(range(-fill, fill + 1), key=abs):
+                j = i + d
+                if d == 0 or not 0 <= j < f or out[j][k] is None:
+                    continue
+                bi, bj = mask_box(masks[i, k]), mask_box(masks[j, k])
+                kp = out[j][k].copy()
+                kp[:, 0] += (bi[0] + bi[2] - bj[0] - bj[2]) / 2  # top-centre shift of the mask box
+                kp[:, 1] += bi[1] - bj[1]
+                filled[i][k] = kp
+                break
+    return filled
+
+
+def identity_evidence(cam: Cam, masks: np.ndarray, imgs: list[np.ndarray], cfg: DancersConfig,
+                      anchors=None, label_desc: dict | None = None) -> dict:
     """masks (F, 2, H, W) bool native (obj1, obj2). Per-frame descriptors, embrace flags and log-odds that
-    obj1 is the lead, scored against per-role galleries built from clean frames."""
+    obj1 is the lead, scored against per-role galleries anchored on the VERIFIED frames: medians over
+    non-embrace frames within +-1 s (grown to 2, 4 s until gallery_min frames) of the label / re-anchor
+    frames, where SAM's objects were just prompted with the verified role boxes. A cue with too few such
+    frames uses the label frame's own descriptors (labels.json). Never SAM's majority labelling: a camera
+    whose SAM identities are swapped for most of the window must still be oriented by its anchor.
+    gallery_majority (all non-embrace frames, SAM's labelling) is returned only as a diagnostic."""
     f = len(masks)
     area = masks.reshape(f, 2, -1).sum(-1).astype(float)
     inter = (masks[:, 0] & masks[:, 1]).reshape(f, -1).sum(-1)
@@ -465,17 +562,34 @@ def identity_evidence(cam: Cam, masks: np.ndarray, imgs: list[np.ndarray], cfg: 
             if b is None:
                 row.append(None)
                 continue
-            row.append(descriptors(hsv, b, match_kpts(cam, i, b), mask=masks[i, k], exclude=masks[i, 1 - k]))
+            row.append(descriptors(hsv, b, match_kpts(cam, i, b, masks[i, k], masks[i, 1 - k]),
+                                   mask=masks[i, k], exclude=masks[i, 1 - k]))
         desc.append(row)
-    # galleries: per-role medians at non-embrace frames, assuming SAM's identities (obj1 = lead) hold mostly
-    gal = {}
+    anchors = sorted(int(a) for a in (anchors or ()))
+    dist = (np.min(np.abs(np.arange(f)[:, None] - np.array(anchors)[None]), 1) if anchors
+            else np.full(f, np.inf))
+
+    def cue_vals(k, cue, sel):
+        return [d[k][cue] for i, d in enumerate(desc) if sel[i] and not embrace[i] and d[k] is not None
+                and np.isfinite(d[k][cue]) and d[k][_n(cue)] >= cfg.rule.min_px]
+
+    gal, gal_src, gal_major = {}, {}, {}
     for k, role in enumerate(ROLES):
-        g = {}
+        g, src, gm = {}, {}, {}
         for cue in CUES:
-            vals = [d[k][cue] for i, d in enumerate(desc) if not embrace[i] and d[k] is not None
-                    and np.isfinite(d[k][cue]) and d[k][_n(cue)] >= cfg.rule.min_px]
-            g[cue] = float(np.median(vals)) if vals else float("nan")
-        gal[role] = g
+            g[cue], src[cue] = float("nan"), "none"
+            for w in cfg.gallery_windows:
+                vals = cue_vals(k, cue, dist <= w * cam.fps)
+                if len(vals) >= cfg.gallery_min:
+                    g[cue], src[cue] = float(np.median(vals)), f"anchors+-{w:g}s"
+                    break
+            else:
+                lv = (label_desc or {}).get(role, {}).get(cue)
+                if lv is not None and np.isfinite(lv):
+                    g[cue], src[cue] = float(lv), "label"
+            allv = cue_vals(k, cue, np.ones(f, bool))
+            gm[cue] = float(np.median(allv)) if allv else float("nan")
+        gal[role], gal_src[role], gal_major[role] = g, src, gm
     scale = {"torso_v": cfg.rule.torso_v_scale, "leg_v": cfg.rule.leg_v_scale, "red": cfg.rule.red_scale}
     llr = np.zeros(f)
     for i, d in enumerate(desc):
@@ -494,7 +608,23 @@ def identity_evidence(cam: Cam, masks: np.ndarray, imgs: list[np.ndarray], cfg: 
             swap = abs(x1 - gf) + abs(x2 - gl)
             tot += np.clip((swap - keep) / scale[cue], -cfg.rule.clip, cfg.rule.clip)
         llr[i] = tot
-    return {"llr": llr, "embrace": embrace, "iou": iou, "area": area, "desc": desc, "gallery": gal}
+    return {"llr": llr, "embrace": embrace, "iou": iou, "area": area, "desc": desc, "gallery": gal,
+            "gallery_source": gal_src, "gallery_majority": gal_major}
+
+
+def identity_flags(llr: np.ndarray, anchors, clip: float, switch_frames: float) -> list[str]:
+    """Warnings when SAM's majority labelling contradicts the verified anchors (the repair is pinned to the
+    anchors, so these frames are relabelled to agree with them - but a human should look)."""
+    flags = []
+    ev = llr != 0
+    if ev.any() and (llr[ev] < 0).sum() > (llr[ev] > 0).sum():
+        flags.append(f"most identity evidence ({int((llr[ev] < 0).sum())}/{int(ev.sum())} frames) says SAM's "
+                     "objects are swapped relative to the verified anchor(s)")
+    free, _ = keep_swap_viterbi(llr, clip, switch_frames)
+    bad = [int(a) for a in anchors if 0 <= a < len(free) and free[a]]
+    if bad:
+        flags.append(f"unpinned repair would have swapped the verified anchor frame(s) {bad}")
+    return flags
 
 
 def _n(cue: str) -> str:
@@ -513,76 +643,104 @@ def segments(flags: np.ndarray) -> list[tuple[int, int]]:
     return out
 
 
-def clean_mask(m: np.ndarray, max_frac: float = 0.01, gap: float = 0.12) -> tuple[np.ndarray, int]:
-    """Drop tiny detached blobs (a lit sign behind a head, a speck on a spectator): components smaller than
-    max_frac of the object that lie farther than gap x object height from its major parts (>= 5 %).
-    Returns (mask, removed pixel count). Limbs split off by the partner's occlusion are large or near."""
-    n, lab, st, _ = cv2.connectedComponentsWithStats(m.astype(np.uint8), 8)
+TYPICAL_BINS = (8, 16, 16)
+
+
+def _colour_typical(lab: np.ndarray, own: np.ndarray, blob: np.ndarray, thr: float = 3e-4) -> float:
+    """Fraction of the blob's pixels whose Lab colour is common in the dancer's own major parts this frame."""
+    from scipy.ndimage import gaussian_filter
+    b = TYPICAL_BINS
+
+    def idx(px):
+        return tuple((px[..., c].astype(np.int32) * b[c]) >> 8 for c in range(3))
+    hist = np.zeros(b)
+    np.add.at(hist, idx(lab[own]), 1)
+    dens = gaussian_filter(hist, 1.0) / max(hist.sum(), 1)
+    return float((dens[idx(lab[blob])] > thr).mean())
+
+
+def clean_mask(m: np.ndarray, max_frac: float = 0.02, gap: float = 0.12, ref_area: float | None = None,
+               keep_pts: np.ndarray | None = None, keep_radius: float = 0.06, partner: np.ndarray | None = None,
+               lab: np.ndarray | None = None, typical: float = 0.8) -> tuple[np.ndarray, int]:
+    """Drop small detached blobs (a lit sign behind a head, a speck on a spectator): components smaller than
+    max_frac x max(object area, ref_area) that lie farther than gap x object height from its major parts
+    (>= 5 % of the current area). ref_area = the object's running-median area, so a mostly occluded dancer
+    (small current area) does not make a background blob look big. Kept anyway, because a hand or foot cut
+    off by the partner's occlusion is not a speck:
+      * blobs within keep_radius x object height of a keep_pts point (the dancer's wrists/elbows/knees/ankles);
+      * blobs touching the `partner` mask (occlusion boundary) - unless `lab` (the frame in Lab) is given and
+        less than `typical` of the blob's pixels have colours common in the dancer's own major parts this
+        frame (the cam05 exit sign touching the follow's hair is light green; his hands are skin-coloured).
+    Returns (mask, removed pixel count)."""
+    n, comp, st, _ = cv2.connectedComponentsWithStats(m.astype(np.uint8), 8)
     if n <= 2:
         return m, 0
     area = st[1:, cv2.CC_STAT_AREA]
     total = area.sum()
-    small = np.flatnonzero(area < max_frac * total) + 1
+    small = np.flatnonzero(area < max_frac * max(total, ref_area or 0)) + 1
     if not len(small):
         return m, 0
-    major = np.isin(lab, np.flatnonzero(area >= 0.05 * total) + 1)
+    major = np.isin(comp, np.flatnonzero(area >= 0.05 * total) + 1)
     if not major.any():
         return m, 0
     ys = np.nonzero(major.any(1))[0]
+    height = ys[-1] - ys[0] + 1
     dist = cv2.distanceTransform((~major).astype(np.uint8), cv2.DIST_L2, 3)
-    limit = gap * (ys[-1] - ys[0] + 1)
-    drop = [j for j in small if dist[lab == j].min() > limit]
+    limit = gap * height
+    near_kp = np.zeros_like(m, dtype=np.uint8)
+    for x, y in (keep_pts if keep_pts is not None else ()):
+        cv2.circle(near_kp, (int(round(x)), int(round(y))), max(2, int(keep_radius * height)), 1, -1)
+    touch = (cv2.dilate(partner.astype(np.uint8), np.ones((7, 7), np.uint8)) > 0) if partner is not None else None
+    drop = []
+    for j in small:
+        blob = comp == j
+        if dist[blob].min() <= limit or near_kp[blob].any():
+            continue
+        if touch is not None and touch[blob].any() and (lab is None or _colour_typical(lab, major, blob) >= typical):
+            continue
+        drop.append(j)
     if not drop:
         return m, 0
-    rm = np.isin(lab, drop)
+    rm = np.isin(comp, drop)
     return m & ~rm, int(rm.sum())
 
 
-# ---------------------------------------------------------------------------
-# step 5: hair / body split
-# ---------------------------------------------------------------------------
+# step 5 hair / body split: dancers_hair.split_hair (keypoint-anchored; raised arms stay body)
 
-def head_top(kpts: np.ndarray | None) -> float | None:
-    """Image y of the top of the skull from COCO face + shoulder keypoints (None if not visible)."""
-    if kpts is None:
-        return None
-    face = kpts[:5]
-    ok = face[:, 2] > 0.3
-    if ok.sum() < 2:
-        return None
-    sh = kpts[5:7]
-    if (sh[:, 2] > 0.3).all():
-        size = max(np.linalg.norm(sh[0, :2] - sh[1, :2]) * 0.6, 1.0)
-    else:
-        pts = face[ok, :2]
-        size = max(np.ptp(pts[:, 0]), np.ptp(pts[:, 1]), 4.0) * 1.5
-    return float(face[ok, 1].min() - 0.75 * size)
+ARM_KP = (7, 8, 9, 10)  # COCO elbows + wrists
+LIMB_KP = (7, 8, 9, 10, 13, 14, 15, 16)  # + knees, ankles
 
 
-def split_hair(img: np.ndarray, follow: np.ndarray, kpts: np.ndarray | None) -> tuple[np.ndarray, np.ndarray]:
-    """(hair, body) for the follow: hair = red-hair pixels inside her mask, cleaned and kept only where
-    connected to the head region; body = mask - hair - everything above the estimated head top."""
+def running_median(x: np.ndarray, win: int) -> np.ndarray:
+    """(F, K) -> per-column median over [i - win, i + win]."""
+    return np.array([np.median(x[max(0, i - win):i + win + 1], 0) for i in range(len(x))])
+
+
+def arm_points(kp: np.ndarray | None, conf: float = 0.3, joints=LIMB_KP) -> np.ndarray:
+    if kp is None:
+        return np.zeros((0, 2))
+    a = kp[list(joints)]
+    return a[a[:, 2] > conf, :2]
+
+
+def qa_scores(follow: np.ndarray, hair: np.ndarray, kp: np.ndarray | None, cfg: HairConfig) -> dict:
+    """Per-frame picks for the body/hair review sheet: 'raised' = how far her highest wrist is above her
+    head centre (head sizes), 'whip' = horizontal reach of her hair from the head centre (head sizes)."""
+    out = {"raised": float("-inf"), "whip": 0.0}
     if not follow.any():
-        return follow.copy(), follow.copy()
-    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    red = (red_hair_mask(hsv) & follow).astype(np.uint8)
-    red = cv2.morphologyEx(red, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
-    red &= follow.astype(np.uint8)
-    n, lab, stats, _ = cv2.connectedComponentsWithStats(red, 8)
-    keep = np.zeros(n, bool)
-    if n > 1:
-        min_area = max(12, 0.002 * follow.sum())
-        keep[1:] = stats[1:, cv2.CC_STAT_AREA] >= min_area
-    hair = keep[lab]
-    body = follow & ~hair
-    top = head_top(kpts)
-    if top is not None:
-        y = int(max(0, np.floor(top)))
-        above = np.zeros_like(body)
-        above[:y] = True
-        hair |= follow & above  # anything of hers above the skull is hair (flying)
-        body &= ~above
-    return hair, body
+        return out
+    ys = np.nonzero(follow.any(1))[0]
+    g = head_geom(kp, float(ys[-1] - ys[0] + 1), cfg)
+    if g is None:
+        return out
+    h, w = follow.shape
+    for j in (9, 10):
+        x, y, c = kp[j]
+        if c > cfg.kp_conf and 0 <= int(y) < h and 0 <= int(x) < w:
+            out["raised"] = max(out["raised"], float((g.centre[1] - y) / g.size))
+    if hair.any():
+        out["whip"] = float(np.abs(np.nonzero(hair)[1] - g.centre[0]).max() / g.size)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -590,6 +748,8 @@ def split_hair(img: np.ndarray, follow: np.ndarray, kpts: np.ndarray | None) -> 
 # ---------------------------------------------------------------------------
 
 def run_camera(cam: Cam, label: dict, predictor, cfg: DancersConfig, log=print, reuse_sam: bool = False) -> dict:
+    """Steps 3-5 for one camera. `predictor` is a SAM2 video predictor, a zero-argument callable returning
+    one (built lazily, only when the cache misses), or None (cache required)."""
     from .dancers_qa import contact_sheet, crop_tile, overlay, write_video
     from .dancers_sam import propagate, work_size
     out = cam.work / "dancers" / cam.id
@@ -610,11 +770,13 @@ def run_camera(cam: Cam, label: dict, predictor, cfg: DancersConfig, log=print, 
     ww = work_size(w, h)
     check = make_check((w, h), ww, role_dets, cfg)
     cache = cam.work / "dancers" / "cache" / f"{cam.id}_sam.npz"
-    key = np.array([a, *label["lead_box"], *label["follow_box"]], float)
+    key = sam_cache_key(label)
     res = load_sam_cache(cache, key) if reuse_sam else None
     if res is None:
         if predictor is None:
             raise RuntimeError(f"cam {cam.id}: no reusable SAM cache for this label")
+        if callable(predictor) and not hasattr(predictor, "propagate_in_video"):
+            predictor = predictor()
         res = propagate(predictor, files, (w, h), a, {1: np.array(label["lead_box"]), 2: np.array(label["follow_box"])},
                         check=check, min_gap=cfg.reanchor_gap, log=log)
         res["check_stats"] = dict(check.stats)
@@ -632,9 +794,13 @@ def run_camera(cam: Cam, label: dict, predictor, cfg: DancersConfig, log=print, 
             masks[i, k] = p > 127
     conf = np.array([[float(res["probs"][i, k][res["probs"][i, k] > 127].mean() / 255)
                       if (res["probs"][i, k] > 127).any() else 0.0 for k in range(2)] for i in range(f)])
-    # step 4: identity verification + repair
-    ide = identity_evidence(cam, masks, imgs, cfg)
-    state, post = keep_swap_viterbi(ide["llr"], cfg.llr_clip, cfg.switch_frames)
+    # step 4: identity verification + repair, anchored on the verified frames (label + re-anchors)
+    anchors = sorted(int(k) for k in res["anchors"])
+    ide = identity_evidence(cam, masks, imgs, cfg, anchors, label.get("descriptors"))
+    state, post = keep_swap_viterbi(ide["llr"], cfg.llr_clip, cfg.switch_frames, pinned=anchors)
+    flags = identity_flags(ide["llr"], anchors, cfg.llr_clip, cfg.switch_frames)
+    for msg in flags:
+        log(f"[dancers]   ERROR cam {cam.id}: {msg} - repair pinned to the anchors; check qa/{cam.id}_dense.jpg")
     swaps = segments(state.astype(bool))
     for s0, s1 in swaps:
         masks[s0:s1 + 1] = masks[s0:s1 + 1, ::-1]
@@ -651,20 +817,40 @@ def run_camera(cam: Cam, label: dict, predictor, cfg: DancersConfig, log=print, 
             lead_wins = p[0] >= p[1]
             masks[i, 0] &= ~(both[i] & ~lead_wins)
             masks[i, 1] &= ~(both[i] & lead_wins)
+    # keypoints of each final role mask (embrace-safe matching); detached blobs relative to the running median
+    kps = role_kpts(cam, masks, fill=cfg.kp_fill)
+    med_area = running_median(masks.reshape(f, 2, -1).sum(-1).astype(float), max(3, int(round(cam.fps))))
     stray_px = np.zeros(2, int)
     for i in range(f):
+        lab_img = None
         for k in range(2):
-            masks[i, k], n = clean_mask(masks[i, k])
+            if lab_img is None:
+                lab_img = cv2.cvtColor(imgs[i], cv2.COLOR_BGR2LAB)
+            masks[i, k], n = clean_mask(masks[i, k], cfg.stray_frac, ref_area=med_area[i, k],
+                                        keep_pts=arm_points(kps[i][k]), partner=masks[i, 1 - k], lab=lab_img)
             stray_px[k] += n
+    # follow hair colour model for this camera (pooled over frames)
+    colour = HairColour(cfg.hair)
+    for i in range(0, f, cfg.hair.seed_stride):
+        fol = masks[i, 1]
+        if fol.any():
+            ys = np.nonzero(fol.any(1))[0]
+            colour.add_frame(imgs[i], fol, head_geom(kps[i][1], float(ys[-1] - ys[0] + 1), cfg.hair), kps[i][1])
+    colour_ok = colour.fit()
+    log(f"[dancers]   {cam.id}: hair colour model {'fitted' if colour_ok else 'NOT fitted (fixed red rule)'} "
+        f"seeds {colour.seeds}")
     # step 5: write masks, hair/body, QA
     frames_out, tight = [], []
     qa_frames = []
     sheet_idx, dense_idx = sheet_frames(cam.t), sheet_frames(cam.t, 0.25)
     sheet_tiles, dense_tiles = [], []
+    picks: dict[str, list] = {"raised": [], "whip": []}
     for i in range(f):
         lead, fol = masks[i, 0], masks[i, 1]
-        kp_f = match_kpts(cam, i, mask_box(fol))
-        hair, body_f = split_hair(imgs[i], fol, kp_f)
+        hair, body_f = split_hair(imgs[i], fol, kps[i][1], colour, cfg.hair)
+        qa = qa_scores(fol, hair, kps[i][1], cfg.hair)
+        picks["raised"].append((qa["raised"], i))
+        picks["whip"].append((qa["whip"], i))
         for role, m in (("lead", lead), ("follow", fol)):
             cv2.imwrite(str(out / "masks" / f"mask_{i:04d}_{PID[role]:02d}.png"), m.astype(np.uint8) * 255)
         cv2.imwrite(str(out / "body" / f"mask_{i:04d}_01.png"), lead.astype(np.uint8) * 255)
@@ -676,7 +862,10 @@ def run_camera(cam: Cam, label: dict, predictor, cfg: DancersConfig, log=print, 
         frames_out.append({"i": i, "t": round(float(cam.t[i]), 4),
                            **{r: {"box": None if boxes[r] is None else [round(float(v), 1) for v in boxes[r]],
                                   "conf": round(float(conf[i, k]), 3)} for k, r in enumerate(ROLES)},
-                           "swap_prob": round(float(post[i]), 4), "embrace": bool(ide["embrace"][i]),
+                           # swap_prob: posterior that the WRITTEN masks are swapped (after repair);
+                           # sam_swap_prob: that SAM's raw objects were
+                           "swap_prob": round(float(1 - post[i] if state[i] else post[i]), 4),
+                           "sam_swap_prob": round(float(post[i]), 4), "embrace": bool(ide["embrace"][i]),
                            "repaired": bool(state[i]), "anchor": i in res["anchors"]})
         vis = overlay(imgs[i], lead, fol, hair, cfg.qa_height, f"cam {cam.id} #{i} t={cam.t[i]:.2f}"
                       + ("  EMBRACE" if ide["embrace"][i] else "") + ("  ANCHOR" if i in res["anchors"] else ""))
@@ -707,9 +896,27 @@ def run_camera(cam: Cam, label: dict, predictor, cfg: DancersConfig, log=print, 
            "tight_rate": round(float(tight_ok.mean()), 4), "untight_frames": [int(i) for i in np.flatnonzero(~tight_ok)],
            "empty_frames": {r: int(sum(1 for fr in frames_out if fr[r]["box"] is None)) for r in ROLES},
            "gallery": {r: _round(g) for r, g in ide["gallery"].items()},
+           "gallery_source": ide["gallery_source"],
+           "gallery_majority": {r: _round(g) for r, g in ide["gallery_majority"].items()},
+           "identity_flags": flags,
+           "hair_model": {"fitted": colour_ok, "seeds": colour.seeds},
+           "qa_picks": {k: top_spaced(lst) for k, lst in picks.items()},
            "reanchor_checks": {k: v for k, v in res.get("check_stats", {}).items() if k != "ious"},
            "stray_px_removed": {r: int(stray_px[k]) for k, r in enumerate(ROLES)}}
     return {"frames": frames_out, "report": rep}
+
+
+def top_spaced(scored: list[tuple[float, int]], n: int = 4, gap: int = 10) -> list[list]:
+    """Best-scoring frames at least `gap` frames apart: [[score, frame], ...]."""
+    out: list[list] = []
+    for v, i in sorted(scored, reverse=True):
+        if not np.isfinite(v):
+            continue
+        if all(abs(i - j) >= gap for _, j in out):
+            out.append([round(float(v), 3), int(i)])
+        if len(out) == n:
+            break
+    return out
 
 
 def tightness(lead: np.ndarray, fol: np.ndarray, pair_boxes: np.ndarray, cam: Cam, i: int,
@@ -748,6 +955,10 @@ def sheet_frames(t: np.ndarray, step: float = 1.0) -> set[int]:
 
 
 def run(take: Take, cams: list[str] | None = None, cfg: DancersConfig | None = None, reuse_sam: bool = False) -> dict:
+    """Steps 3-5 for every camera. The GPU lock is taken and SAM 2.1 built only on the first camera whose
+    cache cannot be reused (with --reuse-sam and valid caches, nothing touches the GPU)."""
+    import contextlib
+
     from . import gpu
     from .dancers_sam import build_predictor
     cfg = cfg or DancersConfig()
@@ -761,8 +972,16 @@ def run(take: Take, cams: list[str] | None = None, cfg: DancersConfig | None = N
     roles = json.loads(roles_path.read_text()) if roles_path.exists() else {"cams": {}}
     report_path = out / "report.json"
     report = json.loads(report_path.read_text()) if report_path.exists() else {"cams": {}}
-    with gpu.exclusive(f"dancers {take.name}"):
-        predictor = build_predictor()
+    with contextlib.ExitStack() as stack:
+        held: dict = {}
+
+        def predictor():
+            if "p" not in held:
+                stack.enter_context(gpu.exclusive(f"dancers {take.name}"))
+                held["p"] = build_predictor()
+                report["sam_overrides"] = getattr(held["p"], "dancecap_overrides", None)
+            return held["p"]
+
         for c in cams:
             cam = Cam.load(work, c)
             r = run_camera(cam, labels[c], predictor, cfg, reuse_sam=reuse_sam)
@@ -771,10 +990,48 @@ def run(take: Take, cams: list[str] | None = None, cfg: DancersConfig | None = N
             rp = r["report"]
             print(f"[dancers] {c}: {rp['frames']} frames, SAM {rp['sam_s_per_frame']:.2f} s/frame "
                   f"(total {rp['total_s_per_frame']:.2f}), anchors {rp['anchors']}, embrace {rp['embrace_frames']}, "
-                  f"swaps repaired {rp['swaps_repaired']}, tight {100 * rp['tight_rate']:.1f}%", flush=True)
+                  f"swaps repaired {rp['swaps_repaired']}, tight {100 * rp['tight_rate']:.1f}%"
+                  + (f", IDENTITY FLAGS {rp['identity_flags']}" if rp["identity_flags"] else ""), flush=True)
             roles["labels_source"] = {k: labels[k]["by"] for k in labels}
             roles["swaps_repaired"] = [{"cam": k, "start": s0, "end": s1}
                                        for k, v in sorted(report["cams"].items()) for s0, s1 in v["swaps_repaired"]]
+            roles["identity_flags"] = {k: v.get("identity_flags", []) for k, v in sorted(report["cams"].items())
+                                       if v.get("identity_flags")}
             roles_path.write_text(json.dumps(roles))
             report_path.write_text(json.dumps(report, indent=1))
+        if not held:
+            print("[dancers] all SAM caches reused - GPU not used")
+    body_hair_review(take, report, cfg)
     return report
+
+
+def body_hair_review(take: Take, report: dict, cfg: DancersConfig, per_kind: int = 6) -> Path | None:
+    """review/dancers_body_hair.jpg: full | body | hair of the follow on the frames where her wrists are
+    highest above her head ('raised') and her hair reaches farthest sideways ('hair whip'), best frame per
+    camera, best cameras first."""
+    from .dancers_qa import body_hair_row, contact_sheet
+    rows = []
+    for kind, name in (("raised", "raised arm"), ("whip", "hair whip")):
+        best = []
+        for c, rp in report.get("cams", {}).items():
+            lst = rp.get("qa_picks", {}).get(kind) or []
+            if lst and (kind != "raised" or lst[0][0] > -1.0):  # wrist above about shoulder height
+                best.append((lst[0][0], c, lst[0][1]))
+        for v, c, i in sorted(best, reverse=True)[:per_kind]:
+            cam = Cam.load(take.work, c)
+            d = take.work / "dancers" / c
+            rd = lambda sub, pid: cv2.imread(str(d / sub / f"mask_{i:04d}_{pid:02d}.png"), cv2.IMREAD_GRAYSCALE) > 0
+            img = cv2.imread(str(cam.files[i]))
+            full = rd("masks", 2)
+            kp = match_kpts(cam, i, mask_box(full), full, rd("masks", 1))
+            rows.append(body_hair_row(img, rd("masks", 1), full, rd("body", 2), rd("hair", 2), kp,
+                                      f"{name}  cam {c} #{i}  score {v:.2f}"))
+    if not rows:
+        return None
+    path = take.work / "review" / "dancers_body_hair.jpg"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    head = ("follow: FULL mask | BODY (full - hair) | HAIR   (green = her keypoints; score: raised = wrist height above "
+            "head centre, whip = hair reach sideways, in head sizes)")
+    cv2.imwrite(str(path), contact_sheet(rows, head, cols=2, max_width=3600), [cv2.IMWRITE_JPEG_QUALITY, 88])
+    print(f"[dancers] -> {path}")
+    return path

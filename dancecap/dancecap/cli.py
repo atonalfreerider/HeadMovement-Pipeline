@@ -6,9 +6,12 @@
     python -m dancecap dancers-labels larissa_kadu    # couple tracks + lead/follow labels + review sheet
     python -m dancecap dancers larissa_kadu           # SAM 2.1 lead/follow masks, identity repair, QA
     python -m dancecap cameras larissa_kadu           # static-room SfM + per-frame 6DoF/zoom -> cameras/<cam>.npz
+    python -m dancecap beats larissa_kadu             # cleanest phone audio on the reference clock + zouk beat grid
     python -m dancecap timing synthetic --validate    # touchdowns/accents vs zouk beats -> timing/timing.json
     python -m dancecap physics synthetic --validate   # L0 centroidal dynamics -> physics/physics.{npz,json}
     python -m dancecap export synthetic --capture 01_SyntheticSMPLX  # -> head-movement StreamingAssets (v3)
+    python -m dancecap room larissa_kadu              # masked 3DGS of the studio -> room/ splats + Quest mesh
+    python -m dancecap texture larissa_kadu           # photoreal per-dancer SMPL-X albedo (2048^2) -> avatar/
 """
 from __future__ import annotations
 
@@ -101,6 +104,27 @@ def cmd_mamma(a):
     print(json.dumps({k: rep[k] for k in ("grid", "ma_3d", "smplx")}, indent=1, default=str))
 
 
+def cmd_beats(a):
+    from . import beats
+    cfg = beats.BeatsConfig(source=a.source, checkpoint=a.checkpoint, device=a.device, min_bpm=a.min_bpm,
+                            out_sr=a.sr)
+    res = beats.run(a.take, cfg, plot=not a.no_plot)
+    t = res["tempo"]
+    print(f"[beats] tempo {t['bpm']:.2f} BPM (quarter notes; linear fit {t['bpm_linear_fit']:.2f}, residual "
+          f"{t['linear_fit_resid_rms_ms']:.1f} ms rms), measure {t['measure_s']:.3f} s, {t['n_measures']} measures; "
+          f"beat_this tracked {t['beat_level']['tracked_bpm']} BPM -> x{t['beat_level']['factor']:g}")
+    s = t["analyzer_split_measures"]
+    print(f"[beats] beat_this_analyzer.split_measures(min_bpm=120) would halve {s.get('split', 0)}/"
+          f"{s.get('measures', 0)} measures (grid at {s.get('resulting_grid_bpm_median')} 'BPM') - not used")
+    for w in t.get("warnings", []):
+        print(f"[beats] WARNING: {w}")
+    m = res["audio"]
+    print(f"[beats] audio cam{m['source_cam']} {m['reference_start']:.4f}..{m['reference_end']:.4f} s @ "
+          f"{m['sample_rate']} Hz -> {res['work'] / 'audio' / 'audio_overlap.wav'}")
+    print(f"[beats] export with: --audio-t0 {m['reference_start']:.7f}")
+    print(f"[beats] -> {res['work'] / 'beats'}" + (f", {', '.join(str(p) for p in res.get('plots', []))}"))
+
+
 def cmd_timing(a):
     from . import timing
     from .take import PACKAGE_ROOT
@@ -184,6 +208,65 @@ def cmd_export(a):
         print(f"[export] {r}: {Path(d['model']).name} ({d['betas']} betas), FK vs npz joints {d['fk_max_err_mm']} mm")
     print(f"[export] {rep['frames']} frames @ {rep['fps']:.2f} fps: {', '.join(rep['files'])}")
     print(f"[export] -> {rep.get('installed', rep['out'])}")
+
+
+def cmd_room(a):
+    import os
+    import shutil
+    import subprocess
+    import sys
+
+    from .take import PACKAGE_ROOT, WORKSPACE
+    if shutil.which("cl") is None and not os.environ.get("DANCECAP_CUDA_ENV"):
+        # gsplat's cached JIT extension still needs ninja + MSVC on PATH: re-run inside prototype/run_cuda.cmd
+        argv = sys.argv[1:] if a.argv is None else a.argv
+        r = subprocess.run(["cmd", "/c", str(WORKSPACE / "prototype" / "run_cuda.cmd"), "-m", "dancecap", *argv],
+                           cwd=PACKAGE_ROOT, env={**os.environ, "DANCECAP_CUDA_ENV": "1", "PYTHONUNBUFFERED": "1"})
+        raise SystemExit(r.returncode)
+    from . import room
+    cfg = room.RoomConfig()
+    if a.cams:
+        cfg.cams = tuple(a.cams.split(","))
+    for k in ("iters", "cap_max", "quest_max", "mesh_max_tris", "mesh_voxel", "max_side"):
+        if getattr(a, k) is not None:
+            setattr(cfg, k, getattr(a, k))
+    stages = tuple(a.stages.split(",")) if a.stages else room.STAGES
+    if not set(stages) <= set(room.STAGES):
+        raise SystemExit(f"unknown stages {sorted(set(stages) - set(room.STAGES))}; choose from {room.STAGES}")
+    rep = room.run(Take.load(a.take), cfg, stages)
+    for g, v in rep.get("gates", {}).items():
+        print(f"[room] gate {g}: {'PASS' if v['passed'] else 'FAIL'} {json.dumps(v.get('value'), default=str)}")
+    print(f"[room] -> {Take.load(a.take).work / 'room' / 'report.json'}")
+
+
+def cmd_texture(a):
+    from . import avatar_texture
+    take = Take.load(a.take)
+    if a.review_only:
+        from .avatar_review import render_review
+        cfg = avatar_texture.TextureConfig(size=a.size)
+        for p in render_review(take, cfg, lock=not a.no_lock):
+            print(f"[texture] {p}")
+        return
+    cfg = avatar_texture.TextureConfig(size=a.size, step_s=a.step_ms / 1000, top_k=a.top_k, device=a.device,
+                                       head_fix=a.head_fix, align_passes=a.align_passes)
+    cams = _cams(take, a.cams)
+    if cams:
+        cfg.cams = tuple(cams)
+    if a.exclude_cams:
+        known = cfg.cams or tuple(sorted(p.stem for p in (take.work / "cameras").glob("[0-9][0-9].npz")))
+        cfg.cams = tuple(c for c in known if c not in a.exclude_cams.split(","))
+    for kv in a.cam_weight or []:
+        c, w = kv.split("=")
+        cfg.cam_weight[c] = float(w)
+    rep = avatar_texture.run(take, cfg, lock=not a.no_lock, qa=not a.no_review)
+    for r, d in rep["roles"].items():
+        print(f"[texture] {r}: measured {d['measured_fraction']:.1%} (face {d['face_measured_fraction']:.1%}), mirrored "
+              f"{d['mirror_fraction']:.1%}, diffused {d['diffused_fraction']:.1%}, median inlier cams "
+              f"{d['median_inlier_cams']}; weight share {d['camera_weight_share']}")
+    for p in rep.get("review", []):
+        print(f"[texture] {p}")
+    print(f"[texture] -> {take.work / 'avatar'} ({rep['runtime_s']['total']:.0f} s)")
 
 
 UNITY_PROJECT = None  # resolved lazily: WORKSPACE/head-movement
@@ -276,6 +359,15 @@ def main(argv=None):
     sp.add_argument("--n-cams", type=int, default=8)
     sp.add_argument("--frames", type=int, default=180)
     sp.set_defaults(fn=cmd_mamma)
+    sp = sub.add_parser("beats", help="cleanest phone audio on the reference clock + beat_this zouk grid, tempo, clicks")
+    sp.add_argument("take")
+    sp.add_argument("--source", help="force the source camera id (default: best music quality score)")
+    sp.add_argument("--checkpoint", default="final0", help="beat_this checkpoint (default final0)")
+    sp.add_argument("--device", help="cuda|cpu (default: cuda when the GPU lock is free, else cpu)")
+    sp.add_argument("--min-bpm", type=float, default=60.0, help="quarter-note tempo folded into [min, 2*min)")
+    sp.add_argument("--sr", type=int, help="output wav sample rate (default: the source's native rate)")
+    sp.add_argument("--no-plot", action="store_true")
+    sp.set_defaults(fn=cmd_beats)
     sp = sub.add_parser("timing", help="footstep touchdowns + joint accents vs the zouk beat grid -> timing/timing.json")
     sp.add_argument("take", help="work/<take> with smplx/{lead,follow}.npz (e.g. synthetic, larissa_kadu)")
     sp.add_argument("--beats", help="zouk beats json [[t, type]] (default: timing/beats.json or beats.json in work)")
@@ -321,6 +413,33 @@ def main(argv=None):
     sp.add_argument("--beats", help="zouk beats json when there is no timing/timing.json")
     sp.add_argument("--no-install", action="store_true", help="only write work/<take>/export/<capture>/")
     sp.set_defaults(fn=cmd_export)
+    sp = sub.add_parser("room", help="static studio: masked 3DGS (gsplat) -> splat_full/splat_quest.ply + Quest mesh")
+    sp.add_argument("take")
+    sp.add_argument("--cams", help="comma-separated cameras (default: the static-model cameras 01,02,03,04,07,09)")
+    sp.add_argument("--stages", help="comma-separated subset of train,quest,mesh,eval (later stages reuse room/cache)")
+    sp.add_argument("--iters", type=int, help="training iterations (default 30000)")
+    sp.add_argument("--cap-max", dest="cap_max", type=int, help="MCMC Gaussian cap (default 1M)")
+    sp.add_argument("--quest-max", dest="quest_max", type=int, help="Quest splat budget (default 150k)")
+    sp.add_argument("--mesh-max-tris", dest="mesh_max_tris", type=int, help="Quest mesh budget (default 80k)")
+    sp.add_argument("--mesh-voxel", dest="mesh_voxel", type=float, help="TSDF voxel (m, default 0.03)")
+    sp.add_argument("--max-side", dest="max_side", type=int, help="training image long side (default 1000)")
+    sp.set_defaults(fn=cmd_room, argv=None)
+    sp = sub.add_parser("texture", help="photoreal per-dancer albedo on the SMPL-X UV layout -> avatar/ + review sheets")
+    sp.add_argument("take")
+    sp.add_argument("--cams", help="comma-separated cameras (default: every cameras/<cam>.npz)")
+    sp.add_argument("--exclude-cams", help="comma-separated cameras to leave out (e.g. a hold-out check)")
+    sp.add_argument("--cam-weight", action="append", help="CAM=W trust multiplier (default 05=0.25), repeatable")
+    sp.add_argument("--size", type=int, default=2048, help="atlas size (default 2048, Quest budget)")
+    sp.add_argument("--step-ms", type=float, default=1000 / 15, help="sample each camera every N ms of reference time")
+    sp.add_argument("--top-k", type=int, default=4, help="samples kept per texel per camera")
+    sp.add_argument("--device", help="cuda|cpu (default cuda)")
+    sp.add_argument("--head-fix", choices=("auto", "on", "off"), default="auto",
+                    help="neck correction to the COCO face keypoints (auto = adopt when leave-one-camera-out improves)")
+    sp.add_argument("--align-passes", type=int, default=1, help="flow-registration passes after the first bake")
+    sp.add_argument("--no-lock", action="store_true", help="do not take work/gpu.lock")
+    sp.add_argument("--no-review", action="store_true", help="skip the review renders")
+    sp.add_argument("--review-only", action="store_true", help="only re-render the review sheets from avatar/")
+    sp.set_defaults(fn=cmd_texture)
     sp = sub.add_parser("ask",help="natural-language lesson control -> hm_* Unity commands (TypeSafe)")
     sp.add_argument("text")
     sp.add_argument("--run", action="store_true", help="read hm_state and execute in the open Unity editor")

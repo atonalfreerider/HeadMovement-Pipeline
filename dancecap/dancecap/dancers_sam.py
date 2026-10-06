@@ -6,7 +6,8 @@ Deviations from the stock SAM2VideoPredictor, all to fit the GPU policy (CONTRAC
   * ++model.max_cond_frames_in_attn=4: re-anchored prompts add conditioning frames; only the 4 temporally
     closest are attended, so cost stays flat.
   * ++model.clear_non_cond_mem_around_input=true: when propagation reaches a re-anchored frame, the drifted
-    non-conditioning memories around it are dropped so the correction is not out-voted by them.
+    non-conditioning memories around it are dropped so the correction is not out-voted by them. REQUIRED:
+    build_with_overrides retries the overrides one by one and raises if this one is rejected.
   * frames are read lazily from the canonical JPEGs (no 1024^2 x F tensor in RAM), state offloaded to CPU.
   * the predictor's output ("video") resolution is the working resolution (long edge <= 1280); callers
     upsample probabilities to native resolution.
@@ -93,19 +94,50 @@ def _clear_obj_non_cond_mem_around_input(self, inference_state, frame_idx, obj_i
         outs.pop(t, None)
 
 
+OVERRIDES = {  # name -> (hydra override, required)
+    "clear_non_cond_mem_around_input": ("++model.clear_non_cond_mem_around_input=true", True),
+    "max_cond_frames_in_attn": ("++model.max_cond_frames_in_attn=4", False),
+}
+
+
+def build_with_overrides(build: Callable[..., object], log: Callable[[str], None] = print):
+    """build(hydra_overrides_extra=[...]) with all OVERRIDES; when that is rejected, retry with each subset
+    (largest first) so one rejected option never silently drops the other. Re-anchoring correctness needs
+    clear_non_cond_mem_around_input, so a build without it raises; max_cond_frames_in_attn only bounds cost.
+    The active overrides are logged and stored on the predictor as `dancecap_overrides`."""
+    from itertools import combinations
+    names = list(OVERRIDES)
+    errors = {}
+    for n in range(len(names), -1, -1):
+        for subset in combinations(names, n):
+            missing = [k for k in names if k not in subset]
+            if any(OVERRIDES[k][1] for k in missing):
+                continue
+            try:
+                pred = build(hydra_overrides_extra=[OVERRIDES[k][0] for k in subset])
+            except Exception as e:  # noqa: BLE001 - hydra raises various config errors
+                errors[subset] = repr(e)
+                continue
+            if missing:
+                log(f"[dancers] SAM override(s) {missing} rejected ({errors}); active: {list(subset)}")
+            else:
+                log(f"[dancers] SAM overrides active: {list(subset)}")
+            try:
+                pred.dancecap_overrides = list(subset)
+            except AttributeError:
+                pass
+            return pred
+    req = [k for k in names if OVERRIDES[k][1]]
+    raise RuntimeError(f"SAM 2 predictor could not be built with the required override(s) {req}: {errors}")
+
+
 def build_predictor(device: str = "cuda"):
     import sam2.sam2_video_predictor as svp
     from sam2.build_sam import build_sam2_video_predictor
     _fp16_storage(svp)
     if not hasattr(svp.SAM2VideoPredictor, "_clear_obj_non_cond_mem_around_input"):
         svp.SAM2VideoPredictor._clear_obj_non_cond_mem_around_input = _clear_obj_non_cond_mem_around_input
-    try:
-        return build_sam2_video_predictor(CONFIG, str(CHECKPOINT), device=device,
-                                          hydra_overrides_extra=["++model.max_cond_frames_in_attn=4",
-                                                                 "++model.clear_non_cond_mem_around_input=true"])
-    except Exception as e:  # older sam2 without the option: run without it, but say so
-        print(f"[dancers] max_cond_frames_in_attn override rejected ({e}); using the default")
-        return build_sam2_video_predictor(CONFIG, str(CHECKPOINT), device=device)
+    return build_with_overrides(lambda **kw: build_sam2_video_predictor(CONFIG, str(CHECKPOINT), device=device, **kw))
 
 
 def init_state(predictor, files: list[Path], work_wh: tuple[int, int]) -> dict:

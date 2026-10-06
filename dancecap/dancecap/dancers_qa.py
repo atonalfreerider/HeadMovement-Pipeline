@@ -111,3 +111,48 @@ def write_video(path: Path, frames: list[np.ndarray], fps: float) -> None:
     for fr in frames:
         vw.write(np.ascontiguousarray(fr[:h2, :w2]))
     vw.release()
+
+
+SKELETON = ((5, 7), (7, 9), (6, 8), (8, 10), (5, 6), (5, 11), (6, 12), (11, 12), (0, 1), (0, 2), (1, 3), (2, 4))
+
+
+def body_hair_row(img: np.ndarray, lead: np.ndarray, full: np.ndarray, body: np.ndarray, hair: np.ndarray,
+                  kpts: np.ndarray | None, title: str, height: int = 520) -> np.ndarray:
+    """One review row for the follow: FULL | BODY | HAIR tinted on the image, cropped to her upper body
+    (top of her mask down to ~60 % of its height: hair, head, arms, hands)."""
+    h, w = full.shape
+    ys, xs = np.nonzero(full) if full.any() else (np.array([0, h - 1]), np.array([0, w - 1]))
+    x0, x1, y0, y1 = xs.min(), xs.max() + 1, ys.min(), ys.max() + 1
+    pad = int(0.08 * (y1 - y0)) + 8
+    y1 = y0 + int(0.6 * (y1 - y0))
+    sel = ys < y1
+    if sel.any():
+        x0, x1 = xs[sel].min(), xs[sel].max() + 1
+    x0, y0, x1, y1 = max(0, x0 - pad), max(0, y0 - pad), min(w, x1 + pad), min(h, y1 + pad)
+    panels = []
+    for name, m, col in (("FULL", full, FOLLOW), ("BODY", body, FOLLOW), ("HAIR", hair, HAIR)):
+        v = img.copy()
+        if lead.any():
+            v[lead] = (0.75 * v[lead] + 0.25 * np.array(LEAD)).astype(np.uint8)
+        if m.any():
+            v[m] = (0.45 * v[m] + 0.55 * np.array(col)).astype(np.uint8)
+        cnts, _ = cv2.findContours(full.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        cv2.drawContours(v, cnts, -1, (255, 255, 255), 1)
+        if kpts is not None and name == "BODY":
+            for a, b in SKELETON:
+                if kpts[a, 2] > 0.3 and kpts[b, 2] > 0.3:
+                    cv2.line(v, tuple(int(t) for t in kpts[a, :2]), tuple(int(t) for t in kpts[b, :2]), (60, 230, 60), 1,
+                             cv2.LINE_AA)
+            for j in range(17):
+                if kpts[j, 2] > 0.3:
+                    cv2.circle(v, (int(kpts[j, 0]), int(kpts[j, 1])), 2, (60, 230, 60), -1)
+        v = v[y0:y1, x0:x1]
+        s = height / v.shape[0]
+        v = cv2.resize(v, (max(1, int(round(v.shape[1] * s))), height), interpolation=cv2.INTER_AREA)
+        label_text(v, name, (6, height - 10), (255, 255, 255), 0.6)
+        panels.append(v)
+    sep = np.full((height, 4, 3), 30, np.uint8)
+    row = np.concatenate([panels[0], sep, panels[1], sep, panels[2]], 1)
+    band = np.full((30, row.shape[1], 3), 16, np.uint8)
+    label_text(band, title, (6, 21), (255, 255, 255), 0.55)
+    return np.concatenate([band, row], 0)
