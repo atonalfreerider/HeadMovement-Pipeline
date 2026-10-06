@@ -34,8 +34,9 @@ LEDGER = PACKAGE_ROOT / "work" / "runpod" / "ledger.json"
 SSH_KEY = Path.home() / ".ssh" / "runpod_dancecap"
 DEFAULT_CAP = 10.0
 # preferred 80 GB GPUs, cheapest first; availability changes, so status/gpus shows what's live
-GPU_PREFERENCE = ["NVIDIA A100 80GB PCIe", "NVIDIA A100-SXM4-80GB", "NVIDIA H100 PCIe", "NVIDIA H100 80GB HBM3",
-                  "NVIDIA H100 NVL"]
+GPU_PREFERENCE = ["NVIDIA A100-SXM4-80GB", "NVIDIA A100 80GB PCIe", "NVIDIA H100 80GB HBM3", "NVIDIA H100 NVL",
+                  "NVIDIA H100 PCIe"]
+CLOUDS = ["COMMUNITY", "SECURE"]  # community is cheaper; secure when no community host with a public IP is free
 DEFAULT_IMAGE = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
 
 
@@ -177,45 +178,46 @@ def _pod_ssh(pod_json: dict) -> tuple[str, int]:
 
 @contextlib.contextmanager
 def pod_session(name: str, max_minutes: float, gpus: list[str] | None = None, image: str = DEFAULT_IMAGE,
-                disk_gb: int = 80, cloud: str = "COMMUNITY"):
+                disk_gb: int = 80, clouds: list[str] | None = None, start_timeout_min: float = 6):
     """Create a pod, yield it, and always delete it. Refuses to start if the budget can't cover max_minutes."""
     ensure_ssh_key()
     last_err = None
-    for gpu in gpus or GPU_PREFERENCE:
+    pod = None
+    for gpu, cloud in [(g, c) for c in (clouds or CLOUDS) for g in (gpus or GPU_PREFERENCE)]:
+        price = gpu_price(gpu, cloud)
+        if price is None:
+            continue
+        # budget check uses the listed price BEFORE anything is created
+        need = price * (max_minutes + start_timeout_min) / 60
+        if need > remaining():
+            raise BudgetError(f"{gpu}: {max_minutes + start_timeout_min:.0f} min at ${price:.2f}/h = ${need:.2f} > "
+                              f"remaining ${remaining():.2f} of the ${cap():.2f} cap")
         args = ["pod", "create", "--name", f"dancecap-{name}", "--image", image, "--gpu-id", gpu,
-                "--container-disk-in-gb", str(disk_gb), "--cloud-type", cloud, "--wait", "--wait-timeout", "15m"]
+                "--container-disk-in-gb", str(disk_gb), "--cloud-type", cloud]
         if cloud == "COMMUNITY":
             args.append("--public-ip")
         try:
-            # budget check uses the GPU's listed price before anything is created
-            price = gpu_price(gpu, cloud)
-            if price is None:
-                continue
-            need = price * max_minutes / 60
-            if need > remaining():
-                raise BudgetError(f"{gpu}: {max_minutes:.0f} min at ${price:.2f}/h = ${need:.2f} > remaining "
-                                  f"${remaining():.2f} of the ${cap():.2f} cap")
-            pod = _ctl(*args, timeout=1200)
-            break
-        except BudgetError:
-            raise
-        except Exception as e:  # unavailable GPU / capacity: try the next one
+            created = _ctl(*args, timeout=180)  # no --wait: record the pod in the ledger the moment it exists
+        except Exception as e:  # no capacity for this GPU/cloud: try the next one
             last_err = e
-            pod = None
-            # a create that timed out may still exist: the error carries its id
             pid = _id_from_error(str(e))
             if pid:
-                _delete(pid, reason="create failed")
+                _record(pid, name, gpu, cloud, price, max_minutes)
+                _delete(pid, reason="create errored")
+            continue
+        pod_id = created["id"]
+        cost = float(created.get("costPerHr") or price)
+        _record(pod_id, name, gpu, cloud, cost, max_minutes)
+        print(f"[runpod] created {pod_id}: {gpu} ({cloud}) ${cost:.2f}/h; waiting up to {start_timeout_min:.0f} min "
+              f"for the container")
+        pod = _wait_running(pod_id, start_timeout_min * 60)
+        if pod:
+            break
+        last_err = RuntimeError(f"{gpu} ({cloud}) container did not start in {start_timeout_min:.0f} min")
+        _delete(pod_id, reason="container did not start")
     if not pod:
-        raise RuntimeError(f"no 80 GB GPU pod could be created: {last_err}")
+        raise RuntimeError(f"no 80 GB GPU pod could be started: {last_err}")
 
-    pod_id = pod["id"]
-    cost = float(pod.get("costPerHr") or price)
-    rows = ledger()
-    rows.append({"pod_id": pod_id, "name": name, "gpu": gpu, "cloud": cloud, "cost_per_hr": cost,
-                 "created": datetime.now(timezone.utc).isoformat(), "created_ts": time.time(),
-                 "max_minutes": max_minutes})
-    _save_ledger(rows)
     try:
         host, port = _pod_ssh(pod)
         p = Pod(pod_id, name, gpu, cost, host, port)
@@ -231,6 +233,28 @@ def pod_session(name: str, max_minutes: float, gpus: list[str] | None = None, im
         yield p
     finally:
         _delete(pod_id, reason="session end")
+
+
+def _record(pod_id: str, name: str, gpu: str, cloud: str, cost: float, max_minutes: float) -> None:
+    rows = ledger()
+    if not any(r["pod_id"] == pod_id for r in rows):
+        rows.append({"pod_id": pod_id, "name": name, "gpu": gpu, "cloud": cloud, "cost_per_hr": cost,
+                     "created": datetime.now(timezone.utc).isoformat(), "created_ts": time.time(),
+                     "max_minutes": max_minutes})
+        _save_ledger(rows)
+
+
+def _wait_running(pod_id: str, timeout_s: float) -> dict | None:
+    """Poll until the container runs and port 22 is publicly mapped; None on timeout (caller deletes the pod)."""
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        p = _ctl("pod", "get", pod_id, check=False)
+        if isinstance(p, dict):
+            ports = (p.get("runtime") or {}).get("ports") or []
+            if any(isinstance(x, dict) and int(x.get("privatePort", 0)) == 22 and x.get("isIpPublic") for x in ports):
+                return p
+        time.sleep(10)
+    return None
 
 
 def _id_from_error(msg: str) -> str | None:
@@ -256,12 +280,25 @@ def _delete(pod_id: str, reason: str) -> None:
 
 
 def gpu_price(gpu: str, cloud: str = "COMMUNITY") -> float | None:
+    """On-demand $/h for a GPU type in a cloud, or None if that cloud doesn't offer it / has no stock."""
     for g in gpu_list():
-        if g.get("id") == gpu or g.get("displayName") == gpu:
-            key = "communityPrice" if cloud == "COMMUNITY" else "securePrice"
-            v = g.get(key) or (g.get("lowestPrice") or {}).get("uninterruptablePrice")
+        if g.get("gpuId") == gpu or g.get("displayName") == gpu:
+            if not g.get("communityCloud" if cloud == "COMMUNITY" else "secureCloud"):
+                return None
+            v = g.get("communityPricePerHr" if cloud == "COMMUNITY" else "securePricePerHr")
             return float(v) if v else None
     return None
+
+
+def gpu_table(min_gb: float = 80) -> list[dict]:
+    rows = []
+    for g in gpu_list():
+        if (g.get("memoryInGb") or 0) < min_gb:
+            continue
+        stocked = [d["dataCenterId"] for d in g.get("dataCenterAvailability", []) if d.get("stockStatus") not in (None, "none")]
+        rows.append({"gpu": g["gpuId"], "gb": g["memoryInGb"], "community": g.get("communityPricePerHr"),
+                     "secure": g.get("securePricePerHr"), "stock": g.get("stockStatus"), "datacenters": stocked})
+    return sorted(rows, key=lambda r: r["community"] or r["secure"] or 99)
 
 
 def gpu_list() -> list[dict]:

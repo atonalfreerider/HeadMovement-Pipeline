@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 
 from .take import Take
 
@@ -26,14 +27,31 @@ def cmd_remote(a):
     if a.action == "status":
         print(json.dumps(remote.status(), indent=1))
     elif a.action == "gpus":
-        rows = []
-        for g in remote.gpu_list():
-            mem = g.get("memoryInGb") or g.get("memory") or 0
-            if mem and float(mem) >= 80:
-                rows.append(g)
-        print(json.dumps(rows, indent=1))
+        for r in remote.gpu_table():
+            print(f"{r['gpu']:<34} {r['gb']:>4} GB  community ${r['community']}  secure ${r['secure']}  "
+                  f"stock {r['stock']}  in {len(r['datacenters'])} DCs")
     elif a.action == "cleanup":
         print("deleted:", remote.cleanup_orphans())
+    elif a.action == "smoke":
+        import tempfile
+        import time as _t
+        from pathlib import Path as _P
+        with remote.pod_session("smoke", max_minutes=10) as pod:
+            pod.run("nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader && "
+                    "python -c \"import torch;print('torch',torch.__version__,'cuda',torch.version.cuda,"
+                    "torch.cuda.is_available(),torch.cuda.get_device_name(0))\" && nproc && free -g | head -2 && df -h / | tail -1")
+            with tempfile.TemporaryDirectory() as d:
+                blob = _P(d) / "probe.bin"
+                blob.write_bytes(os.urandom(50 * 1024 * 1024))
+                t0 = _t.time()
+                pod.put(blob, "/tmp/probe.bin")
+                up = _t.time() - t0
+                t0 = _t.time()
+                pod.get("/tmp/probe.bin", _P(d) / "back.bin")
+                down = _t.time() - t0
+                ok = (_P(d) / "back.bin").read_bytes() == blob.read_bytes()
+            print(f"[smoke] 50 MB up {50 / up:.1f} MB/s, down {50 / down:.1f} MB/s, round-trip identical={ok}")
+        print(json.dumps(remote.status(), indent=1))
 
 
 def cmd_ingest(a):
@@ -356,7 +374,7 @@ def main(argv=None):
     sp.set_defaults(fn=lambda a: [print(f"[review] {p}") for p in __import__("dancecap.review", fromlist=["render"])
                                   .render(Take.load(a.take), a.instants)])
     sp = sub.add_parser("remote", help="Runpod offload: status | gpus | cleanup (budget-capped, auto-deleting pods)")
-    sp.add_argument("action", choices=["status", "gpus", "cleanup"])
+    sp.add_argument("action", choices=["status", "gpus", "cleanup", "smoke"])
     sp.set_defaults(fn=cmd_remote)
     sp = sub.add_parser("cameras", help="static-room SfM (ALIKED+LightGlue, COLMAP) + per-frame pose/zoom of every camera")
     sp.add_argument("take")
