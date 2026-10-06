@@ -1,7 +1,8 @@
 """Body model for the physics stage: SMPL-X shape -> rigid segment masses, COM and inertia; per-frame FK.
 
-The shaped rest mesh (T-pose, betas from the take) is closed (the eye sockets are capped, the separate eyeball
-shells are dropped), voxelised, and every interior voxel is given to the SMPL-X joint whose LBS weight dominates
+The shaped rest mesh (T-pose, betas from the take) is closed (the separate eyeball shells are dropped and the
+mouth opening - the only boundary loop of the SMPL-X body surface - is capped; the result must be watertight),
+voxelised, and every interior voxel is given to the SMPL-X joint whose LBS weight dominates
 there (weights interpolated from the nearest surface vertices). With uniform density each of the 55 joints then
 carries a rigid mass element (mass, rest COM, inertia about that COM) that moves with the joint's FK transform.
 Whole-body COM / angular momentum are sums over those elements. Total volume comes from the divergence theorem
@@ -65,7 +66,7 @@ class BodyModel:
     betas: np.ndarray
     parents: np.ndarray            # (55,)
     v_rest: np.ndarray             # (V, 3) shaped rest vertices (T-pose)
-    faces: np.ndarray              # (F, 3) body faces incl. eye caps (closed), eyeballs dropped
+    faces: np.ndarray              # (F, 3) body faces incl. the mouth cap (closed), eyeballs dropped
     j_rest: np.ndarray             # (55, 3) rest joints
     weights: np.ndarray            # (V, 55) LBS weights
     volume: float                  # m^3, closed mesh
@@ -118,7 +119,9 @@ class BodyModel:
 # ----------------------------------------------------------------------------------------------- shape + mesh
 
 def _closed_body_faces(faces: np.ndarray, n_verts: int) -> tuple[np.ndarray, np.ndarray]:
-    """Drop the eyeball shells and cap the eye sockets with fans to a new centroid vertex each.
+    """Drop the eyeball shells (separate components) and return the boundary loops of the body surface, to be
+    capped with fans to a new centroid vertex each. On SMPL-X there is exactly one loop: the mouth opening (32
+    vertices around x = 0, y ~ 0.24, z ~ 0.08 in the rest pose); the eye sockets are closed by the eyelids.
 
     Returns (faces, cap_loops) where cap_loops are the ordered boundary vertex loops (for the cap centroids)."""
     import trimesh
@@ -159,6 +162,18 @@ def _cap(verts: np.ndarray, body: np.ndarray, loops: list[np.ndarray]) -> tuple[
     return np.concatenate(v), np.concatenate(f)
 
 
+def _check_watertight(verts: np.ndarray, faces: np.ndarray, path) -> None:
+    """The capped body must be a closed, consistently wound surface (every directed edge has its reverse exactly
+    once), or the divergence-theorem volume / mass is wrong: fail loudly for a model with other holes."""
+    e = np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]])
+    key = e[:, 0].astype(np.int64) * (len(verts) + 1) + e[:, 1]
+    rev = e[:, 1].astype(np.int64) * (len(verts) + 1) + e[:, 0]
+    uniq, cnt = np.unique(key, return_counts=True)
+    if (cnt > 1).any() or not np.isin(rev, uniq).all():
+        raise ValueError(f"{path}: capped SMPL-X body is not watertight / consistently wound "
+                         f"({int((~np.isin(rev, uniq)).sum())} open directed edges, {int((cnt > 1).sum())} duplicated)")
+
+
 def mesh_volume_com(verts: np.ndarray, faces: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Divergence theorem on a closed mesh. verts (..., V, 3) -> volume (...,), COM (..., 3)."""
     a, b, c = verts[..., faces[:, 0], :], verts[..., faces[:, 1], :], verts[..., faces[:, 2], :]
@@ -181,6 +196,7 @@ def load_body(npz, gender: str | None = None, model_path: Path | None = None) ->
     parents[0] = -1
     body, loops = _closed_body_faces(np.asarray(m["f"], np.int64), len(v))
     vc, fc = _cap(v, body, loops)
+    _check_watertight(vc, fc, path)
     vol, _ = mesh_volume_com(vc, fc)
     g = (gender or (str(npz["gender"]) if "gender" in npz else "neutral")).lower()
     # the caps' centroid vertices are only for volume; keep them in v_rest (weights of their loop's mean)

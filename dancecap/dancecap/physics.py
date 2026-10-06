@@ -49,8 +49,9 @@ G_VEC = np.array([0.0, -G, 0.0])
 Z95 = 1.96
 FLAG_BITS = {"edge": 1, "flight": 2, "single_support": 4, "double_support": 8, "xcom_outside": 16,
              "low_quality": 32, "partner_identifiable": 64, "partner_no_contact": 128,
-             "partner_inconsistent": 256}
-PARTNER_STATUS = {0: "not_identifiable", 1: "identifiable", 2: "no_contact", 3: "inconsistent"}
+             "partner_inconsistent": 256, "interpolated": 512, "gap": 1024, "partner_cap_bound": 2048}
+PARTNER_STATUS = {0: "not_identifiable", 1: "identifiable", 2: "no_contact", 3: "inconsistent", 4: "no_data"}
+POSE_KEYS = ("global_orient", "body_pose", "jaw_pose", "leye_pose", "reye_pose", "left_hand_pose", "right_hand_pose")
 # candidate partner connections (lead points x follow points, contact distance m), as PartnerConnection.cs
 LEAD_POINTS = {"lead_l_hand": "hand_l", "lead_r_hand": "hand_r", "lead_chest": 9}
 FOLLOW_POINTS = {"follow_l_hand": "hand_l", "follow_r_hand": "hand_r", "follow_spine3": 9, "follow_neck": 12,
@@ -68,6 +69,9 @@ class PhysicsConfig:
     contact_h: float = 0.03         # sole height above the floor estimate counted as contact (m)
     contact_v: float = 0.5          # max horizontal sole speed in contact (m/s)
     contact_pts_h: float = 0.015    # sole vertices within this of the lowest contact point span the polygon
+    use_mamma_contact: bool = True  # also accept MAMMA floor_contact (T,512) when the npz has it
+    mamma_contact_thresh: float = 0.5   # max floor_contact over the foot's 512-subset vertices
+    contact_h_mamma: float = 0.08   # looser sole height bound for MAMMA-confirmed contacts (m)
     mu: float = 0.6                 # floor friction (circumscribed pyramid -> conservative intervals)
     torsion_r: float = 0.05         # free vertical moment <= r * normal force
     partner_cap_n: float = 400.0    # box bound per partner force component (LP boundedness)
@@ -76,6 +80,8 @@ class PhysicsConfig:
     tol_min_nm: float = 3.0
     voxel_m: float = 0.007
     low_quality: float = 0.3
+    max_gap_s: float = 0.2          # bad (non-finite) runs longer than this: outputs NaN there (flag 'gap')
+    max_bad_fraction: float = 0.5   # more bad frames than this: refuse (ValueError)
     seed: int = 0
 
 
@@ -147,25 +153,113 @@ def hull2d(pts: np.ndarray, max_pts: int = 16) -> np.ndarray:
 
 # ----------------------------------------------------------------------------------------------- one dancer
 
+_BODY_CACHE: dict = {}
+_D512: list = []
+
+
+def mamma_foot_contact(npz: dict, body: "pb.BodyModel") -> np.ndarray | None:
+    """(T, 2) left/right floor-contact score from MAMMA's floor_contact (T, 512): max over the 512-subset vertices
+    whose LBS label is that foot (ankle / foot joints); None when the npz has no usable floor_contact or the
+    downsampling matrix (mamma data, verts_512.pkl) is unavailable."""
+    fc = npz.get("floor_contact")
+    if fc is None or np.ndim(fc) != 2 or np.shape(fc)[1] != 512 or not np.any(np.asarray(fc) > 0):
+        return None
+    if not _D512:
+        try:
+            from .mamma_dyn import _load_verts512
+            _D512.append(_load_verts512())
+        except Exception:  # noqa: BLE001 (no mamma data / torch): geometric contacts only
+            _D512.append(None)
+    D = _D512[0]
+    if D is None or D.shape[1] > len(body.weights):
+        return None
+    lab = (D @ body.weights[:D.shape[1]]).argmax(1)
+    fc = np.nan_to_num(np.asarray(fc, float))
+    return np.stack([fc[:, np.isin(lab, pb.FOOT_JOINTS[f])].max(1) for f in ("left", "right")], 1)
+
+
+def _body(npz: dict, mass: float | None, voxel: float) -> "pb.BodyModel":
+    """Shaped, voxelised body (cached per model file, betas, gender, mass and voxel size; never mutated later)."""
+    key = (str(pb.model_file(npz)), np.asarray(npz["betas"], float).tobytes(), str(npz.get("gender", "")), mass, voxel)
+    if key not in _BODY_CACHE:
+        _BODY_CACHE[key] = pb.segment_masses(pb.load_body(npz), mass, voxel=voxel)
+    return _BODY_CACHE[key]
+
+
+def sanitize(npz: dict, cfg: PhysicsConfig) -> tuple[dict, np.ndarray, np.ndarray, dict]:
+    """Mask frames with non-finite transl / pose and bridge them, so one bad frame cannot NaN the whole take.
+
+    The smoothing operator is dense: a single NaN would spread to every frame. Bad frames are linearly
+    interpolated (transl and every axis-angle component; nearest value at the ends) and get weight ~0 in the
+    smoother (they carry no information). Runs longer than cfg.max_gap_s are 'gap' frames whose outputs are set
+    to NaN afterwards. t and betas must be finite (ValueError); more than cfg.max_bad_fraction bad frames is
+    refused. Returns (clean npz copy, bad (T,) bool, gap (T,) bool, info)."""
+    t = np.asarray(npz["t"], float)
+    if not np.all(np.isfinite(t)) or not np.all(np.diff(t) > 0):
+        raise ValueError("physics: t must be finite and strictly increasing")
+    if not np.all(np.isfinite(np.asarray(npz["betas"], float))):
+        raise ValueError("physics: betas are not finite")
+    T = len(t)
+    d = dict(npz)
+    keys = ["transl"] + [k for k in POSE_KEYS if k in d]
+    bad = np.zeros(T, bool)
+    for k in keys:
+        a = np.asarray(d[k], float).reshape(T, -1)
+        bad |= ~np.isfinite(a).all(1)
+    info = {"n_bad_frames": int(bad.sum()), "bad_frame_index": np.flatnonzero(bad)[:200].tolist()}
+    if bad.mean() > cfg.max_bad_fraction:
+        raise ValueError(f"physics: {bad.sum()}/{T} frames have non-finite transl/pose (> {cfg.max_bad_fraction:.0%})")
+    gap = np.zeros(T, bool)
+    if bad.any():
+        good = np.flatnonzero(~bad)
+        for k in keys:
+            a = np.asarray(d[k], float).reshape(T, -1).copy()
+            for col in range(a.shape[1]):
+                a[bad, col] = np.interp(t[bad], t[good], a[good, col])
+            d[k] = a.reshape(np.shape(npz[k]))
+        if "joints" in d:  # stale for the bad frames (only used for the FK check)
+            d["joints"] = np.where(bad[:, None, None], np.nan, np.asarray(d["joints"], float))
+        # runs of bad frames
+        i = 0
+        while i < T:
+            if bad[i]:
+                j = i
+                while j + 1 < T and bad[j + 1]:
+                    j += 1
+                if t[j] - t[i] + float(np.median(np.diff(t))) > cfg.max_gap_s:
+                    gap[i:j + 1] = True
+                i = j + 1
+            else:
+                i += 1
+    info["n_gap_frames"] = int(gap.sum())
+    q = np.asarray(d["quality"], float) if "quality" in d else np.ones(T)
+    d["quality"] = np.where(np.isfinite(q) & ~bad, q, 0.0)
+    return d, bad, gap, info
+
+
 def analyze_dancer(npz: dict, cfg: PhysicsConfig, mass: float | None = None, stature: float | None = None,
                    rng=None) -> dict:
-    """Centroidal quantities of one dancer (all arrays on npz['t'])."""
+    """Centroidal quantities of one dancer (all arrays on npz['t']). Non-finite input frames are bridged and
+    flagged (sanitize), never propagated."""
     rng = rng or np.random.default_rng(cfg.seed)
+    npz, bad, gap, bad_info = sanitize(npz, cfg)
     t = np.asarray(npz["t"], float)
     T = len(t)
-    body = pb.segment_masses(pb.load_body(npz), mass, voxel=cfg.voxel_m)
+    body = _body(npz, mass, cfg.voxel_m)
     M = body.mass
     R, p = pb.forward_kinematics(body, pb.full_pose(npz), np.asarray(npz["transl"], float))
     fk_err = None
     if "joints" in npz:
         J = np.einsum("tjab,jb->tja", R, body.j_rest) + p
-        fk_err = float(np.abs(J - np.asarray(npz["joints"], float)[:, :55]).max())
+        dj = np.abs(J - np.asarray(npz["joints"], float)[:, :55])
+        fk_err = float(np.nanmax(dj)) if np.isfinite(dj).any() else None
     c, I = pb.element_world(body, R, p)                     # (T,55,3), (T,55,3,3)
     m = body.elem_mass
     com_raw = (m[None, :, None] * c).sum(1) / M
-    qual = np.asarray(npz["quality"], float) if "quality" in npz else np.ones(T)
+    qual = np.asarray(npz["quality"], float)
 
-    S = Smoother(t, cfg.cutoff_hz)
+    # bad (bridged) frames carry no information: weight ~0 in the smoother (Smoother clips weights at 1e-3)
+    S = Smoother(t, cfg.cutoff_hz, weights=np.where(bad, 0.0, 1.0) if bad.any() else None)
     com, vcom, acom = S(com_raw, 0), S(com_raw, 1), S(com_raw, 2)
     f_net = M * (acom - G_VEC)
 
@@ -176,8 +270,9 @@ def analyze_dancer(npz: dict, cfg: PhysicsConfig, mass: float | None = None, sta
     dt = float(np.median(np.diff(t)))
     block = max(2, int(round(cfg.block_s / dt)))
     sd_boot = block_bootstrap(S.operator(2), resid, cfg.n_boot, block, rng)
-    a_lo = Smoother(t, cfg.cutoff_sens[0])(com_raw, 2)
-    a_hi = Smoother(t, cfg.cutoff_sens[1])(com_raw, 2)
+    w_s = np.where(bad, 0.0, 1.0) if bad.any() else None
+    a_lo = Smoother(t, cfg.cutoff_sens[0], weights=w_s)(com_raw, 2)
+    a_hi = Smoother(t, cfg.cutoff_sens[1], weights=w_s)(com_raw, 2)
     sens = 0.5 * np.abs(a_hi - a_lo)
     a_band = np.sqrt((Z95 * np.maximum(sd_white, sd_boot)) ** 2 + sens ** 2)
 
@@ -206,10 +301,17 @@ def analyze_dancer(npz: dict, cfg: PhysicsConfig, mass: float | None = None, sta
     low = S(np.stack([sole_pos[f][:, :, 1].min(1) for f in ("left", "right")], 1))   # (T, 2)
     floor_y = float(np.percentile(low.min(1), 2))
     contact = np.zeros((T, 2), bool)
+    mscore = mamma_foot_contact(npz, body) if cfg.use_mamma_contact else None   # (T, 2) or None
     for k, f in enumerate(("left", "right")):
         cen = sole_pos[f].mean(1)
         sp = np.linalg.norm(S(cen, 1)[:, [0, 2]], axis=1)
-        contact[:, k] = (low[:, k] - floor_y < cfg.contact_h) & (sp < cfg.contact_v)
+        geo = (low[:, k] - floor_y < cfg.contact_h) & (sp < cfg.contact_v)
+        if mscore is not None:
+            # fused fits float / sink the feet by a few cm: MAMMA's own floor-contact estimate (its contact term)
+            # may confirm a contact the 3 cm geometric test misses, within a looser height bound
+            geo |= (mscore[:, k] > cfg.mamma_contact_thresh) & (low[:, k] - floor_y < cfg.contact_h_mamma) \
+                & (sp < cfg.contact_v)
+        contact[:, k] = geo
     from scipy.ndimage import median_filter
     contact = median_filter(contact.astype(np.uint8), size=(3, 1), mode="nearest").astype(bool)
     support = np.full((T, 16, 2), np.nan)
@@ -243,6 +345,8 @@ def analyze_dancer(npz: dict, cfg: PhysicsConfig, mass: float | None = None, sta
     flags |= np.where(nc == 2, FLAG_BITS["double_support"], 0)
     flags |= np.where(np.nan_to_num(margin_x, nan=1.0) < 0, FLAG_BITS["xcom_outside"], 0)
     flags |= np.where(qual < cfg.low_quality, FLAG_BITS["low_quality"], 0)
+    flags |= np.where(bad, FLAG_BITS["interpolated"], 0)
+    flags |= np.where(gap, FLAG_BITS["gap"], 0)
 
     com_mesh = pb.posed_mesh_com(body, R, p)
     info = pb.summary(body)
@@ -255,8 +359,22 @@ def analyze_dancer(npz: dict, cfg: PhysicsConfig, mass: float | None = None, sta
         "xcom_omega0": round(w0, 4), "xcom_pendulum_l_m": round(leg, 4),
         "contact_fraction": {"flight": float(np.mean(nc == 0)), "single": float(np.mean(nc == 1)),
                              "double": float(np.mean(nc == 2))},
-        "f_net_band95_median_n": [round(float(x), 1) for x in np.median(M * a_band, 0)],
+        "contact_source": "sole height + speed" + (" | MAMMA floor_contact" if mscore is not None else ""),
+        "f_net_band95_median_n": [round(float(x), 1) for x in np.nanmedian(M * a_band, 0)],
     })
+    info.update(bad_info)
+    if gap.any():  # long bridged runs: the smoother only extrapolates there -> no numbers, flagged 'gap'
+        for arr in (com, vcom, acom, f_net, a_band, L, dL, dL_band, xcom, margin_x, margin_c, spin_rate):
+            arr[gap] = np.nan
+        contact[gap] = False
+        support[gap] = np.nan
+        for i in np.flatnonzero(gap):
+            corners[i] = np.zeros((0, 3))
+        info["contact_fraction"] = {"flight": float(np.mean(nc[~gap] == 0)), "single": float(np.mean(nc[~gap] == 1)),
+                                    "double": float(np.mean(nc[~gap] == 2))}
+        support_bits = FLAG_BITS["flight"] | FLAG_BITS["single_support"] | FLAG_BITS["double_support"] \
+            | FLAG_BITS["xcom_outside"]
+        flags[gap] &= ~support_bits
     if stature is not None:
         info["stature_input_m"] = stature
         info["stature_rel_diff"] = round(body.stature / stature - 1, 4)
@@ -267,7 +385,7 @@ def analyze_dancer(npz: dict, cfg: PhysicsConfig, mass: float | None = None, sta
             "L_vertical": L[:, 1], "spin_rate": spin_rate, "contact": contact, "support": support,
             "foot_corners": corners, "xcom": xcom, "margin_xcom": margin_x, "margin_com": margin_c,
             "flags": flags, "quality": qual, "com_mesh": com_mesh, "joints": np.einsum("tjab,jb->tja", R, body.j_rest) + p,
-            "elem_com": c}
+            "elem_com": c, "bad": bad, "gap": gap}
 
 
 # ----------------------------------------------------------------------------------------------- beats
@@ -379,11 +497,20 @@ def partner_interval(res: dict, cfg: PhysicsConfig) -> dict:
     hi = np.full(T, np.nan)
     lo2, hi2 = lo.copy(), hi.copy()
     relaxed = np.zeros(T, bool)  # feasible only with the doubled tolerance
+    cap_lo, cap_hi = np.zeros(T, bool), np.zeros(T, bool)  # bound set by the artificial component cap, not physics
     status = np.zeros(T, np.int64)
     axis = L["com"] - F["com"]
     axis /= np.maximum(np.linalg.norm(axis, axis=1, keepdims=True), 1e-9)
     n_conn = np.zeros(T, np.int64)
+    finite = np.ones(T, bool)
+    for d in (L, F):
+        finite &= np.isfinite(d["com"]).all(1) & np.isfinite(d["f_net"]).all(1) & np.isfinite(d["dL"]).all(1) \
+            & np.isfinite(d["f_net_band"]).all(1) & np.isfinite(d["dL_band"]).all(1) \
+            & np.isfinite(d["joints"]).all((1, 2))
     for i in range(T):
+        if not finite[i]:
+            status[i] = 4  # no data (a gap in either dancer)
+            continue
         act = [c for c in conns if c["active"][i]]
         n_conn[i] = len(act)
         if not act:
@@ -439,11 +566,19 @@ def partner_interval(res: dict, cfg: PhysicsConfig) -> dict:
         for k in range(len(act)):
             cols = slice(nb[0] + 1 + nb[1] + 1 + 3 * k, nb[0] + 1 + nb[1] + 1 + 3 * k + 3)
             cobj[cols] = -u  # force on follow = -F_k (F_k acts on the lead); tension = (-sum F_k) . u
+        kcols = np.arange(nb[0] + 1 + nb[1] + 1, nvar)
+        cap_tol = 1e-6 * cfg.partner_cap_n + 1e-6
+
         def solve(k_tol):
+            """(lo, hi, lo_at_cap, hi_at_cap) or None. A bound whose optimum has any partner force component at
+            +-partner_cap_n is set by the box (added only to keep the LP bounded), not by the physics."""
             b_ub = np.concatenate([b + k_tol * tol, -(b - k_tol * tol), np.array(b_ub_extra)])
             r1 = linprog(cobj, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method="highs")
             r2 = linprog(-cobj, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method="highs")
-            return (r1.fun, -r2.fun) if r1.status == 0 and r2.status == 0 else None
+            if r1.status != 0 or r2.status != 0:
+                return None
+            at = lambda x: bool(np.any(np.abs(np.abs(x[kcols]) - cfg.partner_cap_n) <= cap_tol))
+            return r1.fun, -r2.fun, at(r1.x), at(r2.x)
 
         # 95 % bands as tolerances; the doubled (~4 sigma) tolerance guards against intervals that are only narrow
         # because the problem is barely feasible (noise), and it decides identifiability.
@@ -451,16 +586,29 @@ def partner_interval(res: dict, cfg: PhysicsConfig) -> dict:
         if i2 is None:
             status[i] = 3
             continue
-        lo[i], hi[i] = i1 if i1 is not None else i2
-        lo2[i], hi2[i] = i2
+        use = i1 if i1 is not None else i2
+        lo[i], hi[i] = use[0], use[1]
+        lo2[i], hi2[i] = i2[0], i2[1]
+        cap_lo[i] = use[2] or i2[2]
+        cap_hi[i] = use[3] or i2[3]
         if i1 is None:
             relaxed[i] = True
+    cap = cap_lo | cap_hi
+    # cap-bound bounds are not physical: report them as unbounded
+    lo = np.where(cap_lo, -np.inf, lo)
+    hi = np.where(cap_hi, np.inf, hi)
+    lo2 = np.where(cap_lo, -np.inf, lo2)
+    hi2 = np.where(cap_hi, np.inf, hi2)
     width = hi - lo
     supp_ok = np.array([(L["contact"][i].sum() <= 1) or (F["contact"][i].sum() <= 1) for i in range(T)])
-    ident = (status == 0) & supp_ok & (hi2 - lo2 <= cfg.identifiable_width_n)
+    flight = np.array([(L["contact"][i].sum() == 0) or (F["contact"][i].sum() == 0) for i in range(T)])
+    # a dancer in flight has only the partner force: if that needs the cap, the kinematics are inconsistent
+    # (false flight from noisy contacts, or an implausible F_net), never 'identifiable'
+    status[(status == 0) & cap & flight] = 3
+    ident = (status == 0) & ~cap & supp_ok & (hi2 - lo2 <= cfg.identifiable_width_n)
     status[ident] = 1
     return {"lo": lo, "hi": hi, "width": width, "lo_robust": lo2, "hi_robust": hi2, "relaxed": relaxed,
-            "status": status, "axis": axis, "n_connections": n_conn,
+            "cap_bound": cap, "status": status, "axis": axis, "n_connections": n_conn,
             "connections": {c["name"]: c["active"] for c in conns}}
 
 
@@ -486,7 +634,8 @@ def analyze(npzs: dict, cfg: PhysicsConfig, beats_t: np.ndarray | None = None, m
         p = res["partner"]
         bits = np.where(p["status"] == 1, FLAG_BITS["partner_identifiable"], 0) \
             | np.where(p["status"] == 2, FLAG_BITS["partner_no_contact"], 0) \
-            | np.where(p["status"] == 3, FLAG_BITS["partner_inconsistent"], 0)
+            | np.where(p["status"] == 3, FLAG_BITS["partner_inconsistent"], 0) \
+            | np.where(p["cap_bound"], FLAG_BITS["partner_cap_bound"], 0)
         for role in ROLES:
             res[role]["flags"] = res[role]["flags"] | bits
     return res
@@ -514,6 +663,16 @@ NOTES = [
     "contact force distributions consistent with both F_net and dL/dt within their bands (friction pyramid mu, "
     "unilateral feet at the sole contact hull corners, free forces at active hand/chest connections, each "
     "component capped). 'identifiable' only with a dancer in flight/single support and width <= identifiable_width_n.",
+    "Partner LP bounds that sit on the +-partner_cap_n box (added only to keep the LP bounded) are not physical: "
+    "they are reported unbounded (lp_range null, flag partner_cap_bound) and such frames are never 'identifiable'; "
+    "with a dancer in (possibly false) flight they are 'inconsistent'.",
+    "Foot contact = sole within contact_h of the floor estimate and slow, OR (when the smplx npz carries MAMMA's "
+    "floor_contact) MAMMA's foot contact score > mamma_contact_thresh with the sole within contact_h_mamma: fused "
+    "fits float / sink the feet by a few cm, so the geometric test alone reported 45-69 % 'flight' on larissa_kadu.",
+    "Non-finite input frames (transl / pose) are bridged by interpolation with ~0 smoother weight (flag "
+    "interpolated); runs longer than max_gap_s are NaN in every output (flag gap) and 'no_data' for the partner LP.",
+    "Bands come from a white-noise model of the COM (4th differences) plus a residual bootstrap: smooth fused fits "
+    "(MAMMA) have temporally correlated errors that these do not see, so on real takes the bands are lower bounds.",
     "head-movement PartnerConnection (spring-damper on frame length) is a HEURISTIC visualisation, not this estimate.",
     "Segment masses: LBS-argmax regions of the voxelised shaped mesh with uniform density; de Leva (1996) deviations "
     "are logged per dancer (trunk/thigh differ by construction: gluteal mass is skinned to the pelvis).",
@@ -580,6 +739,9 @@ def to_json(res: dict, cfg: PhysicsConfig, meta: dict) -> dict:
                          for i in range(len(t))],  # only where identifiable (robust ~4 sigma interval) or no contact
             "lp_range": [[None if not math.isfinite(p["lo"][i]) else round(float(p["lo"][i]), 1),
                           None if not math.isfinite(p["hi"][i]) else round(float(p["hi"][i]), 1)] for i in range(len(t))],
+            "lp_range_note": "null = unbounded (the bound sat on the partner_cap_n box that only keeps the LP "
+                             "bounded: flag partner_cap_bound) or no data",
+            "cap_bound_fraction": float(np.mean(p["cap_bound"])),
             "status": [PARTNER_STATUS[int(s)] for s in p["status"]],
             "identifiable_fraction": float(np.mean(p["status"] == 1)),
             "heuristic": "head-movement PartnerConnection spring-damper signal: heuristic visualisation only",
@@ -603,7 +765,7 @@ def save(res: dict, out_dir: Path, cfg: PhysicsConfig, meta: dict) -> Path:
     for k, v in res.get("beats", {}).items():
         arrs[f"beats_{k}"] = v
     if "partner" in res:
-        for k in ("lo", "hi", "lo_robust", "hi_robust", "relaxed", "status", "axis", "n_connections"):
+        for k in ("lo", "hi", "lo_robust", "hi_robust", "relaxed", "cap_bound", "status", "axis", "n_connections"):
             arrs[f"partner_{k}"] = res["partner"][k]
     np.savez_compressed(out_dir / "physics.npz", **arrs)
     js = to_json(res, cfg, meta)
@@ -650,13 +812,16 @@ def plot_qa(res: dict, path: Path, title: str = "") -> None:
     ax[3].axhline(0, color="gray", lw=0.6)
     if "partner" in res:
         p = res["partner"]
+        lo_p = np.where(np.isfinite(p["lo"]), p["lo"], -450.0)  # unbounded (cap-bound) bounds drawn at the axis edge
+        hi_p = np.where(np.isfinite(p["hi"]), p["hi"], 450.0)
         okk = p["status"] == 0
-        ax[5].fill_between(t, np.where(okk, p["lo"], np.nan), np.where(okk, p["hi"], np.nan), color="gray", alpha=0.3,
-                           label="LP range (not identifiable)", step="mid")
+        ax[5].fill_between(t, np.where(okk, lo_p, np.nan), np.where(okk, hi_p, np.nan), color="gray", alpha=0.3,
+                           label="LP range (not identifiable; edge = unbounded)", step="mid")
         idn = p["status"] == 1
-        ax[5].fill_between(t, np.where(idn, p["lo"], np.nan), np.where(idn, p["hi"], np.nan), color="tab:purple",
+        ax[5].fill_between(t, np.where(idn, lo_p, np.nan), np.where(idn, hi_p, np.nan), color="tab:purple",
                            alpha=0.7, label="identifiable interval", step="mid")
         ax[5].plot(t, np.where(p["status"] == 3, 0, np.nan), "rx", ms=3, label="inconsistent")
+        ax[5].plot(t, np.where(p["cap_bound"], -430, np.nan), "|", color="tab:orange", ms=4, label="cap-bound")
         ax[5].set_ylim(-450, 450)
     labels = ["COM height (cm); contact L/R rasters", "F_net,y / m g (95% band)", "couple vertical GRF", "balance margin (cm)",
               "L vertical (kg m^2/s)", "partner force on follow (N, + tension)"]
@@ -677,15 +842,34 @@ def load_npz(path: Path) -> dict:
 
 
 def find_beats(work: Path) -> Path | None:
-    for p in (work / "timing" / "beats.json", work / "beats.json", work / "zouk-time-analysis.json"):
+    """Beat grid in REFERENCE seconds, best first: timing/timing.json (the timing stage's refined grid, the one
+    export_unity sends to Unity), timing/beats.json, beats.json, beats/beats.json. zouk-time-analysis.json is never
+    used: per the contract it holds AUDIO-CLIP time (t + time_to_audio)."""
+    tj = work / "timing" / "timing.json"
+    if tj.exists():
+        try:
+            if json.loads(tj.read_text()).get("beats", {}).get("grid"):
+                return tj
+        except (ValueError, AttributeError):
+            pass
+    for p in (work / "timing" / "beats.json", work / "beats.json", work / "beats" / "beats.json"):
         if p.exists():
             return p
     return None
 
 
 def load_beat_times(path: Path) -> np.ndarray:
-    arr = np.asarray(json.loads(Path(path).read_text()), float).reshape(-1, 2)
-    return arr[:, 0]
+    """Beat times (s) from timing.json ({"beats": {"grid": [[t, type, measure, count], ...]}}), a {"grid": ...}
+    dict, or a zouk beats json [[t, type], ...] / [t, ...]."""
+    d = json.loads(Path(path).read_text())
+    if isinstance(d, dict):
+        if "beats" in d and isinstance(d["beats"], dict):
+            d = d["beats"]
+        d = d.get("grid", d.get("beats"))
+        if d is None:
+            raise ValueError(f"{path}: no beat grid (expected beats.grid or grid)")
+    rows = [r[0] if isinstance(r, (list, tuple)) else r for r in d]
+    return np.asarray(rows, float)
 
 
 def run(work: Path, cfg: PhysicsConfig | None = None, beats_path: Path | None = None, masses: dict | None = None,
@@ -696,7 +880,7 @@ def run(work: Path, cfg: PhysicsConfig | None = None, beats_path: Path | None = 
     beats_t = load_beat_times(bp) if bp else None
     res = analyze(npzs, cfg, beats_t, masses, statures)
     out_dir = out_dir or work / "physics"
-    meta = {"take": work.name, "beats": None if bp is None else str(bp), "warnings": []}
+    meta = {"take": work.name, "beats_source": None if bp is None else str(bp), "warnings": []}
     if bp is None:
         meta["warnings"].append("no beats json: beat impulses skipped")
     for role in ROLES:
@@ -733,9 +917,36 @@ def gate_g6(res: dict, tol: float = 0.03) -> dict:
             "max_abs_dev_per_beat": cyc.get("beat_max_abs_dev")}
 
 
-def validate_synthetic(cfg: PhysicsConfig | None = None, noise=((0.01, 1.0),), seeds=(0, 1, 2)) -> dict:
+def _noise_rows(res: dict, ref: dict) -> dict:
+    """Per dancer: F_net,y error vs the clean run, 95 % band coverage of that error, contact fractions, plus the
+    partner status / cap-bound fractions when the LP ran."""
+    out = {}
+    for role in ROLES:
+        e = res[role]["f_net"][:, 1] - ref[role]["f_net"][:, 1]
+        ok = np.isfinite(e)
+        out[role] = {"f_net_y_err_rms_n": float(np.sqrt(np.mean(e[ok] ** 2))),
+                     "f_net_y_band95_median_n": float(np.nanmedian(res[role]["f_net_band"][:, 1])),
+                     "f_net_y_err_in_band": float(np.mean(np.abs(e[ok]) <= res[role]["f_net_band"][ok, 1])),
+                     "contact_fraction": res[role]["info"]["contact_fraction"],
+                     "false_flight_fraction": float(np.mean((res[role]["contact"].sum(1) == 0)
+                                                            & (ref[role]["contact"].sum(1) > 0)))}
+    if "partner" in res:
+        st = res["partner"]["status"]
+        out["partner"] = {"status_fraction": {PARTNER_STATUS[k]: float(np.mean(st == k)) for k in PARTNER_STATUS},
+                          "cap_bound_fraction": float(np.mean(res["partner"]["cap_bound"])),
+                          "median_finite_width_n": float(np.nanmedian(np.where(np.isfinite(res["partner"]["width"]),
+                                                                               res["partner"]["width"], np.nan)))
+                          if np.isfinite(res["partner"]["width"]).any() else None}
+    return out
+
+
+def validate_synthetic(cfg: PhysicsConfig | None = None, noise=((0.01, 1.0),), seeds=(0, 1, 2), windows: bool = True,
+                       window_s: float = 6.0, window_noise=((0.003, 0.5), (0.01, 1.0)), window_seeds=(0, 1)) -> dict:
     """Run on work/synthetic (clean + noisy) and check: masses 60-90 kg, de Leva deviations, COM plausibility,
-    F_net,y per frame averages ~ m g, gate G6 (couple vertical GRF over beat cycles within 3 % of (mA+mB) g)."""
+    F_net,y per frame averages ~ m g, gate G6 (couple vertical GRF over beat cycles within 3 % of (mA+mB) g), per
+    dancer and per noise seed. windows=True repeats it on 6 s slices (the real take's length: 1-2 whole measures
+    for G6) clean and noisy, with the partner LP on every slice (status / cap-bound fractions)."""
+    from . import synthetic as syn
     cfg = cfg or PhysicsConfig()
     work = PACKAGE_ROOT / "work" / "synthetic"
     res = run(work, cfg)
@@ -749,15 +960,8 @@ def validate_synthetic(cfg: PhysicsConfig | None = None, noise=((0.01, 1.0),), s
             rng = np.random.default_rng(100 + s)
             noisy = {role: add_noise(npzs[role], rng, tr, rot) for role in ROLES}
             r = analyze(noisy, cfg, beats_t, partner=(s == seeds[0]))
-            row = {"seed": s, "G6": gate_g6(r), **{k: v for k, v in _checks(r).items() if k != "dancers"}}
-            row["f_net_y_band95_median_n"] = {role: float(np.median(r[role]["f_net_band"][:, 1])) for role in ROLES}
-            row["f_net_y_err_rms_n"] = {role: float(np.sqrt(np.mean((r[role]["f_net"][:, 1] - res[role]["f_net"][:, 1]) ** 2)))
-                                        for role in ROLES}
-            row["f_net_y_err_in_band"] = {role: float(np.mean(np.abs(r[role]["f_net"][:, 1] - res[role]["f_net"][:, 1])
-                                                            <= r[role]["f_net_band"][:, 1])) for role in ROLES}
-            if "partner" in r:
-                row["partner_identifiable_fraction"] = float(np.mean(r["partner"]["status"] == 1))
-                row["partner_median_width_n"] = float(np.nanmedian(r["partner"]["width"]))
+            row = {"seed": s, "G6": gate_g6(r), **{k: v for k, v in _checks(r).items() if k != "dancers"},
+                   "per_dancer": _noise_rows(r, res)}
             if s == seeds[0]:
                 plot_qa(r, work / "physics" / f"qa_physics_noise_{int(tr * 1000)}mm_{rot:g}deg.png",
                         f"synthetic + noise {tr * 1000:.0f} mm / {rot:g} deg")
@@ -765,6 +969,41 @@ def validate_synthetic(cfg: PhysicsConfig | None = None, noise=((0.01, 1.0),), s
         rep[f"noise_{tr * 1000:.0f}mm_{rot:g}deg"] = rows
     gates = [rep["clean"]["G6"]["passed"]] + [r["G6"]["passed"] for k, v in rep.items() if k.startswith("noise")
                                               for r in v]
+    if windows:
+        wrows = []
+        t_all = npzs["lead"]["t"]
+        for t0 in np.arange(0.0, float(t_all[-1]) - window_s + 1e-6, 3.0):
+            w = syn.window(work, float(t0), float(t0) + window_s)
+            ref = analyze(w["npz"], cfg, beats_t, partner=True)
+            wrows.append({"t0": float(t0), "noise": "clean", "seed": None, "G6": gate_g6(ref),
+                          "per_dancer": _noise_rows(ref, ref)})
+            for tr, rot in window_noise:
+                for sd in window_seeds:
+                    rng = np.random.default_rng(1000 + 31 * int(t0) + sd)
+                    noisy = {role: add_noise(w["npz"][role], rng, tr, rot) for role in ROLES}
+                    r = analyze(noisy, cfg, beats_t, partner=True)
+                    wrows.append({"t0": float(t0), "noise": f"{tr * 1000:.0f}mm_{rot:g}deg", "seed": sd,
+                                  "G6": gate_g6(r), "per_dancer": _noise_rows(r, ref)})
+        summ = {}
+        for lev in sorted({x["noise"] for x in wrows}):
+            rr = [x for x in wrows if x["noise"] == lev]
+            g6 = [x["G6"] for x in rr]
+            summ[lev] = {"n": len(rr), "G6_passed": int(sum(g["passed"] for g in g6)),
+                         "n_cycles": [g["n_cycles"] for g in g6],
+                         "worst_cycle_dev": float(np.nanmax([g["max_abs_dev_per_cycle"] or np.nan for g in g6])),
+                         "partner_identifiable_max": float(max(x["per_dancer"]["partner"]["status_fraction"]
+                                                               ["identifiable"] for x in rr)),
+                         "partner_cap_bound_mean": float(np.mean([x["per_dancer"]["partner"]["cap_bound_fraction"]
+                                                                  for x in rr]))}
+            for role in ROLES:
+                summ[lev][role] = {
+                    "f_net_y_err_rms_n": [round(x["per_dancer"][role]["f_net_y_err_rms_n"], 1) for x in rr],
+                    "f_net_y_err_in_band_mean": float(np.mean([x["per_dancer"][role]["f_net_y_err_in_band"]
+                                                               for x in rr])),
+                    "false_flight_fraction_mean": float(np.mean([x["per_dancer"][role]["false_flight_fraction"]
+                                                                 for x in rr]))}
+        rep["windows_6s"] = {"window_s": window_s, "rows": wrows, "summary": summ}
+        gates += [x["G6"]["passed"] for x in wrows]
     rep["G6_passed_all"] = bool(all(gates))
     (work / "physics" / "validation.json").write_text(json.dumps(_clean(rep), indent=1))
     return rep

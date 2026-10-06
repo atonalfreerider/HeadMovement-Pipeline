@@ -210,6 +210,23 @@ def test_partner_not_identifiable_in_double_support():
     assert np.all(p["width"] > 100.0)  # statically indeterminate: wide
 
 
+def test_partner_cap_bound_flight_is_never_identifiable():
+    """Reviewer repro: a (false) flight frame whose F_net needs more partner force than the LP's box cap gets a
+    narrow interval from the cap alone. It must come out cap-bound and 'inconsistent', with unbounded lp_range."""
+    res = _scene(True, tension=50.0)
+    res["follow"]["f_net"][:, 1] = 1000.0
+    res["follow"]["f_net_band"][:] = 300.0  # noisy bands: feasible only with the partner force at the cap
+    res["follow"]["dL_band"][:] = 200.0
+    cfg = ph.PhysicsConfig()
+    p = ph.partner_interval(res, cfg)
+    assert np.all(p["status"] != 1), p["status"]
+    assert np.all(p["cap_bound"]) and np.all(p["status"] == 3)
+    assert not np.all(np.isfinite(np.stack([p["lo"], p["hi"]])))
+    # the honest scene stays identifiable and is not cap-bound
+    q = ph.partner_interval(_scene(True, tension=50.0), cfg)
+    assert np.all(q["status"] == 1) and not q["cap_bound"].any()
+
+
 def test_partner_no_contact():
     res = _scene(True, tension=0.0)
     res["follow"]["joints"][:, [20] + list(range(25, 40))] = [3.0, 1.2, 0.0]
@@ -233,3 +250,74 @@ def test_gate_g6_synthetic():
         inner = slice(15, -15)
         assert abs(np.mean(r["f_net"][inner, 1]) / (r["mass"] * ph.G) - 1) < 0.01
         assert r["info"]["fk_max_err_mm"] < 0.01
+
+
+# ----------------------------------------------------------------------------------------------- robustness / io
+
+@needs_syn
+def test_nan_frames_are_masked_not_propagated():
+    """One NaN transl frame and a 0.4 s NaN pose run: everything else stays finite, the frames are flagged, and
+    contacts are still found (before: 0/720 finite f_net, contact.any() False, silent)."""
+    d = ph.load_npz(SYN / "smplx" / "lead.npz")
+    d["transl"] = d["transl"].copy()
+    d["transl"][300] = np.nan
+    d["body_pose"] = d["body_pose"].copy()
+    d["body_pose"][500:512, 3] = np.nan
+    cfg = ph.PhysicsConfig(n_boot=20)
+    r = ph.analyze_dancer(d, cfg)
+    f = r["f_net"][:, 1]
+    assert np.isfinite(f).sum() >= len(f) - 12
+    assert np.all(np.isnan(f[500:512])) and np.isfinite(f[300])
+    assert r["flags"][300] & ph.FLAG_BITS["interpolated"] and r["flags"][505] & ph.FLAG_BITS["gap"]
+    assert r["contact"].any(axis=0).all() and r["info"]["n_bad_frames"] == 13
+    clean = ph.analyze_dancer(ph.load_npz(SYN / "smplx" / "lead.npz"), cfg)
+    far = np.r_[0:280, 320:480, 540:len(f)]
+    assert np.nanmax(np.abs(f[far] - clean["f_net"][far, 1])) < 5.0  # far from the bad frames: unchanged
+    d["betas"] = np.full_like(d["betas"], np.nan)
+    with pytest.raises(ValueError):
+        ph.analyze_dancer(d, cfg)
+
+
+def test_beats_sources(tmp_path):
+    """timing/timing.json (dict, refined grid) is preferred and parsed; [[t, type]] still works; the audio-clock
+    zouk-time-analysis.json is never used; physics.json records the beats file as beats_source."""
+    (tmp_path / "zouk-time-analysis.json").write_text("[[100.0, 1]]")
+    assert ph.find_beats(tmp_path) is None
+    (tmp_path / "beats.json").write_text("[[1.0, 1], [1.5, 3]]")
+    assert ph.find_beats(tmp_path) == tmp_path / "beats.json"
+    assert np.allclose(ph.load_beat_times(tmp_path / "beats.json"), [1.0, 1.5])
+    (tmp_path / "timing").mkdir()
+    (tmp_path / "timing" / "timing.json").write_text(
+        '{"beats": {"grid": [[1.01, 1, 0, 0], [1.49, 3, 0, 1]], "grid_columns": ["t", "type", "measure", "count"]}}')
+    assert ph.find_beats(tmp_path) == tmp_path / "timing" / "timing.json"
+    assert np.allclose(ph.load_beat_times(ph.find_beats(tmp_path)), [1.01, 1.49])
+
+
+@needs_syn
+def test_short_window_run_writes_beats_source(tmp_path):
+    """A 6 s window (like the real take) through run(): physics.json strict-parses, records beats_source (no longer
+    overwritten by the beats list), and G6 on the 1-2 whole measures inside stays within 3 %."""
+    import json
+    from dancecap import synthetic as syn
+    w = syn.window(SYN, 6.0, 12.0)
+    res = ph.run(SYN, ph.PhysicsConfig(n_boot=20), beats_path=SYN / "beats.json", out_dir=tmp_path, npzs=w["npz"],
+                 plot=False)
+    js = json.loads((tmp_path / "physics.json").read_text())
+    assert js["beats_source"] == str(SYN / "beats.json") and isinstance(js["beats"], list) and js["beats"]
+    g6 = ph.gate_g6(res)
+    assert g6["n_cycles"] >= 1 and g6["passed"], g6
+
+
+REAL = Path(__file__).resolve().parents[1] / "work" / "larissa_kadu"
+
+
+@pytest.mark.skipif(not (REAL / "smplx" / "lead.npz").exists(), reason="needs the larissa_kadu MAMMA fit")
+def test_mamma_floor_contact_scores_feet():
+    """MAMMA floor_contact (T, 512) maps onto the two feet; it is high in stance and drops in the lead's kick."""
+    d = ph.load_npz(REAL / "smplx" / "lead.npz")
+    sc = ph.mamma_foot_contact(d, pb.load_body(d))
+    if sc is None:
+        pytest.skip("mamma verts_512 not available")
+    assert sc.shape == (len(d["t"]), 2) and np.median(sc) > 0.5
+    kick = (d["t"] > 58.7) & (d["t"] < 58.95)
+    assert sc[kick, 1].min() < 0.5  # right foot in the air

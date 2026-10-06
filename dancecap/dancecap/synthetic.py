@@ -3,9 +3,13 @@
 Two SMPL-X bodies (neutral model, real FK) doing a zouk-ish basic at 88 BPM in the Y-up world frame:
 alternating steps that land exactly on the beat, the couple slowly rotating with an elastic partner gap,
 the follow's head/torso circling (head movement), and the follow stepping 90 ms LATE in measures 3-4 of
-every 8. Ground truth (beats, every touchdown time per foot, which steps are late) is written next to it.
+every 8 (eased in/out over one swing, see _late_shift). Ground truth (beats, every touchdown time per foot, which
+steps are late) is written next to it.
 
     python -m dancecap synthetic           -> work/synthetic/smplx/{lead,follow}.npz, beats.json, truth.json, audio.wav
+
+window() cuts a short (e.g. 6 s, like the real take) slice of the written take, optionally with Gaussian joint
+noise and/or SMPL-X parameter noise, for the timing / physics validations.
 """
 from __future__ import annotations
 
@@ -27,9 +31,34 @@ def _set(pose, joint, axis, angle):
     pose[:, (joint - 1) * 3 + axis] += angle
 
 
-def _late_shift(t: np.ndarray, role: str) -> np.ndarray:
-    m = np.floor(t / MEASURE).astype(int) % 8
-    return np.where((role == "follow") & ((m == 2) | (m == 3)), LATE_S, 0.0)
+LATE_MEASURES = (2, 3)  # measure index mod 8 in which the follow steps late
+RAMP = True  # False = the original step-function shift (re-landing / one-frame drop artefacts at its edges)
+
+
+def _smoothstep(x: np.ndarray) -> np.ndarray:
+    x = np.clip(x, 0.0, 1.0)
+    return x * x * (3 - 2 * x)
+
+
+def _late_shift(t: np.ndarray, role: str, ramp: bool | None = None) -> np.ndarray:
+    """Time warp of the follow's step cycle: tt = t - shift(t). shift = LATE_S in measures 2-3 (mod 8).
+
+    ramp=True (default) eases the shift in during the swing that lands on the first late beat (the swing is
+    stretched by LATE_S) and out during the swing that lands on the first on-time beat (compressed), so every
+    touchdown is a normal soft landing and the motion is C1. The step function (ramp=False) made the foot land,
+    lift 1.4 cm and re-land at the start of a late block and drop to the floor within one frame at its end."""
+    t = np.asarray(t, float)
+    if role != "follow":
+        return np.zeros_like(t)
+    ramp = RAMP if ramp is None else ramp
+    if not ramp:
+        m = np.floor(t / MEASURE).astype(int) % 8
+        return np.where(np.isin(m, LATE_MEASURES), LATE_S, 0.0)
+    a, b = LATE_MEASURES[0] * MEASURE, (LATE_MEASURES[-1] + 1) * MEASURE  # late block [a, b) of each 8-measure cycle
+    u = t % (8 * MEASURE)
+    up = _smoothstep((u - (a - BEAT)) / BEAT)                              # over the swing landing at a
+    down = _smoothstep((u - (b - BEAT + LATE_S)) / (BEAT - LATE_S))       # over the swing landing at b
+    return LATE_S * np.where(u < a, up, 1.0 - down)
 
 
 def body_pose(t: np.ndarray, role: str) -> np.ndarray:
@@ -58,14 +87,18 @@ def body_pose(t: np.ndarray, role: str) -> np.ndarray:
 
 
 def touchdowns(duration: float, role: str) -> list[dict]:
-    """Analytic touchdown times: a foot lands when its lift returns to 0 (every other beat per foot)."""
+    """Analytic touchdown times: a foot lands when its warped phase tt = t - shift(t) reaches a beat (every other
+    beat per foot); t - shift(t) is strictly increasing, so the landing time is its inverse at the beat."""
+    tf = np.arange(0.0, duration + 2.0, 1e-4)
+    warp = tf - _late_shift(tf, role)
     out = []
     k = 1
     while k * BEAT < duration + 1:
         nominal = k * BEAT
         foot = "left" if k % 2 == 1 else "right"  # left lifts during [2n, 2n+1) beats, lands at odd beats
-        late = float(_late_shift(np.array([nominal]), role)[0])
-        t = nominal + late
+        t = float(np.interp(nominal, warp, tf))
+        late = round(t - nominal, 6)
+        late = 0.0 if abs(late) < 1e-5 else late
         if t < duration:
             out.append({"t": round(t, 6), "foot": foot, "nominal_beat_t": round(nominal, 6), "late_s": late})
         k += 1
@@ -122,8 +155,10 @@ def make(out_dir: Path, seconds: float = 24.0, fps: float = 30.0, smplx_model: P
         "bpm": BPM, "measure_s": MEASURE, "late_s": LATE_S, "fps": fps, "duration": seconds,
         "late_measures_mod8": [2, 3],
         "touchdowns": {r: touchdowns(seconds, r) for r in ("lead", "follow")},
+        "late_ramp": bool(RAMP),
         "notes": "lead steps land exactly on every beat; follow lands 90 ms late in measures 3-4 of every 8 "
-                 "(0-based measure index 2,3 mod 8). World: Y-up, metres, floor y=0.",
+                 "(0-based measure index 2,3 mod 8), the shift eased in/out over one swing. World: Y-up, metres, "
+                 "floor y=0.",
     }
     (out_dir / "truth.json").write_text(json.dumps(truth, indent=1))
     from atlas_bridge.demo import _write_groove  # noqa: E402
@@ -131,6 +166,42 @@ def make(out_dir: Path, seconds: float = 24.0, fps: float = 30.0, smplx_model: P
     d.BPM = BPM
     _write_groove(out_dir / "audio.wav", seconds + 1.0)
     return out_dir
+
+
+def window(work: Path | None = None, t0: float = 0.0, t1: float = 6.0, joint_noise_m: float = 0.0,
+           transl_noise_m: float = 0.0, rot_noise_deg: float = 0.0, seed: int = 0) -> dict:
+    """Short slice [t0, t1) of a written synthetic take (default work/synthetic), optionally noisy.
+
+    Returns {"npz": {role: dict of arrays (contract keys)}, "truth": truth.json with the touchdowns inside the
+    window, "beats": the full [[t, type]] grid (unchanged, so measure indices stay those of the take)}.
+    joint_noise_m: iid Gaussian noise on `joints` only (timing reads joints); transl_noise_m / rot_noise_deg:
+    noise on transl and every body axis-angle (physics reads the parameters; `joints` is then dropped as stale)."""
+    work = Path(work) if work is not None else PACKAGE_ROOT / "work" / "synthetic"
+    rng = np.random.default_rng(seed)
+    truth = json.loads((work / "truth.json").read_text())
+    out = {"npz": {}, "beats": json.loads((work / "beats.json").read_text()), "t0": t0, "t1": t1}
+    for role in ("lead", "follow"):
+        d = np.load(work / "smplx" / f"{role}.npz")
+        t = np.asarray(d["t"], float)
+        k = (t >= t0) & (t < t1)
+        r = {key: (d[key][k] if d[key].ndim and len(d[key]) == len(t) else d[key]) for key in d.files}
+        if joint_noise_m > 0:
+            r["joints"] = r["joints"] + rng.normal(0, joint_noise_m, r["joints"].shape)
+        if transl_noise_m > 0 or rot_noise_deg > 0:
+            from scipy.spatial.transform import Rotation
+            n = int(k.sum())
+            r["transl"] = r["transl"] + rng.normal(0, transl_noise_m, (n, 3))
+            for key, nj in (("global_orient", 1), ("body_pose", 21)):
+                rv = np.asarray(r[key], float).reshape(n * nj, 3)
+                noise = Rotation.from_rotvec(rng.normal(0, math.radians(rot_noise_deg), (n * nj, 3)))
+                r[key] = (noise * Rotation.from_rotvec(rv)).as_rotvec().reshape(n, 3 * nj)
+            r.pop("joints", None)
+        out["npz"][role] = r
+    truth = dict(truth)
+    truth["touchdowns"] = {r: [e for e in truth["touchdowns"][r] if t0 <= e["t"] < t1] for r in truth["touchdowns"]}
+    truth["window"] = [t0, t1]
+    out["truth"] = truth
+    return out
 
 
 def main():

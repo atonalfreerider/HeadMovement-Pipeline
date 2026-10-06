@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -195,8 +196,57 @@ def test_surrogate_chance_and_floor():
     on = g.t[(g.t > 2) & (g.t < 55)][::2]
     bi, per = T.assign_beats(on, g, cfg)
     s2 = T.surrogate(on, g, cfg, rng, {"hit_rate": 1.0, "V": 1.0})
-    assert s2["hit_rate_p"] >= s2["p_floor_isochronous"] * 0.8  # isochronous: p cannot beat the floor
+    assert s2["shift_hit_rate_p"] >= s2["p_floor_isochronous"] * 0.8  # isochronous: the shift test cannot beat the floor
     assert abs(s2["p_floor_isochronous"] - 0.1 / (60 / 88 / 2)) < 1e-6
+    assert s2["hit_rate_p"] < 0.01 and s2["V_p"] < 0.01  # ... the jitter null rejects chance for a precise dancer
+
+
+def test_jitter_null_short_window_power_and_size():
+    """6 s at 88 BPM, every eighth allowed: 8 perfect on-beat steps reject chance (jitter null, V-test, Rayleigh);
+    random event trains are rejected at about the nominal 5 % rate (the test is not anti-conservative)."""
+    cfg = T.TimingConfig(n_surrogates=1000)
+    g = _grid(88.0, 30.0)
+    rng = np.random.default_rng(3)
+    on = g.t[(g.t > 10) & (g.t < 16)][::2][:8] + rng.normal(0, 0.012, 8)
+    bi, per = T.assign_beats(on, g, cfg)
+    a = on - g.t[bi]
+    st = T.circular(a, per)
+    obs = {"hit_rate": float(np.mean(np.abs(a) <= cfg.hit_tol_s)), "V": st["V"]}
+    s = T.surrogate(on, g, cfg, rng, obs)
+    assert s["hit_rate_p"] < 0.01 and s["V_p"] < 0.01 and st["v_test_p"] < 0.01 and st["rayleigh_p"] < 0.01
+    assert s["shift_hit_rate_p"] > 0.05  # the circular shift has no power here (floor 0.29)
+    rej = []
+    for k in range(60):
+        ev = np.sort(rng.uniform(10, 16, 8))
+        bi, per = T.assign_beats(ev, g, cfg)
+        a = ev - g.t[bi]
+        o = {"hit_rate": float(np.mean(np.abs(a) <= cfg.hit_tol_s)), "V": T.circular(a, per)["V"]}
+        rej.append(T.surrogate(ev, g, T.TimingConfig(n_surrogates=400), rng, o)["V_p"] < 0.05)
+    assert np.mean(rej) < 0.15
+
+
+def test_group_contrast_two_sided_control():
+    """An EARLY control group is not 'no effect': the two-sided p catches it, and late_ok fails."""
+    rng = np.random.default_rng(0)
+    cfg = T.TimingConfig(n_perm=3000)
+
+    def evs(shift_in_group):
+        out = []
+        for m in range(6):
+            for k in range(4):
+                a = rng.normal(0, 0.01) + (shift_in_group if m in (2, 3) else 0.0)
+                out.append({"async_ms": 1000 * a, "measure": m, "_async_mc": a + rng.normal(0, 0.005, 50)})
+        return out
+
+    late, early = evs(0.08), evs(-0.08)
+    gl = T.group_contrast(late, lambda m: m in (2, 3), cfg, rng)
+    ge = T.group_contrast(early, lambda m: m in (2, 3), cfg, rng)
+    assert gl["perm_p_greater"] < 0.01 and gl["perm_p_two_sided"] < 0.01
+    assert ge["perm_p_greater"] > 0.9 and ge["perm_p_two_sided"] < 0.01
+    assert T.late_ok({"follow": {"late_measures_vs_rest": gl}, "lead": {"late_measures_vs_rest": ge}}) is False
+    null = T.group_contrast(evs(0.0), lambda m: m in (2, 3), cfg, rng)
+    expect = null["perm_p_two_sided"] >= 0.05 and null["diff_ci95_ms"][0] <= 0 <= null["diff_ci95_ms"][1]
+    assert T.late_ok({"follow": {"late_measures_vs_rest": gl}, "lead": {"late_measures_vs_rest": null}}) is expect
 
 
 def test_measure_effects_flags_late_measure():
@@ -253,14 +303,94 @@ def test_validation_report_contract():
     """When the synthetic validation has been run, check timing.json / validation.json against the contract."""
     p = SYN / "timing" / "timing.json"
     if not p.exists():
-        return
+        pytest.skip("run: python -m dancecap timing synthetic --validate")
     d = json.loads(p.read_text())
     assert {"beats", "footsteps", "accents", "asynchrony", "absolute_timing", "notes", "kinematics"} <= set(d)
     for role in T.ROLES:
         for e in d["footsteps"][role]:
             assert e["sigma"] is None or e["sigma"] > 0
         assert "surrogate" in d["asynchrony"][role]["footsteps"]
+    k = np.load(SYN / "timing" / "kinematics.npz")
+    for role in T.ROLES:
+        assert k[f"{role}_jerk"].shape == k[f"{role}_pos"].shape and k[f"{role}_jerk_reliable"].shape == (55,)
+        assert float(k[f"{role}_jerk_cutoff_hz"]) > 0 and k[f"{role}_jerk_noise_sd"].shape == k[f"{role}_t"].shape
     v = SYN / "timing" / "validation.json"
     if v.exists():
         g = json.loads(v.read_text())["gate"]
-        assert g["clean"]["median_abs_err_ms"] <= 20
+        for role in T.ROLES:
+            assert g["clean"]["per_dancer"][role]["median_abs_err_ms"] <= 20
+
+
+def _noisy_sine_joints(noise, seed=0, n=180):
+    t = np.arange(n) / 30.0
+    J = np.zeros((n, 55, 3))
+    for j in range(55):
+        J[:, j, 0] = 0.15 * np.sin(2 * np.pi * 1.2 * t + j)
+        J[:, j, 1] = 0.5 + 0.05 * np.sin(2 * np.pi * 2.3 * t + 2 * j)
+    return t, J + np.random.default_rng(seed).normal(0, noise, J.shape)
+
+
+def test_derivative_cutoff_follows_noise():
+    """Per joint: clean -> reliable acc / jerk; 1 cm noise -> lower cutoffs; a near-still joint gets the lowest
+    cutoff, is flagged unreliable and has no spurious jerk peaks; a moving joint's jerk error stays bounded."""
+    cfg = T.TimingConfig()
+    idx = list(cfg.accent_joints.values())
+    t, J = _noisy_sine_joints(0.0)
+    J[:, idx[1]] = J[0, idx[1]]  # a still joint
+    c0 = T.choose_cutoffs(t, J, idx, 0.0005, cfg)
+    assert c0["acc"]["reliable"][0] and c0["jerk"]["reliable"][0] and not c0["jerk"]["reliable"][1]
+    t, Jn = _noisy_sine_joints(0.01)
+    Jn[:, idx[1]] = J[:, idx[1]] + np.random.default_rng(5).normal(0, 0.01, (len(t), 3))
+    c1 = T.choose_cutoffs(t, Jn, idx, 0.01, cfg)
+    assert c1["jerk"]["cutoff_hz"][0] < c0["jerk"]["cutoff_hz"][0] and c1["acc"]["cutoff_hz"][0] < c0["acc"]["cutoff_hz"][0]
+    assert c1["jerk"]["cutoff_hz"][1] == min(c1["jerk"]["cutoff_hz"]) and not c1["jerk"]["reliable"][1]
+    k_new = T.spline_kinematics(t, Jn, 0.01, idx)
+    T.apply_cutoffs(t, Jn, c1, (k_new,))
+    sl = slice(20, -20)
+    still_new = np.linalg.norm(k_new.jerk[sl, idx[1]], axis=-1).max()
+    assert still_new < 10.0, still_new  # true jerk 0; noise SD at the lowest cutoff is a few m/s^3
+    true_jerk = -0.15 * (2 * np.pi * 1.2) ** 3 * np.cos(2 * np.pi * 1.2 * t[sl] + idx[0])
+    e_new = np.sqrt(np.mean((k_new.jerk[sl, idx[0], 0] - true_jerk) ** 2))
+    assert e_new < 0.5 * np.abs(true_jerk).max(), e_new
+
+
+def test_resolve_sync_keeps_explicit_and_never_mutates(tmp_path):
+    (tmp_path / "sync").mkdir()
+    (tmp_path / "sync" / "offsets.json").write_text(json.dumps({"offsets": {"01": {"delta_s": 0.0, "sd_s": 0.003},
+                                                                            "02": {"delta_s": 0.01, "sd_s": 0.004}}}))
+    cfg = T.TimingConfig()
+    r = T.resolve_sync(T.TimingConfig(**dict(cfg.__dict__)), tmp_path)
+    assert r.n_cams == 2 and abs(r.sync_sigma_s - np.sqrt((0.003 ** 2 + 0.004 ** 2) / 2)) < 1e-9
+    assert cfg.n_cams is None  # the original is untouched
+    r2 = T.resolve_sync(T.TimingConfig(n_cams=8, sync_sigma_s=0.005), tmp_path)
+    assert r2.n_cams == 8 and r2.sync_sigma_s == 0.005 and r2.sync_source == "config"
+
+
+def test_find_beats_never_uses_audio_clock_file(tmp_path):
+    (tmp_path / "zouk-time-analysis.json").write_text("[[0.5, 1]]")
+    with pytest.raises(FileNotFoundError):
+        T.find_beats(tmp_path)
+
+
+@pytest.mark.skipif(not (SYN / "smplx" / "lead.npz").exists(), reason="run: python -m dancecap synthetic")
+def test_short_noisy_windows_per_dancer():
+    """6 s windows (like the real take) with 1 cm joint noise, several seeds: per dancer median |error| and recall,
+    and a small MC whose detect_rate stays near 1 (draws centred on the raw data, shift-tolerant matching)."""
+    from dancecap import synthetic as S
+    meds, recs = {r: [] for r in T.ROLES}, {r: [] for r in T.ROLES}
+    for s0, seed in ((3.0, 0), (9.0, 1), (15.0, 2)):
+        w = S.window(SYN, s0, s0 + 6.0, joint_noise_m=0.01, seed=seed)
+        cfg = T.TimingConfig(mc_draws=10 if seed == 0 else 0, workers=1, n_surrogates=200, n_perm=500)
+        res = T.analyze({r: w["npz"][r]["t"] for r in T.ROLES}, {r: w["npz"][r]["joints"] for r in T.ROLES},
+                        T._grid_from(w["beats"]), cfg)
+        sc = T.score_touchdowns(res, w["truth"], span=(s0, s0 + 6.0))
+        for r in T.ROLES:
+            meds[r].append(sc[r]["median_abs_err_ms"])
+            recs[r].append(sc[r]["recall"])
+            if seed == 0:
+                rate = np.median([e["detect_rate"] for e in res["footsteps"][r]])
+                assert rate >= 0.8, (r, rate)
+                assert all(np.isfinite(e["sigma"]) and 0 < e["sigma"] < 0.08 for e in res["footsteps"][r])
+    for r in T.ROLES:
+        assert np.median(meds[r]) <= 25 and max(meds[r]) <= 40, (r, meds[r])
+        assert min(recs[r]) >= 0.8, (r, recs[r])
