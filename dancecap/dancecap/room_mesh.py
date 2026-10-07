@@ -423,12 +423,14 @@ def write_obj_parts(path: Path, parts: list[dict]) -> None:
             off += len(p["V"])
 
 
-def build(work: Path, splat, views, geo: dict, cfg, log=print) -> dict:
-    """Quest mesh = explicit floor (plane grid + orthographic floor texture) + TSDF of everything above the floor."""
+def build(work: Path, splat, views, geo: dict, cfg, log=print, out: Path | None = None) -> dict:
+    """Quest mesh = explicit floor (plane grid + orthographic floor texture) + TSDF of everything above the floor.
+    work = where the views' images live (the bundle dir), out = output dir (default work/room)."""
     import open3d as o3d
 
     from .room import load_view
-    out = work / "room"
+    out = Path(out) if out is not None else work / "room"
+    (out / "cache").mkdir(parents=True, exist_ok=True)
     t0 = time.time()
     tr = [v for v in views if v.split == "train"]
     renders = render_views(splat, tr)

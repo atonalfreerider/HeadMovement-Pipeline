@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -241,3 +242,160 @@ def test_outlier_frames_are_detected_and_refilled_by_interpolation():
     p2, t2 = md._interpolate_frames(noisy_pose, noisy_t, bad)
     assert np.allclose(t2, transl) and np.allclose(p2[:, 3:6], pose[:, 3:6], atol=1e-9)
     assert np.allclose(Rotation.from_rotvec(p2[:, :3]).magnitude(), 0)
+
+
+def test_outlier_frames_catch_partial_blowups_and_their_neighbours():
+    reproj = np.full(40, 1.9)
+    reproj[10] = 12.4  # partial blow-up (seed-5 frame 53 in the review): 6.5x the median, missed by 25 px / 8x
+    reproj[[20, 21]] = [300.0, 6.5]  # catastrophic frame + a neighbour at 3.4x the median
+    reproj[30] = 6.0  # isolated 3.2x frame: suspect, reported, not repaired
+    bad, suspect = md.outlier_frames(reproj, return_suspect=True)
+    assert np.flatnonzero(bad).tolist() == [10, 20, 21]
+    assert np.flatnonzero(suspect & ~bad).tolist() == [30]
+
+
+def test_resample_halving_is_per_person():
+    t = 0.01 + np.arange(30) / 30.0
+    lm, vis, box = _linear_track(t)
+    grid = md.master_grid(0.05, 0.9)
+    both = md.resample_landmarks(t, lm, vis, box, grid, 1 / 30.0, extra_scale=np.array([2.0, 1.0]))
+    one = md.resample_landmarks(t, lm, vis, box, grid, 1 / 30.0, extra_scale=1.0)
+    two = md.resample_landmarks(t, lm, vis, box, grid, 1 / 30.0, extra_scale=2.0)
+    assert np.allclose(both["landmarks"][:, 0], two["landmarks"][:, 0])
+    assert np.allclose(both["landmarks"][:, 1], one["landmarks"][:, 1])
+    # ma_3d's rule on what it loads: smallest crop sigma > 15 px -> halved
+    lm2 = lm.copy()
+    lm2[:, 1, :, 2] = md.sigma_px_to_logvar(np.full(lm.shape[0:1] + lm.shape[2:3], 30.0), box[:, 1:2] * 0 + 512)
+    assert md._ma3d_halves(lm2, vis, 1) and not md._ma3d_halves(lm, vis, 0)
+
+
+def test_nearest_index_picks_the_closer_frame():
+    t_src = np.array([0.0, 1 / 30, 2 / 30, 3 / 30])
+    q = np.array([-0.01, 0.010, 0.020, 0.048, 0.09, 0.5])
+    assert md.nearest_index(t_src, q).tolist() == [0, 0, 1, 1, 3, 3]
+
+
+def test_link_dir_is_recreated_when_it_points_elsewhere(tmp_path):
+    a, b = tmp_path / "a", tmp_path / "b"
+    for d in (a, b):
+        d.mkdir()
+        (d / "mask_0000_01.png").write_bytes(d.name.encode())
+    link = tmp_path / "stage" / "masks"
+    md.link_dir(link, a)
+    assert (link / "mask_0000_01.png").read_bytes() == b"a"
+    assert md.link_dir(link, a).endswith("(current)")
+    md.link_dir(link, b)  # e.g. masks/ from an earlier run, now body/
+    assert (link / "mask_0000_01.png").read_bytes() == b"b"
+    assert (a / "mask_0000_01.png").exists()  # removing a link never touches its old target
+
+
+def _fake_take(tmp_path, cams=("01", "02"), F=6, world=True):
+    work = tmp_path / "work"
+    for cam in cams:
+        (work / "frames" / cam).mkdir(parents=True)
+        (work / "frames" / cam / "frames.json").write_text(json.dumps(
+            {"width": 100, "height": 200, "frames": [{"file": f"{i:06d}.jpg", "t": i / 30} for i in range(F)]}))
+        body = work / "dancers" / cam / "body"
+        body.mkdir(parents=True)
+        import cv2
+        m = np.zeros((200, 100), np.uint8)
+        m[50:150, 20:60] = 255
+        for i in range(F):
+            for pid in (1, 2):
+                cv2.imwrite(str(body / f"mask_{i:04d}_{pid:02d}.png"), m)
+        (work / "cameras").mkdir(exist_ok=True)
+        np.savez(work / "cameras" / f"{cam}.npz", t=np.arange(F) / 30, K=np.tile(np.eye(3), (F, 1, 1)),
+                 R=np.tile(np.eye(3), (F, 1, 1)), tvec=np.zeros((F, 3)), ok=np.ones(F, bool))
+    if world:
+        (work / "cameras" / "world_from_sfm.json").write_text(json.dumps({"s": 1.0, "R": np.eye(3).tolist(),
+                                                                         "t": [0, 0, 0]}))
+    return work
+
+
+def test_world_frame_is_required_unless_explicitly_allowed(tmp_path):
+    work = _fake_take(tmp_path, world=False)
+    with pytest.raises(SystemExit):
+        md.load_tracks(work)
+    assert set(md.load_tracks(work, allow_sfm_frame=True)) == {"01", "02"}
+
+
+def test_ma2d_cache_is_invalidated_when_masks_change(tmp_path, monkeypatch):
+    import os
+    import time as _time
+    work = _fake_take(tmp_path)
+    calls = []
+
+    def fake_run(cmd, cwd, log, label):
+        cams = cmd[cmd.index("--cam_names") + 1:cmd.index("--mask_path")]
+        out = Path(cmd[cmd.index("--out_folder") + 1])
+        for c in cams:
+            np.savez(out / f"{c}.npz", landmarks=np.zeros((6, 2, 512, 3), np.float32))
+        calls.append(list(cams))
+        return {"seconds": 0, "gpu_used_peak_mib": 0}
+
+    monkeypatch.setattr(md, "_run_logged", fake_run)
+    out = work / "mamma" / "ma_2d_native"
+    assert set(md.run_ma2d(work, ["01", "02"], out).values()) == {"computed"}
+    assert set(md.run_ma2d(work, ["01", "02"], out).values()) == {"cached"}
+    m = work / "dancers" / "02" / "body" / "mask_0003_02.png"
+    st = m.stat()
+    os.utime(m, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))  # dancers stage re-ran
+    st_ = md.run_ma2d(work, ["01", "02"], out)
+    assert st_ == {"01": "cached", "02": "computed"} and calls[-1] == ["02"]
+    assert md.run_ma2d(work, ["01"], out, force=True) == {"01": "computed"}
+    assert _time is not None
+
+
+def test_dancecap_config_adds_a_light_temporal_term_to_the_second_run(tmp_path):
+    yaml = pytest.importorskip("yaml")
+    if not (MAMMA / "optimization" / md.MA3D_CONFIG).exists():
+        pytest.skip("no mamma-turing worktree")
+    p = md.write_ma3d_config(tmp_path / "cfg.yaml")
+    cfg = yaml.safe_load(p.read_text())
+    base = yaml.safe_load((MAMMA / "optimization" / md.MA3D_CONFIG).read_text())
+    l2 = cfg["optim"]["second_run"]["losses"]
+    assert l2["angular_acc_loss"]["weight"] == 0.0005 and l2["acceleration_loss"]["weight"] == 0.0002
+    assert l2["reproj_loss"] == base["optim"]["second_run"]["losses"]["reproj_loss"]
+    assert cfg["optim"]["third_run"] == base["optim"]["third_run"]
+    assert l2["angular_acc_loss"]["weight"] < base["optim"]["third_run"]["losses"]["angular_acc_loss"]["weight"]
+
+
+def _fit(cams, shared_lead, shared_follow, held=None):
+    res = {}
+    for c in ("01", "02", "03", "05"):
+        if c in cams:
+            res[c] = {"lead": {"median_px": shared_lead}, "follow": {"median_px": shared_follow}}
+        else:
+            res[c] = {"lead": {"median_px": held}, "follow": {"median_px": held}}
+    return {"cams": cams, "residuals": res}
+
+
+def test_choose_fit_prefers_more_cameras_unless_they_conflict():
+    c8, c7 = ["01", "02", "03", "05"], ["01", "02", "03"]
+    tag, why = md.choose_fit({"c8": _fit(c8, 10.0, 11.0), "c7": _fit(c7, 9.9, 10.8, held=14.0)})
+    assert tag == "c8", why
+    tag, why = md.choose_fit({"c8": _fit(c8, 13.0, 11.0), "c7": _fit(c7, 10.0, 10.8, held=14.0)})
+    assert tag == "c7" and "worsens" in why[0]
+    tag, why = md.choose_fit({"c8": _fit(c8, 10.0, 11.0), "c7": _fit(c7, 9.9, 10.8, held=45.0)})
+    assert tag == "c7" and "held-out" in why[0]
+
+
+@pytest.mark.skipif(not (MAMMA / "optimization" / "run_ma_3d.py").exists(), reason="no mamma-turing worktree")
+def test_ma3d_fps_from_global_npz_is_opt_in():
+    src = (MAMMA / "optimization" / "run_ma_3d.py").read_text(encoding="utf-8")
+    start = src.index("def _apply_turing_options")
+    end = src.index("\ndef ", start + 10)
+    ns: dict = {"np": np}
+    exec(compile(src[start:end], "run_ma_3d._apply_turing_options", "exec"), ns)
+    f = ns["_apply_turing_options"]
+
+    class Meta:
+        files = ["fps"]
+
+        def __getitem__(self, k):
+            return np.array(30)
+
+    assert f({}, Meta()).get("fps") is None  # upstream behaviour: no silent dt change
+    assert f({"fps_from_metadata": True}, Meta())["fps"] == 30.0
+    import types
+    assert f({}, Meta(), types.SimpleNamespace(fps=25.0))["fps"] == 25.0

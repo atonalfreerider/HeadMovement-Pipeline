@@ -25,7 +25,13 @@ def amp_dtype():
 
 @contextlib.contextmanager
 def exclusive(label: str, timeout_s: float = 6 * 3600, poll_s: float = 5.0):
-    """Hold work/gpu.lock for the duration of a heavy GPU job. Stale locks (dead pid) are taken over."""
+    """Hold work/gpu.lock for the duration of a heavy GPU job. Stale locks (dead pid) are taken over.
+
+    DANCECAP_GPU_SHARED=1 skips the lock: only for an 80 GB pod GPU running several small jobs side by side
+    (e.g. leave-one-camera-out MAMMA fits, ~2-3 GB each); never set it on the 11 GB workstation."""
+    if os.environ.get("DANCECAP_GPU_SHARED") == "1":
+        yield
+        return
     LOCK.parent.mkdir(parents=True, exist_ok=True)
     deadline = time.time() + timeout_s
     while True:
@@ -49,7 +55,22 @@ def exclusive(label: str, timeout_s: float = 6 * 3600, poll_s: float = 5.0):
     try:
         yield
     finally:
+        _return_cached_vram()
         LOCK.unlink(missing_ok=True)
+
+
+def _return_cached_vram() -> None:
+    """Give PyTorch's cached (unused) VRAM back to the driver before the lock goes: a process that goes on with CPU
+    work after its GPU block otherwise keeps it reserved, and the next stage on the 11 GB card gets less (on Windows
+    the driver may then page to system RAM instead of failing: many times slower). Live tensors are not touched."""
+    import sys
+    torch = sys.modules.get("torch")
+    try:
+        if torch is not None and torch.cuda.is_initialized():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+    except Exception:  # never let cleanup mask the block's own error
+        pass
 
 
 def _alive(pid: int) -> bool:

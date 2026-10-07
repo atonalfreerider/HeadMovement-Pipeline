@@ -1541,7 +1541,8 @@ def run_compare(sess: Session, plot: bool = True) -> dict:
     comp["expected_systematic_ms"] = cc.get(src) if src else None
     det = (sj["alignment"].get("cross_check_detail") or {}).get(src) or {}
     comp["expected_drift_ms_per_min"] = det.get("drift_ms_per_min")
-    comp["expected_note"] = ("the phone grid is on the source camera's audio mapped through its alignment.json clock; "
+    comp["expected_note"] = ("the phone grid is on the source camera's audio mapped through its clock in "
+                             f"{Path(sess.take.cfg['alignment']).name}; "
                              "the cross-check measured that clock's error vs the reference audio clock (median and "
                              "drift), i.e. the difference the grids should show if both beat trackers agree")
     comp["tempo"]["studio_song_time"] = {k: raw["tempo_song"][k] for k in ("bpm", "bpm_linear_fit", "measure_s")}
@@ -1706,9 +1707,10 @@ def plot_review(sess: Session, sj: dict, comp: dict, studio: np.ndarray, phone: 
                     label=f"cam{c}: median {al['cross_checks'].get(c)} ms")
     ax.axhline(0, color="k", lw=0.6)
     ax.set_xlabel("song time (s)")
-    ax.set_ylabel("alignment.json clock - studio line (ms)")
+    al_name = Path(sess.take.cfg["alignment"]).name  # the take's clock file (alignment.json or alignment_studio.json)
+    ax.set_ylabel(f"{al_name} clock - studio line (ms)")
     bc = al.get("beats_py_consistency") or {}
-    ax.set_title("cross-checks: studio aligned to each phone's own audio, mapped through alignment.json"
+    ax.set_title(f"cross-checks: studio aligned to each phone's own audio, mapped through {al_name}"
                  + (f"\n(predicts beats.py's per-phone beat offsets within median {bc.get('median_abs_diff_ms')} ms)"
                     if bc else ""), loc="left", fontsize=11)
     ax.legend(fontsize=8.5, ncol=2)

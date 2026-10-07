@@ -7,7 +7,8 @@
   review/avatar_turntable.jpg        both avatars at one frame from 4 virtual cameras around them (front/side/back)
   review/avatar_face.jpg             head close-ups where each face is seen best (largest, most frontal): PHOTO | AVATAR
 
-The renderer splats the texel points (about 1 mm apart) into a z-buffer, so it needs no rasteriser.
+Renders use avatar_raster (pure-torch triangle rasteriser + bilinear atlas lookup). The smoke preset writes the same
+sheets as review/avatar_smoke_*.jpg from avatar/smoke/.
 """
 from __future__ import annotations
 
@@ -70,16 +71,17 @@ def _pick_views(stats: list[dict], role: str, per_cam: int = 1) -> list[int]:
     return out
 
 
-def _texel_colors(torch, work: Path, device) -> dict:
+def _texel_colors(torch, out_dir: Path, device) -> dict:
     out = {}
     for r in ROLES:
-        z = np.load(work / "avatar" / f"{r}_texels.npz")
+        z = np.load(out_dir / f"{r}_texels.npz")
         out[r] = torch.as_tensor(np.asarray(z["rgb_srgb"], np.float32), device=device)
     return out
 
 
 def render_review(take: Take, cfg: TextureConfig | None = None, bodies=None, views=None, stats=None,
-                  device: str | None = None, lock: bool = True, panel_h: int = 460) -> list[Path]:
+                  device: str | None = None, lock: bool = True, panel_h: int = 460, out: Path | None = None,
+                  prefix: str = "avatar") -> list[Path]:
     import torch
 
     from . import gpu
@@ -88,24 +90,34 @@ def render_review(take: Take, cfg: TextureConfig | None = None, bodies=None, vie
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     rev = work / "review"
     rev.mkdir(parents=True, exist_ok=True)
-    rep_p = work / "avatar" / "report.json"
+    out = out or work / "avatar"
+    rep_p = out / "report.json"
     report = json.loads(rep_p.read_text()) if rep_p.exists() else {}
+    stale = (report.get("smplx_freshness") or {}).get("stale")
+    note = "  [STALE smplx: previous world frame]" if stale else ""
     if bodies is None:
-        bodies, _ = load_bodies(work)
+        bodies, _ = load_bodies(work, out=out)
     if stats is None:
         stats = report["views"]
     if views is None:
         cams = report.get("cams") or sorted({s["cam"] for s in stats})
-        t_lo = max(b.t[0] for b in bodies.values())
-        t_hi = min(b.t[-1] for b in bodies.values())
-        views, _ = camera_views(work, cams, t_lo, t_hi, cfg.step_s)
+        if report.get("t_window"):  # the bake's window and step (stats are indexed like its view list)
+            t_lo, t_hi = report["t_window"]
+            step = float(report.get("config", {}).get("step_s", cfg.step_s))
+        else:
+            t_lo = max(b.t[0] for b in bodies.values())
+            t_hi = min(b.t[-1] for b in bodies.values())
+            step = cfg.step_s
+        views, _ = camera_views(work, cams, t_lo, t_hi, step)
+        if len(views) != len(stats):
+            raise RuntimeError(f"review: {len(views)} views rebuilt but the report has {len(stats)}; re-run the bake")
     atlas = build_atlas(SMPLX_MODELS, cfg.size)
     written = []
     ctx = gpu.exclusive("texture-review") if (lock and device == "cuda") else contextlib.nullcontext()
     metrics: dict = {}
     with ctx:
         geo = _Geo(atlas, device)
-        colors = _texel_colors(torch, work, device)
+        colors = _texel_colors(torch, out, device)
         for role in ROLES:
             rows, metrics[role] = [], {}
             for k in _pick_views(stats, role, per_cam=1):
@@ -136,13 +148,13 @@ def render_review(take: Take, cfg: TextureConfig | None = None, bodies=None, vie
                 _label(tiles[0], f"t={v['t']:.2f}s IoU {stats[k]['roles'][role]['iou']:.2f}", (8, 54), (220, 220, 220), 0.55)
                 _label(tiles[1], f"MAE {err:.0f}/255", (8, 28), (220, 220, 220), 0.6)
                 rows.append(np.concatenate(tiles + [np.zeros((panel_h, 6, 3), np.uint8)], 1))
-            written.append(_sheet(rows, rev / f"avatar_texture_{role}.jpg",
-                                  f"{take.name}  {LABEL[role]}: baked texture re-rendered into each camera (best frame "
-                                  f"per camera) - naked SMPL-X surface, hair not modelled"))
-        written.append(_face_sheet(torch, geo, work, bodies, colors, views, stats, rev / "avatar_face.jpg", take.name,
-                                   device))
-        written.append(_uv_sheet(work, atlas, rev / "avatar_uv.jpg", take.name))
-        written.append(_turntable(torch, geo, bodies, colors, rev / "avatar_turntable.jpg", take.name, device))
+            written.append(_sheet(rows, rev / f"{prefix}_texture_{role}.jpg",
+                                  f"{take.name} {LABEL[role]} [{cfg.preset} {cfg.size}^2]{note}: texture re-rendered "
+                                  f"(best frame per camera), naked SMPL-X, no hair"))
+        written.append(_face_sheet(torch, geo, work, bodies, colors, views, stats, rev / f"{prefix}_face.jpg",
+                                   take.name + note, device))
+        written.append(_uv_sheet(out, atlas, rev / f"{prefix}_uv.jpg", take.name + note))
+        written.append(_turntable(torch, geo, bodies, colors, rev / f"{prefix}_turntable.jpg", take.name + note, device))
     if rep_p.exists():
         report["review_metrics"] = metrics
         rep_p.write_text(json.dumps(report, indent=1, default=float))
@@ -268,11 +280,11 @@ def coverage_vis(atlas, albedo_bgr: np.ndarray, cov_bgr: np.ndarray) -> np.ndarr
     return out
 
 
-def _uv_sheet(work: Path, atlas, path: Path, take: str, tile: int = 1200) -> Path:
+def _uv_sheet(out_dir: Path, atlas, path: Path, take: str, tile: int = 1200) -> Path:
     tiles = []
     for r in ROLES:
-        alb = cv2.imread(str(work / "avatar" / f"{r}_albedo.png"))
-        cov = cv2.imread(str(work / "avatar" / f"{r}_coverage.png"))
+        alb = cv2.imread(str(out_dir / f"{r}_albedo.png"))
+        cov = cv2.imread(str(out_dir / f"{r}_coverage.png"))
         a = cv2.resize(alb, (tile, tile), interpolation=cv2.INTER_AREA)
         c = cv2.resize(coverage_vis(atlas, alb, cov), (tile, tile), interpolation=cv2.INTER_AREA)
         _label(a, f"{LABEL[r]} albedo {alb.shape[1]}x{alb.shape[0]}", (10, 34), (255, 255, 255), 0.9)

@@ -1,7 +1,10 @@
 """dancecap: multi-phone dance capture -> cameras, room, dancers, poses, physics, timing -> Unity.
 
     python -m dancecap ingest larissa_kadu            # window frames + room keyframes, native resolution
-    python -m dancecap mamma larissa_kadu             # MAMMA with per-frame cameras -> smplx/{lead,follow}.npz
+    python -m dancecap mamma prepare larissa_kadu     # local ma_2d + grid inputs per camera set (+ pod_job.json)
+    python -m dancecap mamma fit larissa_kadu --tag c8   # MAMMA ma_3d (Runpod) -> mamma/fits/c8/
+    python -m dancecap mamma select larissa_kadu      # pick a fit -> smplx/{lead,follow}.npz
+    python -m dancecap sync larissa_kadu              # per-camera video offsets from geometry -> sync/offsets.json
     python -m dancecap detect larissa_kadu            # all-person boxes, COCO-17 kpts, spectator ignore masks
     python -m dancecap dancers-labels larissa_kadu    # couple tracks + lead/follow labels + review sheet
     python -m dancecap dancers larissa_kadu           # SAM 2.1 lead/follow masks, identity repair, QA
@@ -52,6 +55,34 @@ def cmd_remote(a):
                 ok = (_P(d) / "back.bin").read_bytes() == blob.read_bytes()
             print(f"[smoke] 50 MB up {50 / up:.1f} MB/s, down {50 / down:.1f} MB/s, round-trip identical={ok}")
         print(json.dumps(remote.status(), indent=1))
+    elif a.action in ("jobs", "bundle", "run", "validate"):
+        _cmd_remote_jobs(a)
+
+
+def _cmd_remote_jobs(a):
+    from . import remote_jobs as rj
+    if a.action == "validate":
+        jobs = [rj.validation_job(a.frames)]
+    else:
+        jobs = rj.resolve_jobs(a.take, a.jobs.split(",") if a.jobs else None)
+    if not jobs:
+        raise SystemExit("no pod jobs: give --take <take> (work/<take>/*/pod_job.json) and/or --jobs")
+    if a.action == "jobs":
+        for j in jobs:
+            print(f"{j.name:<10} {j.legacy or rj.SCHEMA:<20} max {j.max_minutes:>5.0f} min  needs {j.needs}  "
+                  f"{len(j.inputs)} inputs  cmds {[c.name for c in j.commands]}  {j.source}")
+        return
+    if a.action == "bundle":
+        files = rj.bundle_files(jobs)
+        path, man = rj.build_bundle(files)
+        print(json.dumps({k: man[k] for k in ("path", "bytes", "raw_bytes", "n_files", "links", "groups_raw_bytes",
+                                              "build_s")}, indent=1))
+        print(json.dumps(rj.estimate_minutes(jobs, man["bytes"]), indent=1))
+        return
+    res = rj.run_session(jobs, sid=a.session, label=a.action if a.action == "validate" else "batch",
+                         max_cost=a.max_cost, gpus=a.gpus.split(",") if a.gpus else None, force=a.force,
+                         dry_run=a.dry_run, max_minutes=a.max_minutes)
+    print(json.dumps(res, indent=1, default=str))
 
 
 def cmd_ingest(a):
@@ -130,11 +161,48 @@ def cmd_mamma(a):
         print(json.dumps({k: rep[k] for k in ("noise_px", "n_cams", "T", "mpjpe", "ma_3d", "smplx")}, indent=1,
                          default=str))
         return
-    if not a.take:
-        raise SystemExit("mamma: give a take name or --validate-synthetic")
+    words = list(a.words)
+    action = words.pop(0) if words and words[0] in MAMMA_ACTIONS else "run"
+    if not words:
+        raise SystemExit("mamma: give [prepare|fit|select|run|bundle] <take>, or --validate-synthetic")
+    take = words[0]
     cams = a.cams.split(",") if a.cams else None
-    rep = mamma_dyn.run(a.take, cams=cams, skip_2d=a.skip_2d)
-    print(json.dumps({k: rep[k] for k in ("grid", "ma_3d", "smplx")}, indent=1, default=str))
+    if action == "prepare":
+        all_cams = sorted(p.stem for p in (Take.load(take).work / "cameras").glob("*.npz"))
+        sets = mamma_dyn.parse_sets(a.set or ([f"run={','.join(cams)}"] if cams else None), all_cams)
+        prep = mamma_dyn.prepare(take, sets, force_2d=a.force_2d, skip_2d=a.skip_2d,
+                                 allow_sfm_frame=a.allow_sfm_frame, use_sync=not a.no_sync)
+        print(json.dumps({"sets": {k: v["cams"] for k, v in prep["sets"].items()}, "eval": prep["eval"],
+                          "grid": {k: prep["grid"][k] for k in ("t0", "T", "hz")}, "sync": prep["sync"],
+                          "ma_2d": prep["ma_2d"]}, indent=1))
+        print(f"[mamma] -> {Take.load(take).work / 'mamma' / 'pod_job.json'}")
+    elif action == "fit":
+        if not a.tag:
+            raise SystemExit("mamma fit: --tag <set> (see mamma/prepare.json)")
+        fr = tuple(int(x) for x in a.fit_frames.split(":")) if a.fit_frames else None
+        rep = mamma_dyn.fit(take, a.tag, frames=fr)
+        print(json.dumps({k: rep[k] for k in ("run_tag", "cams", "ma_3d", "smplx")}, indent=1, default=str))
+    elif action == "select":
+        sel = mamma_dyn.select(take, tags=a.tags.split(",") if a.tags else None, force_tag=a.force_tag,
+                               qa=not a.no_qa)
+        print(json.dumps({k: sel.get(k) for k in ("chosen", "reasons", "promoted", "review")}, indent=1))
+    elif action == "bundle":
+        mamma_dyn.bundle(take)
+    else:
+        sel = mamma_dyn.run(take, cams=cams, skip_2d=a.skip_2d, sets=a.set, allow_sfm_frame=a.allow_sfm_frame)
+        print(json.dumps({k: sel.get(k) for k in ("chosen", "reasons", "promoted")}, indent=1))
+
+
+MAMMA_ACTIONS = ("prepare", "fit", "select", "run", "bundle")
+
+
+def cmd_sync(a):
+    from . import sync
+    doc = sync.run(a.take, cams=a.cams.split(",") if a.cams else None, range_ms=a.range_ms)
+    for c, o in doc["offsets"].items():
+        sp = "n/a" if o["spread_ms"] is None else f"{o['spread_ms']:.1f}"
+        print(f"[sync] {c}: {o['delta_ms']:+7.1f} ms  {'stable' if o['stable'] else 'UNSTABLE':8s} spread {sp} ms  "
+              f"residual {o['residual_px']['at_zero']:.2f} -> {o['residual_px']['at_delta']:.2f} px")
 
 
 def cmd_beats(a):
@@ -211,12 +279,21 @@ def cmd_physics(a):
     if not (work / "smplx" / "lead.npz").exists():
         raise SystemExit(f"physics: {work / 'smplx'} has no lead/follow npz (run the mamma stage first)")
     pick = lambda x, y: {k: v for k, v in (("lead", x), ("follow", y)) if v is not None}
+    try:  # stature check = mesh vs stature + the take's shoe sole (cameras/world_scale convention)
+        from .cameras.world import sole_from_take
+        from .take import Take
+        soles = sole_from_take(Take.load(a.take).cfg)[0]
+    except (FileNotFoundError, OSError, KeyError):
+        soles = None
     res = physics.run(work, cfg, Path(a.beats) if a.beats else None, masses=pick(a.mass_lead, a.mass_follow),
-                      statures=pick(a.height_lead, a.height_follow))
+                      statures=pick(a.height_lead, a.height_follow), soles=soles)
     for role in physics.ROLES:
         i = res[role]["info"]
         print(f"[physics] {role}: {i['mass_kg']:.1f} kg ({i['mass_source']}), stature {i['stature_m']:.2f} m, "
               f"contact {i['contact_fraction']}, F_net band95 median {i['f_net_band95_median_n']} N")
+        if i.get("stature_warning"):  # mesh vs stature + sole beyond the world_scale tolerance (1.5 %)
+            print(f"[physics] WARNING {role}: mesh {i['stature_rel_diff']:+.1%} vs stature + shoe sole (tol "
+                  f"{i['stature_tol']:.1%}): python -m dancecap.cameras.world_scale check {a.take}")
     if "cycles" in res and res["cycles"].get("n_cycles"):
         print(f"[physics] couple GRF_y over {res['cycles']['n_cycles']} measures: mean "
               f"{res['cycles']['mean_ratio']:.4f} x (mA+mB) g, worst {res['cycles']['max_abs_dev']:.2%}")
@@ -234,56 +311,90 @@ def cmd_export(a):
     try:
         rep = export_unity.export(a.take, a.capture, model=Path(a.model) if a.model else None,
                                   audio=Path(a.audio) if a.audio else None, audio_t0=a.audio_t0,
-                                  beats=Path(a.beats) if a.beats else None, install=not a.no_install)
+                                  beats=Path(a.beats) if a.beats else None, install=not a.no_install,
+                                  allow_no_audio=a.no_audio, textures=not a.no_textures, room=not a.no_room)
     except (FileNotFoundError, ValueError) as e:
         raise SystemExit(f"export: {e}")
     for r, d in rep["dancers"].items():
         print(f"[export] {r}: {Path(d['model']).name} ({d['betas']} betas), FK vs npz joints {d['fk_max_err_mm']} mm")
-    print(f"[export] {rep['frames']} frames @ {rep['fps']:.2f} fps: {', '.join(rep['files'])}")
+    print(f"[export] audio: {rep['audio']}")
+    if rep.get("room"):
+        print(f"[export] room: {rep['room']['triangles']} triangles, {rep['room']['vertices']} vertices")
+    print(f"[export] {rep['frames']} frames @ {rep['fps']:.2f} fps, {rep['bytes'] / 1e6:.1f} MB: {', '.join(rep['files'])}")
     print(f"[export] -> {rep.get('installed', rep['out'])}")
 
 
 def cmd_room(a):
-    import os
     import shutil
     import subprocess
     import sys
+    from pathlib import Path
 
-    from .take import PACKAGE_ROOT, WORKSPACE
-    if shutil.which("cl") is None and not os.environ.get("DANCECAP_CUDA_ENV"):
-        # gsplat's cached JIT extension still needs ninja + MSVC on PATH: re-run inside prototype/run_cuda.cmd
-        argv = sys.argv[1:] if a.argv is None else a.argv
-        r = subprocess.run(["cmd", "/c", str(WORKSPACE / "prototype" / "run_cuda.cmd"), "-m", "dancecap", *argv],
-                           cwd=PACKAGE_ROOT, env={**os.environ, "DANCECAP_CUDA_ENV": "1", "PYTHONUNBUFFERED": "1"})
-        raise SystemExit(r.returncode)
     from . import room
-    cfg = room.RoomConfig()
-    if a.cams:
-        cfg.cams = tuple(a.cams.split(","))
-    for k in ("iters", "cap_max", "quest_max", "mesh_max_tris", "mesh_voxel", "max_side"):
-        if getattr(a, k) is not None:
-            setattr(cfg, k, getattr(a, k))
+    from .env import IS_WINDOWS, cuda_wrapper
+    from .take import PACKAGE_ROOT
+    # the take's work dir only (no Take.load: on a pod there is no takes/ alignment or source video, just the bundle)
+    work = Path(a.take) if Path(a.take).is_dir() else PACKAGE_ROOT / "work" / a.take
+    if a.write_pod_job or a.pod:
+        cfg = room.RoomConfig()
+        room.write_bundle(work, work / "room" / "bundle", cfg)
+        if a.pod:
+            print(json.dumps(room.run_pod(work, a.preset or "pod", a.pod_minutes), indent=1))
+        else:
+            room.write_pod_job(work, a.preset or "pod", a.pod_minutes)
+        return
     stages = tuple(a.stages.split(",")) if a.stages else room.STAGES
     if not set(stages) <= set(room.STAGES):
         raise SystemExit(f"unknown stages {sorted(set(stages) - set(room.STAGES))}; choose from {room.STAGES}")
-    rep = room.run(Take.load(a.take), cfg, stages)
+    needs_gpu = bool(set(stages) - {"prep"})
+    if needs_gpu and IS_WINDOWS and shutil.which("cl") is None and not os.environ.get("DANCECAP_CUDA_ENV"):
+        # gsplat's cached JIT extension still needs ninja + MSVC on PATH: re-run inside the CUDA build env
+        argv = sys.argv[1:] if a.argv is None else a.argv
+        r = subprocess.run(cuda_wrapper(["-m", "dancecap", *argv]), cwd=PACKAGE_ROOT,
+                           env={**os.environ, "DANCECAP_CUDA_ENV": "1", "PYTHONUNBUFFERED": "1"})
+        raise SystemExit(r.returncode)
+    cfg = room.preset(a.preset or "local", iters=a.iters, cap_max=a.cap_max, quest_max=a.quest_max,
+                      mesh_max_tris=a.mesh_max_tris, mesh_voxel=a.mesh_voxel, max_side=a.max_side)
+    if a.cams:
+        cfg.cams = tuple(a.cams.split(","))
+    out = Path(a.out).resolve() if a.out else None
+    rep = room.run(work, cfg, stages, out=out)
     for g, v in rep.get("gates", {}).items():
         print(f"[room] gate {g}: {'PASS' if v['passed'] else 'FAIL'} {json.dumps(v.get('value'), default=str)}")
-    print(f"[room] -> {Take.load(a.take).work / 'room' / 'report.json'}")
+    print(f"[room] -> {(out or work / 'room') / 'report.json' if 'gates' in rep else work / 'room' / 'bundle'}")
 
 
 def cmd_texture(a):
+    from types import SimpleNamespace
+
     from . import avatar_texture
-    take = Take.load(a.take)
+    from .take import PACKAGE_ROOT
+    try:
+        take = Take.load(a.take)
+    except FileNotFoundError:  # on a pod: no takes/ alignment or source videos, only work/<take>
+        take = SimpleNamespace(name=a.take, work=PACKAGE_ROOT / "work" / a.take, sources=[])
+    if a.write_pod_job or a.pod:
+        from . import avatar_pod
+        if a.pod:
+            avatar_pod.run_pod(take.work, a.preset or "pod", a.pod_minutes, step_ms=a.step_ms, max_cost=a.max_cost,
+                               hair_mode=a.hair_mode, blend=a.blend)
+        else:
+            avatar_pod.write_pod_job(take.work, a.preset or "pod", a.pod_minutes, pack=not a.no_pack,
+                                     step_ms=a.step_ms, hair_mode=a.hair_mode, blend=a.blend)
+        return
+    cfg = avatar_texture.preset_config(a.preset or "local", size=a.size,
+                                       step_s=a.step_ms / 1000 if a.step_ms else None, top_k=a.top_k,
+                                       device=a.device, head_fix=a.head_fix, align_passes=a.align_passes,
+                                       allow_stale=True if a.allow_stale else None, hair_mode=a.hair_mode,
+                                       blend=a.blend,
+                                       allow_missing_hair_masks=True if a.allow_missing_hair_masks else None)
     if a.review_only:
         from .avatar_review import render_review
-        cfg = avatar_texture.TextureConfig(size=a.size)
-        for p in render_review(take, cfg, lock=not a.no_lock):
+        out = avatar_texture.default_out(take.work, cfg)
+        for p in render_review(take, cfg, lock=not a.no_lock, out=out, prefix=avatar_texture.review_prefix(cfg)):
             print(f"[texture] {p}")
         return
-    cfg = avatar_texture.TextureConfig(size=a.size, step_s=a.step_ms / 1000, top_k=a.top_k, device=a.device,
-                                       head_fix=a.head_fix, align_passes=a.align_passes)
-    cams = _cams(take, a.cams)
+    cams = _cams(take, a.cams) if take.sources else (a.cams.split(",") if a.cams else None)
     if cams:
         cfg.cams = tuple(cams)
     if a.exclude_cams:
@@ -299,7 +410,7 @@ def cmd_texture(a):
               f"{d['median_inlier_cams']}; weight share {d['camera_weight_share']}")
     for p in rep.get("review", []):
         print(f"[texture] {p}")
-    print(f"[texture] -> {take.work / 'avatar'} ({rep['runtime_s']['total']:.0f} s)")
+    print(f"[texture] -> {avatar_texture.default_out(take.work, cfg)} ({rep['runtime_s']['total']:.0f} s)")
 
 
 UNITY_PROJECT = None  # resolved lazily: WORKSPACE/head-movement
@@ -373,8 +484,18 @@ def main(argv=None):
     sp.add_argument("--instants", type=int, default=6)
     sp.set_defaults(fn=lambda a: [print(f"[review] {p}") for p in __import__("dancecap.review", fromlist=["render"])
                                   .render(Take.load(a.take), a.instants)])
-    sp = sub.add_parser("remote", help="Runpod offload: status | gpus | cleanup (budget-capped, auto-deleting pods)")
-    sp.add_argument("action", choices=["status", "gpus", "cleanup", "smoke"])
+    sp = sub.add_parser("remote", help="Runpod offload: status | gpus | cleanup | smoke | jobs | bundle | run | validate "
+                                       "(budget-capped, auto-deleting pods; batched pod_job.json sessions)")
+    sp.add_argument("action", choices=["status", "gpus", "cleanup", "smoke", "jobs", "bundle", "run", "validate"])
+    sp.add_argument("--take", help="jobs/bundle/run: discover work/<take>/*/pod_job.json")
+    sp.add_argument("--jobs", help="comma-separated stage names (mamma,room,avatar) or pod_job.json paths")
+    sp.add_argument("--session", help="run/validate: resume this session id (work/runpod/sessions/<sid>)")
+    sp.add_argument("--max-cost", type=float, help="run/validate: per-session worst-case $ ceiling (price x max minutes)")
+    sp.add_argument("--max-minutes", type=float, help="override the pod lifetime (kill switch); default = estimate")
+    sp.add_argument("--gpus", help="comma-separated Runpod GPU ids to try (default remote.GPU_PREFERENCE)")
+    sp.add_argument("--force", action="store_true", help="re-run jobs already done in this session")
+    sp.add_argument("--dry-run", action="store_true", help="build the bundle + estimate, no pod")
+    sp.add_argument("--frames", type=int, default=180, help="validate: synthetic MAMMA grid frames")
     sp.set_defaults(fn=cmd_remote)
     sp = sub.add_parser("cameras", help="static-room SfM (ALIKED+LightGlue, COLMAP) + per-frame pose/zoom of every camera")
     sp.add_argument("take")
@@ -383,10 +504,22 @@ def main(argv=None):
     sp.add_argument("--sigma", type=float, default=0.04, help="temporal smoothing sigma (s) for pose and log-focal")
     sp.add_argument("--max-reproj", type=float, default=4.0, help="frames above this median reprojection (px) -> ok=False")
     sp.set_defaults(fn=cmd_cameras)
-    sp = sub.add_parser("mamma", help="MAMMA ma_2d + ma_3d with moving/zooming cameras -> smplx/{lead,follow}.npz")
-    sp.add_argument("take", nargs="?")
+    sp = sub.add_parser("mamma", help="MAMMA with moving/zooming cameras: prepare (local ma_2d + inputs) | fit (ma_3d, "
+                                      "pod) | select (-> smplx/) | run (all) | bundle (pod upload)")
+    sp.add_argument("words", nargs="*", help="[prepare|fit|select|run|bundle] <take>  (no action = run)")
     sp.add_argument("--cams", help="comma-separated camera ids (default: every cameras/<cam>.npz)")
-    sp.add_argument("--skip-2d", action="store_true", help="reuse mamma/ma_2d_native/<cam>.npz")
+    sp.add_argument("--set", action="append", help="prepare/run: camera set tag=01,02,.. | tag=all | tag=-05 "
+                                                   "(repeatable; default one set 'all')")
+    sp.add_argument("--tag", help="fit: which prepared camera set")
+    sp.add_argument("--tags", help="select: restrict to these fit tags")
+    sp.add_argument("--force-tag", help="select: take this fit regardless of the residual rule")
+    sp.add_argument("--fit-frames", help="fit: only grid frames A:B (dry check; never selectable)")
+    sp.add_argument("--no-qa", action="store_true", help="select: skip review images (pod has no frames)")
+    sp.add_argument("--skip-2d", action="store_true", help="reuse mamma/ma_2d_native/<cam>.npz as is")
+    sp.add_argument("--force-2d", action="store_true", help="recompute ma_2d even when its manifest matches")
+    sp.add_argument("--no-sync", action="store_true", help="ignore sync/offsets.json")
+    sp.add_argument("--allow-sfm-frame", action="store_true",
+                    help="run without cameras/world_from_sfm.json (result never promoted to smplx/)")
     sp.add_argument("--validate-synthetic", action="store_true",
                     help="ground-truth check: synthetic couple seen by moving/zooming cameras (work/synthetic_mamma)")
     sp.add_argument("--noise", type=float, default=0.0, help="pixel noise for --validate-synthetic")
@@ -395,6 +528,11 @@ def main(argv=None):
     sp.add_argument("--n-cams", type=int, default=8)
     sp.add_argument("--frames", type=int, default=180)
     sp.set_defaults(fn=cmd_mamma)
+    sp = sub.add_parser("sync", help="per-camera residual video offsets from multi-view geometry -> sync/offsets.json")
+    sp.add_argument("take")
+    sp.add_argument("--cams")
+    sp.add_argument("--range-ms", type=float, default=300.0)
+    sp.set_defaults(fn=cmd_sync)
     sp = sub.add_parser("beats", help="cleanest phone audio on the reference clock + beat_this zouk grid, tempo, clicks")
     sp.add_argument("take")
     sp.add_argument("--source", help="force the source camera id (default: best music quality score)")
@@ -444,16 +582,33 @@ def main(argv=None):
     sp.add_argument("take", help="work/<take> with smplx/{lead,follow}.npz")
     sp.add_argument("--capture", help="capture folder name (default: the take name), e.g. 01_SyntheticSMPLX")
     sp.add_argument("--model", help="SMPL-X model npz (default: MAMMA locked-head for MAMMA fits, else smplx/SMPLX_NEUTRAL.npz)")
-    sp.add_argument("--audio", help="audio wav (default: work/<take>/audio.wav)")
-    sp.add_argument("--audio-t0", type=float, default=0.0, help="reference time (s) of the audio's first sample")
+    sp.add_argument("--audio", help="audio wav (default: work/<take>/audio/audio_overlap.wav, else a synthetic "
+                                    "take's audio.wav)")
+    sp.add_argument("--audio-t0", type=float, default=None,
+                    help="reference time (s) of the audio's first sample (required with --audio; default for "
+                         "audio/audio_overlap.wav: its json's reference_start)")
+    sp.add_argument("--no-audio", action="store_true", help="allow a capture without audio (Unity plays a silent clock)")
+    sp.add_argument("--no-textures", action="store_true", help="untextured skins (no UV split, no albedo)")
+    sp.add_argument("--no-room", action="store_true", help="skip room_mesh.bin / splat_quest.ply")
     sp.add_argument("--beats", help="zouk beats json when there is no timing/timing.json")
     sp.add_argument("--no-install", action="store_true", help="only write work/<take>/export/<capture>/")
     sp.set_defaults(fn=cmd_export)
     sp = sub.add_parser("room", help="static studio: masked 3DGS (gsplat) -> splat_full/splat_quest.ply + Quest mesh")
-    sp.add_argument("take")
-    sp.add_argument("--cams", help="comma-separated cameras (default: the static-model cameras 01,02,03,04,07,09)")
-    sp.add_argument("--stages", help="comma-separated subset of train,quest,mesh,eval (later stages reuse room/cache)")
-    sp.add_argument("--iters", type=int, help="training iterations (default 30000)")
+    sp.add_argument("take", help="take name (work/<take>) or a work directory")
+    sp.add_argument("--cams", help="comma-separated cameras (default: the static-model cameras 01,02,03,04,07,09); "
+                                   "a prep setting")
+    sp.add_argument("--stages", help="comma-separated subset of prep,train,quest,mesh,eval (default all; prep is local "
+                                     "only and skipped when the bundle is up to date; later stages reuse room/cache)")
+    sp.add_argument("--preset", choices=["smoke", "local", "pod"],
+                    help="quality preset: smoke (code path, minutes), local (2080 Ti, default), pod (80 GB, full)")
+    sp.add_argument("--out", help="output dir (default work/<take>/room; review sheets go to <out>/review when set)")
+    sp.add_argument("--pod", action="store_true", help="run train/quest/mesh/eval on a Runpod 80 GB GPU (prep + "
+                                                       "upload here, download + extract into work/<take>)")
+    sp.add_argument("--pod-minutes", dest="pod_minutes", type=float, default=110,
+                    help="pod lifetime cap incl. setup (on-pod kill switch; budget check)")
+    sp.add_argument("--write-pod-job", dest="write_pod_job", action="store_true",
+                    help="only prep + pack the pod inputs and write room/pod_job.json")
+    sp.add_argument("--iters", "--max-steps", dest="iters", type=int, help="training steps (preset: smoke 300, else 30000)")
     sp.add_argument("--cap-max", dest="cap_max", type=int, help="MCMC Gaussian cap (default 1M)")
     sp.add_argument("--quest-max", dest="quest_max", type=int, help="Quest splat budget (default 150k)")
     sp.add_argument("--mesh-max-tris", dest="mesh_max_tris", type=int, help="Quest mesh budget (default 80k)")
@@ -465,13 +620,31 @@ def main(argv=None):
     sp.add_argument("--cams", help="comma-separated cameras (default: every cameras/<cam>.npz)")
     sp.add_argument("--exclude-cams", help="comma-separated cameras to leave out (e.g. a hold-out check)")
     sp.add_argument("--cam-weight", action="append", help="CAM=W trust multiplier (default 05=0.25), repeatable")
-    sp.add_argument("--size", type=int, default=2048, help="atlas size (default 2048, Quest budget)")
-    sp.add_argument("--step-ms", type=float, default=1000 / 15, help="sample each camera every N ms of reference time")
-    sp.add_argument("--top-k", type=int, default=4, help="samples kept per texel per camera")
+    sp.add_argument("--preset", choices=("smoke", "local", "pod"),
+                    help="smoke (512^2, 1.5 s, -> avatar/smoke/) | local (2080 Ti, default) | pod (80 GB GPU)")
+    sp.add_argument("--size", type=int, help="atlas size (default 2048, Quest budget)")
+    sp.add_argument("--step-ms", type=float, help="sample each camera every N ms of reference time (local 66.7)")
+    sp.add_argument("--top-k", type=int, help="samples kept per texel per camera (local 4)")
     sp.add_argument("--device", help="cuda|cpu (default cuda)")
-    sp.add_argument("--head-fix", choices=("auto", "on", "off"), default="auto",
+    sp.add_argument("--head-fix", choices=("auto", "on", "off"),
                     help="neck correction to the COCO face keypoints (auto = adopt when leave-one-camera-out improves)")
-    sp.add_argument("--align-passes", type=int, default=1, help="flow-registration passes after the first bake")
+    sp.add_argument("--align-passes", type=int, help="flow-registration passes after the first bake (local 1)")
+    sp.add_argument("--hair-mode", choices=("exclude", "soft"),
+                    help="follow hair: exclude (default: hair mask + colour hard-excluded, learned scalp, class fill; "
+                         "avatar_hair.py) | soft (old colour down-weighting)")
+    sp.add_argument("--blend", choices=("multiband", "mean"),
+                    help="multiband (default: two-band per-camera fusion, no view seams) | mean (old)")
+    sp.add_argument("--allow-stale", action="store_true",
+                    help="bake even if smplx/ predates cameras/world_from_sfm.json (fit from an older world frame)")
+    sp.add_argument("--write-pod-job", action="store_true",
+                    help="write avatar/pod_job.json + upload tars in avatar/pod/ (no pod is started)")
+    sp.add_argument("--no-pack", action="store_true", help="with --write-pod-job: plan only, do not build the tars")
+    sp.add_argument("--pod", action="store_true", help="run the bake on a budget-capped Runpod 80 GB GPU")
+    sp.add_argument("--pod-minutes", type=float, help="pod auto-delete after N minutes (default: the job's "
+                    "max_minutes_recommended; a smaller value is refused)")
+    sp.add_argument("--max-cost", type=float, default=10.0, help="with --pod: session cost ceiling in $ (default 10)")
+    sp.add_argument("--allow-missing-hair-masks", action="store_true",
+                    help="hair-mode exclude: bake even when < 90%% of the follow's views have a real hair mask")
     sp.add_argument("--no-lock", action="store_true", help="do not take work/gpu.lock")
     sp.add_argument("--no-review", action="store_true", help="skip the review renders")
     sp.add_argument("--review-only", action="store_true", help="only re-render the review sheets from avatar/")

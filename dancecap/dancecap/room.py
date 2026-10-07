@@ -1,12 +1,22 @@
 """Static studio reconstruction: masked 3D Gaussian Splatting (gsplat 1.5.3) -> full splat, Quest splat, Quest mesh.
 
-    python -m dancecap room larissa_kadu                    # train + quest + mesh + eval (all stages)
-    python -m dancecap room larissa_kadu --stages mesh,eval # reuse room/cache/splat_full.pt
+    python -m dancecap room larissa_kadu --stages prep             # local: write the compact training bundle
+    python -m dancecap room larissa_kadu --pod                     # Runpod: upload bundle, train/quest/mesh/eval, fetch
+    python -m dancecap room larissa_kadu --preset smoke --out work/larissa_kadu/room/smoke   # local code-path check
+    python -m dancecap room larissa_kadu --stages mesh,eval        # reuse room/cache/splat_full.pt
+
+Stages: prep (local only: needs pycolmap + the frame store) -> train (GPU heavy: the pod) -> quest -> mesh -> eval
+(local or pod). prep writes room/bundle/ (see write_bundle): undistorted images at <= bundle_max_side, people masks,
+cameras, SfM points and the room geometry (floor / mirror planes, room box) - everything later stages read, so they
+run anywhere (Windows or a Linux pod) from the bundle alone. Presets (PRESETS): smoke (a few hundred steps, tiny
+budgets: code path only), local (2080 Ti), pod (80 GB A100/H100, full quality: native resolution, 30k steps).
 
 Inputs (SfM frame, see CONTRACTS.md): the main COLMAP model cameras/sfm (keyframe poses + sparse points for the
 initialisation), cameras/<cam>.npz (per window-frame K, R, t), keyframes/ + frames/ images, people_masks(_kf)/
 (255 = any person or phone screen: excluded from the loss). Only the static-model cameras are used by default
-(01 02 03 04 07 09); 05/06 are attached rotation-only (~4-5 deg off) and would double the walls.
+(01 02 03 04 07 09); 05/06 are attached rotation-only (~4-5 deg off) and would double the walls. Cameras stay fixed
+in the SfM frame (no world-space normalisation / re-centring as in gsplat's simple_trainer): the PLYs are directly in
+the frame of cameras/sfm and room/transform.json maps them to the world.
 
 Training (under dancecap.gpu.exclusive): gsplat rasterization in 'antialiased' mode, MCMC densification with a
 Gaussian cap, fixed cameras, masked L1 + D-SSIM, a per-image 3x3 + bias colour transform (phones differ in white
@@ -37,7 +47,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -46,17 +55,21 @@ import cv2
 import numpy as np
 
 from . import gpu
-from .take import Take
 
 MAIN_CAMS = ("01", "02", "03", "04", "07", "09")
-STAGES = ("train", "quest", "mesh", "eval")
+STAGES = ("prep", "train", "quest", "mesh", "eval")
+BUNDLE_VERSION = 1
+# fields fixed when the bundle is written (changing them needs a new prep); everything else is a training setting
+PREP_FIELDS = ("cams", "bundle_max_side", "win_step_s", "holdout_win_s", "holdout_kf", "mirror")
 
 
 @dataclass
 class RoomConfig:
     cams: tuple[str, ...] = MAIN_CAMS
-    max_side: int = 1000            # images are downscaled by an integer factor until max(W, H) <= max_side
-    win_step_s: float = 1 / 6       # window frames: one training frame every win_step_s per camera
+    bundle_max_side: int = 1920     # prep: bundle images downscaled by an integer factor until max(W, H) <= this
+                                    # (larissa_kadu: 480x864 phones stay native, cam 02 1080x1920 stays native)
+    max_side: int = 1000            # train/eval: bundle images resized (area) so that max(W, H) <= max_side
+    win_step_s: float = 0.1         # window frames: one training frame every win_step_s per camera
     holdout_win_s: float = 1.0      # held-out window frames: one per second, half a training step off the grid
     holdout_kf: int = 1             # held-out keyframes per camera (middle of the take's keyframe list)
     kf_weight: float = 0.5          # fraction of training draws that are keyframes (they span 30-68 s: more poses)
@@ -77,6 +90,8 @@ class RoomConfig:
     opacity_reg: float = 0.01       # MCMC regularisers (gsplat simple_trainer defaults)
     scale_reg: float = 0.01
     ssim_lambda: float = 0.2
+    refine_start: int = 500         # MCMC relocation/growth window and period (gsplat defaults 500 / 25000 / 100)
+    refine_every: int = 100
     refine_stop: int = 25000
     floor_margin: float = 0.08      # m (SfM units ~ m): Gaussians below floor - margin are killed (reflections)
     reflections: bool = True        # model the glossy floor + mirror wall as planar reflectors (else clamp only)
@@ -102,8 +117,33 @@ class RoomConfig:
     floor_band: float = 0.12        # m, TSDF geometry below this height is replaced by the floor plane
     floor_texel: float = 0.005      # m, target floor texel (capped by floor_tex_max)
     floor_tex_max: int = 2048
+    log_every: int = 1000
     seed: int = 0
     note: str = field(default="", repr=False)
+
+
+# quality presets (overrides of RoomConfig); prep fields are not part of a preset - one bundle serves all three
+PRESETS: dict[str, dict] = {
+    # code path only: a few hundred steps at ~480 px, tiny budgets (minutes on the 2080 Ti)
+    "smoke": dict(max_side=480, iters=300, cap_max=60_000, sh_degree=1, sh_every=100, refine_start=100,
+                  refine_every=50, refine_stop=250, refl_start=100, log_every=100, quest_max=20_000, quest_iters=100,
+                  mesh_voxel=0.06, mesh_max_tris=20_000, mesh_tex=1024, floor_tex_max=1024),
+    # the local 2080 Ti (11 GB): cam 02 at half resolution, ~1 h for 30k steps at the 1M cap
+    "local": dict(max_side=1000),
+    # 80 GB A100/H100 pod: full quality - every camera at native resolution, 30k steps, 1M Gaussians, finer mesh
+    "pod": dict(max_side=1920, iters=30000, cap_max=1_000_000, quest_iters=5000, mesh_voxel=0.025),
+}
+
+
+def preset(name: str, **over) -> "RoomConfig":
+    if name not in PRESETS:
+        raise ValueError(f"room: unknown preset {name!r}; choose from {sorted(PRESETS)}")
+    cfg = RoomConfig(**PRESETS[name])
+    for k, v in over.items():
+        if v is not None:
+            setattr(cfg, k, v)
+    cfg.note = f"preset {name}"
+    return cfg
 
 
 # ----------------------------------------------------------------------------------------------------- views
@@ -120,9 +160,42 @@ class View:
     W: int
     H: int
     k1: float          # radial distortion at native resolution (images are undistorted on load)
-    scale: int         # native / loaded
+    scale: float       # native / loaded
     mask: str          # people mask path (relative to work)
     split: str = "train"
+    src: str = ""      # bundle views: the original frame (name is then images/<i>.jpg relative to the bundle)
+
+    @property
+    def label(self) -> str:
+        return self.src or self.name
+
+    def to_json(self) -> dict:
+        d = asdict(self)
+        for k in ("K", "R", "tvec"):
+            d[k] = np.asarray(d[k], float).tolist()
+        return d
+
+    @classmethod
+    def from_json(cls, d: dict) -> "View":
+        d = dict(d)
+        for k in ("K", "R", "tvec"):
+            d[k] = np.asarray(d[k], float)
+        return cls(**d)
+
+    def resized(self, max_side: int) -> "View":
+        """Same view loaded at max(W, H) <= max_side (area resize on load; K follows the pixel-centre convention)."""
+        if max(self.W, self.H) <= max_side:
+            return self
+        f = max(self.W, self.H) / max_side
+        W2, H2 = max(1, round(self.W / f)), max(1, round(self.H / f))
+        sx, sy = self.W / W2, self.H / H2
+        K = self.K.copy()
+        K[0, 0] /= sx
+        K[1, 1] /= sy
+        K[0, 2] = (K[0, 2] + 0.5) / sx - 0.5
+        K[1, 2] = (K[1, 2] + 0.5) / sy - 0.5
+        return View(self.name, self.cam, self.kind, self.t, K, self.R, self.tvec, W2, H2, self.k1,
+                    self.scale * max(sx, sy), self.mask, self.split, self.src)
 
     @property
     def center(self) -> np.ndarray:
@@ -172,7 +245,7 @@ def collect_views(work: Path, cfg: RoomConfig) -> list[View]:
             raise ValueError(f"room: unsupported camera model {cam.model.name} for {im.name}")
         T = im.cam_from_world()
         T = T.matrix() if hasattr(T, "matrix") else np.asarray(T)
-        s = _factor(cam.width, cam.height, cfg.max_side)
+        s = _factor(cam.width, cam.height, cfg.bundle_max_side)
         K = _scale_K(np.array([[f, 0, cx], [0, f, cy], [0, 0, 1.0]]), s)
         ms = parts[2].split(".")[0]
         v = View(im.name, parts[1], "kf", int(ms) / 1000, K, T[:, :3].copy(), T[:, 3].copy(), cam.width // s,
@@ -187,7 +260,7 @@ def collect_views(work: Path, cfg: RoomConfig) -> list[View]:
         d = np.load(work / "cameras" / f"{cam}.npz")
         meta = json.loads((work / "frames" / cam / "frames.json").read_text())
         w, h = meta["width"], meta["height"]
-        s = _factor(w, h, cfg.max_side)
+        s = _factor(w, h, cfg.bundle_max_side)
         t = d["t"]
         ok = d["ok"].astype(bool)
         t0 = t[0]
@@ -231,24 +304,31 @@ def reflect_mask(ignore: np.ndarray, frac: float, min_h_frac: float = 0.15) -> n
     return out
 
 
-def load_view(work: Path, v: View, cfg: RoomConfig) -> tuple[np.ndarray, np.ndarray]:
-    """(H, W, 3) uint8 RGB undistorted + scaled, (H, W) bool valid (= not a person / reflection / screen)."""
-    img = cv2.imread(str(work / v.name), cv2.IMREAD_COLOR)
+def load_raw(root: Path, v: View) -> tuple[np.ndarray, np.ndarray]:
+    """(H, W, 3) uint8 BGR undistorted + resized to (v.H, v.W), (H, W) uint8 people mask (255 = ignore).
+    root = the take's work dir (frame-store views) or the bundle dir (bundle views: already undistorted)."""
+    img = cv2.imread(str(root / v.name), cv2.IMREAD_COLOR)
     if img is None:
-        raise FileNotFoundError(work / v.name)
-    mp = work / v.mask
+        raise FileNotFoundError(root / v.name)
+    mp = root / v.mask
     m = cv2.imread(str(mp), cv2.IMREAD_GRAYSCALE) if mp.exists() else np.zeros(img.shape[:2], np.uint8)
+    if m.shape != img.shape[:2]:
+        m = cv2.resize(m, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_NEAREST)
     if v.k1:
         Kn = _unscale_K(v.K, v.scale)
         mx, my = cv2.initUndistortRectifyMap(Kn, np.array([v.k1, 0, 0, 0, 0.0]), None, Kn,
                                              (img.shape[1], img.shape[0]), cv2.CV_32FC1)
         img = cv2.remap(img, mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
         m = cv2.remap(m, mx, my, cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=255)
-    if v.scale > 1:
+    if img.shape[:2] != (v.H, v.W):
         img = cv2.resize(img, (v.W, v.H), interpolation=cv2.INTER_AREA)
         m = cv2.resize(m, (v.W, v.H), interpolation=cv2.INTER_AREA)
-    img = cv2.resize(img, (v.W, v.H)) if img.shape[:2] != (v.H, v.W) else img
-    m = cv2.resize(m, (v.W, v.H), interpolation=cv2.INTER_NEAREST) if m.shape[:2] != (v.H, v.W) else m
+    return img, m
+
+
+def load_view(work: Path, v: View, cfg: RoomConfig) -> tuple[np.ndarray, np.ndarray]:
+    """(H, W, 3) uint8 RGB undistorted + scaled, (H, W) bool valid (= not a person / reflection / screen)."""
+    img, m = load_raw(work, v)
     ignore = reflect_mask(m > 64, cfg.reflect_frac)
     return img[:, :, ::-1].copy(), ~ignore
 
@@ -305,6 +385,10 @@ def load_world(work: Path) -> dict:
 
 
 def sfm_points(work: Path):
+    """(P, C, E, L) sparse points: from a bundle's points.npz, else the take's cameras/sfm (pycolmap)."""
+    if (work / "points.npz").exists():
+        d = np.load(work / "points.npz")
+        return d["P"].astype(float), d["C"], d["E"].astype(float), d["L"]
     import pycolmap
     rec = pycolmap.Reconstruction(str(work / "cameras" / "sfm"))
     pts = list(rec.points3D.values())
@@ -744,7 +828,8 @@ def train(work: Path, views: list[View], geo: dict, cfg: RoomConfig, log=print):
     refl = Reflectors(geo["reflectors"], dev, enabled=cfg.reflections)
     app_opt = torch.optim.Adam([app.A, app.b], lr=cfg.lr_app)
     refl_opt = torch.optim.Adam([refl.logit], lr=cfg.lr_refl)
-    strat = MCMCStrategy(cap_max=cfg.cap_max, refine_stop_iter=cfg.refine_stop)
+    strat = MCMCStrategy(cap_max=cfg.cap_max, refine_start_iter=cfg.refine_start, refine_stop_iter=cfg.refine_stop,
+                         refine_every=cfg.refine_every)
     strat.check_sanity(p, opt)
     state = strat.initialize_state()
     kf_idx = [i for i, v in enumerate(tr) if v.kind == "kf"]
@@ -780,7 +865,7 @@ def train(work: Path, views: list[View], geo: dict, cfg: RoomConfig, log=print):
         sched.step()
         run_l = 0.98 * run_l + 0.02 * l1 if step else l1
         run_psnr = 0.98 * run_psnr + 0.02 * psnr if step else psnr
-        if step % 1000 == 0 or step == cfg.iters - 1:
+        if step % cfg.log_every == 0 or step == cfg.iters - 1:
             hist.append({"step": step, "l1": run_l, "psnr": run_psnr, "n": len(splat),
                          "s": round(time.time() - t0, 1), "reflectance": refl.betas()})
             log(f"[room] step {step:5d}  L1 {run_l:.4f}  masked PSNR {run_psnr:5.2f}  N {len(splat):,}  "
@@ -804,7 +889,7 @@ def _keep_only(splat: Splat, keep) -> None:
 def save_ckpt(path: Path, splat: Splat, app: Appearance, refl: Reflectors, views: list[View], extra: dict) -> None:
     import torch
     path.parent.mkdir(parents=True, exist_ok=True)
-    tr = [v.name for v in views if v.split == "train"]
+    tr = [v.label for v in views if v.split == "train"]
     torch.save({"params": {k: v.detach().cpu() for k, v in splat.params.items()}, "sh_degree": splat.sh_degree,
                 "A": app.A.detach().cpu(), "b": app.b.detach().cpu(), "refl_logit": refl.logit.detach().cpu(),
                 "refl_names": [p["name"] for p in refl.planes], "train_names": tr, "extra": extra}, path)
@@ -815,7 +900,7 @@ def load_ckpt(path: Path, views: list[View], geo: dict, device="cuda"):
     ck = torch.load(path, map_location=device, weights_only=False)
     splat = Splat(torch.nn.ParameterDict({k: torch.nn.Parameter(v.to(device)) for k, v in ck["params"].items()}),
                   ck["sh_degree"])
-    tr = [v.name for v in views if v.split == "train"]
+    tr = [v.label for v in views if v.split == "train"]
     if tr != ck["train_names"]:
         raise ValueError("room: checkpoint was trained on a different view set; rerun --stages train")
     app = Appearance(len(tr), device)
@@ -948,7 +1033,7 @@ def evaluate(work: Path, splat: Splat, app: Appearance, refl: Reflectors | None,
         gt = img.astype(np.float32) / 255
         m = masked_metrics(r["rgb"], gt, valid)
         mc = masked_metrics(fit_affine(r["rgb"], gt, valid), gt, valid)
-        rows.append({"view": v.name, "cam": v.cam, "kind": v.kind, "t": round(v.t, 3), **m,
+        rows.append({"view": v.label, "cam": v.cam, "kind": v.kind, "t": round(v.t, 3), **m,
                      "psnr_cc": mc["psnr"], "ssim_cc": mc["ssim"], "alpha_mean": float(r["alpha"].mean())})
     summ = {}
     for key, sel in [("all", lambda r: True), ("kf", lambda r: r["kind"] == "kf"),
@@ -1036,56 +1121,188 @@ def write_transform(out: Path, geo: dict, refl: dict | None = None) -> dict:
     return tr
 
 
-def run(take: Take, cfg: RoomConfig, stages=STAGES, log=print) -> dict:
-    import torch
-    work = take.work
-    out = work / "room"
-    out.mkdir(parents=True, exist_ok=True)
+# ------------------------------------------------------------------------------------------------- bundle
+
+def _arrays(x):
+    """Inverse of _jsonable for geometry: numeric (nested) lists -> float arrays, recursively."""
+    if isinstance(x, dict):
+        return {k: _arrays(v) for k, v in x.items()}
+    if isinstance(x, list):
+        if x and all(isinstance(e, (int, float)) and not isinstance(e, bool) for e in x):
+            return np.asarray(x, float)
+        if x and all(isinstance(e, list) for e in x):
+            try:
+                return np.asarray(x, float)
+            except (ValueError, TypeError):
+                pass
+        return [_arrays(e) for e in x]
+    return x
+
+
+def _prep_cfg(cfg: RoomConfig) -> dict:
+    return _jsonable({k: getattr(cfg, k) for k in PREP_FIELDS})
+
+
+def _prep_inputs(work: Path, cfg: RoomConfig) -> dict:
+    """Files a bundle is derived from (relative path -> mtime): a newer file makes the bundle stale."""
+    files = [work / "cameras" / "world_from_sfm.json"] + \
+        [work / "cameras" / "sfm" / f for f in ("cameras.bin", "images.bin", "points3D.bin")] + \
+        [work / "cameras" / f"{c}.npz" for c in cfg.cams]
+    return {f.relative_to(work).as_posix(): round(f.stat().st_mtime, 3) for f in files if f.exists()}
+
+
+def bundle_fresh(work: Path, bundle: Path, cfg: RoomConfig) -> bool:
+    mp = bundle / "manifest.json"
+    if not mp.exists():
+        return False
+    m = json.loads(mp.read_text())
+    return (m.get("version") == BUNDLE_VERSION and m.get("prep_config") == _prep_cfg(cfg)
+            and m.get("inputs") == _prep_inputs(work, cfg))
+
+
+def write_bundle(work: Path, bundle: Path, cfg: RoomConfig, log=print, force: bool = False) -> dict:
+    """prep: everything train/quest/mesh/eval need, compact and platform-neutral (no pycolmap, no frame store):
+        manifest.json  version, take, prep_config, inputs (mtimes), counts, bytes
+        views.json     [View] with name images/<i>.jpg, mask masks/<i>.png (k1 = 0: undistorted), src = original frame
+        geo.json       room_geometry (floor plane, mirror wall, reflectors, room box, world_from_sfm) in the SfM frame
+        points.npz     SfM points P (N,3) f32, C (N,3) u8, E (N,) f32 reprojection error, L (N,) track length
+        images/        undistorted frames at <= bundle_max_side, JPEG q95
+        masks/         people masks (255 = ignore), same size, PNG
+    Skipped when the manifest matches the current inputs and prep settings (force=True rewrites)."""
+    if not force and bundle_fresh(work, bundle, cfg):
+        m = json.loads((bundle / "manifest.json").read_text())
+        log(f"[room] prep: bundle up to date ({m['n_views']} views, {m['bytes'] / 1e6:.0f} MB) -> {bundle}")
+        return m
+    import shutil
+    t0 = time.time()
+    if bundle.exists():
+        shutil.rmtree(bundle)
+    (bundle / "images").mkdir(parents=True)
+    (bundle / "masks").mkdir(parents=True)
     views = collect_views(work, cfg)
     geo = room_geometry(work, [v for v in views if v.split == "train"], cfg)
+    out_views = []
+    for i, v in enumerate(views):
+        img, m = load_raw(work, v)
+        name, mask = f"images/{i:04d}.jpg", f"masks/{i:04d}.png"
+        cv2.imwrite(str(bundle / name), img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        cv2.imwrite(str(bundle / mask), np.where(m > 64, 255, 0).astype(np.uint8), [cv2.IMWRITE_PNG_COMPRESSION, 9])
+        out_views.append(View(name, v.cam, v.kind, v.t, v.K, v.R, v.tvec, v.W, v.H, 0.0, v.scale, mask, v.split,
+                              v.name))
+    P, C, E, L = sfm_points(work)
+    np.savez_compressed(bundle / "points.npz", P=P.astype(np.float32), C=C.astype(np.uint8),
+                        E=E.astype(np.float32), L=L.astype(np.int32))
+    (bundle / "views.json").write_text(json.dumps([v.to_json() for v in out_views]))
+    (bundle / "geo.json").write_text(json.dumps(_jsonable(geo), indent=1))
+    nbytes = sum(f.stat().st_size for f in bundle.rglob("*") if f.is_file())
+    man = {"version": BUNDLE_VERSION, "take": work.name, "created": time.strftime("%Y-%m-%d %H:%M:%S"),
+           "prep_config": _prep_cfg(cfg), "inputs": _prep_inputs(work, cfg), "n_views": len(out_views),
+           "n_train": sum(v.split == "train" for v in out_views), "n_points": int(len(P)),
+           "resolutions": sorted({f"{v.cam}:{v.W}x{v.H}" for v in out_views}), "bytes": nbytes,
+           "prep_s": round(time.time() - t0, 1)}
+    (bundle / "manifest.json").write_text(json.dumps(man, indent=1))
+    log(f"[room] prep: bundle {len(out_views)} views ({man['n_train']} train), {len(P):,} SfM points, "
+        f"{nbytes / 1e6:.0f} MB in {man['prep_s']:.0f}s -> {bundle}")
+    return man
+
+
+def load_bundle(bundle: Path) -> tuple[list[View], dict, dict]:
+    if not (bundle / "manifest.json").exists():
+        raise FileNotFoundError(f"room: no training bundle at {bundle}; run --stages prep locally first")
+    man = json.loads((bundle / "manifest.json").read_text())
+    if man.get("version") != BUNDLE_VERSION:
+        raise ValueError(f"room: bundle version {man.get('version')} != {BUNDLE_VERSION}; rerun --stages prep")
+    views = [View.from_json(d) for d in json.loads((bundle / "views.json").read_text())]
+    geo = _arrays(json.loads((bundle / "geo.json").read_text()))
+    geo["floor_d"] = float(geo["floor_d"])
+    return views, geo, man
+
+
+# ------------------------------------------------------------------------------------------------- run
+
+def run(work: Path, cfg: RoomConfig, stages=STAGES, out: Path | None = None, review: Path | None = None,
+        log=print) -> dict:
+    """prep (local) and/or the bundle stages. out defaults to work/room (review images -> work/review); with another
+    out (e.g. a smoke run) the review sheets go to out/review so the real ones are not overwritten."""
+    work = Path(work)
+    bundle = work / "room" / "bundle"
+    if "prep" in stages:
+        write_bundle(work, bundle, cfg, log)
+    elif (work / "cameras" / "sfm").exists() and (bundle / "manifest.json").exists() and \
+            not bundle_fresh(work, bundle, cfg):
+        log("[room] WARNING: the bundle is older than cameras/ (or was prepped with other settings); "
+            "rerun --stages prep")
+    rest = tuple(s for s in stages if s != "prep")
+    if not rest:
+        return {"bundle": json.loads((bundle / "manifest.json").read_text())}
+    out = Path(out) if out is not None else work / "room"
+    review = Path(review) if review is not None else (work / "review" if out == work / "room" else out / "review")
+    return run_bundle(bundle, out, cfg, rest, review, log)
+
+
+def run_bundle(bundle: Path, out: Path, cfg: RoomConfig, stages, review: Path, log=print) -> dict:
+    import platform
+
+    import torch
+
+    from .env import is_pod
+    views_b, geo, man = load_bundle(bundle)
+    for k, v in man["prep_config"].items():  # the bundle decides the prep settings
+        setattr(cfg, k, tuple(v) if isinstance(v, list) else v)
+    views = [v.resized(cfg.max_side) for v in views_b]
+    out.mkdir(parents=True, exist_ok=True)
     write_transform(out, geo)
     ntr = sum(v.split == "train" for v in views)
     m = geo.get("mirror") or {}
-    log(f"[room] {len(views)} views ({ntr} train, {len(views) - ntr} held out) from cams {','.join(cfg.cams)}; "
-        f"floor plane {geo['floor_inliers']} inliers, tilt vs world up {geo['tilt_vs_world_deg']:.2f} deg; "
-        f"wall/mirror: {'MIRROR' if m.get('is_mirror') else 'no mirror'} ({m.get('seen_through_below_soffit')} "
-        f"sparse points seen through the wall below {m.get('top_m', 0):.2f} m)")
+    log(f"[room] {len(views)} views ({ntr} train, {len(views) - ntr} held out) from cams {','.join(cfg.cams)} at "
+        f"<= {cfg.max_side} px ({cfg.note or 'custom'}); floor plane {geo['floor_inliers']} inliers, tilt vs world up "
+        f"{geo['tilt_vs_world_deg']:.2f} deg; wall/mirror: {'MIRROR' if m.get('is_mirror') else 'no mirror'} "
+        f"({m.get('seen_through_below_soffit')} sparse points seen through the wall below {m.get('top_m', 0):.2f} m)")
     rep_path = out / "report.json"
     rep = json.loads(rep_path.read_text()) if rep_path.exists() else {}
     rep["config"] = _jsonable(asdict(cfg))
+    rep["bundle"] = {k: man[k] for k in ("created", "n_views", "n_train", "bytes", "resolutions") if k in man}
+    rep.setdefault("runs", []).append({"stages": list(stages), "preset": cfg.note, "pod": is_pod(),
+                                       "host": platform.node(), "when": time.strftime("%Y-%m-%d %H:%M:%S"),
+                                       "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None})
     rep["geometry"] = _jsonable({k: geo[k] for k in ("floor_inliers", "tilt_vs_world_deg", "scene_scale", "mirror")})
     rep["views"] = {"train": ntr, "test": len(views) - ntr,
+                    "resolution": sorted({f"{v.cam}:{v.W}x{v.H}" for v in views}),
                     "per_cam": {c: {s: sum(v.cam == c and v.split == s for v in views) for s in ("train", "test")}
                                 for c in cfg.cams}}
     ck = out / "cache" / "splat_full.pt"
     splat = app = refl = None
     with gpu.exclusive("room"):
         if "train" in stages:
-            splat, app, refl, info = train(work, views, geo, cfg, log)
+            splat, app, refl, info = train(bundle, views, geo, cfg, log)
             save_ckpt(ck, splat, app, refl, views, info)
             n = splat.save_ply(out / "splat_full.ply")
             rep["train"] = info
+            for k in ("quest", "mesh", "eval", "review"):  # derived from the previous splat: stale now
+                rep.pop(k, None)
             log(f"[room] splat_full.ply: {n:,} Gaussians ({(out / 'splat_full.ply').stat().st_size / 1e6:.0f} MB)")
         if splat is None:
+            if not ck.exists():
+                raise FileNotFoundError(f"room: {ck} missing; run --stages train first")
             splat, app, refl, _ = load_ckpt(ck, views, geo)
         write_transform(out, geo, refl.betas())
         if "quest" in stages:
-            q, qi = make_quest(work, splat, app, refl, views, geo, cfg, log)
+            q, qi = make_quest(bundle, splat, app, refl, views, geo, cfg, log)
             q.save_ply(out / "splat_quest.ply")
             qi["mb"] = round((out / "splat_quest.ply").stat().st_size / 1e6, 1)
             rep["quest"] = qi
             log(f"[room] splat_quest.ply: {qi['n']:,} Gaussians, SH {cfg.quest_sh}, {qi['mb']} MB")
         if "mesh" in stages:
             from . import room_mesh
-            rep["mesh"] = room_mesh.build(work, splat, views, geo, cfg, log)
+            rep["mesh"] = room_mesh.build(bundle, splat, views, geo, cfg, log, out=out)
         if "eval" in stages:
             from . import room_review
-            ev = evaluate(work, splat, app, refl, views, cfg)
-            ev_direct = evaluate(work, splat, app, None, views, cfg)
-            ev_classic = evaluate(work, splat, app, refl, views, cfg, rasterize_mode="classic")
+            ev = evaluate(bundle, splat, app, refl, views, cfg)
+            ev_direct = evaluate(bundle, splat, app, None, views, cfg)
+            ev_classic = evaluate(bundle, splat, app, refl, views, cfg, rasterize_mode="classic")
             evq = None
             if (out / "splat_quest.ply").exists():
-                evq = evaluate(work, Splat.from_ply(out / "splat_quest.ply"), app, refl, views, cfg)
+                evq = evaluate(bundle, Splat.from_ply(out / "splat_quest.ply"), app, refl, views, cfg)
             fd = floor_depth_check(splat, views, geo)
             rep["eval"] = {"full": ev["summary"], "full_without_reflections": ev_direct["summary"],
                            "full_classic_raster": ev_classic["summary"], "quest": evq and evq["summary"],
@@ -1101,11 +1318,149 @@ def run(take: Take, cfg: RoomConfig, stages=STAGES, log=print) -> dict:
                         f"(cc {e['summary']['all']['psnr_cc']:.2f}), SSIM {e['summary']['all']['ssim']:.3f}")
             log(f"[room] floor depth: {fd['within_10cm']:.0%} of floor pixels within 10 cm of the floor plane "
                 f"({fd['within_25cm']:.0%} within 25 cm)")
-            rep["review"] = room_review.render_all(work, splat, app, refl, views, geo, cfg, ev, log)
+            rep["review"] = room_review.render_all(bundle, splat, app, refl, views, geo, cfg, ev, log, out=out,
+                                                   review=review)
         torch.cuda.empty_cache()
     rep["gates"] = gates(rep, cfg)
     rep_path.write_text(json.dumps(_jsonable(rep), indent=1))
     return rep
+
+
+# ------------------------------------------------------------------------------------------------- Runpod
+
+POD_ROOT = "/workspace"
+GSPLAT_WHEELS = "https://docs.gsplat.studio/whl/pt24cu124"  # prebuilt for the default image (torch 2.4, CUDA 12.4)
+POD_PRICE_HINT = 1.39  # $/h A100 80 GB community (2026-10-06); remote.pod_session checks the live price + budget
+
+
+def pod_plan(work: Path, preset_name: str = "pod", max_minutes: float = 110) -> dict:
+    """The pod job as data: local inputs, the exact pod commands run_pod executes, expected outputs."""
+    from .take import PACKAGE_ROOT
+    take = work.name
+    pod_dir = work / "room" / "pod"
+    wd = f"{POD_ROOT}/dancecap"
+    rel = f"work/{take}"
+    run_ = (f"set -o pipefail; cd {wd} && DANCECAP_POD=1 PYTHONUNBUFFERED=1 python -m dancecap room {take} "
+            f"--preset {preset_name}")
+    arch = "TORCH_CUDA_ARCH_LIST='8.0;9.0'"
+    return {
+        "take": take, "preset": preset_name, "preset_overrides": PRESETS[preset_name], "max_minutes": max_minutes,
+        "gpu": "80 GB A100/H100 via dancecap.remote.pod_session (community first, secure fallback); on-pod kill "
+               "switch after max_minutes + local delete in finally",
+        "local_prep": [f"python -m dancecap room {take} --stages prep"],
+        "inputs": {"code": {"local": str(pod_dir / "code.tar.gz"), "pod": f"{POD_ROOT}/code.tar.gz",
+                            "from": str(PACKAGE_ROOT / "dancecap")},
+                   "bundle": {"local": str(pod_dir / "bundle.tar"), "pod": f"{POD_ROOT}/bundle.tar",
+                              "from": str(work / "room" / "bundle")}},
+        "pod_commands": {
+            "setup": [
+                f"set -e; mkdir -p {wd} && cd {POD_ROOT} && tar xzf code.tar.gz && tar xf bundle.tar && "
+                f"rm -f bundle.tar code.tar.gz",
+                "(apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libgl1 libgomp1 "
+                ">/dev/null) || echo 'apt failed (open3d may lack libGL)'",
+                "set -e; pip install -q 'numpy<2' 'opencv-python-headless==4.10.0.84' plyfile scipy matplotlib "
+                "open3d xatlas ninja",
+                f"pip install -q gsplat==1.5.3 --index-url {GSPLAT_WHEELS} || "
+                f"{arch} pip install -q gsplat==1.5.3",
+                f"set -e; {arch} python -c \"import torch, gsplat, open3d, xatlas; "
+                "from gsplat.cuda._backend import _C; print('torch', torch.__version__, 'gsplat', gsplat.__version__, "
+                "'open3d', open3d.__version__, torch.cuda.get_device_name(0))\"",
+            ],
+            "train": f"{run_} --stages train,quest 2>&1 | tee -a {wd}/{rel}/room/pod_train.log",
+            "post": f"{run_} --stages mesh,eval 2>&1 | tee -a {wd}/{rel}/room/pod_post.log",
+            "pack": f"cd {wd}/{rel} && tar czf {POD_ROOT}/room_out.tar.gz --exclude=room/bundle room "
+                    f"$(ls review/room_*.jpg 2>/dev/null)",
+        },
+        "download": {"pod": f"{POD_ROOT}/room_out.tar.gz", "local": str(pod_dir / "room_out.tar.gz"),
+                     "extract_to": str(work)},
+        "outputs": ["room/splat_full.ply", "room/splat_quest.ply", "room/room_mesh.obj", "room/room_mesh.mtl",
+                    "room/room_mesh.ply", "room/room_mesh_tex.png", "room/room_floor_tex.png", "room/transform.json",
+                    "room/report.json", "room/eval.json", "room/cache/splat_full.pt", "room/cache/room_mesh_uv.npz",
+                    "review/room_renders.jpg", "review/room_overview.jpg", "review/room_overview_quest.jpg",
+                    "review/room_mesh.jpg", "room/pod_train.log", "room/pod_post.log"],
+        "fallback": f"if 'post' fails on the pod (open3d / xatlas), run it locally after the download: "
+                    f"python -m dancecap room {take} --preset local --stages mesh,eval (reads room/cache/splat_full.pt)",
+    }
+
+
+def pack_pod_inputs(work: Path, plan: dict, log=print) -> dict:
+    """Write code.tar.gz + bundle.tar (JPEG/PNG: no recompression) and record their sizes in the plan."""
+    import tarfile
+
+    from .take import PACKAGE_ROOT
+    (work / "room" / "pod").mkdir(parents=True, exist_ok=True)
+    skip = lambda ti: None if "__pycache__" in ti.name or ti.name.endswith(".pyc") else ti
+    code = Path(plan["inputs"]["code"]["local"])
+    with tarfile.open(code, "w:gz") as tar:
+        tar.add(str(PACKAGE_ROOT / "dancecap"), arcname="dancecap/dancecap", filter=skip)
+    bun = Path(plan["inputs"]["bundle"]["local"])
+    with tarfile.open(bun, "w") as tar:
+        tar.add(str(work / "room" / "bundle"), arcname=f"dancecap/work/{work.name}/room/bundle")
+    for k, p in (("code", code), ("bundle", bun)):
+        plan["inputs"][k]["bytes"] = p.stat().st_size
+        plan["inputs"][k]["mb"] = round(p.stat().st_size / 1e6, 1)
+    up = sum(plan["inputs"][k]["bytes"] for k in ("code", "bundle")) / 1e6
+    plan["upload_mb"] = round(up, 1)
+    plan["upload_s_at_2_5_MBps"] = round(up / 2.5)
+    log(f"[room] pod inputs: code {plan['inputs']['code']['mb']} MB, bundle {plan['inputs']['bundle']['mb']} MB "
+        f"(~{plan['upload_s_at_2_5_MBps']} s upload at 2.5 MB/s)")
+    return plan
+
+
+def write_pod_job(work: Path, preset_name: str = "pod", max_minutes: float = 110, log=print) -> dict:
+    plan = pack_pod_inputs(work, pod_plan(work, preset_name, max_minutes), log)
+    man = json.loads((work / "room" / "bundle" / "manifest.json").read_text())
+    plan["bundle_manifest"] = {k: man[k] for k in ("created", "n_views", "n_train", "n_points", "bytes", "resolutions")}
+    plan["estimate"] = {"setup_min": "5-10 (pip; gsplat JIT build only if the prebuilt wheel is missing)",
+                        "train_quest_min": "25-45 (30k steps, 1M Gaussians, native resolution)",
+                        "mesh_eval_min": "~10", "download_mb": "~550 (splat_full.ply ~250 + checkpoint ~250 + rest)",
+                        "cost_usd_max": round(POD_PRICE_HINT * (max_minutes + 6) / 60, 2),
+                        "note": "pod_session refuses to start unless the remaining budget covers max_minutes + the "
+                                "start timeout at the live price"}
+    plan["run"] = f"python -m dancecap room {work.name} --pod"
+    (work / "room" / "pod_job.json").write_text(json.dumps(plan, indent=1))
+    log(f"[room] pod job -> {work / 'room' / 'pod_job.json'}")
+    return plan
+
+
+def run_pod(work: Path, preset_name: str = "pod", max_minutes: float = 110, log=print) -> dict:
+    """prep (if stale) -> pack -> pod: setup, train+quest, mesh+eval (non-fatal), pack -> download -> extract."""
+    import tarfile
+
+    from . import remote
+    write_bundle(work, work / "room" / "bundle", RoomConfig(), log)
+    plan = write_pod_job(work, preset_name, max_minutes, log)
+    pc = plan["pod_commands"]
+    plog = work / "room" / "pod" / "pod.log"
+    Path(plan["download"]["local"]).unlink(missing_ok=True)  # never extract a previous run's archive
+    res: dict = {"plan": str(work / "room" / "pod_job.json")}
+    with remote.pod_session("room", max_minutes=max_minutes) as pod:
+        res["pod"] = {"id": pod.id, "gpu": pod.gpu, "cost_per_hr": pod.cost_per_hr}
+        t0 = time.time()
+        for k in ("code", "bundle"):
+            pod.put(Path(plan["inputs"][k]["local"]), plan["inputs"][k]["pod"])
+        res["upload_s"] = round(time.time() - t0)
+        for c in pc["setup"]:
+            pod.run(c, log=plog)
+        t0 = time.time()
+        res["train_rc"] = pod.run(pc["train"], check=False, log=plog)
+        res["train_min"] = round((time.time() - t0) / 60, 1)
+        if res["train_rc"] == 0:
+            res["post_rc"] = pod.run(pc["post"], check=False, log=plog)
+        pod.run(pc["pack"], check=False, log=plog)
+        try:
+            pod.get(plan["download"]["pod"], Path(plan["download"]["local"]))
+        except Exception as e:  # noqa: BLE001 - the session deletes the pod either way
+            res["download_error"] = str(e)
+    got = Path(plan["download"]["local"])
+    if got.exists() and "download_error" not in res:
+        with tarfile.open(got) as tar:
+            tar.extractall(work, filter="data")
+        res["extracted"] = True
+    (work / "room" / "pod" / "result.json").write_text(json.dumps(res, indent=1))
+    if res.get("train_rc"):
+        raise RuntimeError(f"room: pod training failed (rc {res['train_rc']}); see {plog}")
+    return res
 
 
 def gates(rep: dict, cfg: RoomConfig) -> dict:

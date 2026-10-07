@@ -266,3 +266,118 @@ def test_hair_model_separates_red_hair_from_skin(tmp_path):
     img = cv2.imread(str(work / "frames" / cam / "000003.jpg"))[:, :, ::-1].copy()
     p = at.hair_probability(img, lut)
     assert np.median(p[10:40, 25:55]) > 0.8 and np.median(p[60:110, 20:60]) < 0.2
+
+
+# ----------------------------------------------------------------------------------------- rasteriser / pod readiness
+
+
+def test_rasterizer_matches_brute_force_with_depth_order():
+    import torch
+
+    from dancecap.avatar_raster import pixel_bary, rasterize
+    rng = np.random.default_rng(3)
+    V = 40
+    px = torch.as_tensor(rng.uniform(-5, 45, (V, 2)), dtype=torch.float32)
+    z = torch.as_tensor(rng.uniform(1.0, 4.0, V), dtype=torch.float32)
+    faces = torch.as_tensor(rng.integers(0, V, (30, 3)))
+    H, W = 32, 40
+    zb, fid = rasterize(torch, px, z, faces, H, W, max_pairs=500)  # small chunks: exercises the chunking
+    # brute force: every pixel centre against every face, perspective-correct depth, nearest wins
+    P, Z, F = px.double().numpy(), z.double().numpy(), faces.numpy()
+    zbf = np.full((H, W), 1e9)
+    for f in F:
+        a, b, c = P[f]
+        ar = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+        if abs(ar) < 1e-9:
+            continue
+        ys, xs = np.mgrid[0:H, 0:W]
+        e = lambda p, q: (q[0] - p[0]) * (ys - p[1]) - (q[1] - p[1]) * (xs - p[0])
+        b0, b1 = e(b, c) / ar, e(c, a) / ar
+        b2 = 1 - b0 - b1
+        ins = (b0 >= -1e-9) & (b1 >= -1e-9) & (b2 >= -1e-9)
+        zz = 1 / (b0 / Z[f[0]] + b1 / Z[f[1]] + b2 / Z[f[2]])
+        zbf = np.where(ins & (zz < zbf), zz, zbf)
+    cov = zbf < 1e8
+    assert cov.sum() > 200
+    assert np.array_equal(cov, (fid >= 0).numpy())
+    assert np.allclose(zb.numpy()[cov], zbf[cov], rtol=1e-5)
+    bary = pixel_bary(torch, px, z, faces, fid)
+    assert torch.allclose(bary[fid >= 0].sum(1), torch.ones(int(cov.sum())), atol=1e-5)
+
+
+def _mini_work(tmp_path, n=24, fps=30.0, t0=56.0):
+    import json
+
+    import cv2
+    work = tmp_path / "work" / "mini"
+    for c in ("01", "02"):
+        (work / "frames" / c).mkdir(parents=True)
+        for sub in ("masks", "body", "hair"):
+            (work / "dancers" / c / sub).mkdir(parents=True)
+        frames = []
+        for i in range(n):
+            cv2.imwrite(str(work / "frames" / c / f"{i:06d}.jpg"), np.full((8, 8, 3), i, np.uint8))
+            for pid in (1, 2):
+                for sub in ("masks", "body"):
+                    cv2.imwrite(str(work / "dancers" / c / sub / f"mask_{i:04d}_{pid:02d}.png"), np.zeros((8, 8), np.uint8))
+            cv2.imwrite(str(work / "dancers" / c / "hair" / f"mask_{i:04d}_02.png"), np.zeros((8, 8), np.uint8))
+            frames.append({"file": f"{i:06d}.jpg", "t": t0 + i / fps + (0.004 if c == "02" else 0.0)})
+        (work / "frames" / c / "frames.json").write_text(json.dumps({"frames": frames}))
+    (work / "cameras").mkdir()
+    for c in ("01", "02"):
+        np.savez(work / "cameras" / f"{c}.npz", R=np.tile(np.eye(3), (n, 1, 1)), tvec=np.zeros((n, 3)))
+    (work / "cameras" / "big_cache.bin").write_bytes(b"x" * 1000)
+    (work / "cameras" / "world_from_sfm.json").write_text(json.dumps({"s": 1.0}))
+    (work / "dancers" / "roles.json").write_text(json.dumps({"cams": {}}))
+    return work
+
+
+def test_view_slots_are_absolute_so_pod_frames_are_a_superset(tmp_path):
+    work = _mini_work(tmp_path)
+    full = set((c, i) for c, i, _ in at._view_list(work, ["01", "02"], -1e9, 1e9, 1 / 15))
+    for lo in (56.01, 56.13, 56.2):
+        sub = set((c, i) for c, i, _ in at._view_list(work, ["01", "02"], lo, lo + 0.4, 1 / 15))
+        assert sub and sub <= full, (lo, sub - full)
+    assert len([1 for c, _ in full if c == "01"]) in (12, 13)  # every 2nd frame of a 30 fps camera
+
+
+def test_smplx_freshness_flags_fits_older_than_the_world_frame(tmp_path):
+    import os
+    work = _mini_work(tmp_path)
+    (work / "smplx").mkdir()
+    for r in at.ROLES:
+        (work / "smplx" / f"{r}.npz").write_bytes(b"")
+    w = work / "cameras" / "world_from_sfm.json"
+    os.utime(w, (2e9, 2e9))
+    assert at.smplx_freshness(work)["stale"]
+    for r in at.ROLES:
+        os.utime(work / "smplx" / f"{r}.npz", (2e9 + 10, 2e9 + 10))
+    assert not at.smplx_freshness(work)["stale"]
+    cfg = at.preset_config("smoke")
+    assert cfg.allow_stale and cfg.size == 512 and at.preset_config("pod", top_k=5).top_k == 5
+    assert at.default_out(work, cfg) == work / "avatar" / "smoke" and at.review_prefix(cfg) == "avatar_smoke"
+
+
+def test_pod_job_bundles_only_what_the_bake_reads(tmp_path):
+    import json
+    import tarfile
+
+    from dancecap import avatar_pod
+    work = _mini_work(tmp_path)
+    job = avatar_pod.write_pod_job(work, "pod", 20, log=lambda *_: None)
+    assert json.loads((work / "avatar" / "pod_job.json").read_text())["take"] == "mini"
+    with tarfile.open(job["inputs"]["texture_inputs"]["local"]) as tar:
+        names = set(tar.getnames())
+    pre = "dancecap/work/mini/"
+    assert pre + "cameras/world_from_sfm.json" in names and pre + "cameras/01.npz" in names
+    assert not any("big_cache" in n for n in names)  # never the cameras caches
+    assert any(n.startswith("dancecap/dancecap/") and n.endswith("avatar_texture.py") for n in names)
+    # preset pod samples every frame of a 30 fps camera: all 24 frames (+ masks) of each camera
+    jpg = [n for n in names if n.endswith(".jpg")]
+    assert len(jpg) == 48 and pre + "dancers/02/hair/mask_0006_02.png" in names
+    # the pod-run frame choice for any window is inside the bundle
+    for c, i, _ in at._view_list(work, ["01", "02"], 56.1, 56.5, 1 / 30):
+        assert f"{pre}frames/{c}/{i:06d}.jpg" in names
+    for k in ("extract", "setup", "run", "pack"):
+        assert k in job["pod_commands"]
+    assert "--preset pod" in job["pod_commands"]["run"] and job["chain_after_mamma"]["upload"] == ["texture_inputs"]

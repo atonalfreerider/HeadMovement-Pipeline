@@ -22,7 +22,9 @@ import json
 import os
 import shlex
 import subprocess
+import sys
 import tarfile
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -122,6 +124,17 @@ def ensure_ssh_key() -> Path:
 # pods
 # ---------------------------------------------------------------------------
 
+def _echo(s: str) -> None:
+    """print() that never raises: a cp1252 console (stdout redirected to a file on Windows) cannot encode the emoji
+    some pod tools print (ultralytics' first import), and that UnicodeEncodeError ended a session and deleted its pod
+    mid-job (2026-10-06, detect09)."""
+    try:
+        print(s, end="", flush=True)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "ascii"
+        print(s.encode(enc, "replace").decode(enc, "replace"), end="", flush=True)
+
+
 @dataclass
 class Pod:
     id: str
@@ -131,40 +144,69 @@ class Pod:
     host: str
     port: int
     user: str = "root"
+    killswitch: dict | None = None
 
     def _ssh_base(self) -> list[str]:
         return ["ssh", "-i", str(SSH_KEY), "-p", str(self.port), "-o", "StrictHostKeyChecking=no",
                 "-o", "UserKnownHostsFile=NUL" if os.name == "nt" else "UserKnownHostsFile=/dev/null",
                 "-o", "ServerAliveInterval=30", "-o", "LogLevel=ERROR", f"{self.user}@{self.host}"]
 
-    def run(self, cmd: str, check: bool = True, timeout: float | None = None, log: Path | None = None) -> int:
-        """Run a shell command on the pod (bash -lc), streaming output to the console and optional log file."""
+    def run(self, cmd: str, check: bool = True, timeout: float | None = None, log: Path | None = None,
+            echo: bool = True) -> int:
+        """Run a shell command on the pod (bash -lc), streaming output to the console and optional log file.
+
+        timeout (s) is enforced by a watchdog that kills the local ssh client even when the command is silent.
+        """
         full = self._ssh_base() + [f"bash -lc {shlex.quote(cmd)}"]
+        timed_out = threading.Event()
         with contextlib.ExitStack() as stack:
             fh = stack.enter_context(open(log, "a", encoding="utf-8")) if log else None
             proc = subprocess.Popen(full, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                     encoding="utf-8", errors="replace")
-            start = time.time()
-            for line in proc.stdout:
-                print(f"[pod] {line}", end="")
-                if fh:
-                    fh.write(line)
-                if timeout and time.time() - start > timeout:
+            dog = None
+            if timeout:
+                def _kill():
+                    timed_out.set()
                     proc.kill()
-                    raise TimeoutError(f"pod command exceeded {timeout:.0f}s: {cmd[:120]}")
-            rc = proc.wait()
+                dog = threading.Timer(timeout, _kill)
+                dog.daemon = True
+                dog.start()
+            try:
+                for line in proc.stdout:
+                    if echo:
+                        _echo(f"[pod] {line}")
+                    if fh:
+                        fh.write(line)
+                        fh.flush()
+                rc = proc.wait()
+            finally:
+                if dog:
+                    dog.cancel()
+        if timed_out.is_set():
+            raise TimeoutError(f"pod command exceeded {timeout:.0f}s: {cmd[:120]}")
         if check and rc != 0:
             raise RuntimeError(f"pod command failed ({rc}): {cmd[:200]}")
         return rc
 
-    def put(self, local: Path, remote: str) -> None:
-        subprocess.run(["scp", "-i", str(SSH_KEY), "-P", str(self.port), "-o", "StrictHostKeyChecking=no",
-                        "-o", "LogLevel=ERROR", str(local), f"{self.user}@{self.host}:{remote}"], check=True)
+    def output(self, cmd: str, timeout: float = 300) -> str:
+        """stdout of a short pod command (raises on failure)."""
+        p = subprocess.run(self._ssh_base() + [f"bash -lc {shlex.quote(cmd)}"], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=timeout)
+        if p.returncode != 0:
+            raise RuntimeError(f"pod command failed ({p.returncode}): {cmd[:200]}: {(p.stderr or p.stdout)[-400:]}")
+        return p.stdout
 
-    def get(self, remote: str, local: Path) -> None:
+    def _scp(self, src: str, dst: str, timeout: float | None) -> None:
+        subprocess.run(["scp", "-q", "-i", str(SSH_KEY), "-P", str(self.port), "-o", "StrictHostKeyChecking=no",
+                        "-o", "UserKnownHostsFile=NUL" if os.name == "nt" else "UserKnownHostsFile=/dev/null",
+                        "-o", "ServerAliveInterval=30", "-o", "LogLevel=ERROR", src, dst], check=True, timeout=timeout)
+
+    def put(self, local: Path, remote: str, timeout: float | None = None) -> None:
+        self._scp(str(local), f"{self.user}@{self.host}:{remote}", timeout)
+
+    def get(self, remote: str, local: Path, timeout: float | None = None) -> None:
         local.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["scp", "-i", str(SSH_KEY), "-P", str(self.port), "-o", "StrictHostKeyChecking=no",
-                        "-o", "LogLevel=ERROR", f"{self.user}@{self.host}:{remote}", str(local)], check=True)
+        self._scp(f"{self.user}@{self.host}:{remote}", str(local), timeout)
 
 
 def _pod_ssh(pod_json: dict) -> tuple[str, int]:
@@ -183,8 +225,12 @@ def _pod_ssh(pod_json: dict) -> tuple[str, int]:
 @contextlib.contextmanager
 def pod_session(name: str, max_minutes: float, gpus: list[str] | None = None, image: str = DEFAULT_IMAGE,
                 disk_gb: int = 80, clouds: list[str] | None = None, start_timeout_min: float = 6,
-                max_start_attempts: int = 2):
-    """Create a pod, yield it, and always delete it. Refuses to start if the budget can't cover max_minutes."""
+                max_start_attempts: int = 2, max_cost: float | None = None):
+    """Create a pod, yield it, and always delete it. Refuses to start if the budget can't cover max_minutes.
+
+    max_cost: a per-session ceiling ($) on top of the global cap: GPU/cloud options whose listed price x
+    (max_minutes + start timeout) exceeds it are skipped (the on-pod kill switch makes that the worst case).
+    """
     ensure_ssh_key()
     last_err = None
     pod = None
@@ -192,9 +238,14 @@ def pod_session(name: str, max_minutes: float, gpus: list[str] | None = None, im
     for gpu, cloud in [(g, c) for c in (clouds or CLOUDS) for g in (gpus or GPU_PREFERENCE)]:
         price = gpu_price(gpu, cloud)
         if price is None:
+            print(f"[runpod] {gpu} ({cloud}): not offered / no stock right now")
             continue
         # budget check uses the listed price BEFORE anything is created
         need = price * (max_minutes + start_timeout_min) / 60
+        if max_cost is not None and need > max_cost:
+            print(f"[runpod] skip {gpu} ({cloud}) ${price:.2f}/h: worst case ${need:.2f} > session max ${max_cost:.2f}")
+            last_err = BudgetError(f"every option exceeds the session max ${max_cost:.2f}")
+            continue
         if need > remaining():
             raise BudgetError(f"{gpu}: {max_minutes + start_timeout_min:.0f} min at ${price:.2f}/h = ${need:.2f} > "
                               f"remaining ${remaining():.2f} of the ${cap():.2f} cap")
@@ -217,7 +268,11 @@ def pod_session(name: str, max_minutes: float, gpus: list[str] | None = None, im
         _record(pod_id, name, gpu, cloud, cost, max_minutes)
         print(f"[runpod] created {pod_id}: {gpu} ({cloud}) ${cost:.2f}/h; waiting up to {start_timeout_min:.0f} min "
               f"for the container")
-        pod = _wait_running(pod_id, start_timeout_min * 60)
+        try:
+            pod = _wait_running(pod_id, start_timeout_min * 60)
+        except BaseException:  # Ctrl-C / crash while waiting: never leave the pod behind
+            _delete(pod_id, reason="interrupted while starting")
+            raise
         if pod:
             break
         last_err = RuntimeError(f"{gpu} ({cloud}) not reachable over direct ssh in {start_timeout_min:.0f} min")
@@ -232,17 +287,41 @@ def pod_session(name: str, max_minutes: float, gpus: list[str] | None = None, im
         host, port = _pod_ssh(pod)
         p = Pod(pod_id, name, gpu, cost, host, port)
         for _ in range(30):  # sshd answers before keys are installed
-            if p.run("true", check=False) == 0:
-                break
+            try:
+                if p.run("true", check=False, timeout=40) == 0:
+                    break
+            except TimeoutError:
+                pass
             time.sleep(5)
-        # on-pod kill switch: Runpod injects a pod-scoped RUNPOD_API_KEY and runpodctl into pods
-        p.run(f"nohup bash -c 'sleep {int(max_minutes * 60)}; runpodctl pod delete $RUNPOD_POD_ID "
-              f"|| runpodctl remove pod $RUNPOD_POD_ID' >/tmp/killswitch.log 2>&1 &", check=False)
+        # on-pod kill switch: Runpod injects a pod-scoped RUNPOD_API_KEY and runpodctl into pods. ssh sessions do
+        # not always inherit the container environment, so take the two variables from PID 1.
+        p.killswitch = arm_killswitch(p, max_minutes)
         print(f"[runpod] pod {pod_id} {gpu} ${cost:.2f}/h, ssh {host}:{port}, auto-delete in {max_minutes:.0f} min; "
               f"budget remaining ${remaining():.2f}")
         yield p
     finally:
         _delete(pod_id, reason="session end")
+
+
+def arm_killswitch(p: "Pod", max_minutes: float) -> dict:
+    """Start the on-pod timer that deletes the pod after max_minutes; returns what was verified about it."""
+    secs = int(max_minutes * 60)
+    ks = (r"set -a; . <(tr '\0' '\n' < /proc/1/environ | grep -E '^RUNPOD_(API_KEY|POD_ID)='); set +a; "
+          f"sleep {secs}; runpodctl pod delete $RUNPOD_POD_ID || runpodctl remove pod $RUNPOD_POD_ID")
+    p.run(f"nohup bash -c {shlex.quote(ks)} >/tmp/killswitch.log 2>&1 < /dev/null &", check=False, timeout=60)
+    try:
+        out = p.output(f"sleep 1; pgrep -a -x sleep | grep -q ' {secs}$' && echo timer=1 || echo timer=0; "
+                       "command -v runpodctl >/dev/null && echo ctl=1 || echo ctl=0; "
+                       r"tr '\0' '\n' < /proc/1/environ | grep -c -E '^RUNPOD_(API_KEY|POD_ID)=' || true", timeout=60)
+        lines = out.split()
+        info = {"timer": "timer=1" in lines, "runpodctl": "ctl=1" in lines,
+                "env_vars": int(lines[-1]) if lines and lines[-1].isdigit() else 0, "after_min": round(max_minutes, 1)}
+    except (RuntimeError, subprocess.SubprocessError) as e:
+        info = {"error": str(e)[:200]}
+    info["armed"] = bool(info.get("timer") and info.get("runpodctl") and info.get("env_vars") == 2)
+    if not info["armed"]:
+        print(f"[runpod] WARNING: on-pod kill switch not verified ({info}); the local delete is the only guard")
+    return info
 
 
 def _record(pod_id: str, name: str, gpu: str, cloud: str, cost: float, max_minutes: float) -> None:

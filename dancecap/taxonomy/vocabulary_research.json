@@ -1,0 +1,682 @@
+{
+  "version": 1,
+  "kind": "vocabulary_research",
+  "created": "2026-10-06",
+  "source": "dancecap/docs/MOVES_RESEARCH.md (synthesis of five research reports; section 5 explains every row)",
+  "energy_convention": "energy_hint is 0..1 normalised Zouk1 height, the same scale as graph.json: energy = (y - y_min) / (y_max - y_min) with y_min = -1.3123, y_max = 1.6592. position_hint values are Zouk1 coordinates (Unity left-handed, y-up, as authored).",
+  "merge_rules": [
+    "vocabulary[] rows with status 'scaffold' name an existing graph move by 'slug': name + aliases are added as aliases of that move. Nothing else changes.",
+    "vocabulary[] rows with status 'proposed' become proposed moves (dashed nodes), or only add aliases when the slug already exists (counterbalance-pivot).",
+    "display_name is the Brazilian Portuguese label for the viewer (spec 3.10). Only use it when display_confidence is 'confirmed' or 'likely'; for 'translation' keep the user's Zouk1 name as the label.",
+    "Slugs stay the Zouk1-derived ones so existing labels keep working: 'lateral' stays the slug, 'Corredor' becomes its display name and an alias (user decision 2026-10-06: 'Lateral' is renamed Corredor).",
+    "hypotheses[], unresolved_aliases[], proposed_links[], do_not_add[] and graph_cleanup[] are NOT merged automatically: they are questions for the user or manual suggestions for taxonomy/additions.toml.",
+    "taxonomy/additions.toml is the user's file and must win over this file (see MOVES_RESEARCH.md section 2, decision G3)."
+  ],
+  "vocabulary": [
+    {
+      "name": "Corredor",
+      "slug": "lateral",
+      "display_name": "Corredor",
+      "display_confidence": "confirmed",
+      "zouk1_name": "Lateral",
+      "aliases": ["corredor", "el corredor", "lateral", "corridor"],
+      "portuguese": "corredor (also 'lateral')",
+      "english": "corridor / side-to-side travelling basic",
+      "description": "The basic side-to-side travelling pattern: the follower walks back and forth along a line past the leader and turns 180 degrees with a compass step at each end; her hips point along the line while her chest stays turned to the leader (torso torsion). Usually entered from a viradinha. Two sources (a salsaforums post and Helen Avelar's 'LATERAL/CORREDOR' tutorial) treat corredor and lateral as one move; the user decided on 2026-10-06 that Lateral is renamed Corredor.",
+      "energy_hint": 0.27,
+      "zouk1_matches": ["8c3386a3-06a5-4328-8409-e2a6a9c62c81", "1c1bdf22-893e-42a5-89d8-56234cbbae94"],
+      "family_hint": "open",
+      "tiers": ["couple"],
+      "status": "scaffold",
+      "verified": true,
+      "merge_note": "Remove the separate proposed move 'corredor' from taxonomy/additions.toml; otherwise the alias 'corredor' collides with it and is dropped with a warning.",
+      "sources": [
+        "https://bathzouk.co.uk/library/fundamentals/moves/lateral/",
+        "https://www.salsaforums.com/threads/zouk-my-new-obsession.21650/page-3",
+        "https://www.youtube.com/watch?v=jjAZJ5Far6g",
+        "https://www.goandance.com/en/blog/post/123/5-basic-steps-of-zouk-for-beginners",
+        "head-movement/docs/VIEWER_SPEC.md section 15 (user decision)"
+      ]
+    },
+    {
+      "name": "Viradinha",
+      "slug": "viradinha",
+      "display_name": "Viradinha",
+      "display_confidence": "confirmed",
+      "zouk1_name": "Viradinha",
+      "aliases": ["veraginha", "viradjinha"],
+      "portuguese": "viradinha ('little turn': virada = turn, -inha = small)",
+      "english": "little turn",
+      "description": "The follower makes a 180-degree backward pivot on the ball of the foot (a compass step) and goes back the way she came; led mainly with the leader's chest, his hand behind her shoulder. It is the entry into the corredor/lateral. 'veraginha' is how the Brazilian pronunciation (di = 'dji') sounds.",
+      "energy_hint": 0.19,
+      "zouk1_matches": ["af78b12c-14d1-4dca-9dde-d60c636067f9"],
+      "zouk1_possible": ["63f848a0-2cfb-4e30-8a98-4504a71c947e"],
+      "family_hint": "step",
+      "tiers": ["couple"],
+      "status": "scaffold",
+      "verified": true,
+      "sources": [
+        "https://bathzouk.co.uk/library/fundamentals/moves/viradinha/",
+        "https://bathzouk.co.uk/library/fundamentals/moves/lateral/"
+      ]
+    },
+    {
+      "name": "Soltinho",
+      "slug": "soltinho",
+      "display_name": "Soltinho",
+      "display_confidence": "confirmed",
+      "zouk1_name": "Soltinho",
+      "aliases": [],
+      "portuguese": "soltinho ('a little loose')",
+      "english": "little loose (alternating turns)",
+      "description": "Leader and follower take turns turning while orbiting a shared circle; a single-foot turn on a fixed axis.",
+      "energy_hint": 0.65,
+      "zouk1_matches": ["d844c4c7-3dbd-42af-b9f4-e0aac5bce6d6"],
+      "family_hint": "open",
+      "tiers": ["couple"],
+      "status": "scaffold",
+      "verified": true,
+      "sources": [
+        "https://bathzouk.co.uk/library/fundamentals/moves/soltinho/",
+        "https://amozouk.com/blog/7-foundational-zouk-moves-all-beginners-should-know",
+        "https://amozouk.com/blog/the-3-fundamental-types-of-turns-in-zouk"
+      ]
+    },
+    {
+      "name": "Gostosinho",
+      "slug": "gostosinho",
+      "display_name": "Gostosinho",
+      "display_confidence": "confirmed",
+      "zouk1_name": "Gostosinho",
+      "aliases": [],
+      "portuguese": "gostosinho ('nice, cosy')",
+      "english": "cosy hug",
+      "description": "A comfortable hug at the end of a back-and-forth basic. In Zouk1 it follows Back Basic, which matches.",
+      "energy_hint": 0.23,
+      "zouk1_matches": ["0c46f359-b79e-496a-b828-e2f13a11c133"],
+      "family_hint": "hold",
+      "tiers": ["couple"],
+      "status": "scaffold",
+      "verified": true,
+      "sources": [
+        "https://www.jettence.com/blog/names-of-brazilian-zouk-moves-in-portuguese-with-gifs-part-2/"
+      ]
+    },
+    {
+      "name": "Bônus",
+      "slug": "bonus",
+      "display_name": "Bônus",
+      "display_confidence": "confirmed",
+      "zouk1_name": "Bonus",
+      "aliases": ["bônus", "bonus turn"],
+      "portuguese": "bônus",
+      "english": "bonus",
+      "description": "A travelling turn in which the leader steps behind the follower instead of in front; she turns about one and a half times and ends facing her start direction, and the weight transfer makes a pause in the basic. The left bonus ends with a patinha ('little paw', a back step with inverted footwork). Hands stay joined (AmoZouk); the version where the leader lets go is the boomerang.",
+      "energy_hint": 0.31,
+      "zouk1_matches": ["3b407072-9e45-4698-b2f1-7e7581361e99"],
+      "family_hint": "open",
+      "tiers": ["couple"],
+      "status": "scaffold",
+      "verified": true,
+      "sub_steps": ["patinha (closing step of the left bonus; not a separate node)"],
+      "sources": [
+        "https://bathzouk.co.uk/library/fundamentals/moves/bonus/",
+        "https://amozouk.com/zouk-move-dictionary",
+        "https://www.scielo.br/j/rbep/a/rNhzqXVKxSQHzYbJVB66Q6h/?lang=pt"
+      ]
+    },
+    {
+      "name": "Boomerang",
+      "slug": "boomerang",
+      "display_name": "Boomerang",
+      "display_confidence": "likely",
+      "zouk1_name": "Boomerang",
+      "aliases": ["bumerangue", "bumerang"],
+      "portuguese": "bumerangue (spelling not found in a zouk source; teachers commonly say 'boomerang')",
+      "english": "boomerang",
+      "description": "The no-hands relative of the bônus (AmoZouk): the leader lets go and the follower travels past and comes back like a boomerang. One source treats boomerang as the European name for bônus; Zouk1 keeps both (Boomerang -> Bonus), which matches AmoZouk's split.",
+      "energy_hint": 0.32,
+      "zouk1_matches": ["fc67c615-7377-4be1-b878-8f92f03b811b"],
+      "family_hint": "turn",
+      "tiers": ["couple"],
+      "status": "scaffold",
+      "verified": true,
+      "sources": [
+        "https://amozouk.com/zouk-move-dictionary",
+        "https://amozouk.com/blog/the-3-fundamental-types-of-turns-in-zouk"
+      ]
+    },
+    {
+      "name": "Ioiô",
+      "slug": "yoyo",
+      "display_name": "Ioiô",
+      "display_confidence": "likely",
+      "zouk1_name": "Yoyo",
+      "aliases": ["ioiô", "ioio", "yo-yo", "yo yo"],
+      "portuguese": "ioiô",
+      "english": "yo-yo",
+      "description": "The follower makes a travelling turn in towards the leader, then out the other way. Isolated in Zouk1: see proposed_links.",
+      "energy_hint": 0.33,
+      "zouk1_matches": ["e286518b-5932-4729-9b0d-27d34e9377c9"],
+      "family_hint": "wave",
+      "tiers": ["couple"],
+      "status": "scaffold",
+      "verified": true,
+      "sources": [
+        "https://amozouk.com/blog/7-foundational-zouk-moves-all-beginners-should-know",
+        "https://amozouk.com/blog/the-3-fundamental-types-of-turns-in-zouk"
+      ]
+    },
+    {
+      "name": "Cambré",
+      "slug": "dip-back",
+      "display_name": "Cambré",
+      "display_confidence": "likely",
+      "zouk1_name": "Dip Back",
+      "aliases": ["cambré", "cambre", "backbend"],
+      "portuguese": "cambré",
+      "english": "backbend (dip back)",
+      "description": "A controlled backbend extending the whole spine while the follower stays supported; forum users call cambrés 'the dips'. Variants: forward cambré, sitting cambré. Maps best onto Dip Back; the three 'Dip' nodes and Fall Back may be other cambré shapes (see hypotheses).",
+      "energy_hint": 0.26,
+      "zouk1_matches": ["79a56109-5376-42ca-92a6-1c9570f62f7a"],
+      "zouk1_possible": ["dec10dbe-d394-453f-8484-a428d895d5ba"],
+      "family_hint": "hold",
+      "tiers": ["couple"],
+      "status": "scaffold",
+      "verified": true,
+      "sources": [
+        "https://www.scielo.br/j/rbep/a/rNhzqXVKxSQHzYbJVB66Q6h/?lang=pt",
+        "https://oaktown-zouk-level-guide.taylorkinney.chatgpt.site/"
+      ]
+    },
+    {
+      "name": "Abraço",
+      "slug": "hug",
+      "display_name": "Abraço",
+      "display_confidence": "likely",
+      "zouk1_name": "Hug",
+      "aliases": ["abraço", "abraco", "close embrace", "closed embrace"],
+      "portuguese": "abraço",
+      "english": "hug / close embrace",
+      "description": "The closed embrace position; the grounded hub of the Zouk1 graph (10 outgoing links).",
+      "energy_hint": 0.14,
+      "zouk1_matches": ["e25c66b0-41f5-4acc-ab29-35743f7c0ee1"],
+      "family_hint": "hold",
+      "tiers": ["couple"],
+      "status": "scaffold",
+      "verified": false,
+      "sources": [
+        "https://thebrazilianways.com/essential-portuguese-terms-every-zouk-dancer-should-know/"
+      ]
+    },
+    {
+      "name": "Abertura",
+      "slug": "side-lunge",
+      "display_name": "Abertura",
+      "display_confidence": "likely",
+      "zouk1_name": "Side Lunge",
+      "aliases": ["abertura", "lunge"],
+      "portuguese": "abertura ('opening', side to side)",
+      "english": "side lunge / opening",
+      "description": "A preparatory side step with the weight on one leg, used to enter turns. Side Lunge is the main hub of Zouk1 (14 inbound links, out to the turns), which fits. Open Lunge and Step To Side are other candidates.",
+      "energy_hint": 0.31,
+      "zouk1_matches": ["3ee2c3ee-696d-482d-b6a9-5bf6ede44e2d"],
+      "zouk1_possible": ["cc4b66e3-e0a0-4461-9ee7-b7006681c533", "8a3239fb-1bf2-427c-a7bd-5639edb099ca"],
+      "family_hint": "hold",
+      "tiers": ["couple"],
+      "status": "scaffold",
+      "verified": true,
+      "sources": [
+        "https://oaktown-zouk-level-guide.taylorkinney.chatgpt.site/",
+        "https://bathzouk.co.uk/library/fundamentals/moves/lunge/"
+      ]
+    },
+    {
+      "name": "Forward Basic",
+      "slug": "forward-basic",
+      "display_name": "Forward Basic",
+      "display_confidence": "translation",
+      "zouk1_name": "Forward Basic",
+      "aliases": ["básico para frente", "passo básico frente"],
+      "portuguese": "passo básico (frente)",
+      "english": "forward basic",
+      "description": "The slow-quick-quick basic danced forward (passo básico frente e trás = forward and back).",
+      "energy_hint": 0.19,
+      "zouk1_matches": ["33fd1aaf-74c6-43e6-92a8-cb29492e9ec5"],
+      "family_hint": "step",
+      "tiers": ["couple"],
+      "status": "scaffold",
+      "verified": true,
+      "sources": [
+        "https://thebrazilianways.com/essential-portuguese-terms-every-zouk-dancer-should-know/",
+        "https://oaktown-zouk-level-guide.taylorkinney.chatgpt.site/"
+      ]
+    },
+    {
+      "name": "Back Basic",
+      "slug": "back-basic",
+      "display_name": "Back Basic",
+      "display_confidence": "translation",
+      "zouk1_name": "Back Basic",
+      "aliases": ["básico para trás", "passo básico trás"],
+      "portuguese": "passo básico (trás)",
+      "english": "back basic",
+      "description": "The slow-quick-quick basic danced backward.",
+      "energy_hint": 0.2,
+      "zouk1_matches": ["09e3ca68-57b3-4726-a744-0fd81752d9d9"],
+      "family_hint": "step",
+      "tiers": ["couple"],
+      "status": "scaffold",
+      "verified": true,
+      "sources": [
+        "https://thebrazilianways.com/essential-portuguese-terms-every-zouk-dancer-should-know/"
+      ]
+    },
+    {
+      "name": "Simple Turn",
+      "slug": "simple-turn",
+      "display_name": "Simple Turn",
+      "display_confidence": "translation",
+      "zouk1_name": "Simple Turn",
+      "aliases": ["giro", "giro simples"],
+      "portuguese": "giro (simples)",
+      "english": "simple turn",
+      "description": "The basic follower turn. 'giro' is the generic Portuguese word for turn.",
+      "energy_hint": 0.34,
+      "zouk1_matches": ["4cd989d6-3a64-478c-85cd-cd3af9fccc3d"],
+      "family_hint": "step",
+      "tiers": ["couple"],
+      "status": "scaffold",
+      "verified": false,
+      "sources": [
+        "https://amozouk.com/blog/the-3-fundamental-types-of-turns-in-zouk"
+      ]
+    },
+    {
+      "name": "Double Turn",
+      "slug": "double-turn",
+      "display_name": "Double Turn",
+      "display_confidence": "translation",
+      "zouk1_name": "Double Turn",
+      "aliases": ["giro duplo"],
+      "portuguese": "giro duplo (translation; not checked in a zouk source)",
+      "english": "double turn",
+      "description": "Two follower rotations.",
+      "energy_hint": 0.66,
+      "zouk1_matches": ["415e57f3-63fa-4182-828d-f440a4690ec0"],
+      "family_hint": "turn",
+      "tiers": ["couple"],
+      "status": "scaffold",
+      "verified": false,
+      "sources": []
+    },
+    {
+      "name": "Pirouette",
+      "slug": "pirouette",
+      "display_name": "Pirouette",
+      "display_confidence": "translation",
+      "zouk1_name": "Pirouette",
+      "aliases": ["pirueta"],
+      "portuguese": "pirueta (translation; not checked in a zouk source)",
+      "english": "pirouette",
+      "description": "Fast follower spin on one foot.",
+      "energy_hint": 0.92,
+      "zouk1_matches": ["a573c6f1-561e-4bbd-83b7-ed2ffe5dcdfd"],
+      "family_hint": "turn",
+      "tiers": ["couple"],
+      "status": "scaffold",
+      "verified": false,
+      "sources": []
+    },
+    {
+      "name": "Airplane",
+      "slug": "airplane",
+      "display_name": "Airplane",
+      "display_confidence": "translation",
+      "zouk1_name": "Airplane",
+      "aliases": ["avião", "aviao"],
+      "portuguese": "avião (named in the dZouk curriculum; no description found, so the match is by translation)",
+      "english": "airplane",
+      "description": "Peak-energy figure (Zouk1 band 4). The dZouk curriculum lists an 'avião'.",
+      "energy_hint": 0.9,
+      "zouk1_matches": ["b7c93212-f32a-4334-a5cc-f6af1db8022f"],
+      "family_hint": "open",
+      "tiers": ["couple"],
+      "status": "scaffold",
+      "verified": false,
+      "sources": [
+        "https://www.dzouk.com/zouk-university-program-toronto/"
+      ]
+    },
+    {
+      "name": "Contrapeso",
+      "slug": "counterbalance-pivot",
+      "display_name": "Contrapeso",
+      "display_confidence": "likely",
+      "zouk1_name": null,
+      "aliases": ["contrapeso", "counter balance", "counter-balance", "counterbalanced pivot", "planada", "planada em contrapeso"],
+      "portuguese": "contrapeso (counterbalance); the pivot itself is a planada",
+      "english": "counterbalance pivot",
+      "description": "The Larissa/Kadu figure: the follower's support foot is the fixed axis, the leader walks a full circle around her at arm's length, and both lean away from each other so each would fall alone while the pair is stable through the tensioned connection. In zouk terms it is most likely a planada (AmoZouk: a single-footed turn where the leader rotates the follower on a stationary axis; the leader walking around her comes from another source and is not in AmoZouk's definition) done in counterbalance ('contrapesos' is attested in SciELO 2023; English sources say 'counterbalance'). Counterbalance itself is a technique that can sit on other moves; that modifier comes from counterbalance.json, not from the label.",
+      "energy_hint": 0.62,
+      "position_hint": [0.6, 0.55, -0.45],
+      "near": ["walk-around", "hug", "pirouette"],
+      "links_from": ["lateral", "open-break", "hug"],
+      "links_to": ["walk-around", "pirouette"],
+      "family": "turn",
+      "tone": "yellow",
+      "zouk1_matches": [],
+      "tiers": ["couple"],
+      "status": "proposed",
+      "verified": true,
+      "merge_note": "Already proposed in additions.toml (energy 0.5, links walk-around -> it -> hug); this row only adds aliases. The energy/links here are the research suggestion if the graph stage wants to revise them.",
+      "sources": [
+        "https://amozouk.com/zouk-move-dictionary",
+        "https://amozouk.com/blog/the-3-fundamental-types-of-turns-in-zouk",
+        "https://en.wikipedia.org/wiki/Brazilian_Zouk",
+        "https://www.scielo.br/j/rbep/a/rNhzqXVKxSQHzYbJVB66Q6h/?lang=pt",
+        "https://www.dzouk.com/zouk-university-program-toronto/",
+        "https://zoukology.com/tag/counter-balance/",
+        "https://zouksidedown.wordpress.com/2014/12/12/out-of-balance-when-you-dance-try-these-tips/",
+        "https://en.wikipedia.org/wiki/Death_spiral_(figure_skating)"
+      ]
+    },
+    {
+      "name": "Pião",
+      "slug": "piao",
+      "display_name": "Pião",
+      "display_confidence": "confirmed",
+      "zouk1_name": null,
+      "aliases": ["pião", "spinning top", "reverse pião", "pião reverso"],
+      "portuguese": "pião ('spinning top'); advanced form: reverse pião",
+      "english": "spinning top",
+      "description": "In closed frame, leader and follower both rotate around a central axis between them; head movement can be added. A counterbalanced pião is the closed-frame relative of the Contrapeso pivot. Not in Zouk1 (Hug Simple Turn is the nearest node; ask the user whether it is the same).",
+      "energy_hint": 0.58,
+      "position_hint": [0.2, 0.4, -0.3],
+      "near": ["hug", "hug-simple-turn", "double-turn"],
+      "links_from": ["hug"],
+      "links_to": ["hug"],
+      "family": "turn",
+      "tone": "yellow",
+      "zouk1_matches": [],
+      "tiers": ["couple"],
+      "status": "proposed",
+      "verified": true,
+      "sources": [
+        "https://www.jettence.com/blog/names-of-brazilian-zouk-moves-in-portuguese-with-gifs-part-2/",
+        "https://www.dzouk.com/zouk-university-program-toronto/",
+        "https://oaktown-zouk-level-guide.taylorkinney.chatgpt.site/"
+      ]
+    },
+    {
+      "name": "Chicote",
+      "slug": "chicote",
+      "display_name": "Chicote",
+      "display_confidence": "confirmed",
+      "zouk1_name": null,
+      "aliases": ["chicotada", "whip", "hair whip", "head whip"],
+      "portuguese": "chicote ('whip'); chicotada = a lash",
+      "english": "whip",
+      "description": "Head accent: the follower throws her hair back while looking up as an accent (timing 'count 1 or 5, prepared forward on 8' is unverified); common in lambazouk. May be what the user calls 'Howl Up' (head thrown back, looking up) and is a candidate for 'cicada' - see hypotheses and unresolved_aliases.",
+      "energy_hint": 0.41,
+      "position_hint": [1.4, -0.1, 0.5],
+      "near": ["howl-up", "howl-down", "behind-back-howl"],
+      "family": "head",
+      "tone": "green",
+      "zouk1_matches": [],
+      "tiers": ["couple"],
+      "status": "proposed",
+      "verified": true,
+      "sources": [
+        "https://www.jettence.com/blog/names-of-brazilian-zouk-moves-in-portuguese-with-gifs-part-2/",
+        "https://www.dzouk.com/zouk-university-program-toronto/",
+        "https://oaktown-zouk-level-guide.taylorkinney.chatgpt.site/"
+      ]
+    },
+    {
+      "name": "Bate cabelo",
+      "slug": "bate-cabelo",
+      "display_name": "Bate cabelo",
+      "display_confidence": "confirmed",
+      "zouk1_name": null,
+      "aliases": ["bate-cabelo", "hair beat", "beating hair"],
+      "portuguese": "bate cabelo ('beating hair')",
+      "english": "hair beat",
+      "description": "Figure-8 upper-body motion with a relaxed neck so the hair whips.",
+      "energy_hint": 0.48,
+      "near": ["howl-up", "body-roll", "behind-back-howl"],
+      "family": "head",
+      "tone": "green",
+      "zouk1_matches": [],
+      "tiers": ["couple"],
+      "status": "proposed",
+      "verified": true,
+      "sources": [
+        "https://www.jettence.com/blog/names-of-brazilian-zouk-moves-in-portuguese-with-gifs/",
+        "https://oaktown-zouk-level-guide.taylorkinney.chatgpt.site/"
+      ]
+    },
+    {
+      "name": "Balão",
+      "slug": "balao",
+      "display_name": "Balão",
+      "display_confidence": "confirmed",
+      "zouk1_name": null,
+      "aliases": ["balão", "balloon", "balão apagado"],
+      "portuguese": "balão ('balloon'); variant: balão apagado",
+      "english": "balloon",
+      "description": "Head movement: the upper body circles around a vertical axis.",
+      "energy_hint": 0.24,
+      "near": ["body-roll", "howl-down", "hug"],
+      "family": "head",
+      "tone": "green",
+      "zouk1_matches": [],
+      "tiers": ["couple"],
+      "status": "proposed",
+      "verified": true,
+      "sources": [
+        "https://www.jettence.com/blog/names-of-brazilian-zouk-moves-in-portuguese-with-gifs/"
+      ]
+    },
+    {
+      "name": "Frango assado",
+      "slug": "frango-assado",
+      "display_name": "Frango assado",
+      "display_confidence": "confirmed",
+      "zouk1_name": null,
+      "aliases": ["roast chicken"],
+      "portuguese": "frango assado ('roast chicken')",
+      "english": "roast chicken",
+      "description": "Head movement: the upper body rotates around a horizontal axis.",
+      "energy_hint": 0.34,
+      "near": ["howl-down", "body-roll", "two-hand-howl-down"],
+      "family": "head",
+      "tone": "green",
+      "zouk1_matches": [],
+      "tiers": ["couple"],
+      "status": "proposed",
+      "verified": true,
+      "sources": [
+        "https://www.jettence.com/blog/names-of-brazilian-zouk-moves-in-portuguese-with-gifs/",
+        "https://oaktown-zouk-level-guide.taylorkinney.chatgpt.site/"
+      ]
+    },
+    {
+      "name": "Boneca",
+      "slug": "boneca",
+      "display_name": "Boneca",
+      "display_confidence": "confirmed",
+      "zouk1_name": null,
+      "aliases": ["doll"],
+      "portuguese": "boneca ('doll')",
+      "english": "doll",
+      "description": "A lambazouk head/upper-body movement, often led visually.",
+      "energy_hint": 0.44,
+      "near": ["howl-up", "behind-back-howl"],
+      "family": "head",
+      "tone": "green",
+      "zouk1_matches": [],
+      "tiers": ["couple"],
+      "status": "proposed",
+      "verified": true,
+      "sources": [
+        "https://www.jettence.com/blog/names-of-brazilian-zouk-moves-in-portuguese-with-gifs-part-2/",
+        "https://oaktown-zouk-level-guide.taylorkinney.chatgpt.site/"
+      ]
+    },
+    {
+      "name": "Toalha",
+      "slug": "toalha",
+      "display_name": "Toalha",
+      "display_confidence": "confirmed",
+      "zouk1_name": null,
+      "aliases": ["towel"],
+      "portuguese": "toalha ('towel')",
+      "english": "towel",
+      "description": "Head movement while turning with her back to the leader.",
+      "energy_hint": 0.54,
+      "near": ["behind-back-howl", "intimate-howl"],
+      "family": "head",
+      "tone": "green",
+      "zouk1_matches": [],
+      "tiers": ["couple"],
+      "status": "proposed",
+      "verified": true,
+      "sources": [
+        "https://www.jettence.com/blog/names-of-brazilian-zouk-moves-in-portuguese-with-gifs-part-2/"
+      ]
+    },
+    {
+      "name": "Balanço",
+      "slug": "balanco",
+      "display_name": "Balanço",
+      "display_confidence": "confirmed",
+      "zouk1_name": null,
+      "aliases": ["balanço", "base paraense", "swing basic"],
+      "portuguese": "balanço ('swing'; also base paraense, from lambada)",
+      "english": "swing basic",
+      "description": "An angled basic of three steps forward or back, inherited from lambada.",
+      "energy_hint": 0.17,
+      "position_hint": [0.65, -0.8, -0.4],
+      "near": ["forward-basic", "back-basic", "stand"],
+      "family": "step",
+      "tone": "green",
+      "zouk1_matches": [],
+      "tiers": ["couple"],
+      "status": "proposed",
+      "verified": true,
+      "sources": [
+        "https://www.jettence.com/blog/names-of-brazilian-zouk-moves-in-portuguese-with-gifs-part-2/",
+        "https://thebrazilianways.com/essential-portuguese-terms-every-zouk-dancer-should-know/"
+      ]
+    }
+  ],
+  "proposed_links": [
+    {"from": "lateral", "to": "yoyo", "why": "Yoyo is isolated in Zouk1; the yo-yo is entered from the side-to-side basic."},
+    {"from": "yoyo", "to": "open-break", "why": "exit back to open position"},
+    {"from": "yoyo", "to": "simple-turn", "why": "alternative exit"},
+    {"from": "lateral", "to": "counterbalance-pivot", "why": "research suggestion; the graph stage currently links walk-around -> counterbalance-pivot -> hug"},
+    {"from": "counterbalance-pivot", "to": "pirouette", "why": "a pivot that releases into a spin"}
+  ],
+  "hypotheses": [
+    {
+      "id": "H1",
+      "question": "Are 'Howl Up' / 'howl Down' head throws (head back and up like a howl, i.e. close to chicote) or the elástico / Raul ('ha-OOL' in Brazilian Portuguese)?",
+      "evidence_for_head_throw": "The user-confirmed legend says Tetra = head movements (howls). Chicote is 'hair thrown back while looking up'.",
+      "evidence_for_raul": "Initial R in Brazilian Portuguese sounds like H; Open Break and Bonus lead into Howl Up; elástico = raul is confirmed (Jettence, dZouk).",
+      "nodes": ["ca1f7708-8b1c-4676-9736-3d2d56f9437b", "3f311deb-fc89-43a8-a1a3-d13618968c12", "c9730218-1455-4fa4-ad79-5b1c390cbbf4", "dc636dbd-2eac-4b4f-ba58-14452fa4ebf6", "50c11f74-3bb0-4175-a3a6-90b74451fdcb"],
+      "if_head_throw": "add aliases (e.g. chicote) to howl-up via additions.toml and drop the proposed chicote node",
+      "if_raul": "add aliases ['raul', 'rau', 'elástico', 'elastico'] to the howl moves",
+      "if_neither": "add Elástico as a proposed Ball node near Open Break at about [1.9, -0.35, -0.6] (energy 0.32)"
+    },
+    {
+      "id": "H2",
+      "question": "Is 'Little Turn' the preparation for 'Viradinha' or the same move (viradinha literally means little turn)?",
+      "nodes": ["63f848a0-2cfb-4e30-8a98-4504a71c947e", "af78b12c-14d1-4dca-9dde-d60c636067f9"]
+    },
+    {
+      "id": "H3",
+      "question": "Is either 'Walk Around' node (0db8e995 at height 0.79, now linked to Contrapeso; 9b47a87e reached only from a blank node) the leader circling the follower, i.e. the planada?",
+      "nodes": ["0db8e995-badc-4139-ad59-29ba20f3c0aa", "9b47a87e-d371-4dc7-8edc-35b5971ae82d"]
+    },
+    {
+      "id": "H4",
+      "question": "Is 'Bent Spin' the tilted turn (giro inclinado: the follower's upper body tilted relative to her rotation axis)?",
+      "nodes": ["f77ac0cb-9813-4bfc-be41-5b66712b3a7e"],
+      "if_yes": "add alias 'tilted turn' to bent-spin; if no, propose Tilted Turn (Star, energy 0.85, near pirouette / double-turn / double-unwined-turn)"
+    },
+    {
+      "id": "H5",
+      "question": "Are the three 'Dip' nodes, 'Dip Back', 'Fall Back' and the two 'Side Dip' nodes different cambré / drop shapes? If so they deserve separate slugs (cambre, side-dip, drop) instead of one 'dip'.",
+      "nodes": ["60611898-1d9a-47e0-9e65-66ed3aa56100", "bf4f4340-b294-431e-8f58-2fa24a4901d8", "a6989a10-e588-4760-84c7-6f4cf8d2943f", "79a56109-5376-42ca-92a6-1c9570f62f7a", "dec10dbe-d394-453f-8484-a428d895d5ba"]
+    },
+    {
+      "id": "H6",
+      "question": "Is 'Dive' the mergulho (a forward-diving head/upper-body movement) or a drop to the floor? Translation matches; no description of mergulho was verified.",
+      "nodes": ["3c3278d2-8bbe-4e27-873d-b372ad935d2a"]
+    },
+    {
+      "id": "H7",
+      "question": "Is 'Back And Forth' the passo básico frente e trás (forward-and-back basic)?",
+      "nodes": ["bb1513c9-476a-4787-a3b0-aff086b1920b"]
+    },
+    {
+      "id": "H8",
+      "question": "Which node is the body wave (onda / ondulação): 'Body Roll' or 'Do The Wave'? (Portuguese term not verified.)",
+      "nodes": ["481f49e1-582a-4d80-95bd-ae0318962d5e", "a9b25cef-18b7-4a45-ae9e-8e5e1201550f"]
+    },
+    {
+      "id": "H9",
+      "question": "Is 'Lateral From Behind' what some syllabi call 'Reverse Lateral'? (low confidence)",
+      "nodes": ["ab99027b-0cc4-4658-8484-774490d1e601", "ead6260c-8a30-416a-af09-47677eda5ddf"]
+    },
+    {
+      "id": "H10",
+      "question": "Volta ao mundo ('around the world'): head roll side to side, or a turn variant? Sources disagree (forum snippets vs the dZouk turn list). Not proposed until the user says.",
+      "nodes": []
+    },
+    {
+      "id": "H11",
+      "question": "Do we need separate nodes for a basic in place (passo básico no lugar) and a travelling turn (Bath Zouk separates it from the simple turn)?",
+      "nodes": []
+    },
+    {
+      "id": "H12",
+      "question": "Is the take's couple Kadu Pires and Larissa Thayane (Kadu Pires co-founded the Brazilian Zouk Dance Council in 2014)? If so their own move names are the natural standard for these labels.",
+      "nodes": []
+    }
+  ],
+  "unresolved_aliases": [
+    {
+      "alias": "cicada",
+      "said_by": "user, 2026-10-06 (spelling unknown)",
+      "candidates": [
+        {"term": "sacada", "pronunciation": "sa-KA-da", "fit": "closest sound; a tango / forro term for displacing the partner's free leg with your own; found in no zouk syllabus, but a core samba de gafieira move (Brazilian partner dance taught by many zouk teachers)"},
+        {"term": "chicote / chicotada", "pronunciation": "shi-KO-chee / shi-ko-TA-da", "fit": "core zouk vocabulary (head/hair whip on an accent); 'chicotada' ends in -ada like 'cicada'"},
+        {"term": "cabeçada", "pronunciation": "ka-be-SA-da", "fit": "generic word for a head movement"},
+        {"term": "sarrada", "pronunciation": "ha-HA-da", "fit": "listed by one zouk school (riozoukimmersion); no description fetched"},
+        {"term": "calesita", "pronunciation": "ka-le-SEE-ta", "fit": "tango 'carousel' - the leader walks the follower around while she pivots; matches the counterbalance pivot in meaning, not in sound"}
+      ],
+      "resolution": "Ask the user, or let the narration step resolve it: keep 'cicada' as an unresolved alias; when it is narrated, show the segment and ask 'leg displacing her leg (sacada) or head/hair whip on an accent (chicote)?'. Do not create a node until confirmed.",
+      "sources": [
+        "https://en.wikipedia.org/wiki/Figures_of_Argentine_tango",
+        "https://www.jettence.com/blog/names-of-brazilian-zouk-moves-in-portuguese-with-gifs-part-2/",
+        "https://www.riozoukimmersion.com/zouk-basic-moves-for-beginners/"
+      ]
+    }
+  ],
+  "do_not_add": [
+    {"term": "corredor (as a separate move)", "why": "It is the lateral; the user renamed Lateral to Corredor."},
+    {"term": "tesoura", "why": "Not found in any zouk glossary or syllabus checked; wait until the user defines it."},
+    {"term": "sacada", "why": "Not zouk vocabulary in any source found; only a candidate spelling for 'cicada'."},
+    {"term": "patinha (as a node)", "why": "The closing step of the left bônus; keep it inside the bônus."},
+    {"term": "mergulho (as a node)", "why": "Probably the user's 'Dive' (H6)."}
+  ],
+  "graph_cleanup": [
+    {"item": "capitalisation", "names": ["howl Down", "right Arm Out", "wrap Hug", "open Lunge In Front", "Behind Back hand Switch", "Cross wrap", "Two Hand howl Down"], "suggestion": "display in title case; keep the authored text as an alias"},
+    {"item": "spelling", "names": ["Double Unwined Turn"], "suggestion": "Double Unwind Turn (alias already in additions.toml)"},
+    {"item": "numeric name", "names": ["180"], "suggestion": "slug '180' is fine; display as '180° turn'"},
+    {"item": "blank and isolated nodes", "suggestion": "11 blank-named nodes and the isolated ones (Leg Split, Roll Right, Inside Turn, Yoyo, Stand ac91d2de, Lead Turn 4ac7598f and blank nodes) are questions for the user; the narration step will show which ones ever get used."},
+    {"item": "hubs", "suggestion": "Mark grounded hub states (Stand, Hug, Side Lunge, Forward/Back Basic) with an extra key 'hub': true so the fingerprint can separate time in the base from time in moves (Snap-Together Motion precedent)."}
+  ]
+}

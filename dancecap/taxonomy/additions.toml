@@ -1,0 +1,147 @@
+# Additions to the zouk dance graph (taxonomy/zouk_graph.json is regenerated from Zouk1.json + this file
+# + taxonomy/vocabulary_research.json). This file wins over the vocabulary research.
+# Edit freely, then run:   python -m dancecap.moves graph
+#
+# Moves are referred to by slug (lower-case, hyphens: "Lateral From Behind" -> "lateral-from-behind"), by an alias,
+# or by a node id (Zouk1 uuid) when one specific instance of a duplicated move is meant.
+# Energy is 0..1 = graph height: 0-0.2 grounded, 0.2-0.4 low, 0.4-0.6 travelling, 0.6-0.8 high, 0.8-1 peak.
+# Legend (confirmed 2026-10-06): Cylinder standing rest, Hourglass holds / embraces / isolations, Diamond steps and
+# basics, Plus open / hand-connection moves, Star turns and spins, Tetra head movements (howls) and dips, Ball special
+# wave moves. Families for proposed moves: rest, hold, step, open, turn, head, wave (= those shapes).
+# Tones: blue (connection / position state), green (move), yellow / orange (advanced, high-commitment).
+
+version = 1
+
+# ---- display names: the label shown in the viewer (Brazilian Portuguese where established; the English Zouk1
+# name stays an alias). Wins over the vocabulary research. ------------------------------------------------------
+[display_names]
+lateral = "Corredor"                # user decision 2026-10-06: "Lateral" is renamed Corredor (slug stays 'lateral')
+# Brazilian Portuguese names from the terminology research (user 2026-10-06: "common zouk terms should apply"):
+airplane = "Avião"                                      # attested (docs/ZOUK_TERMINOLOGY.md)
+back-and-forth = "Frente e Trás"                        # attested (docs/ZOUK_TERMINOLOGY.md)
+back-basic = "Passo Básico Atrás"                       # partial (docs/ZOUK_TERMINOLOGY.md)
+bent-spin = "Giro Inclinado"                            # partial (docs/ZOUK_TERMINOLOGY.md)
+body-roll = "Ondulação"                                 # attested (docs/ZOUK_TERMINOLOGY.md)
+bonus = "Bônus"                                         # attested (docs/ZOUK_TERMINOLOGY.md)
+boomerang = "Bumerangue"                                # attested (docs/ZOUK_TERMINOLOGY.md)
+crosswalk = "Passo Cruzado"                             # partial (docs/ZOUK_TERMINOLOGY.md)
+dip-back = "Cambré"                                     # attested (docs/ZOUK_TERMINOLOGY.md)
+dive = "Mergulho"                                       # partial (docs/ZOUK_TERMINOLOGY.md)
+do-the-wave = "Onda"                                    # partial (docs/ZOUK_TERMINOLOGY.md)
+double-turn = "Giro Duplo"                              # attested (docs/ZOUK_TERMINOLOGY.md)
+forward-basic = "Passo Básico à Frente"                 # partial (docs/ZOUK_TERMINOLOGY.md)
+gostosinho = "Gostosinho"                               # attested (docs/ZOUK_TERMINOLOGY.md)
+hold-behind-crossed-arms = "Cestinha"                   # partial (docs/ZOUK_TERMINOLOGY.md)
+hug = "Abraço"                                          # attested (docs/ZOUK_TERMINOLOGY.md)
+lateral-from-behind = "Corredor From Behind"            # user_decision (docs/ZOUK_TERMINOLOGY.md)
+lead-turn = "Giro do Cavalheiro"                        # attested (docs/ZOUK_TERMINOLOGY.md)
+pirouette = "Giro no Eixo"                              # attested (docs/ZOUK_TERMINOLOGY.md)
+reverse-turn = "Giro Invertido"                         # partial (docs/ZOUK_TERMINOLOGY.md)
+side-lunge = "Preparação para Giro"                     # attested (docs/ZOUK_TERMINOLOGY.md)
+simple-turn = "Giro Simples"                            # attested (docs/ZOUK_TERMINOLOGY.md)
+snake = "Cobrinha"                                      # partial (docs/ZOUK_TERMINOLOGY.md)
+soltinho = "Soltinho"                                   # attested (docs/ZOUK_TERMINOLOGY.md)
+stop = "Trava"                                          # partial (docs/ZOUK_TERMINOLOGY.md)
+switch-hands = "Troca de Mãos"                          # partial (docs/ZOUK_TERMINOLOGY.md)
+tilt-left = "Inclinação para a Esquerda"                # partial (docs/ZOUK_TERMINOLOGY.md)
+tilt-right = "Inclinação para a Direita"                # partial (docs/ZOUK_TERMINOLOGY.md)
+# turn = "Giro"  -- not applied: "giro" already names Giro Simples when narrating (open question)
+twist = "Torção"                                        # attested (docs/ZOUK_TERMINOLOGY.md)
+two-hands-armbar = "Chave de Braço"                     # partial (docs/ZOUK_TERMINOLOGY.md)
+viradinha = "Viradinha"                                 # attested (docs/ZOUK_TERMINOLOGY.md)
+yoyo = "Ioiô"                                           # attested (docs/ZOUK_TERMINOLOGY.md)
+
+# ---- aliases: other names (spellings, Portuguese terms, what you say while narrating) for existing moves --------
+[aliases]
+lateral = ["corredor", "corridor", "Lateral", "Passo Lateral", "Passo do Corredor", "Base Corredor", "Corredor Fechado", "Corredor Aberto"]
+viradinha = ["veraginha", "viradinha turn"]
+double-unwined-turn = ["double unwind turn"]
+howl-down = ["head movement down"]
+# soltinho = ["solto"]
+# Portuguese alternates from the terminology research (only for renamed moves; terms that name another move skipped):
+back-and-forth = ["Básico Frente e Trás", "Passo Frente e Trás", "Vai e Vem", "Básico Frontal", "Passo Básico"]
+back-basic = ["Passo Básico para Trás"]
+bent-spin = ["Giro com Inclinação", "Giro com Cabeça Inclinada"]
+body-roll = ["Ondulação Frontal", "Ondulação Lateral", "Corporal", "Rolos de Corpo"]
+boomerang = ["Bumerang", "Boomerangue"]
+crosswalk = ["Cruzado", "Passo Cruzado da Dama", "Básico Lateral Cruzado", "Cruzado Lateral"]
+dip-back = ["Cambret"]
+dive = ["Mergulho Simples", "Mergulho com Cabeça"]
+do-the-wave = ["Ondinha"]
+double-turn = ["Giro Duplo para os Dois Lados"]
+forward-basic = ["Passo Básico para Frente"]
+gostosinho = ["Básico Gostosinho"]
+hug = ["Posição de Enlace", "Enlace"]
+lead-turn = ["Giro Cavalheiro"]
+pirouette = ["Giros no Eixo"]
+reverse-turn = ["Giro Invertido com a Mão Direita"]
+side-lunge = ["Preparação pro Giro", "Lunge", "Abertura"]
+snake = ["Cobra"]
+soltinho = ["Giro do Cavalheiro e da Dama"]
+stop = ["Trava do Cavalheiro"]
+switch-hands = ["Troca de Mão", "Troca de Conexão", "Trocando a Mão"]
+tilt-left = ["Inclinação para Esquerda"]
+tilt-right = ["Inclinação para Direita"]
+turn = ["Giro da Dama"]
+twist = ["Torções"]
+yoyo = ["Ioiô Simples"]
+
+# ---- proposed moves: not in Zouk1 yet; they appear as dashed "proposed" nodes until status = "accepted" ---------
+[[moves]]
+slug = "counterbalance-pivot"
+name = "Counterbalance Pivot"       # shown as "Contrapeso" (vocabulary research, likely); set display_name to override
+aliases = ["counterbalance", "counter balance pivot", "pivot around"]
+family = "turn"                     # the follower rotates in place (Star)
+tone = "yellow"                     # high commitment: both dancers lean out and hold each other in tension
+energy = 0.62                       # vocabulary research estimate
+near = ["walk-around", "hug", "pirouette"]
+links_from = ["lateral", "open-break", "hug"]   # proposed links  <move> -> counterbalance-pivot
+links_to = ["walk-around", "pirouette"]         # proposed links  counterbalance-pivot -> <move>
+status = "proposed"
+description = "The leader anchors the follower's support foot at one point and walks a full circle around her at arm's length; both lean away and hold each other in tension (shared centre of mass between them). Researched name: contrapeso (the pivot itself is a planada); the pião is a different move (both rotate in closed frame)."
+
+# [[moves]]
+# slug = "my-new-move"
+# name = "My New Move"
+# display_name = "Nome em Português"
+# family = "open"
+# energy = 0.55
+# near = ["soltinho"]
+# status = "proposed"               # "accepted" once you are happy with it
+
+# ---- proposed links between existing moves (dashed until accepted) --------------------------------------------
+# Suggestions from the vocabulary research (Yoyo is isolated in Zouk1) - uncomment to add:
+# [[links]]
+# from = "lateral"
+# to = "yoyo"
+# [[links]]
+# from = "yoyo"
+# to = "open-break"
+# [[links]]
+# from = "yoyo"
+# to = "simple-turn"
+# status = "proposed"               # "accepted" once you are happy with it
+
+# ---- legend corrections (shape / tone meanings), shown in the viewer -----------------------------------------
+# [legend.shapes.Tetra]
+# label = "head movements and dips"
+# [legend.tones.blue]
+# meaning = "connection states"
+
+# ---- same move: the user says these are one move (node ids stay; the first slug resolves to the second) -------
+[same_move]
+little-turn = "viradinha"           # user 2026-10-06: Little Turn is the Viradinha ("viradinha" = little turn)
+
+# ---- accepted additions -----------------------------------------------------------------------------------------
+[[moves]]
+slug = "sarrada"
+name = "Sarrada"
+aliases = ["cicada", "hip press"]
+family = "hold"                     # close embrace (Hourglass)
+tone = "green"
+energy = 0.3
+near = ["hug", "body-roll", "gostosinho"]
+links_from = ["hug"]
+links_to = ["hug"]
+status = "accepted"
+description = "Hip-led press against the partner in close embrace. The user identified the move first heard as 'cicada' as sarrada (2026-10-06); the terminology research found no zouk syllabus source, so the name rests on the user's decision."

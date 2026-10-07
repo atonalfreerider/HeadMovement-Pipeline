@@ -26,3 +26,6 @@
 !/prototype/larissa_kadu/
 /prototype/larissa_kadu/*
 !/prototype/larissa_kadu/*.json
+
+# gated body models downloaded by the user (MANO, FLAME) - licence forbids redistribution
+/models/

@@ -193,7 +193,7 @@ def renders_sheet(work: Path, splat, quest, app, refl, views, cfg, ev: dict, mes
             img, valid = load_view(work, v, cfg)
             real = img.copy()
             real[~valid] = (real[~valid] * 0.45 + np.array([200, 30, 30]) * 0.55).astype(np.uint8)
-            m = metr[v.name]
+            m = metr[v.label]
             r = render_view(splat, v, A, b, refl)
             Am, bm = A.cpu().numpy(), b.cpu().numpy()
             tiles = [label(fit(real, tw, th), f"cam {cam} REAL ({'keyframe' if v.kind == 'kf' else 'window'})",
@@ -255,8 +255,8 @@ def mesh_sheet(mesh, views, world, work: Path, cfg) -> np.ndarray:
     return grid
 
 
-def load_mesh(work: Path) -> dict | None:
-    out = work / "room"
+def load_mesh(out: Path) -> dict | None:
+    """Quest mesh from a room output dir (textured cache if present, else the vertex-coloured PLY)."""
     uvp = out / "cache" / "room_mesh_uv.npz"
     texp = out / "room_mesh_tex.png"
     if uvp.exists() and texp.exists():
@@ -283,12 +283,16 @@ def write(path: Path, img_rgb: np.ndarray, max_w: int = 3600) -> Path:
     return path
 
 
-def render_all(work: Path, splat, app, refl, views, geo, cfg, ev: dict, log=print) -> list[str]:
+def render_all(work: Path, splat, app, refl, views, geo, cfg, ev: dict, log=print, out: Path | None = None,
+               review: Path | None = None) -> list[str]:
+    """work = where the views' images live (bundle dir); out = the room outputs (default work/room); review = the
+    sheet folder (default work/review)."""
     from .room import Splat
-    rev = work / "review"
+    out = Path(out) if out is not None else work / "room"
+    rev = Path(review) if review is not None else work / "review"
     world = geo["world"]
-    quest = Splat.from_ply(work / "room" / "splat_quest.ply") if (work / "room" / "splat_quest.ply").exists() else None
-    mesh = load_mesh(work)
+    quest = Splat.from_ply(out / "splat_quest.ply") if (out / "splat_quest.ply").exists() else None
+    mesh = load_mesh(out)
     paths = [write(rev / "room_renders.jpg", renders_sheet(work, splat, quest, app, refl, views, cfg, ev, mesh)),
              write(rev / "room_overview.jpg", overview(splat, views, geo, world))]
     if quest is not None:

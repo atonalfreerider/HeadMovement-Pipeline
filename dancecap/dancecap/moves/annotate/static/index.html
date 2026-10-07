@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Move Narration</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header id="top">
+  <div class="title">
+    <b id="sessName">loading...</b>
+    <span id="sessMode" class="pill"></span>
+    <span id="dirty" class="pill warn hidden">unsaved</span>
+    <span id="savedInfo" class="muted small"></span>
+  </div>
+  <div class="actions">
+    <button id="btnUndo" title="Undo (Ctrl+Z)">Undo</button>
+    <button id="btnRedo" title="Redo (Ctrl+Y)">Redo</button>
+    <button id="btnSave" class="primary" title="Validate and write labels.json (Ctrl+S)">Save</button>
+    <button id="btnExport" title="python -m dancecap.moves run: graph path, fingerprint, Unity copies">Export to Unity</button>
+    <button id="btnHelp" title="Keyboard shortcuts (?)">?</button>
+  </div>
+</header>
+<div id="banner" class="banner hidden"></div>
+<main>
+  <section id="left">
+    <div id="videoWrap">
+      <video id="video" preload="auto" playsinline></video>
+      <div id="videoNote" class="note hidden"></div>
+    </div>
+    <div class="transport">
+      <select id="camSel" title="Camera (times stay on the take's reference clock)"></select>
+      <button id="btnPlay" title="Play / pause (Space)">Play</button>
+      <span class="speeds" title="Playback speed (keys 1-4)">
+        <button data-rate="0.25">0.25x</button><button data-rate="0.5">0.5x</button><button data-rate="0.75">0.75x</button><button data-rate="1">1x</button>
+      </span>
+    </div>
+    <div id="clock" class="mono clock"></div>
+  </section>
+  <section id="right">
+    <div id="narratePanel" class="panel">
+      <div class="row">
+        <button id="btnRec" class="rec" title="Start / stop narrating (R)">&#9679; Narrate</button>
+        <span id="recStatus" class="small"></span>
+        <canvas id="level" width="120" height="10"></canvas>
+      </div>
+      <div class="row small settings">
+        <label title="Your reaction time: segment starts are moved this much earlier (wall-clock seconds)">lag <input id="lag" type="number" step="0.05" min="0" max="3"> s</label>
+        <label title="Where segment starts snap to">snap <select id="snap"><option value="measure">measure</option><option value="half">half measure</option><option value="beat">beat</option><option value="eighth">eighth</option><option value="none">none</option></select></label>
+        <label title="Speech recogniser (all local)">engine <select id="engine"><option value="auto">auto</option><option value="faster-whisper">faster-whisper</option><option value="sapi">Windows (SAPI)</option></select></label>
+        <label title="Ask TypeSafe which move an unclear phrase means. Sends only the words, never audio or video."><input type="checkbox" id="typesafe"> TypeSafe for unclear phrases</label>
+      </div>
+      <div id="asrStatus" class="small muted"></div>
+      <div id="narrResult" class="hidden">
+        <div class="row"><b id="narrTitle"></b><span class="spacer"></span>
+          <button id="btnApply" class="primary" title="Merge these segments into the timeline (human labels are kept)">Apply</button>
+          <button id="btnRemap" title="Map again with the current lag / snap / TypeSafe settings">Re-map</button>
+          <button id="btnNarrAudio" title="Play the recording">&#9654; audio</button>
+          <label class="filebtn" title="Import a transcript JSON [{word, start, end, prob}] for this recording">transcript...<input id="trFile" type="file" accept=".json,application/json"></label>
+          <button id="btnDiscard" title="Close this narration (the files stay in moves/narration/)">Close</button>
+        </div>
+        <div id="narrWarn" class="small warnText"></div>
+        <div id="narrEvents" class="events"></div>
+      </div>
+      <div class="row small">
+        <span class="muted">earlier narrations</span>
+        <select id="narrSel"></select>
+        <button id="btnOpenNarr">open</button>
+      </div>
+    </div>
+    <div id="editor" class="panel"></div>
+    <div class="panel listPanel">
+      <div class="row small">
+        <b id="listTitle">Segments</b><span class="spacer"></span>
+        <select id="listFilter"><option value="all">all</option><option value="review">needs review</option></select>
+        <button id="btnConfirmAll" title="Mark every narrated segment that has a move as human-confirmed">Confirm all narrated</button>
+      </div>
+      <div id="segList" class="list"></div>
+    </div>
+  </section>
+</main>
+<footer id="tlWrap">
+  <canvas id="timeline"></canvas>
+  <div id="tlInfo" class="small muted"></div>
+</footer>
+<div id="toast"></div>
+<audio id="narrAudio" class="hidden"></audio>
+<div id="help" class="modal hidden"><div class="box">
+  <h3>Narrate</h3>
+  <p>Use headphones. Press <kbd>R</kbd>, say each move's name as it starts, press <kbd>R</kbd> again.
+     Pause, seek, change speed or camera while narrating if you like. <kbd>M</kbd> marks a transition.
+     Say <i>"scratch that"</i> / <i>"undo"</i> to drop the last move, <i>"again"</i> to repeat it.</p>
+  <h3>Keys</h3>
+  <table class="keys">
+    <tr><td><kbd>Space</kbd></td><td>play / pause</td><td><kbd>R</kbd></td><td>narrate on / off</td></tr>
+    <tr><td><kbd>&larr;</kbd> <kbd>&rarr;</kbd></td><td>one eighth (Shift: one measure)</td><td><kbd>1</kbd>-<kbd>4</kbd></td><td>speed 0.25 / 0.5 / 0.75 / 1</td></tr>
+    <tr><td><kbd>M</kbd></td><td>mark a boundary at the playhead (a tap while narrating)</td><td><kbd>S</kbd></td><td>split the selected segment at the playhead</td></tr>
+    <tr><td><kbd>[</kbd> <kbd>]</kbd></td><td>previous / next segment</td><td><kbd>J</kbd></td><td>merge with the next segment</td></tr>
+    <tr><td><kbd>Enter</kbd></td><td>confirm (narration &rarr; human) and go to the next</td><td><kbd>E</kbd></td><td>change the move</td></tr>
+    <tr><td><kbd>Del</kbd></td><td>delete the segment</td><td><kbd>L</kbd></td><td>loop the segment</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Y</kbd></td><td>undo / redo</td><td><kbd>Ctrl</kbd>+<kbd>S</kbd></td><td>save labels.json</td></tr>
+    <tr><td>wheel</td><td>zoom the timeline (Shift: scroll)</td><td>drag edge</td><td>move a boundary (snaps to eighths; Alt: free)</td></tr>
+    <tr><td>double-click</td><td>new segment in a gap</td><td><kbd>+</kbd> <kbd>-</kbd></td><td>zoom</td></tr>
+  </table>
+  <p class="small muted">Hatched = narrated, not yet confirmed. Red = unknown phrase. Orange outline = low confidence.
+     Dashed lines = automatic proposal boundaries (not labels). Yellow strip = counterbalance.</p>
+  <button id="helpClose">Close</button>
+</div></div>
+<div id="modal" class="modal hidden"><div class="box"><h3 id="modalTitle"></h3><pre id="modalText"></pre><button id="modalClose">Close</button></div></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

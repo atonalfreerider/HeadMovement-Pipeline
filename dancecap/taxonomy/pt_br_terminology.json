@@ -1,0 +1,2538 @@
+{
+  "version": 1,
+  "decided": "2026-10-06",
+  "policy": "canonical = attested Brazilian Portuguese term, user name as alias; unattested keep user name",
+  "rows": [
+    {
+      "original": "180",
+      "canonical": "180",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "180"
+      ],
+      "pt_description": "pivô de 180° da dama; a tese da UFPA descreve esse pisar-e-girar como 'pisou-virou' (expressão descritiva, não é nome de passo)",
+      "status": "unattested",
+      "confidence": 0.6,
+      "note": "UFPA uses 'pisou-virou' only to describe the follower's pivot inside the corredor; Willadino (pp. 84, 93) says 'giro de 180 graus' only to describe the passo cruzado. Neither is a move name. Graph: Viradinha -> 180 -> Hip Turn In.",
+      "sources": [
+        "https://bdm.ufpa.br/handle/prefix/5234",
+        "https://lume.ufrgs.br/bitstream/handle/10183/49841/000850593.pdf?sequence=1"
+      ]
+    },
+    {
+      "original": "Airplane",
+      "canonical": "Avião",
+      "canonical_is_pt": true,
+      "alternates_pt": [
+        "Aviao (unaccented, non-Brazilian titles)"
+      ],
+      "english_aliases": [
+        "Airplane",
+        "Aeroplane"
+      ],
+      "pt_description": "ambos se inclinam com os braços abertos, como asas, preparando um giro em eixo vertical",
+      "status": "attested",
+      "confidence": 0.65,
+      "note": "UFPA (Costa 2019) intermediate module 'AVIÃO': 'Preparação de giro com inclinação e execução em eixo vertical', 'ambos se inclinam com os braços abertos para o lado oposto ao que irão girar'. Saulo & Adrise zouk course notes (May 2007), 'Avião': from the cruzado lateral the leader raises her right hand in a large circle, lowering one arm and raising the other while she mirrors. Also used abroad: 'Zouk Basics 03: Aviao' (Minsk 2014), 'Zouk Intermediate, Airplane' (2011). Spelling with til. The exact shape of the user's node is unverified.",
+      "sources": [
+        "https://bdm.ufpa.br/handle/prefix/5234",
+        "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html",
+        "https://www.youtube.com/watch?v=alof8D2kb9w",
+        "https://www.youtube.com/watch?v=7mz6eYFK9j8"
+      ]
+    },
+    {
+      "original": "Arm Across Shoulders",
+      "canonical": "Arm Across Shoulders",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Colar (weak candidate)",
+        "Guilhotina (weak candidate)"
+      ],
+      "english_aliases": [
+        "Arm Across Shoulders"
+      ],
+      "pt_description": "braço passado sobre os ombros/pescoço do(a) parceiro(a) (descritivo)",
+      "status": "unattested",
+      "confidence": 0.45,
+      "note": "Weak leads only, all from the zouk section ('CURSO DE ZOUK SAULO') of the 2005-07 notes: '03. Básico Lateral e Guilhotina' ('...trazendo sua mão esquerda para o lado esquerdo do pescoço da dama, fazendo colar') and '09. Básico Lateral e colar do cavalheiro'. Sérgio Telles 'Zouk - movimento de cabeça (colar)' (2019) does not describe the shape. Graph: leads to Lateral From Behind, consistent with a move done out of the lateral.",
+      "sources": [
+        "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html",
+        "https://www.youtube.com/watch?v=zu5RS93JCkA"
+      ]
+    },
+    {
+      "original": "Arms Raise",
+      "canonical": "Arms Raise",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Arms Raise"
+      ],
+      "pt_description": "erguer os braços (descritivo)",
+      "status": "unattested",
+      "confidence": 0.6,
+      "note": "No move name in BZDC, BZWC, Embrace, AmoZouk or UFPA. The 2005-07 notes say only 'ergue os dois braços dela' in running text (inside the 'Cambrê Mesa' figure). Graph: leads to Twist.",
+      "sources": [
+        "https://www.brazilianzoukcouncil.com/educational",
+        "https://www.embracezoukonline.com/courses/glossary-fundamentals",
+        "https://amozouk.com/zouk-move-dictionary",
+        "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html"
+      ]
+    },
+    {
+      "original": "Back And Forth",
+      "canonical": "Frente e Trás",
+      "canonical_is_pt": true,
+      "alternates_pt": [
+        "Básico Frente e Trás",
+        "Passo Frente e Trás",
+        "Vai e Vem",
+        "Básico Frontal",
+        "Passo Básico"
+      ],
+      "english_aliases": [
+        "Back And Forth",
+        "Front and Back Basic",
+        "Linear Basic"
+      ],
+      "pt_description": "passo básico linear do zouk, avançando e recuando",
+      "status": "attested",
+      "confidence": 0.85,
+      "note": "BZDC movement list 'Frente e Trás'; BZDC demo 'Zouk Brasileiro: Básico Frente e Trás' (2026-10-02, Renata Peçanha & Leo Neves); Bia Guido 'Passo Frente e Trás'; Embrace 'Passo Básico (Básico Frente e Trás, Linear Basic)'; Willadino (p. 153) records Porto Alegre teachers saying 'duas vezes frente e trás'. Variants: 'Vai e Vem' (Paulo Aguiar 'VAI E VEM (BÁSICO 2)'; UFPA 'Deslocando (vai e vem)'), the older 'Básico Frontal' (2005-07 zouk course notes), and plain 'Passo Básico' (BZWC 2019). SciELO 2023 traces the linear basic to gafieira and bolero.",
+      "sources": [
+        "https://www.brazilianzoukcouncil.com/educational",
+        "https://www.youtube.com/watch?v=wzmGQByK74M",
+        "https://www.youtube.com/watch?v=I4Rr9oiQt4Q",
+        "https://www.embracezoukonline.com/courses/glossary-fundamentals",
+        "https://lume.ufrgs.br/bitstream/handle/10183/49841/000850593.pdf?sequence=1",
+        "http://www.pauloaguiar.com/curso-de-zouk%20vol1.html",
+        "https://bdm.ufpa.br/handle/prefix/5234",
+        "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html",
+        "https://www.scielo.br/j/rbep/a/rNhzqXVKxSQHzYbJVB66Q6h/?lang=pt"
+      ]
+    },
+    {
+      "original": "Back Basic",
+      "canonical": "Passo Básico Atrás",
+      "canonical_is_pt": true,
+      "alternates_pt": [
+        "Passo Básico para Trás"
+      ],
+      "english_aliases": [
+        "Back Basic"
+      ],
+      "pt_description": "metade do frente e trás em que o casal recua (passo grande + dois pequenos)",
+      "status": "partial",
+      "confidence": 0.5,
+      "note": "Downgraded by the verifier from attested to partial. The only source is Willadino (UFRGS 2012, p. 91), and 'passo básico no lugar / à frente / atrás' are the author's own analytic labels ('Os passos que elenquei para analisar'; same page: 'Não há uma metodologia oficial'). The teachers he quotes name the whole cycle 'frente e trás'. Correct Portuguese taken from a source, not a translation, but not an established move name. Graph: Forward Basic -> Back Basic -> Gostosinho / Little Turn / Open Break / Stand.",
+      "sources": [
+        "https://lume.ufrgs.br/bitstream/handle/10183/49841/000850593.pdf?sequence=1",
+        "https://www.jettence.com/blog/names-of-brazilian-zouk-moves-in-portuguese-with-gifs-part-2/"
+      ]
+    },
+    {
+      "original": "Behind Back hand Switch",
+      "canonical": "Behind Back hand Switch",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Troca de Mão (base term)"
+      ],
+      "english_aliases": [
+        "Behind Back hand Switch",
+        "Behind-the-back Hand Change"
+      ],
+      "pt_description": "troca de mão por trás das costas (descritivo; só 'troca de mão' é termo atestado)",
+      "status": "unattested",
+      "confidence": 0.6,
+      "note": "Only the base term is attested: Paulo Aguiar vol. 1 'RODADA BÁSICA TROCANDO A MÃO'; Sérgio Telles 'troca de mãos do cavalheiro' (2019) and 'troca de conexão' (2021). 'Troca de mão pelas costas' would be a calque. Keeps it distinct from Switch Hands. Graph: Open Forward Basic -> Behind Back hand Switch (end node).",
+      "sources": [
+        "http://www.pauloaguiar.com/curso-de-zouk%20vol1.html",
+        "https://www.youtube.com/watch?v=4dwFs7aghQ4",
+        "https://www.youtube.com/watch?v=uu_Jt03v2TU"
+      ]
+    },
+    {
+      "original": "Behind Back Howl",
+      "canonical": "Behind Back Howl",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Toalha (candidate)",
+        "Tornado (candidate)",
+        "Desengrenado (candidate)"
+      ],
+      "english_aliases": [
+        "Behind Back Howl"
+      ],
+      "pt_description": "movimento de cabeça com a dama de costas para o cavalheiro (descritivo; família 'movimento de cabeça')",
+      "status": "unattested",
+      "confidence": 0.5,
+      "note": "A real candidate exists: Mayara Gazzi (2022) 'there are many names for this movement: tornado, toalha, desengrenado', 'an advanced level movement'; Jettence: toalha is when the 'follower does head movement but is also turning with her back to the leader'. It fits 'behind back + howl', but the node's green (non-advanced) tone does not. Adopt 'Toalha' only if the user confirms. Patrícia Géa's MDC course names other types (volta ao mundo, parafuso, helicóptero, bate cabelo, infinito), none behind the back.",
+      "sources": [
+        "https://www.youtube.com/watch?v=W0jls_jlb0g",
+        "https://www.jettence.com/blog/names-of-brazilian-zouk-moves-in-portuguese-with-gifs-part-2/",
+        "https://en.patgea.com/tudo-sobre-mdc"
+      ]
+    },
+    {
+      "original": "Behind Back Pirouette",
+      "canonical": "Behind Back Pirouette",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Giro no Eixo (spin only)"
+      ],
+      "english_aliases": [
+        "Behind Back Pirouette"
+      ],
+      "pt_description": "giro no eixo com a conexão atrás das costas (descritivo)",
+      "status": "partial",
+      "confidence": 0.4,
+      "note": "Derived from Pirouette. 'Giro no eixo' covers the spin (UFRJ 2021 dissertation; BZWC 2026 'giros no eixo horizontais e verticais'), but the behind-the-back connection has no name, and the base Pirouette node takes the term. Graph: from Two Hands Armbar, Reverse Overhead Turn, Lunge Forward, Viradinha.",
+      "sources": [
+        "https://www.peb.ufrj.br/images/Tese0353_2021_11_30.pdf",
+        "https://www.brazilianzoukworldchampionships.com/wp-content/uploads/2026/07/2026-Zouk-Worlds-Regras.pdf"
+      ]
+    },
+    {
+      "original": "Behind Back Unwind",
+      "canonical": "Behind Back Unwind",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Behind Back Unwind"
+      ],
+      "pt_description": "desenrolar a dama a partir da mão/braço atrás das costas (descritivo)",
+      "status": "unattested",
+      "confidence": 0.6,
+      "note": "'Desenrolar' appears only as a verb in the 2005-07 notes ('force a dama para desenrolar'). No named move. Graph: Rotate Hip Turn -> Behind Back Unwind -> Side Lunge / Stop.",
+      "sources": [
+        "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html",
+        "https://www.brazilianzoukcouncil.com/educational",
+        "https://www.embracezoukonline.com/courses/glossary-fundamentals"
+      ]
+    },
+    {
+      "original": "Bent Spin",
+      "canonical": "Giro Inclinado",
+      "canonical_is_pt": true,
+      "alternates_pt": [
+        "Giro com Inclinação",
+        "Giro com Cabeça Inclinada",
+        "Giro fora do Eixo (if off-axis)"
+      ],
+      "english_aliases": [
+        "Bent Spin",
+        "Tilted Turn"
+      ],
+      "pt_description": "giro da dama com o tronco/cabeça inclinados para fora do eixo vertical",
+      "status": "partial",
+      "confidence": 0.5,
+      "note": "Attested: Maelly e Lucas 'Giro Inclinado' (2020-12-05, 'o tão famoso giro inclinado da dança de salão zouk', framed as a head-movement-family turn); Mayara Gazzi & Denis Marques 'giros com cabeça/giros inclinados' (2022); UFPA 'Preparação de giro com inclinação'; AmoZouk 'Traveling Tilted Turn'. Match uncertain: 'bent' could also mean 'giro em eixo horizontal' (UFPA; Alex de Carvalho's MAC syllabus), 'espiral/pêndulo' (FIEP) or 'giro fora do eixo' (Rodrigo Delano 2015). Correction: the node is a yellow Hourglass entered from Chicken Wing, not a Star.",
+      "sources": [
+        "https://www.youtube.com/watch?v=myDuxKdKkuA",
+        "https://www.youtube.com/watch?v=a8Nl1GhDzFY",
+        "https://bdm.ufpa.br/handle/prefix/5234",
+        "https://ojs.fiepbulletin.net/fiepbulletin/article/download/86.a1.42/11994/15374",
+        "https://alexdecarvalho.com.br/brazilianzoukmac/",
+        "https://www.youtube.com/watch?v=k4qVo_dg5ok",
+        "https://amozouk.com/zouk-move-dictionary"
+      ]
+    },
+    {
+      "original": "Body Roll",
+      "canonical": "Ondulação",
+      "canonical_is_pt": true,
+      "alternates_pt": [
+        "Ondulação Frontal",
+        "Ondulação Lateral",
+        "Corporal",
+        "Rolos de Corpo"
+      ],
+      "english_aliases": [
+        "Body Roll",
+        "Body Wave"
+      ],
+      "pt_description": "ondulação do corpo: o corpo se movimenta em ondas obedecendo às articulações (frontal ou lateral)",
+      "status": "attested",
+      "confidence": 0.85,
+      "note": "BZWC 2019 '9. Ondulação (Body roll)', same gloss on BZDC's 2018 foundation-pattern page; UFPA 'ONDULAÇÃO FRONTAL / ONDULAÇÃO LATERAL' ('o corpo movimenta-se em ondas obedecendo às articulações'); FIEP/UFSC 'É uma dança que ondula'. Variants: 'rolos de corpo' (UFPA module 2, a calque) and 'corporal' (in 'Elástico com corporal'). 'Onda/ondinha' is kept for Do The Wave. Keep distinct from Reverse Body Roll, which also hangs off Hug.",
+      "sources": [
+        "https://brazilianzoukworldchampionships.com/wp-content/uploads/2019/06/BZWC-COMPETITION-ZOUK-CONTENT.pdf",
+        "https://web.archive.org/web/20180922032353/http://www.brazilianzoukcouncil.com:80/dance-education/identifying-the-brazilian-zouk-rhythm",
+        "https://bdm.ufpa.br/handle/prefix/5234",
+        "https://ojs.fiepbulletin.net/fiepbulletin/article/download/86.a1.42/11994/15374"
+      ]
+    },
+    {
+      "original": "Bonus",
+      "canonical": "Bônus",
+      "canonical_is_pt": true,
+      "alternates_pt": [
+        "Bonus (unaccented)",
+        "Bônus ou Boomerang"
+      ],
+      "english_aliases": [
+        "Bonus"
+      ],
+      "pt_description": "giro externo da dama em deslocamento linear (cerca de 1,5 volta), finalizado com a 'patinha' e retorno ao cavalheiro",
+      "status": "attested",
+      "confidence": 0.9,
+      "note": "BZDC fundamentals list 'Bônus'; BZWC 2026 Portuguese rules 'Bônus ou Boomerang'; UFPA (2019): Adílio Porto and Renata Peçanha conceived 'um movimento de bônus que o aluno ganhava como presente', which 'mais tarde ... ganhou o nome de Bônus' (same origin in SciELO 2023); 2005-07 notes 'Bônus'. Spelling with circumflex. Several sources treat Bônus, Boomerang and Giro Invertido as one move (BZWC; Helen Avelar 2020); AmoZouk and the 2005-07 notes separate bônus (hand kept) from boomerang (hand released), which supports the user's separate nodes.",
+      "sources": [
+        "https://www.brazilianzoukcouncil.com/educational",
+        "https://www.brazilianzoukworldchampionships.com/wp-content/uploads/2026/07/2026-Zouk-Worlds-Regras.pdf",
+        "https://bdm.ufpa.br/handle/prefix/5234",
+        "https://www.scielo.br/j/rbep/a/rNhzqXVKxSQHzYbJVB66Q6h/?lang=pt",
+        "https://amozouk.com/zouk-move-dictionary",
+        "https://www.youtube.com/watch?v=c0J8gpdGQ_o",
+        "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html"
+      ]
+    },
+    {
+      "original": "Boomerang",
+      "canonical": "Bumerangue",
+      "canonical_is_pt": true,
+      "alternates_pt": [
+        "Boomerang",
+        "Bumerang",
+        "Boomerangue"
+      ],
+      "english_aliases": [
+        "Boomerang"
+      ],
+      "pt_description": "giro da dama para fora e de volta, como um bumerangue; na distinção da AmoZouk, o cavalheiro solta a mão (no bônus, mantém)",
+      "status": "attested",
+      "confidence": 0.65,
+      "note": "'Bumerangue' is the dictionary Portuguese spelling (Dicio). Zouk Atoms (Bremen, 2017) write 'Der Bumerangue-Schritt direkt aus dem Lateral', which matches this node's Lateral -> Boomerang edge. Most Brazilian sources write the English 'Boomerang' (BZWC 2026 'Bônus ou Boomerang'; Sarah e Léo 'Bonus/Boomerang'); Helen Avelar writes 'Bumerang'; the 2005-07 Saulo e Adrise notes write 'Boomerangue', listed separately from 'Bônus' and starting from 'Básico Lateral'. Confidence moderate because most sources treat it as the same move as Bônus; AmoZouk and the 2005-07 notes support the separate nodes.",
+      "sources": [
+        "https://www.tanzschule-zouk.de/der-bumerangue-schritt-direkt-aus-dem-lateral/",
+        "https://www.dicio.com.br/bumerangue/",
+        "https://www.youtube.com/watch?v=sil0ZW2RPvM",
+        "https://www.youtube.com/watch?v=XusHFE15PBI",
+        "https://www.youtube.com/watch?v=c0J8gpdGQ_o",
+        "https://www.brazilianzoukworldchampionships.com/wp-content/uploads/2026/07/2026-Zouk-Worlds-Regras.pdf",
+        "https://amozouk.com/blog/7-foundational-zouk-moves-all-beginners-should-know",
+        "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html",
+        "https://www.youtube.com/watch?v=WMzEx4PukKI"
+      ]
+    },
+    {
+      "original": "Chair",
+      "canonical": "Chair",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Chair"
+      ],
+      "pt_description": "a dama em posição 'sentada', como numa cadeira (descritivo; forma não confirmada)",
+      "status": "unattested",
+      "confidence": 0.55,
+      "note": "'Cadeirinha' is item 18 of the SAMBA II step list in the 2005-07 notes (samba de gafieira), not zouk. SciELO's 'sitting cambre' (the follower sits on the leader's knee) is lambada history with no Portuguese name. Helen Avelar's 'PRATICA NA CADEIRA' is a drill on a real chair. Graph: Hold Behind -> Chair -> Dive.",
+      "sources": [
+        "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html",
+        "https://www.scielo.br/j/rbep/a/rNhzqXVKxSQHzYbJVB66Q6h/?lang=pt",
+        "https://www.youtube.com/watch?v=BGC-IjLKjmU"
+      ]
+    },
+    {
+      "original": "Chicken Wing",
+      "canonical": "Chicken Wing",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Chicken Wing"
+      ],
+      "pt_description": "conexão com o braço dobrado em forma de asa (descritivo; não confundir com 'frango assado')",
+      "status": "unattested",
+      "confidence": 0.8,
+      "note": "No zouk source; YouTube searches return only food and music. 'Frango Assado' is a different move, a rotation of the follower's upper body on a horizontal axis (Jettence), so it must not be used; 'asa de frango' would be a calque. Graph: Lead Open Right -> Chicken Wing -> Bent Spin.",
+      "sources": [
+        "https://www.jettence.com/blog/names-of-brazilian-zouk-moves-in-portuguese-with-gifs/",
+        "https://www.embracezoukonline.com/courses/glossary-fundamentals",
+        "https://amozouk.com/zouk-move-dictionary"
+      ]
+    },
+    {
+      "original": "Clockwise Turn",
+      "canonical": "Clockwise Turn",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Clockwise Turn"
+      ],
+      "pt_description": "giro da dama no sentido horário (descritivo)",
+      "status": "unattested",
+      "confidence": 0.6,
+      "note": "No named figure. Direction is only a qualifier: Paulo Aguiar vol. 2 'CORREDOR COM O GIRO DA DAMA PARA DIREITA / PARA ESQUERDA'; 2005-07 notes 'gira ela no sentido horário'. 'Para a direita' equals clockwise only from the turner's own view. Graph: from Switch Hands and Soltinho to Side Lunge and Reverse Turn.",
+      "sources": [
+        "http://www.pauloaguiar.com/curso-de-zouk%20vol2.html",
+        "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html"
+      ]
+    },
+    {
+      "original": "Crab Walk",
+      "canonical": "Crab Walk",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Crab Walk"
+      ],
+      "pt_description": "deslocamento de lado, como caranguejo (descritivo)",
+      "status": "unattested",
+      "confidence": 0.65,
+      "note": "No zouk term. 'Caranguejo'/'Carangueijo' appears only in the samba sections of the 2005-07 class notes ('Aula Samba 05/05/2005 Caranguejo+Facão'; SAMBA II item 10), i.e. samba de gafieira, so it must not be used for zouk. 'Básico para o Lado' (Embrace) is a possible but unconfirmed candidate; see Step To Side.",
+      "sources": [
+        "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html",
+        "https://www.embracezoukonline.com/courses/glossary-fundamentals"
+      ]
+    },
+    {
+      "original": "Cross Body",
+      "canonical": "Cross Body",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Abertura (lead, unconfirmed)"
+      ],
+      "english_aliases": [
+        "Cross Body"
+      ],
+      "pt_description": "passagem da dama cruzando a linha do condutor, do básico para a posição aberta (descritivo)",
+      "status": "unattested",
+      "confidence": 0.55,
+      "note": "'Cross body lead' is salsa/bachata vocabulary; no zouk source uses it. Lead for the user to check: Willadino calls the move from the embrace into the open hold for the passo cruzado 'a abertura' ('quatro passos frente e trás e realizamos a abertura', p. 83), and Sarah e Léo have a lesson titled 'Abertura'. That would fit Forward Basic -> Cross Body -> Open Lunge if this node is that transition.",
+      "sources": [
+        "https://lume.ufrgs.br/bitstream/handle/10183/49841/000850593.pdf?sequence=1",
+        "https://www.youtube.com/watch?v=E_y1dCr-owo"
+      ]
+    },
+    {
+      "original": "Cross Hip Hand",
+      "canonical": "Cross Hip Hand",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Cross Hip Hand"
+      ],
+      "pt_description": "mão cruzada apoiada no quadril (descritivo)",
+      "status": "unattested",
+      "confidence": 0.6,
+      "note": "No term in any checked glossary or syllabus. Graph: Hug Simple Turn -> Cross Hip Hand -> Lead Turn Replace Hands / Side Lunge.",
+      "sources": [
+        "https://www.brazilianzoukcouncil.com/educational",
+        "https://www.embracezoukonline.com/courses/glossary-fundamentals",
+        "https://bdm.ufpa.br/handle/prefix/5234"
+      ]
+    },
+    {
+      "original": "Cross wrap",
+      "canonical": "Cross wrap",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Cestinha (unconfirmed)",
+        "Enrosca (unconfirmed)"
+      ],
+      "english_aliases": [
+        "Cross wrap"
+      ],
+      "pt_description": "envolver a dama com as mãos cruzadas (descritivo)",
+      "status": "unattested",
+      "confidence": 0.45,
+      "note": "Candidates are 'cestinha' (a wrapped position, Sérgio Telles) and 'enrosca' (Bia Guido, undefined); neither source defines a crossed-hands wrap entry. Graph: Open Forward Basic -> Cross wrap -> Snake / Switch Hands.",
+      "sources": [
+        "https://www.youtube.com/watch?v=s5QiCZVzWJk",
+        "https://www.youtube.com/watch?v=-OyylbnJp5A",
+        "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html"
+      ]
+    },
+    {
+      "original": "Crosswalk",
+      "canonical": "Passo Cruzado",
+      "canonical_is_pt": true,
+      "alternates_pt": [
+        "Cruzado",
+        "Passo Cruzado da Dama",
+        "Básico Lateral Cruzado",
+        "Cruzado Lateral"
+      ],
+      "english_aliases": [
+        "Crosswalk",
+        "Cross Step"
+      ],
+      "pt_description": "a dama caminha cruzando a perna à frente, indo e voltando na sua linha",
+      "status": "partial",
+      "confidence": 0.35,
+      "note": "The term is well attested: Willadino (UFRGS 2012) 'passo cruzado da dama'; ContraTempo (Palmas, 2018) 'Zouk - Passo cruzado da Dama'; 2005-07 notes 'Básico Lateral Cruzado ... faz a dama cruzar, indo e voltando'; Tiago & Julinha 'Cruzado Tutorial' (2020). Low confidence: in UFRGS and the 2005-07 notes the passo cruzado da dama is the follower's own footwork of the lateral itself ('simultaneamente ao passo lateral do cavalheiro'), so it may be the Corredor rather than a separate move. Use it only if Crosswalk is a crossing-step variant that follows the Corredor; otherwise revert to 'Crosswalk'. Graph: Lateral -> Crosswalk -> Side Lunge.",
+      "sources": [
+        "https://lume.ufrgs.br/bitstream/handle/10183/49841/000850593.pdf?sequence=1",
+        "https://www.youtube.com/watch?v=TpeVh5yhuEs",
+        "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html",
+        "https://www.youtube.com/watch?v=_unAu7pmN5M"
+      ]
+    },
+    {
+      "original": "Dip",
+      "canonical": "Dip",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Cambré (only for a backward-arch instance)",
+        "Queda (generic category)"
+      ],
+      "english_aliases": [
+        "Dip"
+      ],
+      "pt_description": "queda/descida da dama (genérico; descritivo)",
+      "status": "unattested",
+      "confidence": 0.55,
+      "note": "Downgraded by the verifier from Cambré. Cambré specifically means the follower's backward spinal hyperextension (Dança em Pauta: 'hiperextensão da coluna'; FIEP: 'a dama arqueia o tronco para trás'), and the three Dip nodes are not all that (one Hourglass from Hug -> Leg Extend -> Split, one Tetra from Shoulder Pin, one floor-level Tetra from Fall). Cambré goes to Dip Back, so two nodes do not share one label. 'Quedas' is a rules category (BZDC rule quoted in SciELO), not a move name. Source correction: SciELO's 'extensões de coluna, conhecidas como cambré' is about lambada.",
+      "sources": [
+        "https://www.dancaempauta.com.br/zouk-cambre-e-dor-na-coluna/",
+        "https://ojs.fiepbulletin.net/fiepbulletin/article/download/86.a1.42/11994/15374",
+        "https://www.scielo.br/j/rbep/a/rNhzqXVKxSQHzYbJVB66Q6h/?lang=pt",
+        "https://www.youtube.com/watch?v=Id1GXbXO-gE",
+        "https://www.brazilianzoukcouncil.com/rules"
+      ]
+    },
+    {
+      "original": "Dip Back",
+      "canonical": "Cambré",
+      "canonical_is_pt": true,
+      "alternates_pt": [
+        "Cambrê",
+        "Cambret",
+        "Cambre"
+      ],
+      "english_aliases": [
+        "Dip Back",
+        "Back Dip",
+        "Back Bend"
+      ],
+      "pt_description": "a dama arqueia o tronco para trás (hiperextensão da coluna), conduzida pelo cavalheiro",
+      "status": "attested",
+      "confidence": 0.75,
+      "note": "Zouk-specific sources: FIEP/UFSC (Machado & Shigunov) 'Um dos movimentos bastante utilizados é o cambré, movimento em que a dama arqueia o tronco para trás'; Dança em Pauta (2013) 'movimento de hiperextensão da coluna muito realizado pelas damas no zouk' (from the ballet term); UFPA 'técnica de cambré'; Philip Miha & Fernanda Teixeira 'Passo Cambret' (2012); oGrupo 'Movimentos com Cambré' (2024); 2005-07 Saulo notes 'Cambret ... deixa ela descer suavemente', 'Cambrê Mesa', 'Cambrê Duplo'. Spelling: 'cambré' is primary; cambrê, cambret (CNDD, Philip Miha) and unaccented cambre are variants. Fits the blue state reached from Hug, Tilt Left and Tilt Right.",
+      "sources": [
+        "https://ojs.fiepbulletin.net/fiepbulletin/article/download/86.a1.42/11994/15374",
+        "https://www.dancaempauta.com.br/zouk-cambre-e-dor-na-coluna/",
+        "https://bdm.ufpa.br/handle/prefix/5234",
+        "https://www.youtube.com/watch?v=wSuq3dkEDrM",
+        "https://www.youtube.com/watch?v=p_EoSOBuOlU",
+        "https://www.youtube.com/watch?v=Id1GXbXO-gE",
+        "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html"
+      ]
+    },
+    {
+      "original": "Dive",
+      "canonical": "Mergulho",
+      "canonical_is_pt": true,
+      "alternates_pt": [
+        "Mergulho Simples",
+        "Mergulho com Cabeça"
+      ],
+      "english_aliases": [
+        "Dive"
+      ],
+      "pt_description": "a dama desce (mergulha) e volta a subir",
+      "status": "partial",
+      "confidence": 0.55,
+      "note": "Explicit EN-PT pair: Tiago & Julinha 'Headmovement Online Course | \"Dive - Mergulho\"' (2020). Rodrigo Delano (Belo Horizonte) 'Mergulho Simples' and 'Mergulho com Cabeça' (2015); 2005-07 zouk notes 'preparando para o mergulho, ela desce, sobe'. Partial because every source treats mergulho as a head/upper-body descent (Tetra family), while this node is a blue Diamond at the lowest height reached from Chair. 'Mergulho' is also used in Brazilian bolero.",
+      "sources": [
+        "https://www.youtube.com/watch?v=YrxhneKWl4c",
+        "https://www.youtube.com/watch?v=LvlEaBtt7fM",
+        "https://www.youtube.com/watch?v=QmX7b5y9NFY",
+        "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html"
+      ]
+    },
+    {
+      "original": "Do The Wave",
+      "canonical": "Onda",
+      "canonical_is_pt": true,
+      "alternates_pt": [
+        "Ondinha"
+      ],
+      "english_aliases": [
+        "Do The Wave",
+        "Wave"
+      ],
+      "pt_description": "onda corporal da dama (a 'onda' do zouk), aqui a partir da posição aberta",
+      "status": "partial",
+      "confidence": 0.5,
+      "note": "Onda/ondinha is the general Brazilian word for the zouk body wave, not a named figure: Helen Avelar 'LATERAL/CORREDOR + ONDA' (2021) and 'TODOS TIPOS DE ONDULAÇÕES NO ZOUK - 16 ONDAS' (2021); Sarah e Léo 'a ondinha do zouk' (2024); Sérgio Telles 'variação da ondinha' (2019); BZWC 2026 rules 'ondas corporais'; UFPA 'Ondas'. Partial because no source names a move 'Do The Wave'. 'Ondinha' is also a samba de gafieira figure (2005-07 class notes), so 'Onda' is preferred. 'Ondulação' (BZWC 2019 'Body roll') is kept for the separate Body Roll node. Evidance (Natal) calls the zouk wave 'cobrinha', so Onda and Cobrinha (Snake) may be near-synonyms.",
+      "sources": [
+        "https://www.youtube.com/watch?v=FBGBME2j3aQ",
+        "https://www.youtube.com/watch?v=ngI728iCNIE",
+        "https://www.youtube.com/watch?v=4IOVZzd2tz0",
+        "https://www.youtube.com/watch?v=lRAZxe7Lrzk",
+        "https://www.brazilianzoukworldchampionships.com/wp-content/uploads/2026/07/2026-Zouk-Worlds-Regras.pdf",
+        "https://brazilianzoukworldchampionships.com/wp-content/uploads/2019/06/BZWC-COMPETITION-ZOUK-CONTENT.pdf",
+        "https://bdm.ufpa.br/handle/prefix/5234",
+        "https://www.evidance.com.br/zouk-2/",
+        "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html"
+      ]
+    },
+    {
+      "original": "Double Turn",
+      "canonical": "Giro Duplo",
+      "canonical_is_pt": true,
+      "alternates_pt": [
+        "Giro Duplo para os Dois Lados"
+      ],
+      "english_aliases": [
+        "Double Turn"
+      ],
+      "pt_description": "giro duplo da dama (duas voltas)",
+      "status": "attested",
+      "confidence": 0.8,
+      "note": "Paulo Aguiar's São Paulo zouk DVD vol. 2 step 9 'GIRO DUPLO PARA OS DOIS LADOS' (verified on the page). No competing zouk term; also generic dança de salão wording. Graph: Side Lunge -> Double Turn -> Hug.",
+      "sources": [
+        "http://www.pauloaguiar.com/curso-de-zouk%20vol2.html"
+      ]
+    },
+    {
+      "original": "Double Unwined Turn",
+      "canonical": "Double Unwined Turn",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Giro Duplo (base term)"
+      ],
+      "english_aliases": [
+        "Double Unwined Turn",
+        "Double Unwound Turn",
+        "Double Unwind Turn"
+      ],
+      "pt_description": "giro duplo desenrolando a dama (descritivo)",
+      "status": "partial",
+      "confidence": 0.4,
+      "note": "Derived from Double Turn (Giro Duplo). The unwinding has no name; the 2005-07 Saulo notes ('parafuso') use 'enrola a dama ... force a dama para desenrolar' only as verbs. 'Unwined' is probably a typo for 'Unwound'/'Unwind' (additions.toml already carries the alias 'double unwind turn'). Graph: Overhead Springload -> Double Unwined Turn -> Side Lunge.",
+      "sources": [
+        "http://www.pauloaguiar.com/curso-de-zouk%20vol2.html",
+        "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html"
+      ]
+    },
+    {
+      "original": "Downswing",
+      "canonical": "Downswing",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Downswing"
+      ],
+      "pt_description": "",
+      "status": "unattested",
+      "confidence": 0.6,
+      "note": "No term. oGrupo's 'Decida' (2025) is title-only; Rodrigo Delano 'Mergulho Simples' (2015) is undescribed. Lead: the 2005-07 notes describe a 'mergulho' as 'ela desce, sobe e faz abertura total', a down-and-up that might fit; unconfirmed. No Portuguese description is offered because the shape is undocumented. Graph: Fast Pirouette -> Downswing -> Right Hand Open.",
+      "sources": [
+        "https://www.youtube.com/watch?v=Tl67WOJ3tVw",
+        "https://www.youtube.com/watch?v=LvlEaBtt7fM",
+        "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html"
+      ]
+    },
+    {
+      "original": "Drag",
+      "canonical": "Drag",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Drag"
+      ],
+      "pt_description": "arrastar a dama a partir da queda (descritivo)",
+      "status": "unattested",
+      "confidence": 0.6,
+      "note": "No zouk term. 'Arrastadita' and 'arrasta pé da dama' in the 2005-07 notes are tango/samba footwork, so they should not be used. Graph: Fall -> Drag.",
+      "sources": [
+        "https://www.brazilianzoukcouncil.com/educational",
+        "https://amozouk.com/zouk-move-dictionary",
+        "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html"
+      ]
+    },
+    {
+      "original": "Fall",
+      "canonical": "Fall",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Queda (generic category)"
+      ],
+      "english_aliases": [
+        "Fall"
+      ],
+      "pt_description": "queda (genérico; descritivo)",
+      "status": "unattested",
+      "confidence": 0.5,
+      "note": "No named move. 'Quedas' is the BZDC rules category for dips/drops in which at least one foot of each partner stays on the floor (verified in SciELO 2023): a category, not a move name. Graph: Hug -> Fall -> Dip / Drag.",
+      "sources": [
+        "https://www.scielo.br/j/rbep/a/rNhzqXVKxSQHzYbJVB66Q6h/?lang=pt",
+        "https://www.brazilianzoukcouncil.com/rules"
+      ]
+    },
+    {
+      "original": "Fall Back",
+      "canonical": "Fall Back",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Cambré (only if it ends in a backward arch)"
+      ],
+      "english_aliases": [
+        "Fall Back"
+      ],
+      "pt_description": "queda para trás (descritivo)",
+      "status": "unattested",
+      "confidence": 0.5,
+      "note": "Reached from Stop, no exits. Possibly a cambré if the follower ends in a backward arch, but nothing confirms that. Sérgio Telles describes a trava followed by a guided 'descida' from the corredor, which fits Stop -> Fall Back but gives no name for the fall.",
+      "sources": [
+        "https://ojs.fiepbulletin.net/fiepbulletin/article/download/86.a1.42/11994/15374",
+        "https://www.scielo.br/j/rbep/a/rNhzqXVKxSQHzYbJVB66Q6h/?lang=pt",
+        "https://www.youtube.com/watch?v=FL0mggHUxs0"
+      ]
+    },
+    {
+      "original": "Fall Swoop",
+      "canonical": "Fall Swoop",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Fall Swoop"
+      ],
+      "pt_description": "queda em arco (descritivo)",
+      "status": "unattested",
+      "confidence": 0.5,
+      "note": "No name. Rodrigo Delano's 'Mergulho Simples' and 'Mergulho com Cabeça' (2015) have empty descriptions, and the user already has a Dive node. Graph: Hug -> Fall Swoop.",
+      "sources": [
+        "https://www.youtube.com/watch?v=LvlEaBtt7fM",
+        "https://www.youtube.com/watch?v=QmX7b5y9NFY"
+      ]
+    },
+    {
+      "original": "Fast Pirouette",
+      "canonical": "Fast Pirouette",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Giro no Eixo (base term)"
+      ],
+      "english_aliases": [
+        "Fast Pirouette",
+        "Axis Spin"
+      ],
+      "pt_description": "giro no eixo rápido, impulsionado pelo cavalheiro (descritivo)",
+      "status": "partial",
+      "confidence": 0.5,
+      "note": "Derived from Pirouette (Giro no Eixo: UFRJ 2021; BZWC 2026 'giros no eixo'). Kept English so the base node owns the term. 'Planada' (AmoZouk, a single-footed gliding turn; single source) not adopted. 'Pião' ruled out: Jettence defines it as the couple rotating around a shared axis in closed frame. Highest-energy node (1.66).",
+      "sources": [
+        "https://www.peb.ufrj.br/images/Tese0353_2021_11_30.pdf",
+        "https://www.brazilianzoukworldchampionships.com/wp-content/uploads/2026/07/2026-Zouk-Worlds-Regras.pdf",
+        "https://amozouk.com/zouk-move-dictionary",
+        "https://www.jettence.com/blog/names-of-brazilian-zouk-moves-in-portuguese-with-gifs-part-2/"
+      ]
+    },
+    {
+      "original": "Forward Basic",
+      "canonical": "Passo Básico à Frente",
+      "canonical_is_pt": true,
+      "alternates_pt": [
+        "Passo Básico para Frente"
+      ],
+      "english_aliases": [
+        "Forward Basic"
+      ],
+      "pt_description": "metade do frente e trás em que o condutor avança (passo grande + dois pequenos)",
+      "status": "partial",
+      "confidence": 0.5,
+      "note": "Downgraded by the verifier from attested to partial, for the same reason as Back Basic: Willadino's own analytic label (UFRGS 2012, p. 91), not a name used in titles, syllabi or glossaries. CNDD Bronze fig. 02 'Básico com deslocamento' is the travelling basic as a whole, not its forward half. Graph: Stand -> Forward Basic -> Back Basic / Cross Body / Launch.",
+      "sources": [
+        "https://lume.ufrgs.br/bitstream/handle/10183/49841/000850593.pdf?sequence=1",
+        "https://www.youtube.com/watch?v=hTJkveAdkv4"
+      ]
+    },
+    {
+      "original": "Gostosinho",
+      "canonical": "Gostosinho",
+      "canonical_is_pt": true,
+      "alternates_pt": [
+        "Básico Gostosinho"
+      ],
+      "english_aliases": [
+        "Gostosinho",
+        "Comfy Hug Basic"
+      ],
+      "pt_description": "básico 'gostosinho': abraço aconchegante, feito por exemplo ao fim do básico frente e trás",
+      "status": "attested",
+      "confidence": 0.85,
+      "note": "Verbatim in the BZDC 2018 page and the BZWC 2019 content PDF: foundation pattern 11 'Básico “Gostosinho”'. Jettence: 'Gostosinho is used to describe this comfy hug... Done at the end of a basic back-and-forth'. Kadu & Larissa 'ZOUK Dance Gostosinho - 3 different options'; Tiago Movimentus 'Highjacked Gostosinho Turn' (2021). Spelling correct. Icon check: sources describe a basic/embrace, so the Tetra icon (head movements/dips) looks wrong; the blue tone fits.",
+      "sources": [
+        "https://brazilianzoukworldchampionships.com/wp-content/uploads/2019/06/BZWC-COMPETITION-ZOUK-CONTENT.pdf",
+        "https://web.archive.org/web/20180922032353/http://www.brazilianzoukcouncil.com:80/dance-education/identifying-the-brazilian-zouk-rhythm",
+        "https://www.jettence.com/blog/names-of-brazilian-zouk-moves-in-portuguese-with-gifs-part-2/",
+        "https://kadularissaonline.com/programs/gostosinho-m4v-44c835",
+        "https://www.youtube.com/watch?v=o8ShJFq-RWI"
+      ]
+    },
+    {
+      "original": "Hip Turn In",
+      "canonical": "Hip Turn In",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Hip Turn In"
+      ],
+      "pt_description": "giro para dentro conduzido pelo quadril (descritivo)",
+      "status": "unattested",
+      "confidence": 0.6,
+      "note": "No Portuguese name. Mayara Gazzi's 'Torção de Quadril' is a follower styling on the zouk base ('Dica de charme ... na base do zouk'), not a led turn-in.",
+      "sources": [
+        "https://www.youtube.com/watch?v=zGurf55sC8w"
+      ]
+    },
+    {
+      "original": "Hold Behind",
+      "canonical": "Hold Behind",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Hold Behind"
+      ],
+      "pt_description": "pegada por trás, com o cavalheiro atrás da dama (descritivo)",
+      "status": "unattested",
+      "confidence": 0.55,
+      "note": "No term. Willadino names only 'posição de enlace ou abraço' and 'pegada aberta' ('Bandeja' when sustained). Must stay distinct from Hold Behind Crossed Arms. Graph: Lower Hands -> Hold Behind -> Tilt Left/Right, Spring Load, Chair, Raise Hands.",
+      "sources": [
+        "https://lume.ufrgs.br/bitstream/handle/10183/49841/000850593.pdf?sequence=1",
+        "https://www.brazilianzoukcouncil.com/educational",
+        "https://www.embracezoukonline.com/courses/glossary-fundamentals"
+      ]
+    },
+    {
+      "original": "Hold Behind Crossed Arms",
+      "canonical": "Cestinha",
+      "canonical_is_pt": true,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Hold Behind Crossed Arms",
+        "Basket",
+        "Cuddle Position"
+      ],
+      "pt_description": "a dama envolvida pelos braços do cavalheiro, que fica atrás dela ('cestinha')",
+      "status": "partial",
+      "confidence": 0.5,
+      "note": "One zouk source names the term: Sérgio Telles 'Aula de zouk - cestinha e corredor' (2019-09-18): 'O envolvimento da dama em uma cestinha no qual ela executará o corredor' (adorodancar.com.br reposts the same text). No source describes the arms, so the 'crossed arms' match is unverified. Entry via Turn Wrap and Wrap Behind fits 'envolvimento'. Synthesis decision: wrap Hug was also mapped to Cestinha (confidence 0.4); Cestinha is kept here (0.5; the crossed-arm wrap is the usual 'basket' hold, a fit judgement rather than a source) and wrap Hug keeps its English name until the user chooses. Cestinha is also a figure in forró and samba de gafieira. Spelling: 'cestinha', no accent (diminutive of 'cesta').",
+      "sources": [
+        "https://www.youtube.com/watch?v=s5QiCZVzWJk",
+        "https://adorodancar.com.br/blog/tag/zouk/"
+      ]
+    },
+    {
+      "original": "Hold Hip",
+      "canonical": "Hold Hip",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Hold Hip"
+      ],
+      "pt_description": "mão no quadril/cintura da dama (descritivo)",
+      "status": "unattested",
+      "confidence": 0.6,
+      "note": "No move name. 'Pega na cintura' appears only in running text in the 2005-07 notes. Graph: Lower Left Hand / Bent Spin -> Hold Hip.",
+      "sources": [
+        "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html",
+        "https://www.brazilianzoukcouncil.com/educational"
+      ]
+    },
+    {
+      "original": "howl Down",
+      "canonical": "howl Down",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Mergulho com Cabeça (candidate)",
+        "Cambré (only if a back arch)"
+      ],
+      "english_aliases": [
+        "howl Down",
+        "Howl Down",
+        "Head Movement Down"
+      ],
+      "pt_description": "movimento de cabeça para baixo (descritivo; família 'movimento de cabeça')",
+      "status": "unattested",
+      "confidence": 0.55,
+      "note": "The umbrella term 'movimento de cabeça' is attested (Rodrigo Delano 'Técnica Passiva de Movimento de Cabeça', 2009; Luca e Amanda 'Desbloqueando os Movimentos de Cabeça', 2020); no downward-specific name. Rodrigo Delano 'Mergulho com Cabeça (aula 21)' (2015) is a title with an empty description. 'Cambré' (FIEP: 'a dama arqueia o tronco para trás') applies only if this is a back arch. Casing kept as the user wrote it; 'Howl Down' would match 'Howl Up'.",
+      "sources": [
+        "https://www.youtube.com/watch?v=QmX7b5y9NFY",
+        "https://www.youtube.com/watch?v=Huf9a3Tm47M",
+        "https://www.youtube.com/watch?v=nZCNRM9K4mw",
+        "https://ojs.fiepbulletin.net/fiepbulletin/article/download/86.a1.42/11994/15374"
+      ]
+    },
+    {
+      "original": "Howl Up",
+      "canonical": "Howl Up",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Chicote (only if a fast upward flick)"
+      ],
+      "english_aliases": [
+        "Howl Up"
+      ],
+      "pt_description": "movimento de cabeça para cima (descritivo)",
+      "status": "unattested",
+      "confidence": 0.5,
+      "note": "Chicote is an upward accent (Jettence: followers 'throw their hair back as an accent by looking up'; Rollerranga 'Chicote from Stationary (Flick up)'), but Helen Avelar defines it as 'um tipo de movimento de cabeça mais rápido... impactante', which suits the high-energy Pop node (1.3) better than this one (-0.36).",
+      "sources": [
+        "https://www.jettence.com/blog/names-of-brazilian-zouk-moves-in-portuguese-with-gifs-part-2/",
+        "https://www.youtube.com/watch?v=D2U96n-s6pw",
+        "https://www.youtube.com/watch?v=lShLUTviiA0"
+      ]
+    },
+    {
+      "original": "Hug",
+      "canonical": "Abraço",
+      "canonical_is_pt": true,
+      "alternates_pt": [
+        "Posição de Enlace",
+        "Enlace"
+      ],
+      "english_aliases": [
+        "Hug",
+        "Embrace",
+        "Closed Embrace"
+      ],
+      "pt_description": "posição de abraço (enlace) do casal, base da conexão no zouk",
+      "status": "attested",
+      "confidence": 0.85,
+      "note": "Willadino (UFRGS 2012, Porto Alegre zouk classes), section '- A posição de enlace ou abraço'; UFPA 'o abraço seja o indutor inicial para a conexão com o par'; Sérgio Telles 'Zouk (conexão, abraço e introdução)'; MAC syllabus 'Closed, open and semi-open embrace'. Fits the blue hub that many turns end in and many holds and dips start from. Distinct from Gostosinho (a separate node). SciELO's 'abraço ou enlaço' is about lambada.",
+      "sources": [
+        "https://lume.ufrgs.br/bitstream/handle/10183/49841/000850593.pdf?sequence=1",
+        "https://bdm.ufpa.br/handle/prefix/5234",
+        "https://www.youtube.com/watch?v=D-Gsp1EH0RY",
+        "https://alexdecarvalho.com.br/brazilianzoukmac/"
+      ]
+    },
+    {
+      "original": "Hug Simple Turn",
+      "canonical": "Hug Simple Turn",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Hug Simple Turn"
+      ],
+      "pt_description": "giro simples ligado ao abraço (descritivo; junta os termos atestados 'giro simples' e 'abraço', mas não é nome de passo)",
+      "status": "unattested",
+      "confidence": 0.55,
+      "note": "Derived name. Both parts are attested ('abraço'; 'Giro Simples', BZWC/BZDC), but no source names the combination, so composing one would be a calque. Graph: Side Lunge -> Hug Simple Turn -> Cross Hip Hand / Reverse Hug Simple Turn.",
+      "sources": [
+        "https://brazilianzoukworldchampionships.com/wp-content/uploads/2019/06/BZWC-COMPETITION-ZOUK-CONTENT.pdf",
+        "https://lume.ufrgs.br/bitstream/handle/10183/49841/000850593.pdf?sequence=1",
+        "https://www.youtube.com/watch?v=99f6VKk63sY"
+      ]
+    },
+    {
+      "original": "Inside Spin",
+      "canonical": "Inside Spin",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Giro no Eixo en dedans (candidate only)"
+      ],
+      "english_aliases": [
+        "Inside Spin"
+      ],
+      "pt_description": "giro da dama para dentro, sobre o próprio eixo (descritivo)",
+      "status": "unattested",
+      "confidence": 0.55,
+      "note": "UFRJ's 'en dedans' ('caracterizando a volta como um movimento en dedans') describes the direction of one measured Giro no Eixo trial, not a move name. UFPA has 'giro externo' (the bônus) but no 'giro interno'. No 'giro para dentro', 'giro interno' or 'giro por dentro' in the lesson-title corpus.",
+      "sources": [
+        "https://www.peb.ufrj.br/images/Tese0353_2021_11_30.pdf",
+        "https://bdm.ufpa.br/handle/prefix/5234"
+      ]
+    },
+    {
+      "original": "Inside Turn",
+      "canonical": "Inside Turn",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Giro da Dama (generic)",
+        "Giro Fechado (undescribed)"
+      ],
+      "english_aliases": [
+        "Inside Turn"
+      ],
+      "pt_description": "giro da dama para dentro, em direção ao cavalheiro (descritivo)",
+      "status": "unattested",
+      "confidence": 0.55,
+      "note": "Only generic terms: Sarah e Léo 'Aula de Zouk - Giro Cavalheiro e Dama' (2024); UFPA 'GIRO DO CAVALHEIRO E DA DAMA'; Paulo Aguiar vol. 2 item 4 'GIRO FECHADO' (undescribed). 'Giro da dama' is too generic to stand for this node.",
+      "sources": [
+        "https://www.youtube.com/watch?v=izB0vbWYRzw",
+        "https://bdm.ufpa.br/handle/prefix/5234",
+        "http://www.pauloaguiar.com/curso-de-zouk%20vol2.html"
+      ]
+    },
+    {
+      "original": "Intimate Howl",
+      "canonical": "Intimate Howl",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Colar (weak)"
+      ],
+      "english_aliases": [
+        "Intimate Howl"
+      ],
+      "pt_description": "movimento de cabeça no abraço fechado (descritivo)",
+      "status": "unattested",
+      "confidence": 0.55,
+      "note": "'Colar' names an arm-around-the-neck position (2005-07 Saulo notes: 'Básico Lateral e colar do cavalheiro... trás sua mão direita para o pescoço, fazendo colar'; Sérgio Telles 'Zouk - movimento de cabeça (colar)', 2019, undefined), not necessarily this close-embrace head movement. Unconfirmed.",
+      "sources": [
+        "https://www.youtube.com/watch?v=zu5RS93JCkA",
+        "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html",
+        "https://en.patgea.com/tudo-sobre-mdc"
+      ]
+    },
+    {
+      "original": "Lateral",
+      "canonical": "Corredor",
+      "canonical_is_pt": true,
+      "alternates_pt": [
+        "Lateral",
+        "Lateral/Corredor",
+        "Passo Lateral",
+        "Passo do Corredor",
+        "Base Corredor",
+        "Corredor Fechado",
+        "Corredor Aberto"
+      ],
+      "english_aliases": [
+        "Lateral",
+        "Corridor"
+      ],
+      "pt_description": "a dama caminha para frente e para trás numa linha diante do cavalheiro, girando ('pisou-virou') em cada extremidade, enquanto o cavalheiro se desloca lateralmente em outra linha",
+      "status": "user_decision",
+      "confidence": 0.95,
+      "note": "User decision (2026-10-06). Spelling 'Corredor': no accent, masculine ('o corredor'), plural 'corredores'. Meaning verified against UFPA (Costa 2019). 'Lateral' stays an alias. See the top-level 'corredor' block for usage and recognition sources. 'Infinity' (an Embrace alias) is omitted because Tiago Movimentus uses it for 'bate cabelo'. Applies to both Lateral nodes.",
+      "sources": [
+        "https://www.youtube.com/watch?v=Ixk8oYY4vjg",
+        "https://bdm.ufpa.br/handle/prefix/5234",
+        "https://www.youtube.com/watch?v=kUHF1ogfc60",
+        "http://www.pauloaguiar.com/curso-de-zouk%20vol1.html",
+        "https://andreiudiloff.com.br/produto/aprenda-a-dancar-zouk-em-apenas-1-final-de-semana/",
+        "https://www.youtube.com/watch?v=YYamPZBlauE",
+        "https://www.youtube.com/watch?v=KmQTAL3eowM",
+        "https://www.youtube.com/watch?v=tyrFPUnYNUM",
+        "https://www.youtube.com/watch?v=WEW4IP71lJo",
+        "https://www.brazilianzoukcouncil.com/educational",
+        "https://www.brazilianzoukworldchampionships.com/wp-content/uploads/2026/07/2026-Zouk-Worlds-Regras.pdf",
+        "https://www.embracezoukonline.com/courses/glossary-fundamentals",
+        "https://www.scielo.br/j/rbep/a/rNhzqXVKxSQHzYbJVB66Q6h/?lang=pt"
+      ]
+    },
+    {
+      "original": "Lateral From Behind",
+      "canonical": "Corredor From Behind",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Lateral From Behind"
+      ],
+      "pt_description": "corredor com o cavalheiro atrás da dama (descritivo; 'corredor por trás' não é termo atestado)",
+      "status": "user_decision",
+      "confidence": 0.55,
+      "note": "Derived from the Lateral decision, not explicitly decided: the user renamed only 'Lateral', so this follow-on rename needs the user's OK, and it gives a mixed-language label. Revert to 'Lateral From Behind' if declined. No Portuguese name was found; 'corredor por trás' would be a calque. Related moves checked, none confirmed equivalent: Sérgio Telles 'cestinha e corredor' (the follower does the corredor while wrapped; possibly close, given the entry from Arm Across Shoulders); Abrace e Dance 'Rocambole ou Lateral Junto' (2021); Zouk Atoms 'inverted lateral' (English only, 2023). Applies to both nodes.",
+      "sources": [
+        "https://bdm.ufpa.br/handle/prefix/5234",
+        "https://www.youtube.com/watch?v=Ixk8oYY4vjg",
+        "https://www.youtube.com/watch?v=s5QiCZVzWJk",
+        "https://www.youtube.com/watch?v=RP2Jrc4W3qI",
+        "https://www.youtube.com/watch?v=YyKKj3ALVM8"
+      ]
+    },
+    {
+      "original": "Launch",
+      "canonical": "Launch",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Saída Básica (unverified)",
+        "Abertura (unverified)"
+      ],
+      "english_aliases": [
+        "Launch"
+      ],
+      "pt_description": "a dama é lançada para fora a partir do básico (descritivo)",
+      "status": "unattested",
+      "confidence": 0.55,
+      "note": "No confirmed term. Unverified leads: 'Saída Básica' (Paulo Aguiar vol. 1, item 9, undescribed) and 'Abertura' (Sarah e Léo, Aula 03). 'Arremessa a dama' in the 2005-07 notes is only a verb. 'Send Away / Open Break' (Embrace) is English and belongs to the Open Break node. Graph: terminal node after Forward Basic.",
+      "sources": [
+        "http://www.pauloaguiar.com/curso-de-zouk%20vol1.html",
+        "https://www.youtube.com/watch?v=E_y1dCr-owo",
+        "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html",
+        "https://www.embracezoukonline.com/courses/glossary-fundamentals"
+      ]
+    },
+    {
+      "original": "Lead Open Right",
+      "canonical": "Lead Open Right",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Lead Open Right"
+      ],
+      "pt_description": "abertura para a direita conduzida pelo cavalheiro (descritivo)",
+      "status": "unattested",
+      "confidence": 0.6,
+      "note": "'Abertura' has two attested senses: the lunge before a turn (BZDC 2026 'preparação da abertura'; Sarah e Léo 'Aula 03 - Abertura') and the opening from the embrace to the open hold (UFRGS: 'abertura da posição de abraço para a pegada aberta'). This node is entered from Lateral, which is already open, and 'abertura' is close to the Side Lunge mapping, so it is not adopted. Graph hub: from Lateral, Open Forward Basic, Twist, Wrap Behind; to Chicken Wing, Do The Wave, Right Hand Open.",
+      "sources": [
+        "https://www.youtube.com/watch?v=E_y1dCr-owo",
+        "https://www.youtube.com/watch?v=iz_gF8h0WsE",
+        "https://lume.ufrgs.br/bitstream/handle/10183/49841/000850593.pdf?sequence=1",
+        "https://www.embracezoukonline.com/courses/glossary-fundamentals"
+      ]
+    },
+    {
+      "original": "Lead Turn",
+      "canonical": "Giro do Cavalheiro",
+      "canonical_is_pt": true,
+      "alternates_pt": [
+        "Giro Cavalheiro"
+      ],
+      "english_aliases": [
+        "Lead Turn",
+        "Leader Turn"
+      ],
+      "pt_description": "giro do condutor (o próprio cavalheiro gira)",
+      "status": "attested",
+      "confidence": 0.7,
+      "note": "UFPA (2019) 'GIRO DO CAVALHEIRO E DA DAMA' ('partindo do corredor o cavalheiro executa um giro trocando de lugar com a sua dama'), credited to Adílio Porto and Renata Peçanha; 2005-07 Saulo zouk notes '01. Básico Lateral, Giro do Cavalheiro e Cambrê'; Sarah e Léo 'Giro Cavalheiro e Dama' (2024); oGrupo 'Giro Cavalheiro' (2025). The form with 'do' is the written one; 'Giro Cavalheiro' is a title shortening. Caveats: usually taught paired with the follower's turn (= soltinho, BZWC 'Turn of the guy, turn of the girl'); 'cavalheiro' is the traditional ballroom role word (the neutral 'condutor' is not attested in a move name). If the node means a turn the leader leads for the follower, the term would be 'giro da dama'. Applies to both Lead Turn nodes.",
+      "sources": [
+        "https://bdm.ufpa.br/handle/prefix/5234",
+        "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html",
+        "https://www.youtube.com/watch?v=izB0vbWYRzw",
+        "https://www.youtube.com/watch?v=Tl67WOJ3tVw",
+        "https://brazilianzoukworldchampionships.com/wp-content/uploads/2019/06/BZWC-COMPETITION-ZOUK-CONTENT.pdf"
+      ]
+    },
+    {
+      "original": "Lead Turn Replace Hands",
+      "canonical": "Lead Turn Replace Hands",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Giro do Cavalheiro (base)",
+        "Troca de Mão(s)",
+        "Rodada Básica Trocando a Mão (not confirmed same)"
+      ],
+      "english_aliases": [
+        "Lead Turn Replace Hands",
+        "Lead Turn with Hand Change"
+      ],
+      "pt_description": "giro do cavalheiro com troca de mão (descritivo; as partes são atestadas, a combinação não)",
+      "status": "unattested",
+      "confidence": 0.6,
+      "note": "Parts attested: 'giro do cavalheiro' (UFPA; Sarah e Léo) and 'troca de mãos do cavalheiro' (Sérgio Telles 2019). Paulo Aguiar vol. 1 '5-RODADA BÁSICA TROCANDO A MÃO' is the closest, but 'rodada básica' is the alternating (soltinho-type) pattern ('4-RODADA BÁSICA (GIRO ALTERNADO)'), not confirmed as this node.",
+      "sources": [
+        "http://www.pauloaguiar.com/curso-de-zouk%20vol1.html",
+        "https://www.youtube.com/watch?v=4dwFs7aghQ4",
+        "https://www.youtube.com/watch?v=izB0vbWYRzw",
+        "https://bdm.ufpa.br/handle/prefix/5234"
+      ]
+    },
+    {
+      "original": "Lean Forward",
+      "canonical": "Lean Forward",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Inclinação (generic)"
+      ],
+      "english_aliases": [
+        "Lean Forward"
+      ],
+      "pt_description": "inclinação para a frente (descritivo)",
+      "status": "unattested",
+      "confidence": 0.55,
+      "note": "UFPA's 'inclinações e torções' is only a generic fundamentals heading. The node sits in a tilt chain (Tilt Left -> Lean Forward -> Tilt Right). The mapper's 'volcada' (a tango loanword) was dropped: the verifier found it absent from the MAC page cited for it (an earlier sweep listed it there, so the sources disagree), and the graph context does not support it.",
+      "sources": [
+        "https://bdm.ufpa.br/handle/prefix/5234",
+        "https://alexdecarvalho.com.br/brazilianzoukmac/"
+      ]
+    },
+    {
+      "original": "Leg Extend",
+      "canonical": "Leg Extend",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Leg Extend"
+      ],
+      "pt_description": "extensão da perna da dama (descritivo; o termo geral para enfeites de perna da dama é 'floreio')",
+      "status": "unattested",
+      "confidence": 0.6,
+      "note": "No move name. UFPA 'FLOREIO DE BASE' is a category of follower embellishments ('enfeite') with body or legs, not this move. Graph: Dip -> Leg Extend -> Split.",
+      "sources": [
+        "https://bdm.ufpa.br/handle/prefix/5234"
+      ]
+    },
+    {
+      "original": "Leg Split",
+      "canonical": "Leg Split",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Leg Split",
+        "Split"
+      ],
+      "pt_description": "espacate da dama, abertura total das pernas ('espacate' é a palavra comum do português; descritivo)",
+      "status": "unattested",
+      "confidence": 0.75,
+      "note": "No zouk syllabus or lesson title names a split. 'Espacate' is the ordinary Portuguese word for a gymnastic/ballet split, descriptive only. Leg terms found in zouk mean other things: CNDD Bronze 'Figura 04 Troca de pernas' (2022); 'Zouk Lab #8: Troca de Perna, Piaõ Variations and Shooting the Leg (Saccada de Perna)' (2025). The BZWC 2026 rules allow 'Quedas, inclinações...' only with at least one foot of each partner on the floor (the mapper attributed this to BZDC). Isolated node.",
+      "sources": [
+        "https://www.youtube.com/watch?v=cCaaLyoASPo",
+        "https://www.youtube.com/watch?v=X5nR8zfspbY",
+        "https://www.brazilianzoukworldchampionships.com/wp-content/uploads/2026/07/2026-Zouk-Worlds-Regras.pdf",
+        "https://www.embracezoukonline.com/courses/glossary-fundamentals"
+      ]
+    },
+    {
+      "original": "Little Turn",
+      "canonical": "Little Turn",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Viradinha"
+      ],
+      "english_aliases": [
+        "Little Turn"
+      ],
+      "pt_description": "pequena virada/pivô da dama (descritivo)",
+      "status": "unattested",
+      "confidence": 0.5,
+      "note": "'Viradinha' is the attested term and literally means 'little turn' (AmoZouk 'Little Turn'; Gui Prada 'the little turn around'). But the graph has Little Turn -> Viradinha as separate nodes, so renaming would put two 'Viradinha' nodes in sequence. Keep the English label; merge into Viradinha only if the user confirms they are the same move.",
+      "sources": [
+        "https://amozouk.com/zouk-move-dictionary",
+        "https://www.brazilianzoukcouncil.com/educational",
+        "https://www.youtube.com/watch?v=P3mGYaHvco8",
+        "https://www.embracezoukonline.com/courses/glossary-fundamentals",
+        "https://www.youtube.com/watch?v=9pXfvmGySn8"
+      ]
+    },
+    {
+      "original": "Lower Hands",
+      "canonical": "Lower Hands",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Lower Hands"
+      ],
+      "pt_description": "baixar as mãos (transição de conexão; descritivo)",
+      "status": "unattested",
+      "confidence": 0.8,
+      "note": "A connection transition, not a figure; none of the glossaries names it (Embrace, 13 fundamentals; AmoZouk; BZDC list). Graph: Raise Hands -> Lower Hands -> Hold Behind.",
+      "sources": [
+        "https://www.embracezoukonline.com/courses/glossary-fundamentals",
+        "https://amozouk.com/zouk-move-dictionary",
+        "https://www.brazilianzoukcouncil.com/educational"
+      ]
+    },
+    {
+      "original": "Lower Left Hand",
+      "canonical": "Lower Left Hand",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Lower Left Hand"
+      ],
+      "pt_description": "baixar a mão esquerda (descritivo)",
+      "status": "unattested",
+      "confidence": 0.75,
+      "note": "No named figure in BZDC, Embrace, Paulo Aguiar vol. 1-2, UFRGS, UFPA or the 2005-07 zouk notes. Graph: Lateral From Behind -> Lower Left Hand -> Hold Hip.",
+      "sources": [
+        "https://www.brazilianzoukcouncil.com/educational",
+        "https://www.embracezoukonline.com/courses/glossary-fundamentals",
+        "http://www.pauloaguiar.com/curso-de-zouk%20vol1.html",
+        "http://www.pauloaguiar.com/curso-de-zouk%20vol2.html",
+        "https://bdm.ufpa.br/handle/prefix/5234"
+      ]
+    },
+    {
+      "original": "Lunge Forward",
+      "canonical": "Lunge",
+      "canonical_is_pt": true,
+      "alternates_pt": [
+        "Preparação para Giro",
+        "Preparação pro Giro",
+        "Abertura"
+      ],
+      "english_aliases": [
+        "Lunge Forward",
+        "Lunge",
+        "Preparation"
+      ],
+      "pt_description": "lunge (preparação) para o giro",
+      "status": "partial",
+      "confidence": 0.55,
+      "note": "'Lunge' is an English loanword, but Brazilian Portuguese texts use it as the term: BZDC movement list ('Frente e Trás, Lateral, Viradinha, Lunge, Bônus, Soltinho') and BZWC 2026 Portuguese rules ('Lunges'). Native forms: 'Preparação pro giro' (BZWC 2019 content: 'Preparation/lunge with turn in place') and 'Preparação para Giro, Abertura' (Embrace). Partial because no Portuguese qualifier for 'forward' is attested. Graph: Unwind -> Lunge Forward -> Behind Back Pirouette / Untwist Turn. Side Lunge carries the native form 'Preparação para Giro'; see the open question on the lunge nodes.",
+      "sources": [
+        "https://www.brazilianzoukcouncil.com/educational",
+        "https://www.brazilianzoukworldchampionships.com/wp-content/uploads/2026/07/2026-Zouk-Worlds-Regras.pdf",
+        "https://brazilianzoukworldchampionships.com/wp-content/uploads/2019/06/BZWC-COMPETITION-ZOUK-CONTENT.pdf",
+        "https://www.embracezoukonline.com/courses/glossary-fundamentals"
+      ]
+    },
+    {
+      "original": "One Hand",
+      "canonical": "One Hand",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "One Hand"
+      ],
+      "pt_description": "dançar com uma só conexão (uma mão) (descritivo)",
+      "status": "unattested",
+      "confidence": 0.75,
+      "note": "'Conexão' is the Brazilian word for a hand hold (Sérgio Telles 2021 'Giro da dama com as duas conexões', 'troca de conexão'; UFPA 'conexão aberta'), but no source names a one-hand figure; 'uma conexão' is descriptive only. Graph: Lateral -> One Hand -> Right Hand Open / Side Lunge.",
+      "sources": [
+        "https://www.youtube.com/watch?v=uu_Jt03v2TU",
+        "https://bdm.ufpa.br/handle/prefix/5234",
+        "https://www.embracezoukonline.com/courses/glossary-fundamentals"
+      ]
+    },
+    {
+      "original": "Open Back Basic",
+      "canonical": "Open Back Basic",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Passo Básico Atrás",
+        "Básico Frente e Trás",
+        "Vai e Vem (Básico 2)",
+        "Pegada Aberta (hold name)"
+      ],
+      "english_aliases": [
+        "Open Back Basic",
+        "Basic Back (open hold)"
+      ],
+      "pt_description": "passo básico atrás em pegada aberta (descritivo)",
+      "status": "partial",
+      "confidence": 0.6,
+      "note": "The parts are attested: UFRGS 'passo básico atrás' and 'pegada aberta (de mãos dadas)'; BZDC 'Frente e Trás'; Paulo Aguiar 'VAI E VEM (BÁSICO 2)'; UFPA 'Deslocando (vai e vem)'. No source names an open-hold back basic, and the plain Back Basic node takes the Portuguese term, so the English name stays. Graph: Open Forward Basic -> Open Back Basic -> Soltinho / Push Spin Break.",
+      "sources": [
+        "https://lume.ufrgs.br/bitstream/handle/10183/49841/000850593.pdf?sequence=1",
+        "https://www.brazilianzoukcouncil.com/educational",
+        "http://www.pauloaguiar.com/curso-de-zouk%20vol1.html",
+        "https://bdm.ufpa.br/handle/prefix/5234"
+      ]
+    },
+    {
+      "original": "Open Break",
+      "canonical": "Open Break",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Abertura",
+        "Spiderman",
+        "Pegada Aberta (hold name)"
+      ],
+      "english_aliases": [
+        "Open Break",
+        "Send Away",
+        "Spider-Man"
+      ],
+      "pt_description": "abertura do abraço para a pegada aberta (descritivo)",
+      "status": "partial",
+      "confidence": 0.5,
+      "note": "'Open Break' is itself an attested alias: Embrace 'Send Away (Spider-Man, Open Break)'; Bia Guido 'Aula 04 - Spiderman' (2020, English loan in a Portuguese title). UFRGS: 'abertura da posição de abraço para a pegada aberta'. 'Abertura' is the best-attested Portuguese word, but it is also an alias of the lunge (Embrace 'Lunge (Preparação para Giro, Abertura)'; Sarah e Léo 'Aula 03 - Abertura'), so the English name stays. Graph: Back Basic -> Open Break -> Lateral / Switch Hands / Open Back Basic.",
+      "sources": [
+        "https://www.embracezoukonline.com/courses/glossary-fundamentals",
+        "https://www.youtube.com/watch?v=E--1VTZNYu4",
+        "https://lume.ufrgs.br/bitstream/handle/10183/49841/000850593.pdf?sequence=1",
+        "https://www.youtube.com/watch?v=E_y1dCr-owo",
+        "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html"
+      ]
+    },
+    {
+      "original": "Open Forward Basic",
+      "canonical": "Open Forward Basic",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Passo Básico à Frente",
+        "Básico Frente e Trás",
+        "Pegada Aberta (hold name)"
+      ],
+      "english_aliases": [
+        "Open Forward Basic",
+        "Basic Forward (open hold)"
+      ],
+      "pt_description": "passo básico à frente em pegada aberta (descritivo)",
+      "status": "partial",
+      "confidence": 0.6,
+      "note": "Same as Open Back Basic: the parts are attested ('passo básico à frente', UFRGS; 'Frente e Trás', BZDC; 'pegada aberta', UFRGS), but no source names the open-hold variant; the plain Forward Basic node takes the Portuguese term. Graph: a root leading to Open Back Basic, Cross wrap, Overhead Springload, Side Lunge and others.",
+      "sources": [
+        "https://lume.ufrgs.br/bitstream/handle/10183/49841/000850593.pdf?sequence=1",
+        "https://www.brazilianzoukcouncil.com/educational",
+        "https://www.embracezoukonline.com/courses/glossary-fundamentals"
+      ]
+    },
+    {
+      "original": "Open Lunge",
+      "canonical": "Open Lunge",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Lunge",
+        "Preparação para Giro",
+        "Preparação pro Giro",
+        "Abertura"
+      ],
+      "english_aliases": [
+        "Open Lunge",
+        "Lunge",
+        "Preparation for Turn"
+      ],
+      "pt_description": "lunge (preparação para giro) em posição aberta (descritivo)",
+      "status": "partial",
+      "confidence": 0.6,
+      "note": "Brazilian zouk uses the loanword 'Lunge' (BZDC list; BZWC 2026 'Lunges'); native forms 'Preparação pro giro' (BZWC 2019) and 'Preparação para Giro' (Embrace). The English name already uses that loan, and a single Portuguese term would merge the user's lunge nodes. UFPA's 'preparação de giro (patinha)' was not adopted: Sérgio Telles uses 'patinha' for a 'chicote livre', so it is ambiguous. Graph: Open Lunge -> Simple Turn.",
+      "sources": [
+        "https://www.brazilianzoukworldchampionships.com/wp-content/uploads/2026/07/2026-Zouk-Worlds-Regras.pdf",
+        "https://brazilianzoukworldchampionships.com/wp-content/uploads/2019/06/BZWC-COMPETITION-ZOUK-CONTENT.pdf",
+        "https://www.embracezoukonline.com/courses/glossary-fundamentals",
+        "https://www.brazilianzoukcouncil.com/educational",
+        "https://bdm.ufpa.br/handle/prefix/5234",
+        "https://www.youtube.com/watch?v=4dwFs7aghQ4"
+      ]
+    },
+    {
+      "original": "open Lunge In Front",
+      "canonical": "open Lunge In Front",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Lunge",
+        "Preparação para Giro"
+      ],
+      "english_aliases": [
+        "open Lunge In Front",
+        "Open Lunge In Front"
+      ],
+      "pt_description": "lunge à frente em posição aberta, preparando o giro (descritivo)",
+      "status": "partial",
+      "confidence": 0.5,
+      "note": "Derived from Open Lunge; no name for the 'in front' variant. Graph: Switch Hands -> open Lunge In Front -> Reverse Turn.",
+      "sources": [
+        "https://brazilianzoukworldchampionships.com/wp-content/uploads/2019/06/BZWC-COMPETITION-ZOUK-CONTENT.pdf",
+        "https://www.embracezoukonline.com/courses/glossary-fundamentals",
+        "https://www.youtube.com/watch?v=c0J8gpdGQ_o"
+      ]
+    },
+    {
+      "original": "Overhead Springload",
+      "canonical": "Overhead Springload",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Elástico (unverified)",
+        "Passo Mola (title only)"
+      ],
+      "english_aliases": [
+        "Overhead Springload",
+        "Overhead Spring Load"
+      ],
+      "pt_description": "impulso tipo mola com os braços acima da cabeça (descritivo)",
+      "status": "unattested",
+      "confidence": 0.55,
+      "note": "BZDC/BZWC 'Elástico com corporal (Elastic with contraction or body roll)' and Jettence 'Elástico/Raul' (pull and bounce back) involve no overhead arm position; 'Passo Mola' (Hei Bora Dançar, Eny e Tais Lopes) is title-only.",
+      "sources": [
+        "https://brazilianzoukworldchampionships.com/wp-content/uploads/2019/06/BZWC-COMPETITION-ZOUK-CONTENT.pdf",
+        "https://www.jettence.com/blog/names-of-brazilian-zouk-moves-in-portuguese-with-gifs/",
+        "https://www.youtube.com/watch?v=c8mbcYeX2Lo"
+      ]
+    },
+    {
+      "original": "Pirouette",
+      "canonical": "Giro no Eixo",
+      "canonical_is_pt": true,
+      "alternates_pt": [
+        "Giros no Eixo",
+        "Planada (AmoZouk only)"
+      ],
+      "english_aliases": [
+        "Pirouette",
+        "On-axis Spin",
+        "Axis Spin"
+      ],
+      "pt_description": "rotação da dama sobre o próprio eixo longitudinal, em geral sobre um pé em meia ponta, impulsionada pelo cavalheiro pela mão",
+      "status": "attested",
+      "confidence": 0.68,
+      "note": "UFRJ/COPPE (Navarro 2021): 'O Giro no Eixo é um movimento realizado em dupla e consiste em uma rotação da conduzida em seu eixo longitudinal, geralmente sobre apoio unipodal em meia ponta ... impulsionado principalmente pelo bailarino condutor por meio da mão'; its difficulty is scored in competition. Also FIEP/UFSC and SciELO ('giros no eixo'), Mayara Gazzi 'Giros no eixo com mais equilíbrio' (2019), Helen Avelar & Rodrigo Delano 'PRÁTICA GIRO NO EIXO' (2021). Caveat: UFRJ says it is 'Diferente da pirueta' because the leader drives it; if the user's Pirouette is a self-propelled solo spin, it fits less well. 'Pião' is a different move (the couple rotating together; Jettence; CNDD fig. 08). 'Giro em eixo vertical' was removed from the alternates (UFPA uses it inside the avião). Fits the Star icon, yellow tone and high energy (1.42).",
+      "sources": [
+        "https://www.peb.ufrj.br/images/Tese0353_2021_11_30.pdf",
+        "https://ojs.fiepbulletin.net/fiepbulletin/article/download/86.a1.42/11994/15374",
+        "https://www.scielo.br/j/rbep/a/rNhzqXVKxSQHzYbJVB66Q6h/?lang=pt",
+        "https://www.youtube.com/watch?v=7jhhjdMlUKQ",
+        "https://www.youtube.com/watch?v=cSVoebLc3CI",
+        "https://www.youtube.com/watch?v=fRjM2A-S_ps",
+        "https://www.jettence.com/blog/names-of-brazilian-zouk-moves-in-portuguese-with-gifs-part-2/"
+      ]
+    },
+    {
+      "original": "Pop",
+      "canonical": "Pop",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Chicote (candidate)",
+        "Explosão (single-school name)"
+      ],
+      "english_aliases": [
+        "Pop",
+        "Whip / Flick (candidate)"
+      ],
+      "pt_description": "acento rápido e explosivo de cabeça e tronco (descritivo; ver 'chicote')",
+      "status": "unattested",
+      "confidence": 0.5,
+      "note": "Two candidates, both verified. CHICOTE: 'CNDD - Zouk - 13 Chicote' (Confederação Nacional de Dança Desportiva, Syllabus Bronze Dança de Salão Zouk, Figura 13, 2022), the strongest attested term for a fast head whip; Helen Avelar (2020) 'um tipo de movimento de cabeça mais rápido'. It fits the Tetra icon and the high energy (1.3). EXPLOSÃO: Luca e Amanda (2020) 'uma técnica de finalização do movimento, que chamamos de \"explosão\"', one school's own name. Ask the user before renaming.",
+      "sources": [
+        "https://www.youtube.com/watch?v=LOG8JYuy05M",
+        "https://www.youtube.com/watch?v=lShLUTviiA0",
+        "https://www.youtube.com/watch?v=D2U96n-s6pw",
+        "https://www.youtube.com/watch?v=rIIEKmqtUrU",
+        "https://www.youtube.com/watch?v=KxJpnAXlQUg",
+        "https://www.jettence.com/blog/names-of-brazilian-zouk-moves-in-portuguese-with-gifs-part-2/"
+      ]
+    },
+    {
+      "original": "Project Forward",
+      "canonical": "Project Forward",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Project Forward"
+      ],
+      "pt_description": "projetar a dama para a frente a partir da pegada por trás (descritivo)",
+      "status": "unattested",
+      "confidence": 0.75,
+      "note": "'Send Away (Spider-Man, Open Break)' (Gui Prada) and Bia Guido 'Zouk Brasileiro Aula 04 - Spiderman' (2020) are an open break from open position, a different context. No Portuguese term. Graph: Hold Behind Crossed Arms -> Project Forward -> Walk Pirouette.",
+      "sources": [
+        "https://www.embracezoukonline.com/courses/glossary-fundamentals",
+        "https://www.youtube.com/watch?v=E--1VTZNYu4",
+        "https://amozouk.com/zouk-move-dictionary"
+      ]
+    },
+    {
+      "original": "Push Spin Break",
+      "canonical": "Push Spin Break",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Push Spin Break"
+      ],
+      "pt_description": "impulso da dama para um giro, seguido de abertura (descritivo)",
+      "status": "unattested",
+      "confidence": 0.7,
+      "note": "No name. oGrupo de Dança's title item 'Saída em Giro' (2025, a general ballroom channel) is undescribed and more likely fits Spin Out. Graph: terminal branch from Open Back Basic.",
+      "sources": [
+        "https://www.youtube.com/watch?v=Tl67WOJ3tVw",
+        "https://www.embracezoukonline.com/courses/glossary-fundamentals"
+      ]
+    },
+    {
+      "original": "Raise Hands",
+      "canonical": "Raise Hands",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Raise Hands"
+      ],
+      "pt_description": "erguer as mãos/braços acima da cabeça (descritivo)",
+      "status": "unattested",
+      "confidence": 0.6,
+      "note": "No term. Sérgio Telles' 'envolvimento de \"chapéuzinho\" na dama' names a wrap (correct spelling 'chapeuzinho'), not raised hands; UFPA's avião has the couple leaning 'com os braços abertos', not raised.",
+      "sources": [
+        "https://www.youtube.com/watch?v=4dwFs7aghQ4",
+        "https://bdm.ufpa.br/handle/prefix/5234"
+      ]
+    },
+    {
+      "original": "Reposition Behind",
+      "canonical": "Reposition Behind",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Reposition Behind"
+      ],
+      "pt_description": "reposicionamento do cavalheiro por trás da dama (descritivo)",
+      "status": "unattested",
+      "confidence": 0.65,
+      "note": "Nothing found in school pages, theses, glossaries or about 320 Brazilian lesson titles. The closest is oGrupo's descriptive title 'Giro com Trava e Cavalheiro atrás da dama', not a term.",
+      "sources": [
+        "https://bdm.ufpa.br/handle/prefix/5234",
+        "https://adorodancar.com.br/blog/tag/zouk/"
+      ]
+    },
+    {
+      "original": "Reverse",
+      "canonical": "Reverse",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Reverse"
+      ],
+      "pt_description": "onda no sentido inverso (descritivo, não é termo estabelecido)",
+      "status": "unattested",
+      "confidence": 0.6,
+      "note": "No Portuguese term for a reversed wave. 'Ioiô Invertido' (DanceMais, 'Samba de Zouk Avançado vol. 4') is a turn figure, and 'Giro Invertido' is a turn that Helen Avelar equates with Bônus/Bumerang; neither fits the wrap/wave cycle Snake -> Submissive Overhead -> Reverse -> Snake. 'Ondulação reversa' would be a calque.",
+      "sources": [
+        "https://www.youtube.com/watch?v=k0L2WgpW_PM",
+        "https://www.youtube.com/watch?v=c0J8gpdGQ_o",
+        "https://brazilianzoukworldchampionships.com/wp-content/uploads/2019/06/BZWC-COMPETITION-ZOUK-CONTENT.pdf",
+        "https://www.youtube.com/watch?v=ngI728iCNIE"
+      ]
+    },
+    {
+      "original": "Reverse Body Roll",
+      "canonical": "Reverse Body Roll",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Reverse Body Roll"
+      ],
+      "pt_description": "ondulação no sentido inverso (descritivo; o termo da família é 'ondulação')",
+      "status": "unattested",
+      "confidence": 0.7,
+      "note": "The family term is attested (UFPA 'ONDULAÇÃO FRONTAL', 'ONDULAÇÃO LATERAL'; Helen Avelar '16 ONDAS'), but no source names a reversed roll, and 'ondulação reversa/invertida' would be a calque. The English name also keeps it distinct from Body Roll (Ondulação).",
+      "sources": [
+        "https://bdm.ufpa.br/handle/prefix/5234",
+        "https://www.youtube.com/watch?v=ngI728iCNIE",
+        "https://web.archive.org/web/20180922032353/http://www.brazilianzoukcouncil.com:80/dance-education/identifying-the-brazilian-zouk-rhythm"
+      ]
+    },
+    {
+      "original": "Reverse Hug Simple Turn",
+      "canonical": "Reverse Hug Simple Turn",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Reverse Hug Simple Turn"
+      ],
+      "pt_description": "giro simples a partir do abraço, no sentido inverso (descritivo)",
+      "status": "unattested",
+      "confidence": 0.65,
+      "note": "'Giro simples' (UFPA; BZDC demo 2026-10-02; BZWC 2026) and 'giro invertido' (Paulo Aguiar vol. 2; NDEC 2021) are both attested, but Helen Avelar's 'BONUS/ BUMERANG/ GIRO INVERTIDO' (2020) puts giro invertido in the bônus family, so it does not fit a reverse simple turn out of the hug. Graph: Hug Simple Turn -> Reverse Hug Simple Turn -> Simple Turn.",
+      "sources": [
+        "https://www.youtube.com/watch?v=iz_gF8h0WsE",
+        "https://bdm.ufpa.br/handle/prefix/5234",
+        "http://www.pauloaguiar.com/curso-de-zouk%20vol2.html",
+        "https://www.youtube.com/watch?v=c0J8gpdGQ_o",
+        "https://www.brazilianzoukworldchampionships.com/wp-content/uploads/2026/07/2026-Zouk-Worlds-Regras.pdf"
+      ]
+    },
+    {
+      "original": "Reverse Overhead Turn",
+      "canonical": "Reverse Overhead Turn",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Giro Invertido (base term)"
+      ],
+      "english_aliases": [
+        "Reverse Overhead Turn"
+      ],
+      "pt_description": "giro invertido com o braço passando por cima da cabeça (descritivo)",
+      "status": "unattested",
+      "confidence": 0.5,
+      "note": "'Giro invertido' is attested (Paulo Aguiar vol. 2 'GIRO INVERTIDO', 'GIRO INVERTIDO COM A MÃO DIREITA'; NDEC 'Giro Invertido para Direita') and belongs to the separate Reverse Turn node. Counter-evidence: Helen Avelar uses 'Bonus/Bumerang/Giro Invertido' as one move. No name for the overhead variant. Graph: Side Lunge -> Reverse Overhead Turn -> Behind Back Pirouette.",
+      "sources": [
+        "http://www.pauloaguiar.com/curso-de-zouk%20vol2.html",
+        "https://www.youtube.com/watch?v=dz1zqbcdzOU",
+        "https://www.youtube.com/watch?v=c0J8gpdGQ_o"
+      ]
+    },
+    {
+      "original": "Reverse Turn",
+      "canonical": "Giro Invertido",
+      "canonical_is_pt": true,
+      "alternates_pt": [
+        "Giro Invertido com a Mão Direita"
+      ],
+      "english_aliases": [
+        "Reverse Turn",
+        "Inverted Turn"
+      ],
+      "pt_description": "giro da dama no sentido inverso",
+      "status": "partial",
+      "confidence": 0.6,
+      "note": "Paulo Aguiar vol. 2 '5- GIRO INVERTIDO' and '6- GIRO INVERTIDO COM A MÃO DIREITA' (undescribed); NDEC 'Zouk - Giro Invertido para Direita' (2021). Helen Avelar's bilingual titles pair the PT 'BONUS/ BUMERANG/ GIRO INVERTIDO' (2020) with the EN 'BONUS/ BUMERANG/ REVERSE TURN', a direct EN-PT pair. Downgraded by the verifier to partial because those titles and BZDC/BZWC ('Bônus (Boomerang)') make giro invertido, bônus and boomerang one move, while the user has separate Bonus and Boomerang nodes. 'Contragiro' is the Porto Seguro lambada word, not the zouk term.",
+      "sources": [
+        "http://www.pauloaguiar.com/curso-de-zouk%20vol2.html",
+        "https://www.youtube.com/watch?v=dz1zqbcdzOU",
+        "https://www.youtube.com/watch?v=V9Gp1SyLLAU",
+        "https://www.youtube.com/watch?v=7OxzkH8pbgY",
+        "https://www.youtube.com/watch?v=c0J8gpdGQ_o",
+        "https://brazilianzoukworldchampionships.com/wp-content/uploads/2019/06/BZWC-COMPETITION-ZOUK-CONTENT.pdf",
+        "https://dancandolambada.com.br/"
+      ]
+    },
+    {
+      "original": "right Arm Out",
+      "canonical": "right Arm Out",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "right Arm Out",
+        "Right Arm Out"
+      ],
+      "pt_description": "braço direito estendido para fora (descritivo)",
+      "status": "unattested",
+      "confidence": 0.7,
+      "note": "Mayara Gazzi's 'Charme de Braços: Helicóptero' (2022) is follower arm styling, not a connection state. No term. Graph: blue state between Tilt Right and Roll.",
+      "sources": [
+        "https://www.youtube.com/watch?v=teu7rkY22z0",
+        "https://www.embracezoukonline.com/courses/glossary-fundamentals"
+      ]
+    },
+    {
+      "original": "Right Hand Open",
+      "canonical": "Right Hand Open",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Right Hand Open"
+      ],
+      "pt_description": "conexão aberta pela mão direita (descritivo)",
+      "status": "unattested",
+      "confidence": 0.7,
+      "note": "Paulo Aguiar vol. 2 'GIRO INVERTIDO COM A MÃO DIREITA' uses 'com a mão direita' only as a qualifier; UFPA 'conexão aberta' is generic. No named state. Graph hub: from Lateral, wrap Hug, One Hand, Downswing, Lead Open Right; to Inside Spin, Fast Pirouette.",
+      "sources": [
+        "http://www.pauloaguiar.com/curso-de-zouk%20vol2.html",
+        "https://bdm.ufpa.br/handle/prefix/5234"
+      ]
+    },
+    {
+      "original": "Roll",
+      "canonical": "Roll",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Rolinho (if rotisserie / off-axis turn)",
+        "Giro fora do Eixo"
+      ],
+      "english_aliases": [
+        "Roll",
+        "Rotisserie (candidate)"
+      ],
+      "pt_description": "giro fora do eixo em que o corpo gira e o topo da cabeça fica no lugar (descrição do candidato 'rolinho'; não confirmado)",
+      "status": "unattested",
+      "confidence": 0.45,
+      "note": "Mayara Gazzi posted 'Como Pisar no Rolinho?' (2023-02-01) and 'How to Step on Rotisserie?' (2023-02-02), so rolinho = rotisserie in her usage; Rollerranga defines rotisserie as 'turning the body while the top of the head remains in place'. Applies only if Roll is that off-axis turn. Other off-axis names: 'giro inclinado' (Maelly e Lucas), 'giros com cabeça inclinada' (Mayara Gazzi & Denis Marques). In Porto Seguro lambada 'rolinho' is part of the boneca; 'rolê' is a separate Rodrigo Delano head-movement technique.",
+      "sources": [
+        "https://www.youtube.com/watch?v=fws-jehVwKY",
+        "https://www.youtube.com/watch?v=8UnNCnDVCwE",
+        "https://www.youtube.com/watch?v=zduz6YFQZXc",
+        "https://www.youtube.com/watch?v=myDuxKdKkuA",
+        "https://www.youtube.com/watch?v=a8Nl1GhDzFY",
+        "https://dancandolambada.com.br/",
+        "https://www.youtube.com/watch?v=buv-CEaj8CA"
+      ]
+    },
+    {
+      "original": "Roll Right",
+      "canonical": "Roll Right",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Roll Right"
+      ],
+      "pt_description": "rolamento/giro para a direita (descritivo)",
+      "status": "unattested",
+      "confidence": 0.5,
+      "note": "No term. Mayara Gazzi's 'rolinho' (= rotisserie) is pitched with her head-movement course and done 'slow motion'; it is not this step-family move. See Roll. No graph edges.",
+      "sources": [
+        "https://www.youtube.com/watch?v=fws-jehVwKY"
+      ]
+    },
+    {
+      "original": "Rotate Hip Turn",
+      "canonical": "Rotate Hip Turn",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Rotate Hip Turn"
+      ],
+      "pt_description": "giro conduzido pela rotação do quadril (descritivo)",
+      "status": "unattested",
+      "confidence": 0.7,
+      "note": "Mayara Gazzi's 'Torção de Quadril' (2020) is 'Dica de charme simples ... para usar na base do zouk', a follower styling, not a led turn out of the hug. Graph: Hug -> Rotate Hip Turn -> Behind Back Unwind.",
+      "sources": [
+        "https://www.youtube.com/watch?v=zGurf55sC8w",
+        "https://www.embracezoukonline.com/courses/glossary-fundamentals",
+        "https://bdm.ufpa.br/handle/prefix/5234"
+      ]
+    },
+    {
+      "original": "Shoulder Pin",
+      "canonical": "Shoulder Pin",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Shoulder Pin"
+      ],
+      "pt_description": "o condutor fixa o ombro da dama com a mão (descritivo)",
+      "status": "unattested",
+      "confidence": 0.65,
+      "note": "'Colar' (Sérgio Telles 2019; 2005-07 notes 'colar do cavalheiro') puts the hand on the neck, not the shoulder. Lead: under 'Básico Frontal e Chicote' the 2005-07 Saulo notes have the leader's right hand on the follower's left shoulder, her curving toward it and being pushed back, which resembles Shoulder Pin -> Dip; but it is a step inside a chicote description, not a figure name.",
+      "sources": [
+        "https://www.youtube.com/watch?v=zu5RS93JCkA",
+        "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html"
+      ]
+    },
+    {
+      "original": "Side Dip",
+      "canonical": "Side Dip",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Queda (generic category)"
+      ],
+      "english_aliases": [
+        "Side Dip"
+      ],
+      "pt_description": "queda/inclinação da dama para o lado (descritivo)",
+      "status": "unattested",
+      "confidence": 0.5,
+      "note": "No attested term. CNDD Bronze fig. 12 'Cambret - Variações: Frontal + Dama na Lateral + Lado a Lado' is a cambré variation, not confirmed for this step-family move. 'Quedas' is the generic dips category in the BZDC rule quoted by SciELO ('quedas (nas quais pelo menos um dos pés de cada parceiro se mantém em solo)'); in the BZWC 2026 rules 'queda' also means a ranking drop. Applies to both Side Dip nodes.",
+      "sources": [
+        "https://www.youtube.com/watch?v=7JYqLxcduak",
+        "https://www.scielo.br/j/rbep/a/rNhzqXVKxSQHzYbJVB66Q6h/?lang=pt"
+      ]
+    },
+    {
+      "original": "Side Lunge",
+      "canonical": "Preparação para Giro",
+      "canonical_is_pt": true,
+      "alternates_pt": [
+        "Preparação pro Giro",
+        "Lunge",
+        "Abertura"
+      ],
+      "english_aliases": [
+        "Side Lunge",
+        "Lunge",
+        "Preparation"
+      ],
+      "pt_description": "preparação (lunge, abertura lateral) que antecede o giro da dama",
+      "status": "attested",
+      "confidence": 0.6,
+      "note": "Graph: many entries (Lateral, Bonus, Crosswalk, Hug...) and exits only into turns (Simple Turn, Double Turn, Hug Simple Turn, Reverse Overhead Turn, Turn Wrap), i.e. the fundamental turn preparation. Forms: 'Preparação para Giro' (Embrace: 'Lunge (Preparação para Giro, Abertura*)'; Sérgio Telles 2021 '...finalizando com o chicote e preparação para giro'; NDEC 'Preparação giro simples'); 'Preparação pro giro' (BZWC 2019 content and BZDC 2018: 'Preparation/lunge with turn in place'; 'pro' is the colloquial contraction of 'para o'); the loanword 'Lunge' (current BZDC list; BZWC 2026 'Lunges'). BZDC's own Portuguese text (Giro Simples video, 2026-10-02) calls the lunge 'abertura' ('sem preparação da abertura'), and UFPA defines the giro simples as 'uma abertura lateral seguida de um giro da dama', which matches 'side'. 'Abertura' is not canonical because it also means the opening from embrace to open hold (UFRGS). Synthesis correction: the batch-3 verifier said BZWC does not list 'Preparação pro giro'; it was reading the 2026 rules, and the 2019 content PDF does list it (confirmed by two other verifiers).",
+      "sources": [
+        "https://www.embracezoukonline.com/courses/glossary-fundamentals",
+        "https://brazilianzoukworldchampionships.com/wp-content/uploads/2019/06/BZWC-COMPETITION-ZOUK-CONTENT.pdf",
+        "https://web.archive.org/web/20180922032353/http://www.brazilianzoukcouncil.com:80/dance-education/identifying-the-brazilian-zouk-rhythm",
+        "https://www.youtube.com/watch?v=uu_Jt03v2TU",
+        "https://www.youtube.com/watch?v=75-2goroF0w",
+        "https://www.youtube.com/watch?v=iz_gF8h0WsE",
+        "https://www.youtube.com/watch?v=E_y1dCr-owo",
+        "https://bdm.ufpa.br/handle/prefix/5234",
+        "https://www.brazilianzoukcouncil.com/educational",
+        "https://www.brazilianzoukworldchampionships.com/wp-content/uploads/2026/07/2026-Zouk-Worlds-Regras.pdf"
+      ]
+    },
+    {
+      "original": "Simple Turn",
+      "canonical": "Giro Simples",
+      "canonical_is_pt": true,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Simple Turn",
+        "Single Turn"
+      ],
+      "pt_description": "giro simples da dama com deslocamento, voltando ao condutor",
+      "status": "attested",
+      "confidence": 0.9,
+      "note": "BZWC 2019 'Giro Simples (Simple turn with girls travelling)' and BZWC 2026 rules; BZDC demo 'Zouk Brasileiro: Giro Simples' (2026-10-02); CNDD Bronze fig. 07 'Giro simples'; UFPA 'GIRO SIMPLES • Movimento executado com base no corredor'; lessons by Bia Guido, Helen Avelar and Sarah e Léo; NDEC 'Preparação giro simples' shows the lunge-to-turn link. ('Giro Simple' in Embrace is a typo.)",
+      "sources": [
+        "https://brazilianzoukworldchampionships.com/wp-content/uploads/2019/06/BZWC-COMPETITION-ZOUK-CONTENT.pdf",
+        "https://www.youtube.com/watch?v=iz_gF8h0WsE",
+        "https://www.youtube.com/watch?v=qjtZRkAUo7Q",
+        "https://www.youtube.com/watch?v=1G_6COXv5Go",
+        "https://www.youtube.com/watch?v=ggJ5IO2cXF4",
+        "https://www.youtube.com/watch?v=75-2goroF0w",
+        "https://www.brazilianzoukworldchampionships.com/wp-content/uploads/2026/07/2026-Zouk-Worlds-Regras.pdf",
+        "https://bdm.ufpa.br/handle/prefix/5234"
+      ]
+    },
+    {
+      "original": "Snake",
+      "canonical": "Cobrinha",
+      "canonical_is_pt": true,
+      "alternates_pt": [
+        "Cobra"
+      ],
+      "english_aliases": [
+        "Snake"
+      ],
+      "pt_description": "movimento sinuoso (onda) característico do zouk",
+      "status": "partial",
+      "confidence": 0.55,
+      "note": "Real zouk vocabulary: Luan Correia & Adriana Gomes 'Aula de dança: Cobrinha do zouk' (2017, 'a famosa cobrinha do zouk'); Evidance (Natal): 'um movimento sinuoso (onda) conhecido como cobrinha'; Helen Avelar uses the loanword 'SNAKE'. Downgraded by the verifier to partial: sources use cobrinha for the general zouk wave, not specifically the user's wrap move, so it is a near-synonym of Onda (Do The Wave). The 'abraço com cobrinha' line in the 2017 video is a sign-off pun, not evidence of an embrace move. Applies to both Snake nodes.",
+      "sources": [
+        "https://www.youtube.com/watch?v=wvzBUIq6HY8",
+        "https://www.evidance.com.br/zouk-2/",
+        "https://www.youtube.com/watch?v=nCo4ssnE8Js"
+      ]
+    },
+    {
+      "original": "Soltinho",
+      "canonical": "Soltinho",
+      "canonical_is_pt": true,
+      "alternates_pt": [
+        "Giro do Cavalheiro e da Dama",
+        "Rodada Básica (Giro Alternado) (probable)"
+      ],
+      "english_aliases": [
+        "Soltinho",
+        "Turn of the guy, turn of the girl"
+      ],
+      "pt_description": "giro da dama e giro do cavalheiro alternados (de 'solto')",
+      "status": "attested",
+      "confidence": 0.9,
+      "note": "BZDC fundamentals 'Soltinho'; BZWC 2019 'Soltinho (Turn of the guy, turn of the girl)'; BZWC 2026 rules; Luca e Amanda (2020) explain it as alternating the follower's and the leader's turns; AmoZouk derives it from solto/solta. Alternates: UFPA 'GIRO DO CAVALHEIRO E DA DAMA' (each turns, swapping places); Paulo Aguiar 'RODADA BÁSICA (GIRO ALTERNADO)', probably the same but undescribed. Caveat: 'Soltinho' is also a separate Brazilian ballroom dance (Dance News 1998; 2005-07 notes 'também conhecido como Swing, ou mesmo Rock'). The mapper's claim that forró calls the move 'troca de lugar' had no source and was dropped.",
+      "sources": [
+        "https://www.brazilianzoukcouncil.com/educational",
+        "https://brazilianzoukworldchampionships.com/wp-content/uploads/2019/06/BZWC-COMPETITION-ZOUK-CONTENT.pdf",
+        "https://www.brazilianzoukworldchampionships.com/wp-content/uploads/2026/07/2026-Zouk-Worlds-Regras.pdf",
+        "https://www.youtube.com/watch?v=vzf8j4jjJ5g",
+        "https://amozouk.com/zouk-move-dictionary",
+        "https://bdm.ufpa.br/handle/prefix/5234",
+        "http://www.pauloaguiar.com/curso-de-zouk%20vol1.html",
+        "http://www.dancadesalao.com/jornal/dancenews/980801.htm",
+        "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html"
+      ]
+    },
+    {
+      "original": "Spin Out",
+      "canonical": "Spin Out",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Saída em Giro (title only, unverified)"
+      ],
+      "english_aliases": [
+        "Spin Out"
+      ],
+      "pt_description": "saída da dama girando para fora (descritivo)",
+      "status": "unattested",
+      "confidence": 0.5,
+      "note": "'Saída em Giro' appears only as the last item of an oGrupo de Dança title (2025; a general ballroom channel), undescribed. 'Saída básica' (Paulo Aguiar) and 'Saída e Entrada' (Guilherme Chaves Escola de Dança, not Sarah e Léo as the mapper said) are generic exits.",
+      "sources": [
+        "https://www.youtube.com/watch?v=Tl67WOJ3tVw",
+        "https://www.youtube.com/watch?v=aMyZ8el5gRU",
+        "http://www.pauloaguiar.com/curso-de-zouk%20vol1.html"
+      ]
+    },
+    {
+      "original": "Split",
+      "canonical": "Split",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Split"
+      ],
+      "pt_description": "abertura total das pernas, espacate (descritivo)",
+      "status": "unattested",
+      "confidence": 0.5,
+      "note": "No zouk term. In zouk 'abertura' means the opening or lunge preparation (Embrace; Willadino p. 83), and 'abertura total' in the 2005-07 notes is an exit into the open position, so neither can name a leg split. The separate Leg Split node also exists. Graph: Dip -> Leg Extend -> Split.",
+      "sources": [
+        "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html",
+        "https://www.embracezoukonline.com/courses/glossary-fundamentals",
+        "https://lume.ufrgs.br/bitstream/handle/10183/49841/000850593.pdf?sequence=1"
+      ]
+    },
+    {
+      "original": "Spring Load",
+      "canonical": "Spring Load",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Mola (title only, unverified)"
+      ],
+      "english_aliases": [
+        "Spring Load"
+      ],
+      "pt_description": "acúmulo de tensão, como uma mola, antes de desenrolar a dama (descritivo)",
+      "status": "unattested",
+      "confidence": 0.6,
+      "note": "'Elástico/Raul' is a different move (Jettence: the leader pulls the follower 'as if pulling an elastic band' and she bounces back; UFPA defines Raul with a frontal undulation). Hei Bora Dançar's 'PASSO MOLA NO ZOUK BRASILEIRO' exists as a title but does not define the move and could not be re-fetched. Graph: Hold Behind -> Spring Load -> Unwrap.",
+      "sources": [
+        "https://www.jettence.com/blog/names-of-brazilian-zouk-moves-in-portuguese-with-gifs/",
+        "https://bdm.ufpa.br/handle/prefix/5234",
+        "https://www.youtube.com/watch?v=c8mbcYeX2Lo",
+        "https://www.youtube.com/watch?v=EHJ1wpsh-Os"
+      ]
+    },
+    {
+      "original": "Stand",
+      "canonical": "Stand",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Stand"
+      ],
+      "pt_description": "parado, em pé (estado de repouso; descritivo, não é nome de passo)",
+      "status": "unattested",
+      "confidence": 0.8,
+      "note": "A rest state, not a figure; no source names it. Willadino's 'posição de enlace ou abraço' (p. 92) is the closed hold, which the Hug node already covers. Applies to all three Stand nodes.",
+      "sources": [
+        "https://lume.ufrgs.br/bitstream/handle/10183/49841/000850593.pdf?sequence=1"
+      ]
+    },
+    {
+      "original": "Step To Side",
+      "canonical": "Step To Side",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Básico para o Lado (candidate)"
+      ],
+      "english_aliases": [
+        "Step To Side",
+        "Side Basic (candidate)"
+      ],
+      "pt_description": "passo para o lado (descritivo)",
+      "status": "unattested",
+      "confidence": 0.5,
+      "note": "The mapper's 'Básico para o Lado' was rejected by the verifier: it appears only in Gui Prada's English-language Embrace glossary, without a description, and no Brazilian school, syllabus or lesson uses it. Willadino's Porto Alegre names 'passo lateral do cavalheiro' and 'passo cruzado da dama' describe the corredor itself. The graph reads as a single step (no incoming links; goes to Side Dip and Hug). Do not use 'passo lateral' or 'básico lateral': both clash with Lateral -> Corredor (and in Porto Seguro lambada 'lateral' is a basic variation).",
+      "sources": [
+        "https://www.embracezoukonline.com/courses/glossary-fundamentals",
+        "https://www.youtube.com/watch?v=vlCjE6rvCP4",
+        "https://lume.ufrgs.br/bitstream/handle/10183/49841/000850593.pdf?sequence=1",
+        "https://dancandolambada.com.br/"
+      ]
+    },
+    {
+      "original": "Stop",
+      "canonical": "Trava",
+      "canonical_is_pt": true,
+      "alternates_pt": [
+        "Trava do Cavalheiro"
+      ],
+      "english_aliases": [
+        "Stop",
+        "Lock",
+        "Check"
+      ],
+      "pt_description": "o cavalheiro trava (interrompe) o movimento da dama antes de redirecioná-la",
+      "status": "partial",
+      "confidence": 0.55,
+      "note": "Sérgio Telles 'Zouk - aula básico/intermediário - trava' (2019-11-08: 'Sequência que envolve trava do cavalheiro e exige ... agilidade para mudança de direção') and 'Zouk - aula (intermediário)' (2019-12-16: 'Partindo do corredor da dama, com uma trava do cavalheiro, o qual irá conduzir a dama nessa descida'), which matches Stop -> Fall Back; Paulo Aguiar vol. 2 'GIRO DA DAMA COM TRAVA'; Felipe La Rosa 'Trava e Dois Giros pra trás' (2016); oGrupo 'Giro com Trava' (2025). Partial: no source shows a trava coming out of an unwind. Also used in bolero and forró. Spelling: 'trava', no accent.",
+      "sources": [
+        "https://www.youtube.com/watch?v=FBG6tdT-RIk",
+        "https://www.youtube.com/watch?v=FL0mggHUxs0",
+        "http://www.pauloaguiar.com/curso-de-zouk%20vol2.html",
+        "https://www.youtube.com/watch?v=FPbqbOPL4wg",
+        "https://www.youtube.com/watch?v=dtY5VHmNqzc"
+      ]
+    },
+    {
+      "original": "Submissive Overhead",
+      "canonical": "Submissive Overhead",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Submissive Overhead"
+      ],
+      "pt_description": "movimento da família das ondas, com os braços acima da cabeça, dentro do envolvimento (descritivo)",
+      "status": "unattested",
+      "confidence": 0.7,
+      "note": "No term in any fetched glossary or syllabus (BZWC 2019 and 2026, Embrace, AmoZouk, Jettence parts 1-2, UFPA, Willadino, Paulo Aguiar). Graph: Snake -> Submissive Overhead -> Pop / Reverse, in the wrap context.",
+      "sources": [
+        "https://www.embracezoukonline.com/courses/glossary-fundamentals",
+        "https://amozouk.com/zouk-move-dictionary",
+        "https://brazilianzoukworldchampionships.com/wp-content/uploads/2019/06/BZWC-COMPETITION-ZOUK-CONTENT.pdf",
+        "https://www.brazilianzoukworldchampionships.com/wp-content/uploads/2026/07/2026-Zouk-Worlds-Regras.pdf"
+      ]
+    },
+    {
+      "original": "Switch Hands",
+      "canonical": "Troca de Mãos",
+      "canonical_is_pt": true,
+      "alternates_pt": [
+        "Troca de Mão",
+        "Troca de Conexão",
+        "Trocando a Mão"
+      ],
+      "english_aliases": [
+        "Switch Hands",
+        "Hand Switch"
+      ],
+      "pt_description": "troca de mãos (de conexão) entre o cavalheiro e a dama",
+      "status": "partial",
+      "confidence": 0.5,
+      "note": "Genuine Brazilian lesson wording, not a translation: Sérgio Telles 'Passo simples com troca de mãos do cavalheiro' (2019) and 'troca de conexão' (2021); Paulo Aguiar vol. 1 step 5 'RODADA BÁSICA TROCANDO A MÃO'; 2005-07 notes 'troca sua mão esquerda pela a direita'. It is an action phrase rather than a named syllabus figure, so partial. Applies to both nodes. Behind Back hand Switch and Lead Turn Replace Hands are separate nodes.",
+      "sources": [
+        "https://www.youtube.com/watch?v=4dwFs7aghQ4",
+        "https://www.youtube.com/watch?v=uu_Jt03v2TU",
+        "http://www.pauloaguiar.com/curso-de-zouk%20vol1.html",
+        "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html"
+      ]
+    },
+    {
+      "original": "Throw Cloak",
+      "canonical": "Throw Cloak",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Throw Cloak"
+      ],
+      "pt_description": "",
+      "status": "unattested",
+      "confidence": 0.7,
+      "note": "Not attested. 'Toalha' (Jettence: a head movement while the follower turns with her back to the leader) has no link to this node; UFPA's 'toalha torcida' is a training game with a real towel; no 'capa' term was found. No Portuguese description is offered because the move's shape is undocumented. Graph: Lateral From Behind -> Throw Cloak -> Airplane (Avião).",
+      "sources": [
+        "https://www.jettence.com/blog/names-of-brazilian-zouk-moves-in-portuguese-with-gifs-part-2/",
+        "https://bdm.ufpa.br/handle/prefix/5234"
+      ]
+    },
+    {
+      "original": "Tight Walk",
+      "canonical": "Tight Walk",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Caminhada (generic)"
+      ],
+      "english_aliases": [
+        "Tight Walk"
+      ],
+      "pt_description": "caminhada curta e junta ao par (descritivo)",
+      "status": "partial",
+      "confidence": 0.4,
+      "note": "'Caminhada' is attested in zouk lessons (oGrupo 2024 'Movimentos com Cambré e Caminhada'; Sérgio Telles 2020 'O passo de hoje envolve caminhada, trava...'; BZWC 2026 'Uso correto de caminhadas e giros'), but it is generic (also forró, gafieira, tango) and nothing captures 'tight'. Applies to both nodes (terminal leaves from Lateral and Lateral From Behind).",
+      "sources": [
+        "https://www.youtube.com/watch?v=p_EoSOBuOlU",
+        "https://www.youtube.com/watch?v=Yjkj_mz746o",
+        "https://www.youtube.com/watch?v=KDwvv_B2Up4",
+        "https://www.brazilianzoukworldchampionships.com/wp-content/uploads/2026/07/2026-Zouk-Worlds-Regras.pdf"
+      ]
+    },
+    {
+      "original": "Tilt Left",
+      "canonical": "Inclinação para a Esquerda",
+      "canonical_is_pt": true,
+      "alternates_pt": [
+        "Inclinação",
+        "Inclinação para Esquerda"
+      ],
+      "english_aliases": [
+        "Tilt Left",
+        "Tilt"
+      ],
+      "pt_description": "inclinação lateral do tronco/eixo da dama para a esquerda",
+      "status": "partial",
+      "confidence": 0.45,
+      "note": "Only the base word is an attested zouk term: UFPA module 3 'inclinações e torções', exercise 'movimentos de inclinação para os lados'; BZWC 2026 'Quedas, inclinações, movimentos circulares e lineares'; Sérgio Telles 'giro com inclinação' (2020). 'Para a esquerda' is a plain qualifier in the usual Brazilian title pattern (NDEC 'Giro Invertido para Esquerda'); the full phrase is descriptive, not a figure name. 'Inclinação' is also used for head tilts. Applies to both Tilt Left nodes.",
+      "sources": [
+        "https://bdm.ufpa.br/handle/prefix/5234",
+        "https://www.brazilianzoukworldchampionships.com/wp-content/uploads/2026/07/2026-Zouk-Worlds-Regras.pdf",
+        "https://www.youtube.com/watch?v=Yjkj_mz746o",
+        "https://www.youtube.com/watch?v=4dwFs7aghQ4",
+        "https://www.youtube.com/watch?v=nMPAXxTZ2Kg"
+      ]
+    },
+    {
+      "original": "Tilt Right",
+      "canonical": "Inclinação para a Direita",
+      "canonical_is_pt": true,
+      "alternates_pt": [
+        "Inclinação",
+        "Inclinação para Direita"
+      ],
+      "english_aliases": [
+        "Tilt Right",
+        "Tilt"
+      ],
+      "pt_description": "inclinação lateral do tronco/eixo da dama para a direita",
+      "status": "partial",
+      "confidence": 0.45,
+      "note": "Mirror of Tilt Left, same evidence: 'inclinação' is a zouk movement category (UFPA; BZWC 2026; Sérgio Telles), and 'para a direita' is a plain qualifier (NDEC 'Giro Invertido para Direita'), not a named figure. Applies to both Tilt Right nodes.",
+      "sources": [
+        "https://bdm.ufpa.br/handle/prefix/5234",
+        "https://www.brazilianzoukworldchampionships.com/wp-content/uploads/2026/07/2026-Zouk-Worlds-Regras.pdf",
+        "https://www.youtube.com/watch?v=Yjkj_mz746o",
+        "https://www.youtube.com/watch?v=dz1zqbcdzOU"
+      ]
+    },
+    {
+      "original": "Turn",
+      "canonical": "Giro",
+      "canonical_is_pt": true,
+      "alternates_pt": [
+        "Giro da Dama"
+      ],
+      "english_aliases": [
+        "Turn"
+      ],
+      "pt_description": "giro (termo genérico)",
+      "status": "partial",
+      "confidence": 0.55,
+      "note": "The standard generic zouk word for a turn: BZDC/BZWC 'Giro Simples', 'Preparação pro giro'; UFPA 'GIRO SIMPLES', 'GIRO DO CAVALHEIRO E DA DAMA'; Paulo Aguiar 'GIRO DUPLO', 'GIRO FECHADO'; CNDD '07 Giro simples', '10 Giro com contratempo'. Partial because it is generic. Both Turn nodes (heights 0.74 and 1.47) get it; if they are different turns, add a qualifier. ('Giros e contragiros' is from the lambada course, not zouk.)",
+      "sources": [
+        "https://brazilianzoukworldchampionships.com/wp-content/uploads/2019/06/BZWC-COMPETITION-ZOUK-CONTENT.pdf",
+        "https://bdm.ufpa.br/handle/prefix/5234",
+        "http://www.pauloaguiar.com/curso-de-zouk%20vol2.html",
+        "https://www.youtube.com/watch?v=izB0vbWYRzw",
+        "https://www.youtube.com/watch?v=qjtZRkAUo7Q"
+      ]
+    },
+    {
+      "original": "Turn Wrap",
+      "canonical": "Turn Wrap",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Enrosca (unverified)"
+      ],
+      "english_aliases": [
+        "Turn Wrap",
+        "Wrap"
+      ],
+      "pt_description": "giro que enrola a dama, levando-a à posição envolvida (descritivo)",
+      "status": "unattested",
+      "confidence": 0.55,
+      "note": "No move name. Sérgio Telles (2019) describes 'o envolvimento da dama em uma cestinha' (descriptive). The 2007 Saulo & Adrise notes use 'enrola a dama' as a verb. Bia Guido's lessons 'Enrosca' (2020-07-13) and 'Slide e Enrosca' (2020-09-25) are plausible ('enroscar' = to coil) but their descriptions do not show the move. Graph: Side Lunge -> Turn Wrap -> Hold Behind Crossed Arms.",
+      "sources": [
+        "https://www.youtube.com/watch?v=s5QiCZVzWJk",
+        "https://www.youtube.com/watch?v=-OyylbnJp5A",
+        "https://www.youtube.com/watch?v=1gUaXM4jne8",
+        "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html"
+      ]
+    },
+    {
+      "original": "Twist",
+      "canonical": "Torção",
+      "canonical_is_pt": true,
+      "alternates_pt": [
+        "Torções",
+        "Torção de Quadril (follower styling)"
+      ],
+      "english_aliases": [
+        "Twist",
+        "Torsion"
+      ],
+      "pt_description": "torção do tronco: um grupo muscular se contrai enquanto outro se estende; pode ser estática ou em deslocamento",
+      "status": "attested",
+      "confidence": 0.6,
+      "note": "UFPA (Costa 2019) module 3 'INTRODUÇÃO À TORÇÃO' ('Contração de um determinado grupo muscular, enquanto outro exerce extensão. Pode ser estático (parado) ou circular (deslocando)') and module 4 'TORÇÃO COM FINALIZAÇÃO EXTERNA'; 2005-07 zouk notes 'Básico Frontal Com Torção'; Zouk Flow (2021) 'o mundo das torções'. A family term; the shape of the user's twist is unverified. Spelling 'torção' ('torsão' is a different, technical word). Graph: Arms Raise -> Twist -> Lead Open Right.",
+      "sources": [
+        "https://bdm.ufpa.br/handle/prefix/5234",
+        "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html",
+        "https://www.youtube.com/watch?v=S1yKuP4_KLY",
+        "https://www.youtube.com/watch?v=zGurf55sC8w"
+      ]
+    },
+    {
+      "original": "Two Hand howl Down",
+      "canonical": "Two Hand howl Down",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Movimento de Cabeça (umbrella term)"
+      ],
+      "english_aliases": [
+        "Two Hand howl Down",
+        "Two Hand Head Movement Down"
+      ],
+      "pt_description": "movimento de cabeça para baixo, com as duas mãos dadas (descritivo; família 'movimento de cabeça')",
+      "status": "unattested",
+      "confidence": 0.6,
+      "note": "'Howl' is the user's own word. The Portuguese umbrella term is 'movimento de cabeça' (MDC: Patrícia Géa's course; Rodrigo Delano's technique lessons; UFPA 'movimento de cabeça linear e circular'). No named downward head movement in two-hand hold. Icon check: the node is a Diamond (step), not a Tetra, and is reached only from Open Forward Basic.",
+      "sources": [
+        "https://bdm.ufpa.br/handle/prefix/5234",
+        "https://en.patgea.com/tudo-sobre-mdc",
+        "https://www.youtube.com/watch?v=Huf9a3Tm47M"
+      ]
+    },
+    {
+      "original": "Two Hands Armbar",
+      "canonical": "Chave de Braço",
+      "canonical_is_pt": true,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Two Hands Armbar",
+        "Armbar",
+        "Arm Lock"
+      ],
+      "pt_description": "chave de braço feita com as duas mãos (descritivo)",
+      "status": "partial",
+      "confidence": 0.45,
+      "note": "Paulo Aguiar's São Paulo zouk vol. 2 step 1 is 'CHAVE DE BRAÇO' (undescribed); Lá vai Forró (2017) teaches 'Chave de braço' in forró; pt.wikipedia defines 'chave de braço' as the jiu-jitsu/judo armlock. No zouk source shows the figure's shape, so the match rests on the word plus the graph (Lateral -> armbar -> Behind Back Pirouette), close to translation-matching. Confirm with the user; revert to the English name if it is a different figure. 'Two hands' is not part of the term. Spelling with ç.",
+      "sources": [
+        "http://www.pauloaguiar.com/curso-de-zouk%20vol2.html",
+        "https://www.youtube.com/watch?v=1Tm25-p2vDk",
+        "https://pt.wikipedia.org/wiki/Chave_de_braço"
+      ]
+    },
+    {
+      "original": "Untwist Turn",
+      "canonical": "Untwist Turn",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Torção com Finalização Externa (related, not equivalent)"
+      ],
+      "english_aliases": [
+        "Untwist Turn"
+      ],
+      "pt_description": "giro que desfaz a torção (descritivo)",
+      "status": "unattested",
+      "confidence": 0.6,
+      "note": "UFPA 'TORÇÃO COM FINALIZAÇÃO EXTERNA' finishes a twist into a more open connection: related, but not a turn that undoes a twist. No 'destorção'-type name in fetched sources or the lesson-title corpus.",
+      "sources": [
+        "https://bdm.ufpa.br/handle/prefix/5234"
+      ]
+    },
+    {
+      "original": "Unwind",
+      "canonical": "Unwind",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Unwind"
+      ],
+      "pt_description": "desenrolar a dama (verbo descritivo das notas de aula; não é nome de passo)",
+      "status": "unattested",
+      "confidence": 0.6,
+      "note": "The 'CURSO DE ZOUK - SAULO E ADRISE - MAIO/2007' notes use 'enrola a dama' and 'force a dama para desenrolar no sentido horário' only as verbs. No named move. May duplicate Unwrap.",
+      "sources": [
+        "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html",
+        "https://www.youtube.com/watch?v=-OyylbnJp5A"
+      ]
+    },
+    {
+      "original": "Unwrap",
+      "canonical": "Unwrap",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Unwrap"
+      ],
+      "pt_description": "desenrolar / sair do envolvimento (descritivo)",
+      "status": "unattested",
+      "confidence": 0.6,
+      "note": "Wrap names exist ('Enrosca', Bia Guido 2020; 'cestinha', Sérgio Telles 2019), but there is no named exit from a wrap; 'desenrolar' is only a verb in the 2005-07 notes.",
+      "sources": [
+        "https://www.youtube.com/watch?v=-OyylbnJp5A",
+        "https://www.youtube.com/watch?v=s5QiCZVzWJk",
+        "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html"
+      ]
+    },
+    {
+      "original": "Viradinha",
+      "canonical": "Viradinha",
+      "canonical_is_pt": true,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Viradinha"
+      ],
+      "pt_description": "virada curta da dama; um dos fundamentos do zouk brasileiro",
+      "status": "attested",
+      "confidence": 0.95,
+      "note": "Already the established term, correctly spelled ('nh'; diminutive of 'virada'): BZDC list 'Frente e Trás, Lateral, Viradinha, Lunge, Bônus, Soltinho'; BZWC 2019 '2. Viradinha'; BZDC 2018 foundation patterns; Embrace glossary; Bia Guido 'Zouk Brasileiro Aula 03 - Viradinha' (2020). Gui Prada glosses it 'the little turn around' and says it came from bolero; AmoZouk 'Little Turn'. See Little Turn.",
+      "sources": [
+        "https://www.brazilianzoukcouncil.com/educational",
+        "https://brazilianzoukworldchampionships.com/wp-content/uploads/2019/06/BZWC-COMPETITION-ZOUK-CONTENT.pdf",
+        "https://web.archive.org/web/20180922032353/http://www.brazilianzoukcouncil.com:80/dance-education/identifying-the-brazilian-zouk-rhythm",
+        "https://www.embracezoukonline.com/courses/glossary-fundamentals",
+        "https://www.youtube.com/watch?v=9pXfvmGySn8",
+        "https://amozouk.com/zouk-move-dictionary",
+        "https://www.youtube.com/watch?v=P3mGYaHvco8"
+      ]
+    },
+    {
+      "original": "Walk Around",
+      "canonical": "Walk Around",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Contorno na Dama (unverified)",
+        "Caminhada (generic)"
+      ],
+      "english_aliases": [
+        "Walk Around"
+      ],
+      "pt_description": "caminhada ao redor do(a) parceiro(a) (descritivo)",
+      "status": "unattested",
+      "confidence": 0.45,
+      "note": "Applies to both nodes. 'Raul' (UFPA: 'Variação do vai e vem onde o condutor rodeia a conduzida enquanto ela executa ondulação frontal') requires the follower's body wave, so it is not a plain walk-around. Sarah e Léo 'Contorno na Dama' (2021-12-20) says only 'passo fácil... que já dê um efeito legal'; the shape is unverified. Keep distinct from Walk Around Behind.",
+      "sources": [
+        "https://bdm.ufpa.br/handle/prefix/5234",
+        "https://www.youtube.com/watch?v=LVwX4DqYvW8",
+        "https://www.youtube.com/watch?v=Tl67WOJ3tVw"
+      ]
+    },
+    {
+      "original": "Walk Around Behind",
+      "canonical": "Walk Around Behind",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Contorno na Dama (title only)",
+        "Raul (only if the follower does a chest wave)"
+      ],
+      "english_aliases": [
+        "Walk Around Behind"
+      ],
+      "pt_description": "o cavalheiro contorna a dama por trás (descritivo)",
+      "status": "unattested",
+      "confidence": 0.5,
+      "note": "UFPA 'Raul': 'Variação do “vai e vem” onde o condutor rodeia a conduzida enquanto ela executa ondulação frontal'; Maelly e Lucas 'Movimento de Raul'. But Jettence uses 'Elástico/Raul' for the elastic pull-and-bounce, so 'Raul' names different moves in different sources. Sarah e Léo 'Contorno na Dama' (2021) gives no mechanics. Keep distinct from Walk Around.",
+      "sources": [
+        "https://bdm.ufpa.br/handle/prefix/5234",
+        "https://www.youtube.com/watch?v=1Y97gjFNWy8",
+        "https://www.jettence.com/blog/names-of-brazilian-zouk-moves-in-portuguese-with-gifs/",
+        "https://www.youtube.com/watch?v=LVwX4DqYvW8"
+      ]
+    },
+    {
+      "original": "Walk Pirouette",
+      "canonical": "Walk Pirouette",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Walk Pirouette"
+      ],
+      "pt_description": "giro no eixo a partir de uma caminhada (descritivo)",
+      "status": "unattested",
+      "confidence": 0.6,
+      "note": "The on-axis spin is described in Portuguese as 'giro no eixo' (Sérgio Telles 2019; 2005-07 notes 'Giro da Dama no Eixo'), but nothing names a walk into a pirouette. oGrupo's 'Giro Caminhada' (2025) is undescribed. 'Pião' is a different move (the couple rotating around a shared axis, Jettence). Graph: Project Forward -> Walk Pirouette (end node).",
+      "sources": [
+        "https://www.youtube.com/watch?v=FL0mggHUxs0",
+        "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html",
+        "https://www.youtube.com/watch?v=MHeFXGAjerw",
+        "https://www.youtube.com/watch?v=Tl67WOJ3tVw",
+        "https://www.jettence.com/blog/names-of-brazilian-zouk-moves-in-portuguese-with-gifs-part-2/"
+      ]
+    },
+    {
+      "original": "Wings",
+      "canonical": "Wings",
+      "canonical_is_pt": false,
+      "alternates_pt": [],
+      "english_aliases": [
+        "Wings"
+      ],
+      "pt_description": "giro com os braços abertos como asas (descritivo)",
+      "status": "unattested",
+      "confidence": 0.6,
+      "note": "UFPA 'Múltiplas Asas' is a training exercise for arm positions in the Avião ('giro com os braços abertos'), not a move name. Keep distinct from Airplane. Graph: Switch Hands -> Wings -> Turn.",
+      "sources": [
+        "https://bdm.ufpa.br/handle/prefix/5234"
+      ]
+    },
+    {
+      "original": "Wrap Behind",
+      "canonical": "Wrap Behind",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Enrosca (unverified)"
+      ],
+      "english_aliases": [
+        "Wrap Behind"
+      ],
+      "pt_description": "enrolar a dama com o cavalheiro posicionado atrás dela (descritivo)",
+      "status": "unattested",
+      "confidence": 0.5,
+      "note": "Bia Guido 'Aula 07 - Enrosca' and 'Slide e Enrosca' (2020) are verified titles, but their descriptions do not define the move; the 2005-07 notes use 'enrola a dama' as a generic verb. It leads to Hold Behind Crossed Arms (Cestinha), so it may be the entry into the cestinha; unconfirmed.",
+      "sources": [
+        "https://www.youtube.com/watch?v=-OyylbnJp5A",
+        "https://www.youtube.com/watch?v=1gUaXM4jne8",
+        "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html",
+        "https://www.youtube.com/watch?v=s5QiCZVzWJk"
+      ]
+    },
+    {
+      "original": "wrap Hug",
+      "canonical": "wrap Hug",
+      "canonical_is_pt": false,
+      "alternates_pt": [
+        "Cestinha (see Hold Behind Crossed Arms)",
+        "Envolvimento da Dama (descriptive)"
+      ],
+      "english_aliases": [
+        "wrap Hug",
+        "Wrap Hug"
+      ],
+      "pt_description": "a dama envolvida nos braços do cavalheiro, em abraço (descritivo)",
+      "status": "partial",
+      "confidence": 0.4,
+      "note": "Both verifiers accepted 'Cestinha' here at low confidence (0.4) and asked the user to choose one node for it. Synthesis decision: Cestinha went to Hold Behind Crossed Arms (higher confidence), and this node keeps the user's name so two nodes do not share one label. Single zouk source for the term: Sérgio Telles 'cestinha e corredor' (2019). Graph: reached after Inside Spin; leads to Snake, Reposition Behind, Right Hand Open.",
+      "sources": [
+        "https://www.youtube.com/watch?v=s5QiCZVzWJk",
+        "https://adorodancar.com.br/blog/tag/zouk/"
+      ]
+    },
+    {
+      "original": "Yoyo",
+      "canonical": "Ioiô",
+      "canonical_is_pt": true,
+      "alternates_pt": [
+        "Iô-Iô",
+        "Io-Io",
+        "Io Io",
+        "IO-IO",
+        "Ioiô Simples"
+      ],
+      "english_aliases": [
+        "Yoyo",
+        "Yo-yo"
+      ],
+      "pt_description": "giro da dama com deslocamento em direção ao condutor e depois para fora no outro sentido, como um ioiô",
+      "status": "attested",
+      "confidence": 0.9,
+      "note": "Fundamental in BZWC 2019 ('Io Io') and BZWC 2026 ('Io-Io'). Sarah e Léo 'Aula de Zouk - Ioiô' (2022, 'Passo Super tradicional no zouk'); Luca e Amanda (2020, 'apelidamos de ioiô'); Helen Avelar 'IO-IO' (2021); Willadino (UFRGS 2012) observed 'Ioiô simples' in Porto Alegre classes; AmoZouk 'Ioiô / Yo-Yo'. 'Ioiô' is the dictionary spelling; Iô-Iô (Embrace), Io-Io and IO-IO are variants. Caveat: 'Iô-Iô' is also a samba de gafieira figure; the zouk use stands on its own. No graph edges.",
+      "sources": [
+        "https://www.youtube.com/watch?v=LXidkwrhzS0",
+        "https://www.youtube.com/watch?v=zWs3Kd6gwjM",
+        "https://www.youtube.com/watch?v=3ZVqLEePLXs",
+        "https://www.youtube.com/watch?v=L1Tzgr87PVQ",
+        "https://amozouk.com/zouk-move-dictionary",
+        "https://lume.ufrgs.br/bitstream/handle/10183/49841/000850593.pdf?sequence=1",
+        "https://brazilianzoukworldchampionships.com/wp-content/uploads/2019/06/BZWC-COMPETITION-ZOUK-CONTENT.pdf",
+        "https://www.brazilianzoukworldchampionships.com/wp-content/uploads/2026/07/2026-Zouk-Worlds-Regras.pdf",
+        "https://www.embracezoukonline.com/courses/glossary-fundamentals"
+      ]
+    }
+  ],
+  "corredor": {
+    "summary": "Decision (user, 2026-10-06): the node 'Lateral' is renamed 'Corredor'; 'Lateral' stays an alias. Spelling: 'Corredor', no accent, masculine ('o corredor'), plural 'corredores'; capitalised as a node name, lower-case in running text. Meaning matches the user's definition: UFPA (Costa 2019) defines it as the leader leaving the follower's line 'enquanto a dama executa um movimento de \"pisou-virou\"', and says the move is 'mais conhecido como corredor, pois é assim que se chama no Rio de Janeiro'; the same thesis credits Adílio Porto and Renata Peçanha with conceiving 'o básico, corredor, giro do cavalheiro e da dama e mais um movimento de bônus'. Official use found: the CNDD (Confederação Nacional de Dança Desportiva, Brazil's national dancesport confederation) 'Syllabus Bronze Dança de Salão Zouk' lists Figura 06 'Corredor' and Figura 09 'Giro com corredor' (videos published 2022-12-28, danced by Philip Miha & Fernanda Teixeira). It is the only standardisation body found using the term. Long-standing usage: Philip Miha & Fernanda Teixeira 'Aula de Zouk - Passo do Corredor' (2012-10-29, earliest dated find); Paulo Aguiar's São Paulo DVD 'CORREDOR FECHADO E ABERTO (BÁSICO 3)'; Sérgio Telles 'cestinha e corredor' (2019); Sarah e Léo 'Aula 02 - Corredor' (2021); LD Escola 'Interrupção do corredor' (2021) and 'O Corredor' (2022); Helen Avelar 'LATERAL/CORREDOR' (2020-21); Andrei Udiloff (São Paulo) 'o famoso corredor (também conhecido como lateral)'. Counter-usage still current: the Brazilian Zouk Dance Council (BZDC) lists 'Lateral' (educational page, and its syllabus demo video 'Zouk Brasileiro: Lateral', 2026-10-02); BZWC competition texts say 'Lateral' from 2019 to 2026, with 'Lateral (Corridor)' in the 2019 content; SciELO 2023 writes 'o lateral'; Gui Prada's glossary lists 'Lateral (Corredor, Infinity)'. Not found: any dated announcement by a council, congress or syllabus body making 'Corredor' the new official term in place of 'Lateral'. The only documented zouk naming vote (2006, Minas/BH Zouk Congress) chose the name of the dance, 'Zouk Brasileiro', not move names. Conclusion: 'Corredor' is well-established Brazilian usage and is used by CNDD; the claim that it is 'now the officially recognized term' has no online source found, so cite CNDD or the user's own source for it. Side benefit: in Portuguese 'lateral' is also an ordinary adjective ('ondulação lateral', 'chicote lateral'), and in Porto Seguro lambada 'lateral' is a variation of the basic step, so 'Corredor' is less ambiguous. Derived node 'Lateral From Behind' has no attested Portuguese name; see its row.",
+    "sources": [
+      "https://bdm.ufpa.br/handle/prefix/5234",
+      "https://bdm.ufpa.br/bitstreams/59ef9bcc-08e1-454c-b2c7-81375e4c3354/download",
+      "https://www.youtube.com/watch?v=Ixk8oYY4vjg",
+      "https://www.youtube.com/watch?v=vgfcKGTqlbg",
+      "https://www.youtube.com/watch?v=kUHF1ogfc60",
+      "https://www.youtube.com/watch?v=hQSZjonfq_s",
+      "http://www.pauloaguiar.com/curso-de-zouk%20vol1.html",
+      "http://www.pauloaguiar.com/curso-de-zouk%20vol2.html",
+      "https://www.youtube.com/watch?v=s5QiCZVzWJk",
+      "https://www.youtube.com/watch?v=YYamPZBlauE",
+      "https://www.youtube.com/watch?v=l1xQNAt9Xz0",
+      "https://www.youtube.com/watch?v=KmQTAL3eowM",
+      "https://www.youtube.com/watch?v=jjAZJ5Far6g",
+      "https://www.youtube.com/watch?v=tyrFPUnYNUM",
+      "https://andreiudiloff.com.br/produto/aprenda-a-dancar-zouk-em-apenas-1-final-de-semana/",
+      "https://www.brazilianzoukcouncil.com/educational",
+      "https://www.youtube.com/watch?v=WEW4IP71lJo",
+      "https://brazilianzoukworldchampionships.com/wp-content/uploads/2019/06/BZWC-COMPETITION-ZOUK-CONTENT.pdf",
+      "https://web.archive.org/web/20210615102708id_/https://www.brazilianzoukworldchampionships.com/wp-content/uploads/2019/08/BZWC-REGRAS-DOS-COMPETIDORES.pdf",
+      "https://www.brazilianzoukworldchampionships.com/wp-content/uploads/2026/07/2026-Zouk-Worlds-Regras.pdf",
+      "https://www.brazilianzoukworldchampionships.com/wp-content/uploads/2026/07/2026-Zouk-worlds-Rules.pdf",
+      "https://www.embracezoukonline.com/courses/glossary-fundamentals",
+      "https://www.scielo.br/j/rbep/a/rNhzqXVKxSQHzYbJVB66Q6h/?lang=pt",
+      "https://zoukology.com/the-10-fundamentals-of-zouk-beyond-the-movements/",
+      "https://pt.wikipedia.org/wiki/Zouk_brasileiro",
+      "https://www.brazilianzoukcouncil.com/educational/history/history-details",
+      "https://www.brazilianzoukcouncil.com/educational/history/origin-bzdc",
+      "https://bathzouk.co.uk/library/fundamentals/moves/lateral/",
+      "https://www.salsaforums.com/threads/zouk-my-new-obsession.21650/page-3",
+      "https://lume.ufrgs.br/bitstream/handle/10183/49841/000850593.pdf?sequence=1",
+      "https://dancandolambada.com.br/"
+    ]
+  },
+  "cicada": {
+    "best_reading": "Unresolved: needs the user. By sound the best match is 'sacada' ('sacada de perna', a leg displacement), a samba de gafieira / forró / tango term that is not in Brazilian zouk syllabi. By zouk usage the best-attested candidate is 'chicote' (a fast head/hair whip). Rule: leg displacement = Sacada (flag as a loan); head whip = Chicote; hip-led press = Sarrada.",
+    "evidence": [
+      "SACADA [sa-KA-da]: same syllable count, stress and s-k-d consonants as 'cicada'. Attested only in other dances: samba de gafieira ('21. Sacada (gancho, ... tirando a direita da dama ...)' in the SAMBA list of the 2005-07 class notes; gafieira lessons 'Sacada: perna direita e esquerda' and Franz Rocha 'Sacadas de Pernas'), Brazilian bolero ('Leque c/ Sacada de Perna'), forró roots and tango. Not found in the zouk section of the same notes, in BZDC/BZWC, CNDD, UFPA, UFRGS, UFRJ, SciELO, Embrace, AmoZouk, Jettence, or about 320 Brazilian zouk lesson titles. One zouk-school lesson abroad does use it: 'Zouk Lab #8: Troca de Perna, Piaõ Variations and Shooting the Leg (Saccada de Perna)' (Zouk Life Iceland, 2025; title re-checked 2026-10-06), so it reaches zouk as a gafieira/tango loan.",
+      "CHICOTE [shee-KOH-chee]: weaker sound match but strongly attested in zouk: CNDD Syllabus Bronze Zouk Figura 13 'Chicote' (2022); Helen Avelar: 'Chicote é um tipo de movimento de cabeça mais rápido no Zouk'; Sérgio Telles 'Zouk - aula chicote (dama)' (2019), 'Partindo de um corredor básico e finalizando no chicote da dama'; Jettence: the follower throws her hair back as an accent by looking up. Also a lambada term and a soltinho/sertanejo step. If the move is this, the user's 'Pop' node is the likely owner.",
+      "SARRADA [sa-HA-da]: attested in zouk as a hip-led move (Online Zouk School 'Sarrada course (5 variations)'; 'Sarrada: Rio Style', Canada Zouk Congress 2023; Leandro & Nayara demo); moderate sound match.",
+      "Others: 'cigarra' (the Portuguese word for cicada) is not a zouk term; 'saída', 'laçada', 'descida/decida' and 'chicotada' are weak sound matches with no fitting zouk use."
+    ],
+    "sources": [
+      "https://pdfcoffee.com/dana-de-salao-apostilha-pdf-free.html",
+      "https://www.youtube.com/watch?v=lfGdGqmZr2g",
+      "https://www.youtube.com/watch?v=vUPiEh6MM2Q",
+      "https://www.youtube.com/watch?v=oEQP-Bw5x9I",
+      "https://www.youtube.com/watch?v=X5nR8zfspbY",
+      "http://www.dancadesalao.com/sambadegafieira/sambagaf-core.php",
+      "https://almaquedanca.wordpress.com/tag/zouk/",
+      "https://www.youtube.com/watch?v=LOG8JYuy05M",
+      "https://www.youtube.com/watch?v=lShLUTviiA0",
+      "https://www.youtube.com/watch?v=oeEyFmAsCTk",
+      "https://www.youtube.com/watch?v=7ENH5rDNaYc",
+      "https://www.jettence.com/blog/names-of-brazilian-zouk-moves-in-portuguese-with-gifs-part-2/",
+      "https://www.youtube.com/watch?v=D2U96n-s6pw",
+      "https://www.youtube.com/watch?v=dtJ26WoMax0",
+      "https://www.youtube.com/watch?v=-HvEoupm8Pk",
+      "https://www.youtube.com/watch?v=3LFUINvKZWM"
+    ]
+  }
+}

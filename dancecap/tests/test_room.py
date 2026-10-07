@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import math
 import os
-import shutil
 import sys
 from pathlib import Path
 
@@ -144,6 +143,84 @@ def test_render_mesh_occlusion_and_colour():
     assert (img[5, 5] == [0, 0, 255]).all()     # blue behind it at the corners
 
 
+# ------------------------------------------------------------------------------------------- bundle / presets
+
+def test_view_resized_matches_area_downscale_geometry():
+    K = np.array([[600.0, 0, 239.5], [0, 600, 431.5], [0, 0, 1]])
+    v = View("x", "01", "win", 0, K, np.eye(3), np.zeros(3), 480, 864, 0.0, 1, "m")
+    assert v.resized(1000) is v
+    r = v.resized(432)
+    assert (r.W, r.H) == (240, 432) and np.isclose(r.scale, 2.0)
+    assert np.allclose(r.K, _scale_K(K, 2))  # integer factor: identical to the old integer downscale
+    # a 3D point projects to the same normalised image position at both resolutions
+    X = np.array([0.3, -0.2, 4.0])
+    p, q = K @ X, r.K @ X
+    assert np.allclose(((p[:2] / p[2]) + 0.5) / [480, 864], ((q[:2] / q[2]) + 0.5) / [240, 432])
+    back = View.from_json(json.loads(json.dumps(r.to_json())))
+    assert back.W == r.W and np.allclose(back.K, r.K) and back.label == "x"
+
+
+def test_bundle_roundtrip_and_skip_when_fresh(tmp_path, monkeypatch):
+    work = tmp_path / "take"
+    (work / "frames" / "01").mkdir(parents=True)
+    (work / "people_masks" / "01").mkdir(parents=True)
+    rng = np.random.default_rng(3)
+    K = np.array([[300.0, 0, 79.5], [0, 300, 59.5], [0, 0, 1]])
+    views = []
+    for i in range(3):
+        cv2.imwrite(str(work / "frames" / "01" / f"{i:06d}.jpg"), rng.integers(0, 255, (120, 160, 3), np.uint8))
+        m = np.zeros((120, 160), np.uint8)
+        m[40:80, 60:90] = 255
+        cv2.imwrite(str(work / "people_masks" / "01" / f"{i:06d}.png"), m)
+        views.append(View(f"frames/01/{i:06d}.jpg", "01", "win", float(i), K, np.eye(3), np.array([0, 0, i * 0.1]),
+                          160, 120, 0.02 if i == 1 else 0.0, 1, f"people_masks/01/{i:06d}.png",
+                          "test" if i == 2 else "train"))
+    geo = {"floor_n": np.array([0, 1.0, 0]), "floor_d": 0.0, "floor_inliers": 10, "tilt_vs_world_deg": 0.5,
+           "box_lo": np.array([-1.0, 0, -1]), "box_hi": np.array([1.0, 2, 1]), "origin": np.zeros(3),
+           "up": np.array([0, 1.0, 0]), "scene_scale": 2.0,
+           "world": {"s": 1.0, "R": np.eye(3), "t": np.zeros(3)}, "mirror": None,
+           "reflectors": [{"name": "floor", "n": np.array([0, 1.0, 0]), "d": 0.0, "rect": None, "schlick": True,
+                           "beta_init": 0.15, "front_margin": 0.03}]}
+    P = rng.normal(size=(50, 3))
+    monkeypatch.setattr(room, "collect_views", lambda w, cfg: views)
+    monkeypatch.setattr(room, "room_geometry", lambda w, vs, cfg: geo)
+    monkeypatch.setattr(room, "sfm_points", lambda w: (P, np.zeros((50, 3), np.uint8), np.zeros(50), np.full(50, 3)))
+    bundle = work / "room" / "bundle"
+    man = room.write_bundle(work, bundle, RoomConfig(), log=lambda *a: None)
+    assert man["n_views"] == 3 and man["n_train"] == 2 and man["bytes"] > 0
+    calls = []
+    assert room.write_bundle(work, bundle, RoomConfig(), log=calls.append)["created"] == man["created"]
+    assert "up to date" in calls[0]
+    monkeypatch.undo()  # the bundle must be readable without any of the patched (pycolmap) helpers
+    vb, gb, _ = room.load_bundle(bundle)
+    assert [v.src for v in vb] == [v.name for v in views] and all(v.k1 == 0 for v in vb)
+    assert isinstance(gb["floor_n"], np.ndarray) and np.allclose(gb["world"]["R"], np.eye(3))
+    assert gb["reflectors"][0]["rect"] is None and isinstance(gb["reflectors"][0]["n"], np.ndarray)
+    Pb = room.sfm_points(bundle)[0]
+    assert np.allclose(Pb, P, atol=1e-6)
+    img, valid = room.load_view(bundle, vb[0], RoomConfig(reflect_frac=0))
+    assert img.shape == (120, 160, 3) and not valid[50:70, 65:85].any() and valid[:30].all()
+    small = vb[0].resized(80)
+    img, valid = room.load_view(bundle, small, RoomConfig(reflect_frac=0))
+    assert img.shape == (60, 80, 3) and valid.shape == (60, 80)
+
+
+def test_presets_and_pod_plan(tmp_path):
+    for name in room.PRESETS:
+        cfg = room.preset(name)
+        assert not set(room.PRESETS[name]) & set(room.PREP_FIELDS)  # one bundle serves every preset
+        assert cfg.refine_start < cfg.refine_stop <= cfg.iters
+    assert room.preset("smoke").iters <= 500 and room.preset("pod").max_side >= 1920
+    assert room.preset("smoke", iters=None).iters == 300 and room.preset("smoke", iters=50).iters == 50
+    with pytest.raises(ValueError):
+        room.preset("nope")
+    plan = room.pod_plan(tmp_path / "larissa_kadu")
+    cmds = " ".join(plan["pod_commands"]["setup"]) + plan["pod_commands"]["train"] + plan["pod_commands"]["post"]
+    assert "gsplat==1.5.3" in cmds and "--stages train,quest" in cmds and "--stages mesh,eval" in cmds
+    assert "--preset pod" in cmds and "C:" not in cmds and "\\" not in cmds  # Linux paths only
+    assert "room/splat_quest.ply" in plan["outputs"] and "review/room_renders.jpg" in plan["outputs"]
+
+
 # ------------------------------------------------------------------------------------- GPU end-to-end (opt-in)
 
 FLOOR_REFL = 0.35
@@ -221,6 +298,9 @@ def test_gpu_synthetic_glossy_room(tmp_path):
     room.sfm_points = lambda work: (allP, rng.integers(0, 255, allP.shape).astype(np.uint8), np.zeros(len(allP)),
                                     np.full(len(allP), 5))
     res = {}
+    from dancecap import gpu
+    lock = gpu.exclusive("test_room gpu")  # never share the 11 GB card with another stage's job
+    lock.__enter__()
     try:
         for reflections in (True, False):
             cfg = RoomConfig(iters=3000, cap_max=80_000, sh_degree=1, refine_stop=2000, max_side=400, kf_weight=1.0,
@@ -235,6 +315,7 @@ def test_gpu_synthetic_glossy_room(tmp_path):
             res[reflections] = (splat, refl, ev, room.floor_depth_check(splat, views, geo), app)
     finally:
         room.load_view, room.sfm_points = orig
+        lock.__exit__(None, None, None)
     splat, refl, ev, fd, app = res[True]
     assert (splat.numpy()["means"][:, 1] < -RoomConfig().floor_margin).sum() == 0
     assert ev["summary"]["all"]["psnr_cc"] > 22, ev["summary"]
@@ -258,11 +339,16 @@ def _need(p: Path):
 
 
 def test_real_outputs_contract_and_budgets():
-    import torch
+    pytest.importorskip("open3d")
+    pytest.importorskip("plyfile")
+    torch = pytest.importorskip("torch")
     out = WORK / "room"
     for f in ("splat_full.ply", "splat_quest.ply", "room_mesh.ply", "room_mesh.obj", "room_mesh.mtl",
               "room_mesh_tex.png", "room_floor_tex.png", "transform.json", "report.json", "eval.json"):
         _need(out / f)
+    rep = json.loads((out / "report.json").read_text())
+    if not all(k in rep for k in ("train", "quest", "mesh", "eval")):
+        pytest.skip(f"{out / 'report.json'} is from an incomplete run (stages {sorted(rep)})")
     cfg = RoomConfig()
     q = load_ply(out / "splat_quest.ply")
     assert len(q["means"]) <= cfg.quest_max and q["shN"].shape[1] == (cfg.quest_sh + 1) ** 2 - 1
@@ -276,11 +362,15 @@ def test_real_outputs_contract_and_budgets():
     mesh = o3d.io.read_triangle_mesh(str(out / "room_mesh.ply"))
     assert len(mesh.triangles) <= cfg.mesh_max_tris
     V = np.asarray(mesh.vertices)
+    F = np.asarray(mesh.triangles)
     assert np.mean(V @ n + d < -0.05) < 0.01  # no mirrored floor under the floor
     Vw = (w["s"] * (w["R"] @ V.T)).T + w["t"]
-    near = (np.abs(Vw[:, 0]) < 3) & (np.abs(Vw[:, 2]) < 3)
-    hist, edges = np.histogram(Vw[near, 1], bins=np.arange(-1.0, 4.0, 0.05))
-    assert abs(edges[np.argmax(hist)] + 0.025) < 0.1  # the densest layer near the dancers is the floor at y ~ 0
+    # the floor is a coarse 25 cm quad grid (few vertices) next to a dense TSDF: weight the layers by surface AREA
+    cen = Vw[F].mean(1)
+    area = 0.5 * np.linalg.norm(np.cross(Vw[F[:, 1]] - Vw[F[:, 0]], Vw[F[:, 2]] - Vw[F[:, 0]]), axis=1)
+    near = (np.abs(cen[:, 0]) < 3) & (np.abs(cen[:, 2]) < 3)
+    hist, edges = np.histogram(cen[near, 1], bins=np.arange(-1.0, 4.0, 0.05), weights=area[near])
+    assert abs(edges[np.argmax(hist)] + 0.025) < 0.1  # the largest layer near the dancers is the floor at y ~ 0
     mtl = (out / "room_mesh.mtl").read_text()
     assert "room_mesh_tex.png" in mtl and "room_floor_tex.png" in mtl
     full = load_ply(out / "splat_full.ply")

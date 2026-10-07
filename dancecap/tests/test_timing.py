@@ -133,7 +133,13 @@ def test_detect_touchdowns_contact_model():
     J = _walker(t, td_l, td_r)
     cfg = T.TimingConfig()
     kin, fine = T.spline_kinematics(t, J, 0.0005, T._needed(cfg), te=(t, np.linspace(t[0], t[-1], 4 * len(t))))
-    ev = T.detect_touchdowns(t, J, kin, 0.0005, cfg, fine)
+    info = {}
+    ev = T.detect_touchdowns(t, J, kin, 0.0005, cfg, fine, info)
+    assert info["suspect_feet"] == [] and not any(e.get("suspect") for e in ev)
+    # a plausible-lag window that excludes the observed touchdown - stance-start lags flags both feet
+    info2 = {}
+    T.detect_touchdowns(t, J, kin, 0.0005, T.TimingConfig(plausible_lag_ms=(-60.0, -50.0)), fine, info2)
+    assert {s["foot"] for s in info2["suspect_feet"]} == {"left", "right"}
     for foot, truth in (("left", td_l), ("right", td_r)):
         det = np.array([e["t"] for e in ev if e["foot"] == foot])
         pairs = T.match(det, truth, 0.1)
@@ -313,7 +319,15 @@ def test_validation_report_contract():
     k = np.load(SYN / "timing" / "kinematics.npz")
     for role in T.ROLES:
         assert k[f"{role}_jerk"].shape == k[f"{role}_pos"].shape and k[f"{role}_jerk_reliable"].shape == (55,)
-        assert float(k[f"{role}_jerk_cutoff_hz"]) > 0 and k[f"{role}_jerk_noise_sd"].shape == k[f"{role}_t"].shape
+        # per joint (CONTRACTS.md): cutoff / snr / reliable (55,), noise SD per frame and joint (T, 55)
+        for name in ("acc", "jerk"):
+            cut = k[f"{role}_{name}_cutoff_hz"]
+            assert cut.shape == (55,) and np.all(cut > 0), (role, name, cut.shape)
+            assert k[f"{role}_{name}_snr"].shape == (55,) and k[f"{role}_{name}_reliable"].dtype == bool
+            assert k[f"{role}_{name}_noise_sd"].shape == (len(k[f"{role}_t"]), 55)
+        assert float(k[f"{role}_noise_m"]) > 0
+        tm = d["touchdown_method"][role]
+        assert {"n_template", "n_fallback", "n_clamped", "suspect_feet", "mc"} <= set(tm)
     v = SYN / "timing" / "validation.json"
     if v.exists():
         g = json.loads(v.read_text())["gate"]

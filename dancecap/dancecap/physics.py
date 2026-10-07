@@ -238,7 +238,7 @@ def sanitize(npz: dict, cfg: PhysicsConfig) -> tuple[dict, np.ndarray, np.ndarra
 
 
 def analyze_dancer(npz: dict, cfg: PhysicsConfig, mass: float | None = None, stature: float | None = None,
-                   rng=None) -> dict:
+                   rng=None, sole_m: float | None = None) -> dict:
     """Centroidal quantities of one dancer (all arrays on npz['t']). Non-finite input frames are bridged and
     flagged (sanitize), never propagated."""
     rng = rng or np.random.default_rng(cfg.seed)
@@ -375,10 +375,14 @@ def analyze_dancer(npz: dict, cfg: PhysicsConfig, mass: float | None = None, sta
         support_bits = FLAG_BITS["flight"] | FLAG_BITS["single_support"] | FLAG_BITS["double_support"] \
             | FLAG_BITS["xcom_outside"]
         flags[gap] &= ~support_bits
-    if stature is not None:
+    if stature is not None:  # mesh crown-to-sole vs stature + shoe sole (same convention as cameras/world_scale check)
+        from .cameras.world import SCALE_AGREE_REL, SOLE_M
+        sole = SOLE_M if sole_m is None else float(sole_m)
         info["stature_input_m"] = stature
-        info["stature_rel_diff"] = round(body.stature / stature - 1, 4)
-        info["stature_warning"] = abs(body.stature / stature - 1) > 0.05
+        info["stature_sole_m"] = sole
+        info["stature_rel_diff"] = round(body.stature / (stature + sole) - 1, 4)
+        info["stature_tol"] = SCALE_AGREE_REL  # = world_scale check's per-dancer tolerance (was 5 %: missed 4.25 %)
+        info["stature_warning"] = abs(body.stature / (stature + sole) - 1) > SCALE_AGREE_REL
     return {"t": t, "mass": M, "body": body, "info": info, "S": S, "com_raw": com_raw, "com": com, "vcom": vcom,
             "acom": acom, "sd_pos": sd_pos, "f_net": f_net, "f_net_band": M * a_band, "f_sd_white": M * sd_white,
             "f_sd_boot": M * sd_boot, "f_cutoff_sens": M * sens, "L": L, "dL": dL, "dL_band": dL_band,
@@ -615,10 +619,11 @@ def partner_interval(res: dict, cfg: PhysicsConfig) -> dict:
 # ----------------------------------------------------------------------------------------------- top level
 
 def analyze(npzs: dict, cfg: PhysicsConfig, beats_t: np.ndarray | None = None, masses: dict | None = None,
-            statures: dict | None = None, partner: bool = True) -> dict:
+            statures: dict | None = None, partner: bool = True, soles: dict | None = None) -> dict:
     rng = np.random.default_rng(cfg.seed)
-    masses, statures = masses or {}, statures or {}
-    res = {role: analyze_dancer(npzs[role], cfg, masses.get(role), statures.get(role), rng) for role in ROLES}
+    masses, statures, soles = masses or {}, statures or {}, soles or {}
+    res = {role: analyze_dancer(npzs[role], cfg, masses.get(role), statures.get(role), rng, soles.get(role))
+           for role in ROLES}
     tL, tF = res["lead"]["t"], res["follow"]["t"]
     if len(tL) != len(tF) or np.abs(tL - tF).max() > 1e-6:
         raise ValueError("lead and follow must share the master time grid (contract: 30 Hz grid)")
@@ -873,20 +878,23 @@ def load_beat_times(path: Path) -> np.ndarray:
 
 
 def run(work: Path, cfg: PhysicsConfig | None = None, beats_path: Path | None = None, masses: dict | None = None,
-        statures: dict | None = None, out_dir: Path | None = None, npzs: dict | None = None, plot: bool = True) -> dict:
+        statures: dict | None = None, out_dir: Path | None = None, npzs: dict | None = None, plot: bool = True,
+        soles: dict | None = None) -> dict:
     cfg = cfg or PhysicsConfig()
     npzs = npzs or {role: load_npz(work / "smplx" / f"{role}.npz") for role in ROLES}
     bp = beats_path or find_beats(work)
     beats_t = load_beat_times(bp) if bp else None
-    res = analyze(npzs, cfg, beats_t, masses, statures)
+    res = analyze(npzs, cfg, beats_t, masses, statures, soles=soles)
     out_dir = out_dir or work / "physics"
     meta = {"take": work.name, "beats_source": None if bp is None else str(bp), "warnings": []}
     if bp is None:
         meta["warnings"].append("no beats json: beat impulses skipped")
     for role in ROLES:
         if res[role]["info"].get("stature_warning"):
-            meta["warnings"].append(f"{role}: mesh stature differs from the input by "
-                                    f"{100 * res[role]['info']['stature_rel_diff']:+.1f} %")
+            meta["warnings"].append(f"{role}: mesh crown-to-sole height differs from stature + shoe sole by "
+                                    f"{100 * res[role]['info']['stature_rel_diff']:+.1f} % (> "
+                                    f"{100 * res[role]['info']['stature_tol']:.1f} %): world scale suspect - run "
+                                    f"python -m dancecap.cameras.world_scale check {work.name}")
     res["_json"] = save(res, out_dir, cfg, meta)
     if plot:
         plot_qa(res, out_dir / "qa_physics.png", f"{work.name}: L0 centroidal physics")

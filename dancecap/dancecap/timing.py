@@ -94,6 +94,7 @@ class TimingConfig:
     # landing ends (foot low and slow), so a one-frame clamp biased clean touchdowns 20-35 ms early; 0.15 s only
     # catches events the template pushed well past the observed contact.
     clamp_after_stance_s: float | None = 0.15
+    plausible_lag_ms: tuple = (-60.0, 160.0)  # per-foot median (touchdown - first stance frame); outside -> suspect
     template_knot_s: float = 0.033
     template_scale_sd: float = 0.15  # prior SD of a step's descent amplitude relative to the template
     # accents
@@ -424,9 +425,18 @@ def _lsq_template(U: np.ndarray, Y: np.ndarray, lo: float, hi: float, knot_s: fl
     from scipy.interpolate import LSQUnivariateSpline
     o = np.argsort(U, kind="stable")
     U, Y = U[o] + np.arange(len(U)) * 1e-9, Y[o].reshape(len(U), -1)
-    inner = np.arange(lo + knot_s, hi - knot_s / 2, knot_s)
-    inner = inner[(inner > U[0]) & (inner < U[-1])]
-    return [LSQUnivariateSpline(U, Y[:, p], inner, k=3) for p in range(Y.shape[1])]
+    # Few pooled steps (LOO with 2-3 steps, sparse 30 Hz samples) can leave knot intervals without data
+    # (Schoenberg-Whitney fails in FITPACK, seen in the real-take MC with correlated noise): widen the knot spacing
+    # until the fit is accepted; last resort one cubic over the window.
+    for mult in (1, 2, 3, 4, 6, 8):
+        ks = knot_s * mult
+        inner = np.arange(lo + ks, hi - ks / 2, ks)
+        inner = inner[(inner > U[0]) & (inner < U[-1])]
+        try:
+            return [LSQUnivariateSpline(U, Y[:, p], inner, k=3) for p in range(Y.shape[1])]
+        except ValueError:
+            continue
+    return [LSQUnivariateSpline(U, Y[:, p], [], k=3) for p in range(Y.shape[1])]
 
 
 def _step_samples(t, Y, taus, spans, pre, post):
@@ -694,6 +704,26 @@ def detect_touchdowns(t: np.ndarray, joints: np.ndarray, kin: Kinematics, noise_
     info["n_clamped"] = n_cl
     lag = [e["stance"][0] - e["t"] for e in allev]
     info["stance_start_minus_touchdown_ms"] = float(np.median(lag) * 1000) if lag else None
+    # plausibility per foot: the contact model enters stance while a soft landing ends (touchdown ~0-100 ms after
+    # the first stance frame on the synthetic take, clean or 1 cm noise). A foot whose touchdowns sit far outside
+    # that is flagged: its times are not trustworthy. (at_search_edge alone is not: the per-step anchor it falls
+    # back to is fine on clean data, e.g. the unit-test walker.)
+    lo_ms, hi_ms = cfg.plausible_lag_ms
+    info["suspect_feet"] = []
+    for foot, fe in by_foot.items():
+        if not fe:
+            continue
+        lag_ms = float(np.median([e["t"] - e["stance"][0] for e in fe]) * 1000)
+        tf = info["template_feet"].get(foot)
+        why = []
+        if not lo_ms <= lag_ms <= hi_ms:
+            why.append(f"median touchdown - stance start {lag_ms:+.0f} ms outside [{lo_ms:g}, {hi_ms:g}]")
+        if tf is not None:
+            tf["touchdown_minus_stance_ms"] = lag_ms
+        if why:
+            info["suspect_feet"].append({"foot": foot, "reasons": why})
+            for e in fe:
+                e["suspect"] = True
     for foot_ev in by_foot.values():
         for e in foot_ev:
             e.pop("_rows")
@@ -1254,7 +1284,10 @@ NOTES = [
     "searched within +-60 ms of the median per-step estimate (touchdown_method.<role>.template_feet). Steps left "
     "out get the dancer's median template-minus-hinge offset (method 'hinge+offset'). t_ankle / t_toe are the "
     "per-joint raw-height hinges, t_spline_vy0 the spline vertical-velocity cross-check. A touchdown is never "
-    "placed more than clamp_after_stance_s after the contact model's first stance frame (clamped_to_stance).",
+    "placed more than clamp_after_stance_s after the contact model's first stance frame (clamped_to_stance). A "
+    "foot whose median touchdown-minus-first-stance-frame lies outside plausible_lag_ms (synthetic: -3..92 ms, clean "
+    "and at 1 cm noise) is listed in touchdown_method.<role>."
+    "suspect_feet and its events carry suspect=true.",
     "sigma per event = SD over a Monte-Carlo that adds the noise model to the RAW joints and re-runs the whole "
     "detector (template offsets re-estimated per draw); draws are matched to the nominal events after removing "
     "each draw's median shift, and sigma keeps that shift. detect_rate = fraction of draws that found the event. "

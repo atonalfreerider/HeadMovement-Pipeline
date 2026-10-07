@@ -79,7 +79,12 @@ def test_motion_fk_and_skin_lbs_match_smplx():
             h, frames = eu.read_motion(out / f"smplx_{role}.bin")
             sh, skin = eu.read_skin(out / f"smplx_{role}_skin.bin")
             assert frames.shape == (h["frames"], eu.FRAME_FLOATS) and sh["joints"] == 55
-            assert skin.vertices.shape == (10475, 3) and skin.weights.shape == (10475, 55)
+            # seam-split (textured) skin: one vertex per unique (v, vt) pair, weights/rest copied from vertex_ids
+            assert sh["version"] == 2 and skin.uv is not None and skin.vertex_ids is not None
+            V = len(skin.vertices)
+            assert V == 11313 and skin.weights.shape == (V, 55) and skin.uv.shape == (V, 2)
+            assert skin.vertex_ids.max() == 10474 and len(np.unique(skin.vertex_ids)) == 10475
+            assert np.allclose(np.linalg.norm(skin.normals, axis=1), 1, atol=1e-4)
             assert np.allclose(skin.weights.sum(1), 1, atol=1e-4) and skin.parents[0] == -1
             transl = frames[:, :3].astype(float)
             quats = frames[:, 3:3 + 220].reshape(-1, 55, 4).astype(float)
@@ -104,10 +109,75 @@ def test_motion_fk_and_skin_lbs_match_smplx():
                               right_hand_pose=ft("right_hand_pose"), jaw_pose=ft("jaw_pose"), transl=ft("transl"))
                 ours = eu.lbs_unity(eu.Skin(v, f, skin.weights.astype(float), skin.joints.astype(float),
                                             skin.parents, "", np.zeros(0)), P, R, i) * [1, 1, -1]
-                err = np.abs(ours - o.vertices[0].numpy()).max()
+                err = np.abs(ours - o.vertices[0].numpy()[skin.vertex_ids]).max()
                 assert err < 1e-3, (role, i, err)
     finally:
         shutil.rmtree(out, ignore_errors=True)
+
+
+def test_uv_split_matches_texture_stage_and_model_uvs():
+    """Split mesh == avatar_uv.write_uv_mesh's (vertex_ids[ft] == f) and every split face keeps the model's vt."""
+    m = np.load(eu.DEFAULT_MODEL, allow_pickle=True)
+    vid, uv, faces = eu.uv_split(m["f"], m["ft"], m["vt"])
+    assert np.array_equal(vid[faces], np.asarray(m["f"]))
+    assert np.allclose(uv[faces], np.asarray(m["vt"])[np.asarray(m["ft"])])
+    assert len(vid) == len(np.unique(np.stack([m["f"].ravel(), m["ft"].ravel()], 1), axis=0))
+
+
+def test_capture_name_and_audio_rules(tmp_path):
+    import pytest
+    for bad in ("..", ".", "/abs", "a/b", "a\b", "", "C:x"):
+        with pytest.raises(ValueError):
+            eu.validate_capture_name(bad)
+    assert eu.validate_capture_name("02_LarissaKadu") == "02_LarissaKadu"
+    with pytest.raises(ValueError):  # --audio without --audio-t0
+        eu.resolve_audio(tmp_path, tmp_path / "x.wav", None)
+    with pytest.raises(ValueError):  # nothing to play and no --no-audio
+        eu.resolve_audio(tmp_path, None, None)
+    assert eu.resolve_audio(tmp_path, None, None, allow_no_audio=True) == (None, 0.0, "none")
+    (tmp_path / "audio").mkdir()
+    (tmp_path / "audio" / "audio_overlap.wav").write_bytes(b"RIFF")
+    (tmp_path / "audio" / "audio_overlap.json").write_text(json.dumps({"reference_start": 29.97}))
+    wav, t0, src = eu.resolve_audio(tmp_path, None, None)
+    assert wav.name == "audio_overlap.wav" and t0 == 29.97
+    (tmp_path / "audio.wav").write_bytes(b"RIFF")
+    import shutil as sh
+    sh.rmtree(tmp_path / "audio")
+    with pytest.raises(ValueError):  # real take audio.wav without a start time
+        eu.resolve_audio(tmp_path, None, None)
+
+
+def test_stale_physics_and_kinematics_are_skipped():
+    """A physics/timing run on another grid must not be exported (np.interp / Nearest would clamp silently)."""
+    times = np.arange(30) / 30.0
+    w: list = []
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        ph = Path(d) / "physics.json"
+        ph.write_text(json.dumps({"t": (times + 0.5).tolist()}))
+        assert not eu._physics_on_grid(ph, times, w) and w
+        ph.write_text(json.dumps({"t": times.tolist()}))
+        assert eu._physics_on_grid(ph, times, w)
+        kin = Path(d) / "kinematics.npz"
+        np.savez(kin, lead_t=times[5:], lead_jerk=np.ones((25, 55, 3)), follow_t=times,
+                 follow_jerk=np.ones((30, 55, 3)), follow_jerk_reliable=np.r_[np.zeros(1, bool), np.ones(54, bool)])
+        w2: list = []
+        out = eu._timing_for_unity({"beats": {}}, kin, times, w2)
+        assert "lead" not in out["jerk"] and len(w2) == 1
+        fj = np.asarray(out["jerk"]["follow"])
+        assert fj.shape == (30, 24) and (fj[:, 0] == 0).all() and (fj[:, 1] > 0).all()
+
+
+def test_synthetic_time_to_audio_is_never_negative_zero():
+    rep, out = None, None
+    try:
+        rep = eu.export("synthetic", CAPTURE, install=False, room=False)
+        out = Path(rep["out"])
+        txt = (out / "capture.json").read_text()
+        assert '"time_to_audio": -0.0' not in txt and json.loads(txt)["time_to_audio"] == 0.0
+    finally:
+        if out is not None:
+            shutil.rmtree(out, ignore_errors=True)
 
 
 def test_mamma_model_selection():
