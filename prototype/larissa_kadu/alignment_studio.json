@@ -1,0 +1,2074 @@
+{
+  "reference": "06-Demo-John.mp4",
+  "convention": "reference_time = slope * source_time + offset",
+  "sources": [
+    {
+      "id": "01",
+      "name": "01-Demo-Ali.mp4",
+      "duration": 183.458378,
+      "numbered": true,
+      "slope": 1.0000075428495738,
+      "offset": 1.6026141748949305,
+      "anchors": [
+        {
+          "source_start": 7.5258,
+          "reference_start": 9.12844,
+          "offset": 1.6026404363630213,
+          "confidence": 0.179,
+          "inlier": true,
+          "residual_seconds": -3.0504509231477073e-05
+        },
+        {
+          "source_start": 15.388,
+          "reference_start": 16.980171,
+          "offset": 1.5921713014740977,
+          "confidence": 0.22,
+          "inlier": false,
+          "residual_seconds": -0.01055894279007319
+        },
+        {
+          "source_start": 23.22905,
+          "reference_start": 24.831804,
+          "offset": 1.6027540015434134,
+          "confidence": 0.135,
+          "inlier": true,
+          "residual_seconds": -3.5386581412666374e-05
+        },
+        {
+          "source_start": 31.08509,
+          "reference_start": 32.688541,
+          "offset": 1.6034512837842172,
+          "confidence": 0.242,
+          "inlier": true,
+          "residual_seconds": 0.0006026387314292947
+        },
+        {
+          "source_start": 38.93803,
+          "reference_start": 40.540174,
+          "offset": 1.60214398385353,
+          "confidence": 0.221,
+          "inlier": true,
+          "residual_seconds": -0.0007638947443950883
+        },
+        {
+          "source_start": 46.78886,
+          "reference_start": 48.391905,
+          "offset": 1.6030448489646076,
+          "confidence": 0.253,
+          "inlier": true,
+          "residual_seconds": 7.775273696353224e-05
+        },
+        {
+          "source_start": 54.64558,
+          "reference_start": 56.248544,
+          "offset": 1.6029639661636494,
+          "confidence": 0.237,
+          "inlier": true,
+          "residual_seconds": -6.239212109449e-05
+        },
+        {
+          "source_start": 62.49727,
+          "reference_start": 64.100275,
+          "offset": 1.6030048312747311,
+          "confidence": 0.295,
+          "inlier": true,
+          "residual_seconds": -8.075112657479622e-05
+        },
+        {
+          "source_start": 70.3482,
+          "reference_start": 71.951908,
+          "offset": 1.6037075313440425,
+          "confidence": 0.219,
+          "inlier": true,
+          "residual_seconds": 0.0005627305587267983
+        },
+        {
+          "source_start": 78.20587,
+          "reference_start": 79.808547,
+          "offset": 1.6026766485430812,
+          "confidence": 0.292,
+          "inlier": true,
+          "residual_seconds": -0.0005274214650370368
+        },
+        {
+          "source_start": 86.05688,
+          "reference_start": 87.660278,
+          "offset": 1.6033975136541585,
+          "confidence": 0.255,
+          "inlier": true,
+          "residual_seconds": 0.00013422465859491695
+        },
+        {
+          "source_start": 93.90786,
+          "reference_start": 95.51191,
+          "offset": 1.6040502137234824,
+          "confidence": 0.304,
+          "inlier": true,
+          "residual_seconds": 0.0007277059667814001
+        },
+        {
+          "source_start": 101.76012,
+          "reference_start": 103.363641,
+          "offset": 1.6035210788345609,
+          "confidence": 0.214,
+          "inlier": true,
+          "residual_seconds": 0.00013934266186765853
+        },
+        {
+          "source_start": 109.6174,
+          "reference_start": 111.22028,
+          "offset": 1.6028801960335954,
+          "confidence": 0.246,
+          "inlier": true,
+          "residual_seconds": -0.0005608064201965135
+        },
+        {
+          "source_start": 117.46858,
+          "reference_start": 119.072011,
+          "offset": 1.6034310611446756,
+          "confidence": 0.215,
+          "inlier": true,
+          "residual_seconds": -6.916157883551932e-05
+        },
+        {
+          "source_start": 125.32015,
+          "reference_start": 126.923644,
+          "offset": 1.6034937612140112,
+          "confidence": 0.192,
+          "inlier": true,
+          "residual_seconds": -6.568472093704258e-05
+        },
+        {
+          "source_start": 133.177,
+          "reference_start": 134.780381,
+          "offset": 1.6033810434548172,
+          "confidence": 0.268,
+          "inlier": true,
+          "residual_seconds": -0.00023766551780113332
+        },
+        {
+          "source_start": 141.02815,
+          "reference_start": 142.632014,
+          "offset": 1.6038637435241014,
+          "confidence": 0.241,
+          "inlier": true,
+          "residual_seconds": 0.00018581450802912514
+        },
+        {
+          "source_start": 148.88049,
+          "reference_start": 150.483745,
+          "offset": 1.6032546086351829,
+          "confidence": 0.189,
+          "inlier": true,
+          "residual_seconds": -0.0004825494003171116
+        },
+        {
+          "source_start": 156.73665,
+          "reference_start": 158.340384,
+          "offset": 1.6037337258342177,
+          "confidence": 0.326,
+          "inlier": true,
+          "residual_seconds": -6.269003438319487e-05
+        },
+        {
+          "source_start": 164.58822,
+          "reference_start": 166.192115,
+          "offset": 1.6038945909452877,
+          "confidence": 0.28,
+          "inlier": true,
+          "residual_seconds": 3.8951865263925356e-05
+        },
+        {
+          "source_start": 172.43933,
+          "reference_start": 174.043747,
+          "offset": 1.604417291014613,
+          "confidence": 0.31,
+          "inlier": true,
+          "residual_seconds": 0.0005024321928601694
+        }
+      ],
+      "accepted": true,
+      "max_residual_seconds": 0.0007638947443950883,
+      "anchor_inliers": 21,
+      "clock_source": "studio track (song.json cross_check_detail.studio_derived_clock)",
+      "studio_fit": {
+        "fit_residual_ms_median": 0.13,
+        "fit_residual_ms_p95": 0.75,
+        "n_anchors": 22,
+        "n_inliers": 21,
+        "song_span": [
+          16.4,
+          184.4
+        ]
+      }
+    },
+    {
+      "id": "02",
+      "name": "02-Demo-Tina.mp4",
+      "duration": 178.494983,
+      "numbered": true,
+      "slope": 0.9999976039201529,
+      "offset": 4.178502554903582,
+      "anchors": [
+        {
+          "source_start": 6.24914,
+          "reference_start": 10.428342,
+          "offset": 4.179201919338593,
+          "confidence": 0.203,
+          "inlier": true,
+          "residual_seconds": 0.0007143378734255634
+        },
+        {
+          "source_start": 14.10445,
+          "reference_start": 18.283018,
+          "offset": 4.178567735702444,
+          "confidence": 0.248,
+          "inlier": true,
+          "residual_seconds": 9.897618726029123e-05
+        },
+        {
+          "source_start": 21.95868,
+          "reference_start": 26.137792,
+          "offset": 4.179111717108057,
+          "confidence": 0.215,
+          "inlier": true,
+          "residual_seconds": 0.0006617769550913977
+        },
+        {
+          "source_start": 29.81449,
+          "reference_start": 33.992566,
+          "offset": 4.178075698513666,
+          "confidence": 0.246,
+          "inlier": true,
+          "residual_seconds": -0.0003554184912744063
+        },
+        {
+          "source_start": 37.66475,
+          "reference_start": 41.842235,
+          "offset": 4.177485097747805,
+          "confidence": 0.282,
+          "inlier": true,
+          "residual_seconds": -0.0009272094073580206
+        },
+        {
+          "source_start": 45.51866,
+          "reference_start": 49.697009,
+          "offset": 4.178349079153421,
+          "confidence": 0.323,
+          "inlier": true,
+          "residual_seconds": -4.4409406264378504e-05
+        },
+        {
+          "source_start": 53.37347,
+          "reference_start": 57.551783,
+          "offset": 4.1783130605590415,
+          "confidence": 0.302,
+          "inlier": true,
+          "residual_seconds": -6.160724870341028e-05
+        },
+        {
+          "source_start": 61.22328,
+          "reference_start": 65.401551,
+          "offset": 4.178270624834923,
+          "confidence": 0.345,
+          "inlier": true,
+          "residual_seconds": -8.52342012791496e-05
+        },
+        {
+          "source_start": 69.0775,
+          "reference_start": 73.256226,
+          "offset": 4.178726441198776,
+          "confidence": 0.235,
+          "inlier": true,
+          "residual_seconds": 0.00038940150082567015
+        },
+        {
+          "source_start": 76.93253,
+          "reference_start": 81.111,
+          "offset": 4.178470422604406,
+          "confidence": 0.309,
+          "inlier": true,
+          "residual_seconds": 0.0001522041855395173
+        },
+        {
+          "source_start": 84.78348,
+          "reference_start": 88.960768,
+          "offset": 4.177287986880302,
+          "confidence": 0.307,
+          "inlier": true,
+          "residual_seconds": -0.0010114200354962577
+        },
+        {
+          "source_start": 92.63721,
+          "reference_start": 96.815444,
+          "offset": 4.17823380324414,
+          "confidence": 0.336,
+          "inlier": true,
+          "residual_seconds": -4.678550747883037e-05
+        },
+        {
+          "source_start": 100.49186,
+          "reference_start": 104.670218,
+          "offset": 4.178357784649748,
+          "confidence": 0.294,
+          "inlier": true,
+          "residual_seconds": 9.601626669564212e-05
+        },
+        {
+          "source_start": 108.34153,
+          "reference_start": 112.519985,
+          "offset": 4.178455348925652,
+          "confidence": 0.317,
+          "inlier": true,
+          "residual_seconds": 0.00021238897869579887
+        },
+        {
+          "source_start": 116.19628,
+          "reference_start": 120.374661,
+          "offset": 4.178381165289494,
+          "confidence": 0.275,
+          "inlier": true,
+          "residual_seconds": 0.00015702595072752956
+        },
+        {
+          "source_start": 124.0516,
+          "reference_start": 128.229435,
+          "offset": 4.177835146695102,
+          "confidence": 0.281,
+          "inlier": true,
+          "residual_seconds": -0.0003701706697256668
+        },
+        {
+          "source_start": 131.90629,
+          "reference_start": 136.084209,
+          "offset": 4.1779191281007115,
+          "confidence": 0.287,
+          "inlier": true,
+          "residual_seconds": -0.0002673687997116758
+        },
+        {
+          "source_start": 139.75594,
+          "reference_start": 143.933977,
+          "offset": 4.178036692376594,
+          "confidence": 0.328,
+          "inlier": true,
+          "residual_seconds": -0.0001309961356525946
+        },
+        {
+          "source_start": 147.61018,
+          "reference_start": 151.788653,
+          "offset": 4.1784725087404695,
+          "confidence": 0.255,
+          "inlier": true,
+          "residual_seconds": 0.00032363961440751154
+        },
+        {
+          "source_start": 155.46479,
+          "reference_start": 159.643426,
+          "offset": 4.17863649014609,
+          "confidence": 0.344,
+          "inlier": true,
+          "residual_seconds": 0.0005064412927424655
+        },
+        {
+          "source_start": 163.31528,
+          "reference_start": 167.493194,
+          "offset": 4.17791405442199,
+          "confidence": 0.328,
+          "inlier": true,
+          "residual_seconds": -0.0001971840304690886
+        },
+        {
+          "source_start": 171.16953,
+          "reference_start": 175.34787,
+          "offset": 4.178339870785834,
+          "confidence": 0.324,
+          "inlier": true,
+          "residual_seconds": 0.00024745174351892274
+        }
+      ],
+      "accepted": true,
+      "max_residual_seconds": 0.0010114200354962577,
+      "anchor_inliers": 22,
+      "clock_source": "studio track (song.json cross_check_detail.studio_derived_clock)",
+      "studio_fit": {
+        "fit_residual_ms_median": 0.25,
+        "fit_residual_ms_p95": 0.88,
+        "n_anchors": 22,
+        "n_inliers": 22,
+        "song_span": [
+          17.72,
+          185.72
+        ]
+      }
+    },
+    {
+      "id": "03",
+      "name": "03-Demo-Mao.mp4",
+      "duration": 179.995,
+      "numbered": true,
+      "slope": 0.9999892769196703,
+      "offset": 5.397761004466049,
+      "anchors": [
+        {
+          "source_start": 5.64974,
+          "reference_start": 11.047076,
+          "offset": 5.397336177546941,
+          "confidence": 0.179,
+          "inlier": true,
+          "residual_seconds": -0.0003642443032454423
+        },
+        {
+          "source_start": 13.50423,
+          "reference_start": 18.90185,
+          "offset": 5.397620158952556,
+          "confidence": 0.244,
+          "inlier": true,
+          "residual_seconds": 3.961429587917564e-06
+        },
+        {
+          "source_start": 21.3531,
+          "reference_start": 26.751618,
+          "offset": 5.398517723228448,
+          "confidence": 0.214,
+          "inlier": true,
+          "residual_seconds": 0.0009856897689886068
+        },
+        {
+          "source_start": 29.20821,
+          "reference_start": 34.606294,
+          "offset": 5.3980835395922995,
+          "confidence": 0.215,
+          "inlier": true,
+          "residual_seconds": 0.0006357371083680619
+        },
+        {
+          "source_start": 37.06483,
+          "reference_start": 42.461068,
+          "offset": 5.396237520997914,
+          "confidence": 0.25,
+          "inlier": true,
+          "residual_seconds": -0.0011260343186378918
+        },
+        {
+          "source_start": 44.91846,
+          "reference_start": 50.315842,
+          "offset": 5.397381502403519,
+          "confidence": 0.283,
+          "inlier": true,
+          "residual_seconds": 0.00010216219233427637
+        },
+        {
+          "source_start": 52.76849,
+          "reference_start": 58.165609,
+          "offset": 5.397119066679416,
+          "confidence": 0.265,
+          "inlier": true,
+          "residual_seconds": -7.60970294848562e-05
+        },
+        {
+          "source_start": 60.62342,
+          "reference_start": 66.020383,
+          "offset": 5.396963048085034,
+          "confidence": 0.302,
+          "inlier": true,
+          "residual_seconds": -0.00014788657850317577
+        },
+        {
+          "source_start": 68.47779,
+          "reference_start": 73.875059,
+          "offset": 5.397268864448904,
+          "confidence": 0.206,
+          "inlier": true,
+          "residual_seconds": 0.00024215282581963038
+        },
+        {
+          "source_start": 76.32807,
+          "reference_start": 81.724826,
+          "offset": 5.3967564287247995,
+          "confidence": 0.29,
+          "inlier": true,
+          "residual_seconds": -0.00018610371522242986
+        },
+        {
+          "source_start": 84.18271,
+          "reference_start": 89.5796,
+          "offset": 5.396890410130396,
+          "confidence": 0.299,
+          "inlier": true,
+          "residual_seconds": 3.210362605443606e-05
+        },
+        {
+          "source_start": 92.03695,
+          "reference_start": 97.434374,
+          "offset": 5.397424391536006,
+          "confidence": 0.285,
+          "inlier": true,
+          "residual_seconds": 0.0006503066781107236
+        },
+        {
+          "source_start": 99.88746,
+          "reference_start": 105.284044,
+          "offset": 5.396583790770151,
+          "confidence": 0.292,
+          "inlier": true,
+          "residual_seconds": -0.00010611243838809514
+        },
+        {
+          "source_start": 107.74218,
+          "reference_start": 113.138818,
+          "offset": 5.396637772175751,
+          "confidence": 0.286,
+          "inlier": true,
+          "residual_seconds": 3.209576074425513e-05
+        },
+        {
+          "source_start": 115.59764,
+          "reference_start": 120.993592,
+          "offset": 5.395951753581386,
+          "confidence": 0.231,
+          "inlier": true,
+          "residual_seconds": -0.0005696881050170077
+        },
+        {
+          "source_start": 123.44813,
+          "reference_start": 128.843359,
+          "offset": 5.395229317857272,
+          "confidence": 0.239,
+          "inlier": true,
+          "residual_seconds": -0.001207942394245265
+        },
+        {
+          "source_start": 131.30172,
+          "reference_start": 136.698133,
+          "offset": 5.396413299262889,
+          "confidence": 0.279,
+          "inlier": true,
+          "residual_seconds": 6.025368782047735e-05
+        },
+        {
+          "source_start": 139.15632,
+          "reference_start": 144.552809,
+          "offset": 5.396489115626736,
+          "confidence": 0.309,
+          "inlier": true,
+          "residual_seconds": 0.0002202955584209576
+        },
+        {
+          "source_start": 147.01146,
+          "reference_start": 152.407583,
+          "offset": 5.39612309703233,
+          "confidence": 0.254,
+          "inlier": true,
+          "residual_seconds": -6.149173876224268e-05
+        },
+        {
+          "source_start": 154.861,
+          "reference_start": 160.257351,
+          "offset": 5.396350661308247,
+          "confidence": 0.337,
+          "inlier": true,
+          "residual_seconds": 0.0002502437851319428
+        },
+        {
+          "source_start": 162.71589,
+          "reference_start": 168.112125,
+          "offset": 5.396234642713836,
+          "confidence": 0.342,
+          "inlier": true,
+          "residual_seconds": 0.0002184538071787756
+        },
+        {
+          "source_start": 170.57047,
+          "reference_start": 175.9668,
+          "offset": 5.396330459077717,
+          "confidence": 0.299,
+          "inlier": true,
+          "residual_seconds": 0.0003984954633438065
+        }
+      ],
+      "accepted": true,
+      "max_residual_seconds": 0.001207942394245265,
+      "anchor_inliers": 22,
+      "clock_source": "studio track (song.json cross_check_detail.studio_derived_clock)",
+      "studio_fit": {
+        "fit_residual_ms_median": 0.21,
+        "fit_residual_ms_p95": 1.1,
+        "n_anchors": 22,
+        "n_inliers": 22,
+        "song_span": [
+          18.35,
+          186.35
+        ]
+      }
+    },
+    {
+      "id": "04",
+      "name": "04-Demo-Tony.mp4",
+      "duration": 59.742189,
+      "numbered": true,
+      "slope": 1.0000072524248897,
+      "offset": 8.73750543208472,
+      "anchors": [
+        {
+          "source_start": 6.38532,
+          "reference_start": 15.122889,
+          "offset": 8.737568711389688,
+          "confidence": 0.231,
+          "inlier": true,
+          "residual_seconds": 1.697025127000984e-05
+        },
+        {
+          "source_start": 14.24067,
+          "reference_start": 22.978055,
+          "offset": 8.737385352962336,
+          "confidence": 0.145,
+          "inlier": true,
+          "residual_seconds": -0.00022335851193844292
+        },
+        {
+          "source_start": 22.08993,
+          "reference_start": 30.828314,
+          "offset": 8.738383742447024,
+          "confidence": 0.232,
+          "inlier": true,
+          "residual_seconds": 0.000718104804157349
+        },
+        {
+          "source_start": 29.94625,
+          "reference_start": 38.68348,
+          "offset": 8.737230384019682,
+          "confidence": 0.219,
+          "inlier": true,
+          "residual_seconds": -0.0004922309938919511
+        },
+        {
+          "source_start": 37.79611,
+          "reference_start": 46.533739,
+          "offset": 8.737628773504369,
+          "confidence": 0.263,
+          "inlier": true,
+          "residual_seconds": -0.00015077202925795063
+        },
+        {
+          "source_start": 45.65078,
+          "reference_start": 54.388905,
+          "offset": 8.738125415077015,
+          "confidence": 0.267,
+          "inlier": true,
+          "residual_seconds": 0.000288904139189583
+        },
+        {
+          "source_start": 53.50628,
+          "reference_start": 62.244072,
+          "offset": 8.737792056649681,
+          "confidence": 0.26,
+          "inlier": true,
+          "residual_seconds": -0.00010142571186833038
+        }
+      ],
+      "accepted": true,
+      "max_residual_seconds": 0.000718104804157349,
+      "anchor_inliers": 7,
+      "clock_source": "studio track (song.json cross_check_detail.studio_derived_clock)",
+      "studio_fit": {
+        "fit_residual_ms_median": 0.22,
+        "fit_residual_ms_p95": 0.63,
+        "n_anchors": 7,
+        "n_inliers": 7,
+        "song_span": [
+          22.5,
+          70.51
+        ]
+      }
+    },
+    {
+      "id": "05",
+      "name": "05-Demo-Liudmyla.mp4",
+      "duration": 185.151667,
+      "numbered": true,
+      "slope": 0.999998031542036,
+      "offset": 8.420382335636774,
+      "anchors": [
+        {
+          "source_start": 8.05253,
+          "reference_start": 16.473149,
+          "offset": 8.420618860787734,
+          "confidence": 0.249,
+          "inlier": true,
+          "residual_seconds": 0.00025237621776952324
+        },
+        {
+          "source_start": 15.9044,
+          "reference_start": 24.324585,
+          "offset": 8.420185230773535,
+          "confidence": 0.125,
+          "inlier": true,
+          "residual_seconds": -0.00016579772039548857
+        },
+        {
+          "source_start": 23.7555,
+          "reference_start": 32.175923,
+          "offset": 8.42042343571757,
+          "confidence": 0.229,
+          "inlier": true,
+          "residual_seconds": 8.786178396036348e-05
+        },
+        {
+          "source_start": 31.61242,
+          "reference_start": 40.032366,
+          "offset": 8.419946222833097,
+          "confidence": 0.193,
+          "inlier": true,
+          "residual_seconds": -0.00037388508376778873
+        },
+        {
+          "source_start": 39.46317,
+          "reference_start": 47.883704,
+          "offset": 8.420534427777142,
+          "confidence": 0.216,
+          "inlier": true,
+          "residual_seconds": 0.00022977373163968196
+        },
+        {
+          "source_start": 47.31475,
+          "reference_start": 55.735141,
+          "offset": 8.420390797762934,
+          "confidence": 0.22,
+          "inlier": true,
+          "residual_seconds": 0.00010159922261010479
+        },
+        {
+          "source_start": 55.17125,
+          "reference_start": 63.591485,
+          "offset": 8.420235419836693,
+          "confidence": 0.227,
+          "inlier": true,
+          "residual_seconds": -3.8313513634591345e-05
+        },
+        {
+          "source_start": 63.02205,
+          "reference_start": 71.442922,
+          "offset": 8.420871789822492,
+          "confidence": 0.21,
+          "inlier": true,
+          "residual_seconds": 0.0006135104419513482
+        },
+        {
+          "source_start": 70.87921,
+          "reference_start": 79.299365,
+          "offset": 8.420154576938032,
+          "confidence": 0.253,
+          "inlier": true,
+          "residual_seconds": -8.823595334206402e-05
+        },
+        {
+          "source_start": 78.73015,
+          "reference_start": 87.150703,
+          "offset": 8.420552781882066,
+          "confidence": 0.184,
+          "inlier": true,
+          "residual_seconds": 0.0003254232360632159
+        },
+        {
+          "source_start": 86.58155,
+          "reference_start": 95.002139,
+          "offset": 8.420589151867858,
+          "confidence": 0.301,
+          "inlier": true,
+          "residual_seconds": 0.00037724837271468914
+        },
+        {
+          "source_start": 94.43868,
+          "reference_start": 102.858484,
+          "offset": 8.419803773941624,
+          "confidence": 0.249,
+          "inlier": true,
+          "residual_seconds": -0.0003926631233923672
+        },
+        {
+          "source_start": 102.29088,
+          "reference_start": 110.70992,
+          "offset": 8.419040143927418,
+          "confidence": 0.191,
+          "inlier": true,
+          "residual_seconds": -0.001140836411977375
+        },
+        {
+          "source_start": 110.1414,
+          "reference_start": 118.561357,
+          "offset": 8.41995651391322,
+          "confidence": 0.228,
+          "inlier": true,
+          "residual_seconds": -0.0002090130075629304
+        },
+        {
+          "source_start": 117.99794,
+          "reference_start": 126.417701,
+          "offset": 8.419761135986988,
+          "confidence": 0.19,
+          "inlier": true,
+          "residual_seconds": -0.00038892566506376625
+        },
+        {
+          "source_start": 125.84896,
+          "reference_start": 134.269138,
+          "offset": 8.420177505972788,
+          "confidence": 0.212,
+          "inlier": true,
+          "residual_seconds": 4.289872359208857e-05
+        },
+        {
+          "source_start": 133.70049,
+          "reference_start": 142.120476,
+          "offset": 8.41998571091682,
+          "confidence": 0.215,
+          "inlier": true,
+          "residual_seconds": -0.00013344092565148458
+        },
+        {
+          "source_start": 141.55671,
+          "reference_start": 149.976918,
+          "offset": 8.42020849803231,
+          "confidence": 0.236,
+          "inlier": true,
+          "residual_seconds": 0.0001048108287022842
+        },
+        {
+          "source_start": 149.40784,
+          "reference_start": 157.828257,
+          "offset": 8.42041670297641,
+          "confidence": 0.313,
+          "inlier": true,
+          "residual_seconds": 0.00032847039219063845
+        },
+        {
+          "source_start": 157.26476,
+          "reference_start": 165.684699,
+          "offset": 8.419939490091906,
+          "confidence": 0.25,
+          "inlier": true,
+          "residual_seconds": -0.0001332764756227789
+        },
+        {
+          "source_start": 165.11541,
+          "reference_start": 173.536136,
+          "offset": 8.42072586007771,
+          "confidence": 0.298,
+          "inlier": true,
+          "residual_seconds": 0.0006685471847163171
+        }
+      ],
+      "accepted": true,
+      "max_residual_seconds": 0.001140836411977375,
+      "anchor_inliers": 21,
+      "clock_source": "studio track (song.json cross_check_detail.studio_derived_clock)",
+      "studio_fit": {
+        "fit_residual_ms_median": 0.26,
+        "fit_residual_ms_p95": 0.62,
+        "n_anchors": 21,
+        "n_inliers": 21,
+        "song_span": [
+          23.88,
+          183.88
+        ]
+      }
+    },
+    {
+      "id": "06",
+      "name": "06-Demo-John.mp4",
+      "duration": 185.525233,
+      "numbered": true,
+      "slope": 1.0,
+      "offset": 0.0,
+      "anchors": [],
+      "accepted": true,
+      "max_residual_seconds": 0.0,
+      "clock_source": "reference (identity)"
+    },
+    {
+      "id": "07",
+      "name": "07-Demo-Natalie.mp4",
+      "duration": 129.168333,
+      "numbered": true,
+      "slope": 0.9999872274554323,
+      "offset": 30.007134973475495,
+      "anchors": [
+        {
+          "source_start": 5.68391,
+          "reference_start": 35.689937,
+          "offset": 30.00602743557231,
+          "confidence": 0.133,
+          "inlier": true,
+          "residual_seconds": -0.0010349399093882994
+        },
+        {
+          "source_start": 13.54038,
+          "reference_start": 43.546577,
+          "offset": 30.006196552771357,
+          "confidence": 0.204,
+          "inlier": true,
+          "residual_seconds": -0.000765475597127363
+        },
+        {
+          "source_start": 21.39077,
+          "reference_start": 51.398111,
+          "offset": 30.007341087798917,
+          "confidence": 0.209,
+          "inlier": true,
+          "residual_seconds": 0.000479328886584085
+        },
+        {
+          "source_start": 29.24281,
+          "reference_start": 59.249744,
+          "offset": 30.006933787868235,
+          "confidence": 0.187,
+          "inlier": true,
+          "residual_seconds": 0.00017231948674378827
+        },
+        {
+          "source_start": 37.09894,
+          "reference_start": 67.106285,
+          "offset": 30.007344740025516,
+          "confidence": 0.218,
+          "inlier": true,
+          "residual_seconds": 0.0006836144145836442
+        },
+        {
+          "source_start": 44.95009,
+          "reference_start": 74.957819,
+          "offset": 30.007729275053066,
+          "confidence": 0.171,
+          "inlier": true,
+          "residual_seconds": 0.001168428605424765
+        },
+        {
+          "source_start": 52.80269,
+          "reference_start": 82.809452,
+          "offset": 30.0067619751224,
+          "confidence": 0.259,
+          "inlier": true,
+          "residual_seconds": 0.00030142635823438013
+        },
+        {
+          "source_start": 60.65984,
+          "reference_start": 90.665993,
+          "offset": 30.006152927279672,
+          "confidence": 0.226,
+          "inlier": true,
+          "residual_seconds": -0.00020726568595819117
+        },
+        {
+          "source_start": 68.51125,
+          "reference_start": 98.517626,
+          "offset": 30.006375627348987,
+          "confidence": 0.212,
+          "inlier": true,
+          "residual_seconds": 0.00011571686749789478
+        },
+        {
+          "source_start": 76.36297,
+          "reference_start": 106.36916,
+          "offset": 30.006190162376555,
+          "confidence": 0.247,
+          "inlier": true,
+          "residual_seconds": 3.0538338691599165e-05
+        },
+        {
+          "source_start": 84.2201,
+          "reference_start": 114.225701,
+          "offset": 30.00560111453383,
+          "confidence": 0.214,
+          "inlier": true,
+          "residual_seconds": -0.00045815396090631566
+        },
+        {
+          "source_start": 92.07189,
+          "reference_start": 122.077334,
+          "offset": 30.005443814603154,
+          "confidence": 0.187,
+          "inlier": true,
+          "residual_seconds": -0.0005151665538960515
+        },
+        {
+          "source_start": 99.92292,
+          "reference_start": 129.928868,
+          "offset": 30.0059483496307,
+          "confidence": 0.232,
+          "inlier": true,
+          "residual_seconds": 8.96461042430019e-05
+        },
+        {
+          "source_start": 107.7796,
+          "reference_start": 137.785507,
+          "offset": 30.005907466829726,
+          "confidence": 0.211,
+          "inlier": true,
+          "residual_seconds": 0.00014911309872900347
+        },
+        {
+          "source_start": 115.63163,
+          "reference_start": 145.637042,
+          "offset": 30.00541200185731,
+          "confidence": 0.264,
+          "inlier": true,
+          "residual_seconds": -0.00024606147059103023
+        },
+        {
+          "source_start": 123.48307,
+          "reference_start": 153.488577,
+          "offset": 30.005506536884866,
+          "confidence": 0.272,
+          "inlier": true,
+          "residual_seconds": -5.1243575711623635e-05
+        }
+      ],
+      "accepted": true,
+      "max_residual_seconds": 0.001168428605424765,
+      "anchor_inliers": 16,
+      "clock_source": "studio track (song.json cross_check_detail.studio_derived_clock)",
+      "studio_fit": {
+        "fit_residual_ms_median": 0.26,
+        "fit_residual_ms_p95": 1.05,
+        "n_anchors": 16,
+        "n_inliers": 16,
+        "song_span": [
+          43.46,
+          163.46
+        ]
+      }
+    },
+    {
+      "id": "08",
+      "name": "SaveInsta.App - 3229808766692924452_20971593899.mp4",
+      "duration": 60.040717,
+      "numbered": false,
+      "slope": 1.0000479148272883,
+      "offset": 10.206394684023518,
+      "anchors": [
+        {
+          "source_start": 6.44133,
+          "reference_start": 16.647195,
+          "offset": 10.205865479826826,
+          "confidence": 0.261,
+          "inlier": true,
+          "residual_seconds": -0.0008378394111474563
+        },
+        {
+          "source_start": 14.29451,
+          "reference_start": 24.501773,
+          "offset": 10.207263131148922,
+          "confidence": 0.169,
+          "inlier": true,
+          "residual_seconds": 0.00018352814758415548
+        },
+        {
+          "source_start": 22.14763,
+          "reference_start": 32.356351,
+          "offset": 10.208720782471019,
+          "confidence": 0.309,
+          "inlier": true,
+          "residual_seconds": 0.0012648985812049318
+        },
+        {
+          "source_start": 30.0031,
+          "reference_start": 40.210928,
+          "offset": 10.207828433793114,
+          "confidence": 0.275,
+          "inlier": true,
+          "residual_seconds": -3.843585020035789e-06
+        },
+        {
+          "source_start": 37.85244,
+          "reference_start": 48.060598,
+          "offset": 10.208157833027244,
+          "confidence": 0.285,
+          "inlier": true,
+          "residual_seconds": -5.0544121307893874e-05
+        },
+        {
+          "source_start": 45.70709,
+          "reference_start": 55.915175,
+          "offset": 10.20808548434934,
+          "confidence": 0.29,
+          "inlier": true,
+          "residual_seconds": -0.0004992469973714719
+        },
+        {
+          "source_start": 53.56077,
+          "reference_start": 63.769753,
+          "offset": 10.208983135671446,
+          "confidence": 0.28,
+          "inlier": true,
+          "residual_seconds": 2.2096603949250948e-05
+        }
+      ],
+      "accepted": true,
+      "max_residual_seconds": 0.0012648985812049318,
+      "anchor_inliers": 7,
+      "clock_source": "studio track (song.camera_check run by clock_studio: camera excluded from the base take)",
+      "studio_fit": {
+        "fit_residual_ms_median": 0.16,
+        "fit_residual_ms_p95": 1.15,
+        "n_anchors": 7,
+        "n_inliers": 7,
+        "song_span": [
+          24.06,
+          72.06
+        ]
+      }
+    },
+    {
+      "id": "09",
+      "name": "WhatsApp Video 2023-11-06 at 1.07.38 AM.mp4",
+      "duration": 73.293333,
+      "numbered": false,
+      "slope": 0.9999946416630929,
+      "offset": -3.1312632979226613,
+      "anchors": [
+        {
+          "source_start": 5.26699,
+          "reference_start": 2.137519,
+          "offset": -3.129471177561471,
+          "confidence": 0.263,
+          "inlier": true,
+          "residual_seconds": 0.0018203426680969415
+        },
+        {
+          "source_start": 13.12257,
+          "reference_start": 9.991802,
+          "offset": -3.130768021364652,
+          "confidence": 0.212,
+          "inlier": true,
+          "residual_seconds": 0.0005655917091562657
+        },
+        {
+          "source_start": 20.98027,
+          "reference_start": 17.845987,
+          "offset": -3.1342830302095983,
+          "confidence": 0.264,
+          "inlier": true,
+          "residual_seconds": -0.0029073129318746282
+        },
+        {
+          "source_start": 28.82658,
+          "reference_start": 25.695264,
+          "offset": -3.1313162911424968,
+          "confidence": 0.214,
+          "inlier": true,
+          "residual_seconds": 0.00010146930768328843
+        },
+        {
+          "source_start": 36.68096,
+          "reference_start": 33.549449,
+          "offset": -3.1315112999874444,
+          "confidence": 0.283,
+          "inlier": true,
+          "residual_seconds": -5.1453123028011305e-05
+        },
+        {
+          "source_start": 44.53598,
+          "reference_start": 41.403732,
+          "offset": -3.132248143790626,
+          "confidence": 0.275,
+          "inlier": true,
+          "residual_seconds": -0.0007462070826420586
+        },
+        {
+          "source_start": 52.38949,
+          "reference_start": 49.257917,
+          "offset": -3.131573152635575,
+          "confidence": 0.275,
+          "inlier": true,
+          "residual_seconds": -2.9134175107969895e-05
+        },
+        {
+          "source_start": 60.24315,
+          "reference_start": 57.1122,
+          "offset": -3.1309499964387513,
+          "confidence": 0.295,
+          "inlier": true,
+          "residual_seconds": 0.0006361045779570418
+        },
+        {
+          "source_start": 68.09241,
+          "reference_start": 64.961379,
+          "offset": -3.1310314224134146,
+          "confidence": 0.319,
+          "inlier": true,
+          "residual_seconds": 0.0005967375828390686
+        }
+      ],
+      "accepted": true,
+      "max_residual_seconds": 0.0029073129318746282,
+      "anchor_inliers": 9,
+      "clock_source": "studio track (song.json cross_check_detail.studio_derived_clock)",
+      "studio_fit": {
+        "fit_residual_ms_median": 0.59,
+        "fit_residual_ms_p95": 2.47,
+        "n_anchors": 9,
+        "n_inliers": 9,
+        "song_span": [
+          9.28,
+          73.27
+        ]
+      }
+    }
+  ],
+  "intervals": [
+    {
+      "start": -3.1312632979226613,
+      "end": 0.0,
+      "cameras": [
+        "09"
+      ],
+      "count": 1,
+      "numbered_count": 0
+    },
+    {
+      "start": 0.0,
+      "end": 1.6026141748949305,
+      "cameras": [
+        "06",
+        "09"
+      ],
+      "count": 2,
+      "numbered_count": 1
+    },
+    {
+      "start": 1.6026141748949305,
+      "end": 4.178502554903582,
+      "cameras": [
+        "01",
+        "06",
+        "09"
+      ],
+      "count": 3,
+      "numbered_count": 2
+    },
+    {
+      "start": 4.178502554903582,
+      "end": 5.397761004466049,
+      "cameras": [
+        "01",
+        "02",
+        "06",
+        "09"
+      ],
+      "count": 4,
+      "numbered_count": 3
+    },
+    {
+      "start": 5.397761004466049,
+      "end": 8.420382335636774,
+      "cameras": [
+        "01",
+        "02",
+        "03",
+        "06",
+        "09"
+      ],
+      "count": 5,
+      "numbered_count": 4
+    },
+    {
+      "start": 8.420382335636774,
+      "end": 8.73750543208472,
+      "cameras": [
+        "01",
+        "02",
+        "03",
+        "05",
+        "06",
+        "09"
+      ],
+      "count": 6,
+      "numbered_count": 5
+    },
+    {
+      "start": 8.73750543208472,
+      "end": 10.206394684023518,
+      "cameras": [
+        "01",
+        "02",
+        "03",
+        "04",
+        "05",
+        "06",
+        "09"
+      ],
+      "count": 7,
+      "numbered_count": 6
+    },
+    {
+      "start": 10.206394684023518,
+      "end": 30.007134973475495,
+      "cameras": [
+        "01",
+        "02",
+        "03",
+        "04",
+        "05",
+        "06",
+        "08",
+        "09"
+      ],
+      "count": 8,
+      "numbered_count": 6
+    },
+    {
+      "start": 30.007134973475495,
+      "end": 68.4801277078232,
+      "cameras": [
+        "01",
+        "02",
+        "03",
+        "04",
+        "05",
+        "06",
+        "07",
+        "08",
+        "09"
+      ],
+      "count": 9,
+      "numbered_count": 7
+    },
+    {
+      "start": 68.4801277078232,
+      "end": 70.16167697170609,
+      "cameras": [
+        "01",
+        "02",
+        "03",
+        "05",
+        "06",
+        "07",
+        "08",
+        "09"
+      ],
+      "count": 8,
+      "numbered_count": 6
+    },
+    {
+      "start": 70.16167697170609,
+      "end": 70.24998852460884,
+      "cameras": [
+        "01",
+        "02",
+        "03",
+        "05",
+        "06",
+        "07",
+        "08"
+      ],
+      "count": 7,
+      "numbered_count": 6
+    },
+    {
+      "start": 70.24998852460884,
+      "end": 159.1738181651855,
+      "cameras": [
+        "01",
+        "02",
+        "03",
+        "05",
+        "06",
+        "07"
+      ],
+      "count": 6,
+      "numbered_count": 6
+    },
+    {
+      "start": 159.1738181651855,
+      "end": 182.673057866672,
+      "cameras": [
+        "01",
+        "02",
+        "03",
+        "05",
+        "06"
+      ],
+      "count": 5,
+      "numbered_count": 5
+    },
+    {
+      "start": 182.673057866672,
+      "end": 185.06237597384327,
+      "cameras": [
+        "01",
+        "03",
+        "05",
+        "06"
+      ],
+      "count": 4,
+      "numbered_count": 4
+    },
+    {
+      "start": 185.06237597384327,
+      "end": 185.39083090362212,
+      "cameras": [
+        "03",
+        "05",
+        "06"
+      ],
+      "count": 3,
+      "numbered_count": 3
+    },
+    {
+      "start": 185.39083090362212,
+      "end": 185.525233,
+      "cameras": [
+        "05",
+        "06"
+      ],
+      "count": 2,
+      "numbered_count": 2
+    },
+    {
+      "start": 185.525233,
+      "end": 193.57168487236333,
+      "cameras": [
+        "05"
+      ],
+      "count": 1,
+      "numbered_count": 1
+    }
+  ],
+  "max_count": 9,
+  "maximum_overlap": [
+    {
+      "start": 30.007134973475495,
+      "end": 68.4801277078232,
+      "cameras": [
+        "01",
+        "02",
+        "03",
+        "04",
+        "05",
+        "06",
+        "07",
+        "08",
+        "09"
+      ],
+      "count": 9,
+      "numbered_count": 7
+    }
+  ],
+  "warning": "Unnumbered files may duplicate cameras. Audio propagation and A/V offset still require visual verification.",
+  "clock_kind": "AUDIO clocks (as alignment.json): phone audio-video latency and speaker->phone sound travel (~2.9 ms/m) are not included; sync.py's video residual offsets measure what remains",
+  "provenance": {
+    "version": 1,
+    "module": "dancecap.clock_studio build",
+    "derived_from": {
+      "song_json": "dancecap/work/larissa_kadu/song/song.json",
+      "align_detail": "dancecap/work/larissa_kadu/song/align_detail.json",
+      "replaces_clocks_of": "prototype/larissa_kadu/alignment.json"
+    },
+    "song_to_reference": {
+      "convention": "reference_time = slope * song_time + offset",
+      "slope": 0.9816504175921832,
+      "offset": -6.968368616188321,
+      "accuracy_ms": 1.0,
+      "residual_ms_median": 0.323,
+      "residual_ms_p95": 1.295
+    },
+    "method": "per phone: studio -> phone-source affine fit y = a x + b (8 s onset-feature windows every 8 s, robust LS; song.camera_check) composed with studio -> reference: reference = (s / a) * source + (o - s b / a). cam06 = identity (the reference clock is cam06's audio).",
+    "anchors_note": "anchors[]: source_start / reference_start are the 8 s studio window CENTRES on the phone's source clock and on the reference clock (through the song -> reference line); residual_seconds = reference_start - (slope * source_start + offset)",
+    "alignment_json_unchanged": true
+  },
+  "deltas_vs_alignment_json": {
+    "01": {
+      "delta_ms_at_reference": {
+        "30": 12.396,
+        "49.25": 8.422,
+        "68.5": 4.449
+      },
+      "slope_delta_ppm": -206.47,
+      "old_minus_new_drift_ms_per_min": 12.388,
+      "old_clock_error_ms_song_cross_check": 0.36,
+      "note": "new - old reference time of the same source instant (> 0: the studio clock puts this camera's frames later than alignment.json did)"
+    },
+    "02": {
+      "delta_ms_at_reference": {
+        "30": -11.722,
+        "49.25": -11.138,
+        "68.5": -10.555
+      },
+      "slope_delta_ppm": 30.317,
+      "old_minus_new_drift_ms_per_min": -1.819,
+      "old_clock_error_ms_song_cross_check": 9.86,
+      "note": "new - old reference time of the same source instant (> 0: the studio clock puts this camera's frames later than alignment.json did)"
+    },
+    "03": {
+      "delta_ms_at_reference": {
+        "30": -26.491,
+        "49.25": -26.084,
+        "68.5": -25.677
+      },
+      "slope_delta_ppm": 21.145,
+      "old_minus_new_drift_ms_per_min": -1.269,
+      "old_clock_error_ms_song_cross_check": 25.25,
+      "note": "new - old reference time of the same source instant (> 0: the studio clock puts this camera's frames later than alignment.json did)"
+    },
+    "04": {
+      "delta_ms_at_reference": {
+        "30": -28.096,
+        "49.25": -28.471,
+        "68.5": -28.846
+      },
+      "slope_delta_ppm": -19.472,
+      "old_minus_new_drift_ms_per_min": 1.168,
+      "old_clock_error_ms_song_cross_check": 28.28,
+      "note": "new - old reference time of the same source instant (> 0: the studio clock puts this camera's frames later than alignment.json did)"
+    },
+    "05": {
+      "delta_ms_at_reference": {
+        "30": -2.716,
+        "49.25": -6.178,
+        "68.5": -9.64
+      },
+      "slope_delta_ppm": -179.877,
+      "old_minus_new_drift_ms_per_min": 10.793,
+      "old_clock_error_ms_song_cross_check": 14.05,
+      "note": "new - old reference time of the same source instant (> 0: the studio clock puts this camera's frames later than alignment.json did)"
+    },
+    "07": {
+      "delta_ms_at_reference": {
+        "30": 35.794,
+        "49.25": 31.686,
+        "68.5": 27.577
+      },
+      "slope_delta_ppm": -213.477,
+      "old_minus_new_drift_ms_per_min": 12.809,
+      "old_clock_error_ms_song_cross_check": -21.96,
+      "note": "new - old reference time of the same source instant (> 0: the studio clock puts this camera's frames later than alignment.json did)"
+    },
+    "08": {
+      "delta_ms_at_reference": {
+        "30": 1.87,
+        "49.25": 16.026,
+        "68.5": 30.181
+      },
+      "slope_delta_ppm": 734.86,
+      "old_minus_new_drift_ms_per_min": -44.092,
+      "old_clock_error_ms_song_cross_check": -9.4,
+      "note": "new - old reference time of the same source instant (> 0: the studio clock puts this camera's frames later than alignment.json did)"
+    },
+    "09": {
+      "delta_ms_at_reference": {
+        "30": -8.765,
+        "49.25": -6.977,
+        "68.5": -5.19
+      },
+      "slope_delta_ppm": 92.825,
+      "old_minus_new_drift_ms_per_min": -5.57,
+      "old_clock_error_ms_song_cross_check": 8.48,
+      "note": "new - old reference time of the same source instant (> 0: the studio clock puts this camera's frames later than alignment.json did)"
+    }
+  },
+  "validation": {
+    "accuracy_note": "audio clocks: every phone within about +-1-2 ms of cam06's audio in the onset-envelope sense; the sub-ms fit residuals / medians below are precision from the same onset-feature machinery, not capture-time accuracy (raw-waveform correlation puts some phones ~10 ms elsewhere, cam03). VIDEO frame sync is not covered: see D and sync.py.",
+    "span": [
+      30.0,
+      68.5
+    ],
+    "A_studio_track": {
+      "method": "each phone's audio mapped through the clock set vs the studio track mapped through song.json's song->reference fit; 4 s onset-feature windows every 1 s (centres 32.5-65.5 s), r >= 0.08; residual = clock(phone instant) - studio-line(same instant), ms; drift = robust line (outlier windows listed)",
+      "per_camera": {
+        "01": {
+          "alignment_json": {
+            "n": 34,
+            "median_ms": -8.56,
+            "mean_ms": -8.42,
+            "abs_median_ms": 8.56,
+            "abs_p95_ms": 11.92,
+            "abs_max_ms": 13.22,
+            "robust_sd_ms": 2.83,
+            "drift_ms_per_min": 12.54,
+            "drift_se_ms_per_min": 0.46,
+            "line_at_first_ms": -11.87,
+            "line_at_last_ms": -4.97,
+            "outlier_windows_t": [],
+            "outlier_rule": "excluded from the drift line only: |res - line| > max(4 robust sd, 3 ms)"
+          },
+          "studio": {
+            "n": 34,
+            "median_ms": 0.06,
+            "mean_ms": 0.05,
+            "abs_median_ms": 0.25,
+            "abs_p95_ms": 0.83,
+            "abs_max_ms": 1.23,
+            "robust_sd_ms": 0.36,
+            "drift_ms_per_min": 0.14,
+            "drift_se_ms_per_min": 0.44,
+            "line_at_first_ms": 0.01,
+            "line_at_last_ms": 0.08,
+            "outlier_windows_t": [],
+            "outlier_rule": "excluded from the drift line only: |res - line| > max(4 robust sd, 3 ms)"
+          }
+        },
+        "02": {
+          "alignment_json": {
+            "n": 34,
+            "median_ms": 11.6,
+            "mean_ms": 11.74,
+            "abs_median_ms": 11.6,
+            "abs_p95_ms": 13.6,
+            "abs_max_ms": 14.56,
+            "robust_sd_ms": 1.02,
+            "drift_ms_per_min": -5.22,
+            "drift_se_ms_per_min": 0.58,
+            "line_at_first_ms": 13.18,
+            "line_at_last_ms": 10.31,
+            "outlier_windows_t": [],
+            "outlier_rule": "excluded from the drift line only: |res - line| > max(4 robust sd, 3 ms)"
+          },
+          "studio": {
+            "n": 34,
+            "median_ms": 0.36,
+            "mean_ms": 0.6,
+            "abs_median_ms": 0.4,
+            "abs_p95_ms": 2.0,
+            "abs_max_ms": 3.02,
+            "robust_sd_ms": 0.59,
+            "drift_ms_per_min": -3.4,
+            "drift_se_ms_per_min": 0.57,
+            "line_at_first_ms": 1.53,
+            "line_at_last_ms": -0.34,
+            "outlier_windows_t": [],
+            "outlier_rule": "excluded from the drift line only: |res - line| > max(4 robust sd, 3 ms)"
+          }
+        },
+        "03": {
+          "alignment_json": {
+            "n": 34,
+            "median_ms": 26.13,
+            "mean_ms": 26.36,
+            "abs_median_ms": 26.13,
+            "abs_p95_ms": 27.67,
+            "abs_max_ms": 29.76,
+            "robust_sd_ms": 0.46,
+            "drift_ms_per_min": -2.11,
+            "drift_se_ms_per_min": 0.87,
+            "line_at_first_ms": 26.94,
+            "line_at_last_ms": 25.78,
+            "outlier_windows_t": [],
+            "outlier_rule": "excluded from the drift line only: |res - line| > max(4 robust sd, 3 ms)"
+          },
+          "studio": {
+            "n": 34,
+            "median_ms": 0.18,
+            "mean_ms": 0.52,
+            "abs_median_ms": 0.34,
+            "abs_p95_ms": 2.25,
+            "abs_max_ms": 7.17,
+            "robust_sd_ms": 0.53,
+            "drift_ms_per_min": -1.36,
+            "drift_se_ms_per_min": 0.84,
+            "line_at_first_ms": 0.71,
+            "line_at_last_ms": -0.04,
+            "outlier_windows_t": [
+              35.5
+            ],
+            "outlier_rule": "excluded from the drift line only: |res - line| > max(4 robust sd, 3 ms)"
+          }
+        },
+        "04": {
+          "alignment_json": {
+            "n": 34,
+            "median_ms": 28.62,
+            "mean_ms": 28.59,
+            "abs_median_ms": 28.62,
+            "abs_p95_ms": 29.09,
+            "abs_max_ms": 29.59,
+            "robust_sd_ms": 0.35,
+            "drift_ms_per_min": 0.77,
+            "drift_se_ms_per_min": 0.33,
+            "line_at_first_ms": 28.38,
+            "line_at_last_ms": 28.8,
+            "outlier_windows_t": [],
+            "outlier_rule": "excluded from the drift line only: |res - line| > max(4 robust sd, 3 ms)"
+          },
+          "studio": {
+            "n": 34,
+            "median_ms": 0.11,
+            "mean_ms": 0.12,
+            "abs_median_ms": 0.24,
+            "abs_p95_ms": 0.56,
+            "abs_max_ms": 0.91,
+            "robust_sd_ms": 0.31,
+            "drift_ms_per_min": -0.41,
+            "drift_se_ms_per_min": 0.33,
+            "line_at_first_ms": 0.23,
+            "line_at_last_ms": 0.01,
+            "outlier_windows_t": [],
+            "outlier_rule": "excluded from the drift line only: |res - line| > max(4 robust sd, 3 ms)"
+          }
+        },
+        "05": {
+          "alignment_json": {
+            "n": 34,
+            "median_ms": 6.19,
+            "mean_ms": 6.24,
+            "abs_median_ms": 6.19,
+            "abs_p95_ms": 8.91,
+            "abs_max_ms": 8.94,
+            "robust_sd_ms": 1.9,
+            "drift_ms_per_min": 9.88,
+            "drift_se_ms_per_min": 0.47,
+            "line_at_first_ms": 3.52,
+            "line_at_last_ms": 8.95,
+            "outlier_windows_t": [],
+            "outlier_rule": "excluded from the drift line only: |res - line| > max(4 robust sd, 3 ms)"
+          },
+          "studio": {
+            "n": 34,
+            "median_ms": 0.06,
+            "mean_ms": 0.09,
+            "abs_median_ms": 0.26,
+            "abs_p95_ms": 0.82,
+            "abs_max_ms": 1.35,
+            "robust_sd_ms": 0.41,
+            "drift_ms_per_min": -0.9,
+            "drift_se_ms_per_min": 0.47,
+            "line_at_first_ms": 0.34,
+            "line_at_last_ms": -0.16,
+            "outlier_windows_t": [],
+            "outlier_rule": "excluded from the drift line only: |res - line| > max(4 robust sd, 3 ms)"
+          }
+        },
+        "06": {
+          "alignment_json": {
+            "n": 33,
+            "median_ms": 0.07,
+            "mean_ms": 0.1,
+            "abs_median_ms": 0.47,
+            "abs_p95_ms": 1.14,
+            "abs_max_ms": 1.18,
+            "robust_sd_ms": 0.75,
+            "drift_ms_per_min": 0.74,
+            "drift_se_ms_per_min": 0.73,
+            "line_at_first_ms": -0.11,
+            "line_at_last_ms": 0.29,
+            "outlier_windows_t": [],
+            "outlier_rule": "excluded from the drift line only: |res - line| > max(4 robust sd, 3 ms)"
+          },
+          "studio": {
+            "n": 33,
+            "median_ms": 0.07,
+            "mean_ms": 0.1,
+            "abs_median_ms": 0.47,
+            "abs_p95_ms": 1.14,
+            "abs_max_ms": 1.18,
+            "robust_sd_ms": 0.75,
+            "drift_ms_per_min": 0.74,
+            "drift_se_ms_per_min": 0.73,
+            "line_at_first_ms": -0.11,
+            "line_at_last_ms": 0.29,
+            "outlier_windows_t": [],
+            "outlier_rule": "excluded from the drift line only: |res - line| > max(4 robust sd, 3 ms)"
+          }
+        },
+        "07": {
+          "alignment_json": {
+            "n": 34,
+            "median_ms": -31.81,
+            "mean_ms": -30.76,
+            "abs_median_ms": 31.81,
+            "abs_p95_ms": 34.45,
+            "abs_max_ms": 34.97,
+            "robust_sd_ms": 1.18,
+            "drift_ms_per_min": 8.57,
+            "drift_se_ms_per_min": 0.83,
+            "line_at_first_ms": -33.97,
+            "line_at_last_ms": -29.25,
+            "outlier_windows_t": [
+              36.5
+            ],
+            "outlier_rule": "excluded from the drift line only: |res - line| > max(4 robust sd, 3 ms)"
+          },
+          "studio": {
+            "n": 34,
+            "median_ms": -0.11,
+            "mean_ms": 0.91,
+            "abs_median_ms": 0.63,
+            "abs_p95_ms": 1.56,
+            "abs_max_ms": 29.74,
+            "robust_sd_ms": 0.86,
+            "drift_ms_per_min": -3.95,
+            "drift_se_ms_per_min": 0.6,
+            "line_at_first_ms": 1.14,
+            "line_at_last_ms": -1.03,
+            "outlier_windows_t": [
+              36.5
+            ],
+            "outlier_rule": "excluded from the drift line only: |res - line| > max(4 robust sd, 3 ms)"
+          }
+        },
+        "09": {
+          "alignment_json": {
+            "n": 34,
+            "median_ms": 7.14,
+            "mean_ms": 7.02,
+            "abs_median_ms": 7.14,
+            "abs_p95_ms": 8.81,
+            "abs_max_ms": 9.15,
+            "robust_sd_ms": 1.76,
+            "drift_ms_per_min": -7.64,
+            "drift_se_ms_per_min": 0.59,
+            "line_at_first_ms": 9.12,
+            "line_at_last_ms": 4.92,
+            "outlier_windows_t": [],
+            "outlier_rule": "excluded from the drift line only: |res - line| > max(4 robust sd, 3 ms)"
+          },
+          "studio": {
+            "n": 34,
+            "median_ms": -0.08,
+            "mean_ms": 0.02,
+            "abs_median_ms": 0.46,
+            "abs_p95_ms": 1.24,
+            "abs_max_ms": 1.5,
+            "robust_sd_ms": 0.66,
+            "drift_ms_per_min": -2.04,
+            "drift_se_ms_per_min": 0.61,
+            "line_at_first_ms": 0.58,
+            "line_at_last_ms": -0.55,
+            "outlier_windows_t": [],
+            "outlier_rule": "excluded from the drift line only: |res - line| > max(4 robust sd, 3 ms)"
+          }
+        }
+      }
+    },
+    "B_phones_only": {
+      "method": "every pair of phones (no studio track) mapped through the clock set, 8 s windows every 1.5 s (centres 34.5-63 s), r >= 0.08, psr >= 1.05; pair medians solved (weighted LS) for each phone's clock error with cam06 = 0. Independent of the studio track.",
+      "alignment_json": {
+        "clock_error_ms": {
+          "01": -8.05,
+          "02": 11.19,
+          "03": 26.58,
+          "04": 28.85,
+          "05": 6.43,
+          "07": -31.3,
+          "09": 6.48,
+          "06": 0.0
+        },
+        "pair_closure_residual_ms_median": 0.4,
+        "pair_closure_residual_ms_max": 1.8,
+        "pairs_used": 28,
+        "pairs_total": 28
+      },
+      "studio": {
+        "clock_error_ms": {
+          "01": 0.15,
+          "02": -0.17,
+          "03": 0.34,
+          "04": 0.21,
+          "05": -0.3,
+          "07": -0.01,
+          "09": -0.77,
+          "06": 0.0
+        },
+        "pair_closure_residual_ms_median": 0.62,
+        "pair_closure_residual_ms_max": 1.42,
+        "pairs_used": 28,
+        "pairs_total": 28
+      },
+      "studio_predicted_alignment_json_error_ms_at_mid_span": {
+        "01": -8.42,
+        "02": 11.14,
+        "03": 26.08,
+        "04": 28.47,
+        "05": 6.18,
+        "06": 0.0,
+        "07": -31.69,
+        "09": 6.98
+      }
+    },
+    "C_envelope_spot_check": {
+      "onsets_ref_s": [
+        47.2825,
+        53.5651,
+        62.9889
+      ],
+      "peak_lag_ms": {
+        "alignment_json": {
+          "01": [
+            -9.0,
+            -10.0,
+            -6.0
+          ],
+          "02": [
+            12.0,
+            9.0,
+            10.0
+          ],
+          "03": [
+            26.0,
+            23.0,
+            24.0
+          ],
+          "04": [
+            28.0,
+            26.0,
+            28.0
+          ],
+          "05": [
+            4.0,
+            7.0,
+            5.0
+          ],
+          "06": [
+            -2.0,
+            -1.0,
+            1.0
+          ],
+          "07": [
+            -33.0,
+            -34.0,
+            -31.0
+          ],
+          "09": [
+            3.0,
+            5.0,
+            0.0
+          ]
+        },
+        "studio": {
+          "01": [
+            0.0,
+            -2.0,
+            -1.0
+          ],
+          "02": [
+            1.0,
+            -2.0,
+            -1.0
+          ],
+          "03": [
+            0.0,
+            -3.0,
+            -2.0
+          ],
+          "04": [
+            0.0,
+            -2.0,
+            -1.0
+          ],
+          "05": [
+            -2.0,
+            0.0,
+            -3.0
+          ],
+          "06": [
+            -2.0,
+            -1.0,
+            1.0
+          ],
+          "07": [
+            -1.0,
+            -3.0,
+            -2.0
+          ],
+          "09": [
+            -4.0,
+            -2.0,
+            -5.0
+          ]
+        }
+      },
+      "spread_ms": {
+        "alignment_json": [
+          61.0,
+          60.0,
+          59.0
+        ],
+        "studio": [
+          5.0,
+          3.0,
+          6.0
+        ]
+      },
+      "note": "peak of each phone's broadband onset envelope within +-60 ms of the studio onset (1 ms grid on 5 ms features); spread = max - min over phones at each onset"
+    },
+    "D_video_offsets_expected": {
+      "from": "dancecap/work/larissa_kadu/sync/offsets.json (window 56-62 s, old clocks)",
+      "at_reference_s": 59.0,
+      "per_camera": {
+        "01": {
+          "delta_old_ms": 58.33,
+          "clock_change_ms": 6.41,
+          "stable": false,
+          "spread_ms": 10.12,
+          "expected_new_ms": 46.97
+        },
+        "02": {
+          "delta_old_ms": -35.78,
+          "clock_change_ms": -10.84,
+          "stable": false,
+          "spread_ms": 10.12,
+          "expected_new_ms": -29.89
+        },
+        "03": {
+          "delta_old_ms": -20.35,
+          "clock_change_ms": -25.88,
+          "stable": false,
+          "spread_ms": 14.48,
+          "expected_new_ms": 0.58
+        },
+        "04": {
+          "delta_old_ms": 68.52,
+          "clock_change_ms": -28.66,
+          "stable": true,
+          "spread_ms": 6.08,
+          "expected_new_ms": 92.23
+        },
+        "05": {
+          "delta_old_ms": 2.54,
+          "clock_change_ms": -7.93,
+          "stable": false,
+          "spread_ms": 38.27,
+          "expected_new_ms": 5.52
+        },
+        "06": {
+          "delta_old_ms": -39.51,
+          "clock_change_ms": 0.0,
+          "stable": false,
+          "spread_ms": 10.76,
+          "expected_new_ms": -44.46
+        },
+        "07": {
+          "delta_old_ms": 33.98,
+          "clock_change_ms": 29.6,
+          "stable": false,
+          "spread_ms": 12.41,
+          "expected_new_ms": -0.58
+        },
+        "09": {
+          "delta_old_ms": -2.54,
+          "clock_change_ms": -6.07,
+          "stable": false,
+          "spread_ms": 57.43,
+          "expected_new_ms": -1.42
+        }
+      },
+      "sd_ms": {
+        "old_clocks_measured": 38.7,
+        "new_clocks_expected": 40.3
+      },
+      "range_ms": {
+        "old_clocks_measured": [
+          -39.5,
+          68.5
+        ],
+        "new_clocks_expected": [
+          -44.5,
+          92.2
+        ]
+      },
+      "corr_delta_old_vs_clock_change": 0.13,
+      "note": "delta_new = delta_old - clock change, median 0 (sync.py's gauge). The audio clocks do not remove the per-phone video offsets (A/V latency, sound travel): sync.py must measure them on the new take before any MAMMA fit."
+    },
+    "detail": "dancecap/work/larissa_kadu_38/clock_studio/validation.json",
+    "review_image": "dancecap/work/larissa_kadu_38/review/clock_studio_validation.png"
+  }
+}

@@ -1,0 +1,84 @@
+# Larissa & Kadu demo, the full all-camera span: same recordings, dancers and metadata as larissa_kadu.toml, but on the
+# studio-derived phone clocks (alignment_studio.json: every phone's AUDIO within about +-1-2 ms of cam06's audio, in the
+# onset-envelope sense; over 30-68.5 s alignment.json's phone-to-phone clocks are off by -36..+29 ms, cam07 worst, and
+# 01/05/07 drift 10-13 ms/min; checked by python -m dancecap.clock_studio validate -> review/clock_studio_validation.png).
+# These are AUDIO clocks: they do NOT fix video-frame sync. Phone A/V latency + sound travel leave per-phone VIDEO
+# offsets of tens of ms (predicted from larissa_kadu's sync.py: about -45..+92 ms, cam04 worst), so sync.py must run on
+# THIS take before MAMMA ([sync] required below; never copy another take's sync/offsets.json).
+# 9 phone recordings around a studio floor (08 duplicates 09 with overlays).
+name = "larissa_kadu_38"
+source_dir = "../../dances/Larissa-Kadu-demo"
+alignment = "../../prototype/larissa_kadu/alignment_studio.json"   # affine audio clocks, reference = 06-Demo-John.mp4
+exclude = ["08"]
+
+# reference seconds analysed in detail: the largest span inside [30.0, 68.5] where all 8 used cameras have video
+# frames on the studio clocks (exact 30.0071 (cam07 first frame) .. 68.4468 (cam04 last frame)), rounded inward to
+# 1/30 s: 901/30 .. 2053/30 = 38.4 s. (python -m dancecap.clock_studio window --alignment
+# ../prototype/larissa_kadu/alignment_studio.json --exclude 08 --within 30 68.5)
+# Ingest decodes only frames inside this window, so mamma prepare's grid is shorter: 30.0636 (cam09's first decoded
+# frame) .. 68.3969 s, ~1151 frames, not 1153, before sync (clock_studio window --take -> window.json "decoded").
+window = [30.033333333333335, 68.43333333333334]
+
+# sparse snapshots of the static room, spread across the overlap so handheld cameras contribute many viewpoints.
+# Same span/step as larissa_kadu; its keyframes are REUSED (copied with t re-mapped through the new clocks:
+# python -m dancecap.clock_studio reuse-keyframes --from larissa_kadu --to larissa_kadu_38), so run
+# 'ingest larissa_kadu_38 --window-only' (a full ingest would re-pick them and drop cam07's 30.0 s keyframe, which
+# starts 7 ms before cam07's first frame on the studio clock) and 'detect larissa_kadu_38 --no-keyframes' (plain detect
+# re-detects the keyframes and overwrites the copied people_masks_kf).
+keyframe_span = [30.0, 68.0]
+keyframe_step = 4.0
+
+# Video sync (dancecap.sync): required = true makes 'mamma prepare' refuse to build fit inputs / a pod job until
+# work/larissa_kadu_38/sync/offsets.json exists AND records these clocks (a file measured on other clocks is refused).
+# Order: mamma prepare (runs ma_2d, then stops) -> python -m dancecap sync larissa_kadu_38 -> python -m
+# dancecap.clock_studio window --take larissa_kadu_38 (edge margins are small: cam07 starts 26 ms before the window,
+# cam04 ends 13.5 ms after it, on the audio clocks; trim the window if the sync-corrected times say so) -> mamma prepare.
+[sync]
+required = true
+
+[cameras]
+# Metric scale (scale stage, 2026-10-06): the cameras stage bootstraps the world with the chain rule, then INHERITS the
+# scale of larissa_kadu's world corrected by its MAMMA betas (rest heights vs stature + shoe sole: x 0.95446), through
+# the SfM similarity of the same physical camera frames, when the geometry gates pass (>= 4 cameras, centre residual
+# < 1 % of the spread, gravity within 1 deg). The chain (CHAIN_FRAC calibrated on those same betas) is the cross-check:
+# G2a world_scale fails if it is > 2 % off (coarse: triangulated before sync). Rebuild the file if shoe_sole_m or a
+# stature changes (set them in BOTH tomls; the cameras stage refuses a reference built with other soles / statures, or
+# one whose larissa_kadu SfM model / camera tracks / frame pts changed since - sha1 in the file):
+#   python -m dancecap.cameras.world_scale reference larissa_kadu --sole <m> --out <this file>
+# The result is SELF-CONSISTENT, not absolutely verified (+-1.5 %): it rests on the statures being barefoot heights.
+scale_reference = { take = "larissa_kadu", sim3 = "work/larissa_kadu_38/scale/reference_larissa_kadu_world_corrected.json" }
+# Static map (front stage, 2026-10-06): NOT re-mapped. larissa_kadu's bundle-adjusted COLMAP model (10 keyframes per
+# camera across 30-68 s + its window frames, 0.85 px) is copied with image names re-mapped to this take's frames
+# (python -m dancecap.cameras.reuse map larissa_kadu_38 --from larissa_kadu; cameras/sfm_work/map_images.json), so
+# the SfM frame is identical to larissa_kadu's. Its window images cover only 56-62 s, so localisation references are
+# the nearest map images in time of either kind (keyframes every 4 s): kf_by_time (cameras/localize.py LocSettings).
+loc = { kf_by_time = true }
+
+# Dance metadata (user 2026-10-06): data is siloed by level; the title is the reaction "Leader + Follower x Song".
+[dance]
+level = "professional"          # professional | intermediate | novice
+category = "demo"               # demo | lesson | jack_and_jill
+song = "Ficar Sem Você (feat. Urias)"
+artist = "Davi Sabbag"
+song_file = "../../dances/Larissa-Kadu-demo/Ficar Sem Você.mp3"   # studio track supplied by the user (not for any repo)
+
+# Dancer facts supplied by the user (2026-10-05). Stature = standing height to the crown, barefoot-equivalent
+# unknown (they dance in sneakers, ~2-3 cm sole). Used for metric scale (cameras) and SMPL-X shape checks.
+# Body masses not supplied: physics estimates them from SMPL-X volume and flags +-10%.
+# shoe_sole_m: added to the stature for the fitted mesh's crown-to-sole height (world_scale check, physics) and to the
+# ankle height (floor). 0.025 ASSUMES 5'8" / 5'5" are BAREFOOT heights and the mesh sole sits on the sneaker sole -
+# UNCONFIRMED (question to the user, 2026-10-06). If the heights were measured in these sneakers, set 0.0 (world
+# -1.5 %) and rebuild the scale reference (see [cameras]). Whole-inch, probably self-reported: +-0.7 % more.
+[dancers.lead]
+name = "Kadu"
+pid = 1
+stature_m = 1.727   # 5'8"
+description = "black t-shirt, jeans, shaved head"
+shoe_sole_m = 0.025   # sneakers; UNCONFIRMED barefoot statures (see above)
+
+[dancers.follow]
+name = "Larissa"
+pid = 2
+stature_m = 1.651   # 5'5"
+description = "long red hair, white crop top, light ripped jeans, white sneakers"
+shoe_sole_m = 0.025   # sneakers; UNCONFIRMED barefoot statures (see above)
