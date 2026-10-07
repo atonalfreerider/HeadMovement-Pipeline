@@ -198,7 +198,7 @@ MAMMA_ACTIONS = ("prepare", "fit", "select", "run", "bundle")
 
 def cmd_sync(a):
     from . import sync
-    doc = sync.run(a.take, cams=a.cams.split(",") if a.cams else None, range_ms=a.range_ms)
+    doc = sync.run(a.take, cams=a.cams.split(",") if a.cams else None, range_ms=a.range_ms, workers=a.workers)
     for c, o in doc["offsets"].items():
         sp = "n/a" if o["spread_ms"] is None else f"{o['spread_ms']:.1f}"
         print(f"[sync] {c}: {o['delta_ms']:+7.1f} ms  {'stable' if o['stable'] else 'UNSTABLE':8s} spread {sp} ms  "
@@ -312,7 +312,8 @@ def cmd_export(a):
         rep = export_unity.export(a.take, a.capture, model=Path(a.model) if a.model else None,
                                   audio=Path(a.audio) if a.audio else None, audio_t0=a.audio_t0,
                                   beats=Path(a.beats) if a.beats else None, install=not a.no_install,
-                                  allow_no_audio=a.no_audio, textures=not a.no_textures, room=not a.no_room)
+                                  allow_no_audio=a.no_audio, textures=not a.no_textures, room=not a.no_room,
+                                  smplx_dir=a.smplx_dir)
     except (FileNotFoundError, ValueError) as e:
         raise SystemExit(f"export: {e}")
     for r, d in rep["dancers"].items():
@@ -532,6 +533,8 @@ def main(argv=None):
     sp.add_argument("take")
     sp.add_argument("--cams")
     sp.add_argument("--range-ms", type=float, default=300.0)
+    sp.add_argument("--workers", type=int, default=None,
+                    help="worker processes (default: 1 off-pod, the container's CPU quota up to 16 on a pod)")
     sp.set_defaults(fn=cmd_sync)
     sp = sub.add_parser("beats", help="cleanest phone audio on the reference clock + beat_this zouk grid, tempo, clicks")
     sp.add_argument("take")
@@ -592,6 +595,8 @@ def main(argv=None):
     sp.add_argument("--no-room", action="store_true", help="skip room_mesh.bin / splat_quest.ply")
     sp.add_argument("--beats", help="zouk beats json when there is no timing/timing.json")
     sp.add_argument("--no-install", action="store_true", help="only write work/<take>/export/<capture>/")
+    sp.add_argument("--smplx-dir", default=None, help="contract folder under work/<take> to export instead of smplx/ "
+                                                      "(e.g. smplx_detail: refined hands + face, or smplx_hands)")
     sp.set_defaults(fn=cmd_export)
     sp = sub.add_parser("room", help="static studio: masked 3DGS (gsplat) -> splat_full/splat_quest.ply + Quest mesh")
     sp.add_argument("take", help="take name (work/<take>) or a work directory")

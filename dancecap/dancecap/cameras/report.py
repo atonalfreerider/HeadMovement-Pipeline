@@ -143,10 +143,11 @@ def overlay(path: Path, img: np.ndarray, K, R, t, k1, kp_xy: np.ndarray | None, 
     cv2.imwrite(str(path), im, [cv2.IMWRITE_JPEG_QUALITY, 90])
 
 
-def gates(rep: dict, n_cams: int) -> dict:
+def gates(rep: dict, n_cams: int, sim3: dict | None = None) -> dict:
     """Gate G2a from the per-camera report. Main-model and attached cameras are reported separately: an attached
     camera's static reprojection and focal come from its own sub-model (one shared focal) and do not test its
-    registration in the main frame; that is tested by the vertical check and the dancers' hold-out instead."""
+    registration in the main frame; that is tested by the vertical check and the dancers' hold-out instead.
+    With the world frame (sim3): world_scale / world_scale_chain (world.scale_checks)."""
     cams = rep["cams"]
     main = [c for c, v in cams.items() if v.get("in_main_model")]
     att = [c for c, v in cams.items() if v.get("attached")]
@@ -198,4 +199,7 @@ def gates(rep: dict, n_cams: int) -> dict:
         out["dancer_check"] = {"value": val, "passed": reported and len(val) == len(cams),
                                "note": "main cameras: dancers triangulated from the OTHER main cameras (non-circular); "
                                        "attached: temporal hold-out of the attach (fit on alternating 0.5 s blocks)"}
+    if sim3 is not None:
+        from .world import scale_checks
+        out.update(scale_checks(sim3))
     return out

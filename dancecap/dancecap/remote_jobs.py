@@ -52,11 +52,12 @@ SESSIONS = RUNPOD_DIR / "sessions"
 BUNDLES = RUNPOD_DIR / "bundles"
 WHEEL_KEY = "cp311-torch2.5.1-cu124-sm80_90"  # must match remote/bootstrap.sh
 WHEELHOUSE = RUNPOD_DIR / "wheelhouse" / WHEEL_KEY
-FEATURES = ("base", "mamma", "room", "texture", "dancers", "check")
+FEATURES = ("base", "mamma", "room", "texture", "dancers", "cameras", "ma2d", "check")  # check last
 UPLOAD_MBPS, DOWNLOAD_MBPS = 2.5, 12.0  # measured home link (2026-10-06)
 # bootstrap minutes per feature: cold (CUDA wheels compiled on the pod) / with cached wheels
-BOOTSTRAP_MIN = {"base": 5, "mamma": 8, "room": 15, "texture": 0, "dancers": 3, "check": 1}
-BOOTSTRAP_MIN_CACHED = {"base": 5, "mamma": 2, "room": 3, "texture": 0, "dancers": 3, "check": 1}
+BOOTSTRAP_MIN = {"base": 5, "mamma": 8, "room": 15, "texture": 0, "dancers": 3, "cameras": 1, "ma2d": 3, "check": 1}
+BOOTSTRAP_MIN_CACHED = {"base": 5, "mamma": 2, "room": 3, "texture": 0, "dancers": 3, "cameras": 1, "ma2d": 3,
+                        "check": 1}
 DEFAULT_EXCLUDE = ("__pycache__", "*.pyc", ".git", ".pytest_cache", "node_modules", ".ipynb_checkpoints")
 ARCHIVE_CODE_EXCLUDE = ("dancecap/dancecap", "mamma-turing")  # code always comes from the bundle (current tree)
 MAMMA_SKIP = ("docs", "gui", "docker", "data", "tests", "output", "outputs", "wandb")  # top-level mamma-turing dirs

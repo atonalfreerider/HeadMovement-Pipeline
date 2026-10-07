@@ -36,6 +36,17 @@ hair_mode = "soft", blend = "mean"):
      hair-region group. Measured on larissa_kadu (same samples, 2048^2): luminance steps across view boundaries in
      excess of the interior texel-to-texel variation -26 % (1 texel) / -32 % (4 texels) on the follow, 0 / -9 % on
      the lead; steps that remain are content mismatch between views (fit misregistration, cloth moving), not exposure.
+     Face texels (face_sharp_fusion, default) keep the one-band sharp fusion (best view ^4 at all frequencies),
+     feathered over ~4 texels: mixing one camera's detail with another camera's local mean put a red-brown rim on the
+     lead's eye.
+  Off-body hair (offbody_hair, TextureConfig.hair_offbody): the split misses motion-blurred hair - in a hair whip the
+     outer, smeared part of the whip is labelled BODY (larissa_kadu_38 review/dancers_body_hair.jpg: cam07 #372, cam05
+     #342, cam01 #396, cam09 #525, cam04 #607 beside her neck and shoulder). In the bake every pixel of her full mask
+     that lies outside her posed model's silhouette (dilated by hair_offbody_margin_frac x her mask height) and is
+     connected to her hair is hair whatever its colour, and joins the hair mask before the colour step and the
+     exclusion ramp. A view where that off-body hair is large (>= hair_whip_area_frac of her mask: a whip) gets its
+     exclusion radii multiplied by hair_whip_mult, so smeared hair over her shoulders / arms next to the whip is
+     excluded too. Views and pixels are counted in report.json passes[].hair_offbody.
   Face: the dancers-stage hair split often covers her warm-lit face, so inside her projected face (FaceProjector)
      hair = mask AND a face-aware colour model (hair_lut_face_aware), other face pixels get a relative weight, the
      face-core texels use a lighter luminance quantile as the fusion's inlier reference (TextureConfig.skin_ref_q) and
@@ -46,7 +57,8 @@ hair_mode = "soft", blend = "mean"):
 
 Review / validation (writes only under the given output dirs):
     python -m dancecap.avatar_hair metrics <avatar dir>                      # hair-coloured texel fractions
-    python -m dancecap.avatar_hair compare <take> --before DIR --after DIR --review DIR [--heldout-step-ms 133.3]
+    python -m dancecap.avatar_hair compare <take> --before DIR --after DIR --review DIR [--heldout-cam C] [--label L]
+                                                                             [--no-sheets] [--json F]
 """
 from __future__ import annotations
 
@@ -64,20 +76,42 @@ FOREARM_JOINTS = (18, 19, 20, 21)
 # ------------------------------------------------------------------------------------------------ per view
 
 
+def offbody_hair(full: np.ndarray, sil: np.ndarray, hair: np.ndarray | None, margin_px: float) -> np.ndarray:
+    """Her full-mask pixels outside her posed model's silhouette (dilated by margin_px) that are connected to her hair
+    (components touching the hair mask, 3 px tolerance) -> bool (H, W). The smeared outer part of a hair whip that the
+    dancers-stage split labelled body; a misfit hand or foot far from her hair is not included."""
+    fm = full > 0
+    if not fm.any() or hair is None or not np.any(hair):
+        return np.zeros(fm.shape, bool)
+    r = max(1, int(round(margin_px)))
+    sil_d = cv2.dilate((sil > 0).astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1,) * 2))
+    off = fm & (sil_d == 0)
+    if not off.any():
+        return off
+    n, lab = cv2.connectedComponents((off | (hair > 0)).astype(np.uint8), connectivity=8)
+    touch = np.unique(lab[cv2.dilate((hair > 0).astype(np.uint8), np.ones((7, 7), np.uint8)) > 0])
+    return off & np.isin(lab, touch[touch > 0])
+
+
 def hair_maps(full: np.ndarray, hair: np.ndarray | None, p_hair: np.ndarray | None, dilate_frac: float = 0.006,
               ramp_frac: float = 0.006, p_hard: float = 0.6, near_frac: float = 0.06,
-              face: np.ndarray | None = None, p_face: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+              face: np.ndarray | None = None, p_face: np.ndarray | None = None,
+              extra_hair: np.ndarray | None = None, whip_mult: float = 1.0) -> tuple[np.ndarray, np.ndarray]:
     """-> keep (H, W) float32 in [0, 1] = weight multiplier for body texels, hair (H, W) uint8 0/1 = hair pixels.
 
     full: her full mask (body + hair), hair: her hair mask (or None), p_hair: P(hair | colour) (or None), face: her
     projected face + throat (FaceProjector) where the hair mask is not trusted (the dancers-stage split often marks
     warm-lit face skin as hair): there a pixel is hair only when the mask AND the face-aware colour model p_face
-    (hair_lut_face_aware; default p_hair) agree, and other face pixels get a relative (1 - p_face)^2 weight."""
+    (hair_lut_face_aware; default p_hair) agree, and other face pixels get a relative (1 - p_face)^2 weight.
+    extra_hair: pixels known to be hair whatever their colour (offbody_hair), joined to the hair mask outside the face;
+    whip_mult scales both exclusion radii (hair-whip views)."""
     H, W = full.shape[:2]
     fm = full > 0
     mask = (hair > 0) & fm if hair is not None else np.zeros((H, W), bool)
     fd = (face > 0) if face is not None else np.zeros((H, W), bool)
     hb = mask & ~fd  # outside her face / throat the hair mask is trusted
+    if extra_hair is not None:
+        hb |= (extra_hair > 0) & fm & ~fd
     ys = np.nonzero(fm.any(1))[0]
     h = float(ys[-1] - ys[0] + 1) if len(ys) else 0.0
     if p_hair is not None and h > 0:
@@ -90,8 +124,8 @@ def hair_maps(full: np.ndarray, hair: np.ndarray | None, p_hair: np.ndarray | No
         hb |= strong
     keep = np.ones((H, W), np.float32)
     if hb.any():
-        r0 = max(2.0, dilate_frac * h)
-        r1 = r0 + max(2.0, ramp_frac * h)
+        r0 = max(2.0, dilate_frac * h) * max(1.0, whip_mult)
+        r1 = r0 + max(2.0, ramp_frac * h) * max(1.0, whip_mult)
         d = cv2.distanceTransform((~hb).astype(np.uint8), cv2.DIST_L2, 5)
         keep = np.clip((d - r0) / (r1 - r0), 0, 1).astype(np.float32)
     if p_hair is not None:  # the old soft colour rule stays for stray hair-coloured pixels far from her hair
@@ -454,9 +488,11 @@ def fill_classed(atlas, rgb_lin: np.ndarray, conf: np.ndarray, n_verts: int, con
     bad (N,) bool: measured texels that may NOT seed a fill (hair-coloured / mostly seen through hair): they keep
     their own colour but are never mirrored onto a hole, never feed the vertex colours the diffusion starts from, and
     a k-means class whose centre is hair-coloured (red_cast) seeds nothing. skin_only (N,) bool: hole texels that
-    take the skin class whatever their nearest measured neighbour is (neck / nape / face / ears); the skin class is
-    the most common class of the measured, non-bad vertices of those texels. A vertex its class cannot reach gets
-    the class's median colour (not the global mean)."""
+    take a skin colour whatever their nearest measured neighbour is (neck / nape / face / ears): a colour field
+    diffused only from measured, non-bad vertices of the skin classes (warm, not hair-coloured k-means centres with
+    a* > 5 and b* > 8, each holding >= 5 % of the skin-zone seeds; lit and shadowed skin usually split into two;
+    fallback the most common class there). A vertex its class cannot reach gets the class's median colour (not the
+    global mean)."""
     from scipy.sparse import diags
     from scipy.sparse.csgraph import dijkstra
 
@@ -487,7 +523,7 @@ def fill_classed(atlas, rgb_lin: np.ndarray, conf: np.ndarray, n_verts: int, con
         A = _vertex_adjacency(atlas.faces, n_verts)
         kidx = np.flatnonzero(known)
         lab_known = np.zeros(len(kidx), np.int32)
-        red_cls = set()
+        red_cls, cen = set(), None
         if classes > 1:
             lab = cv2.cvtColor(linear_to_srgb(col[kidx]).astype(np.float32)[None], cv2.COLOR_RGB2LAB)[0]
             crit = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 50, 0.1)
@@ -516,9 +552,15 @@ def fill_classed(atlas, rgb_lin: np.ndarray, conf: np.ndarray, n_verts: int, con
                 tri.ravel(), atlas.bary.ravel(), n_verts).clip(min=1e-9)
             seeds = lab_known[sk_v[kidx]]
             if len(seeds) >= 10:
-                skin_k = int(np.bincount(seeds, minlength=classes).argmax())
+                cnt = np.bincount(seeds, minlength=classes)
+                # skin = warm, not hair-coloured classes (lit and shadowed skin often split in two); a class must
+                # hold >= 5 % of the skin-zone seeds. Fallback: the most common class there.
+                warm = [k for k in range(classes) if cen is not None and cen[k, 1] > 5 and cen[k, 2] > 8
+                        and k not in red_cls and cnt[k] >= 0.05 * len(seeds)]
+                skin_ks = warm or [int(cnt.argmax())]
+                skin_k = int(max(skin_ks, key=lambda k: cnt[k]))
                 label[sk_v & ~known] = skin_k
-                vstat["skin_class"] = skin_k
+                vstat["skin_classes"] = [int(k) for k in skin_ks]
                 vstat["skin_only_hole_vertices"] = int((sk_v & ~known).sum())
         c = col.copy()
         have = known.astype(float)
@@ -549,7 +591,7 @@ def fill_classed(atlas, rgb_lin: np.ndarray, conf: np.ndarray, n_verts: int, con
         if left.any():  # unreachable vertices (separate components without data): median of the good seeds
             c[left] = np.median(col[kidx], 0) if len(kidx) else col[known].mean(0)
         if skin_k is not None:  # skin-zone holes: a skin-only colour field (other classes' vertices do not feed it)
-            seed_s = known & (label == skin_k)
+            seed_s = known & np.isin(label, skin_ks)
             todo = sk_v & ~seed_s
             mz = (sk_v | seed_s).astype(float)
             Az = diags(mz) @ A @ diags(mz)
@@ -677,7 +719,8 @@ def lowpass_groups(torch, vals, wts, yx: np.ndarray, groups: np.ndarray, sigma: 
     return out_v, out_w
 
 
-def multiband(torch, layers, atlas, groups: np.ndarray | None, expo, sigma: float, sigma_high: float = 0.0):
+def multiband(torch, layers, atlas, groups: np.ndarray | None, expo, sigma: float, sigma_high: float = 0.0,
+              sharp_where=None, feather: float = 4.0):
     """Two-band fusion of per-camera layers -> linear RGB (N, 3).
 
     layers = (T (C,N,3) per-camera colour, Ws (C,N) sum of sharpened inlier weights, Q (C,N) sum of inlier weights);
@@ -701,6 +744,17 @@ def multiband(torch, layers, atlas, groups: np.ndarray | None, expo, sigma: floa
     low = (wl[..., None] * lpT).sum(0) / wl.sum(0).clamp(min=1e-30)[:, None]
     high = (ws[..., None] * (T - lpT)).sum(0) / ws.sum(0).clamp(min=1e-30)[:, None]
     out = low + high
+    if sharp_where is not None and bool(torch.as_tensor(sharp_where).any()):
+        # one-band sharp fusion on these texels (the face: its best view at both frequencies), feathered over
+        # `feather` texels inside the low-pass groups so no ring appears at the boundary
+        w0 = Ws * has
+        sharp = (w0[..., None] * T).sum(0) / w0.sum(0).clamp(min=1e-30)[:, None]
+        m = torch.as_tensor(sharp_where, device=T.device).float()
+        f, _ = lowpass_groups(torch, m[None, :, None], torch.ones((1, T.shape[1]), device=T.device), atlas.texel_yx,
+                              grp, feather, pool=1)
+        f = ((f[0, :, 0] - 0.2) / 0.6).clamp(0, 1)  # ~1 sigma ramp centred on the boundary
+        f = torch.where(w0.sum(0) > 0, f, torch.zeros_like(f))
+        out = out * (1 - f[:, None]) + sharp * f[:, None]
     none = ws.sum(0) <= 0
     out[none] = 0.0
     return out.clamp(min=0)

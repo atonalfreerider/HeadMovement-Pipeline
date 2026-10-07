@@ -13,6 +13,10 @@
 #   dancers  SAM 2.1 (facebookresearch/sam2 at the commit installed locally, 2b90b9f) + hydra-core/iopath for the
 #            dancers stage on a pod (dancecap.dancers_pod); its optional CUDA post-processing op is built
 #            for sm_80/sm_90 when possible (SAM2_BUILD_ALLOW_ERRORS=1)
+#   cameras  cameras stage on a pod (dancecap.front_pod): pycolmap 4.2.1 (CPU wheel, as locally) + LightGlue/ALIKED at the
+#            local commit (eb42fee) + kornia
+#   ma2d     MAMMA ma_2d inference (landmarks/run_ma_2d.py) on a pod: the lightning / albumentations / omegaconf stack it
+#            imports, pinned to the local .venv-nopo4d versions (numpy held at 1.26.4)
 #   check    import checks (torch.cuda, smplx, pytorch_sdf, gsplat, open3d, pyrender/EGL) -> $STATE/check.json
 #
 # Idempotent: each feature leaves $STATE/<feature>.ok (with this script's version) and is skipped when present.
@@ -116,6 +120,28 @@ feature_dancers() {
   pipq "hydra-core>=1.3.2" "iopath>=0.1.10" || return 1
   SAM2_BUILD_CUDA=1 SAM2_BUILD_ALLOW_ERRORS=1 pipq --no-deps --no-build-isolation       "git+https://github.com/facebookresearch/sam2@2b90b9f5ceec907a1c18123530e92e794ad901a4" || return 1
   "$PY" -c "import sam2; from sam2.build_sam import build_sam2_video_predictor; print('[bootstrap] sam2 ok', sam2.__file__)"
+}
+
+# numpy/torch must never move: every later pip install in these features runs under this constraints file
+_constraints() {
+  printf '%s\n' numpy==1.26.4 torch==2.5.1 torchvision==0.20.1 > "$STATE/constraints.txt"
+  echo "$STATE/constraints.txt"
+}
+
+feature_cameras() {
+  local c; c=$(_constraints)
+  pipq -c "$c" pycolmap==4.2.1 kornia==0.8.3 || return 1
+  pipq -c "$c" --no-deps "git+https://github.com/cvg/LightGlue@eb42fee2d71449efb0aa5c10549752b5d75384d8" || return 1
+  "$PY" -c "import pycolmap, lightglue; from lightglue import ALIKED, LightGlue; print('[bootstrap] pycolmap', pycolmap.__version__, 'lightglue ok')"
+}
+
+feature_ma2d() {
+  local c; c=$(_constraints)
+  pipq -c "$c" pytorch-lightning==2.0.0 torchmetrics==1.9.0 lightning-utilities==0.15.3 omegaconf==2.3.1 \
+      python-dotenv==1.2.3 loguru==0.7.3 webdataset==1.0.2 wandb==0.29.0 scikit-image==0.26.0 albumentations==1.4.24 \
+      albucore==0.0.23 librosa==0.11.0 yacs==0.1.8 einops==0.8.2 kornia==0.8.3 huggingface_hub nvidia-ml-py lz4 \
+      zstandard || return 1
+  "$PY" -c "import pytorch_lightning, albumentations, omegaconf, kornia, skimage, librosa, webdataset; print('[bootstrap] ma2d stack ok')"
 }
 
 feature_check() {

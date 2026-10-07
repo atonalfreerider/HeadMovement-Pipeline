@@ -608,20 +608,25 @@ def export_room(work: Path, out: Path, warnings: list[str], clear_dance_floor: b
 def export(take: str, capture: str | None = None, model: Path | None = None, audio: Path | None = None,
            audio_t0: float | None = None, beats: Path | None = None, install: bool = True,
            streaming_assets: Path = UNITY_STREAMING, allow_no_audio: bool = False, textures: bool = True,
-           room: bool = True) -> dict:
-    """Write work/<take>/export/<capture>/ and (install=True) mirror it into head-movement StreamingAssets."""
+           room: bool = True, smplx_dir: str | None = None, faces: bool = True, face_albedo: str = "face") -> dict:
+    """Write work/<take>/export/<capture>/ and (install=True) mirror it into head-movement StreamingAssets.
+    smplx_dir: a contract folder under work/<take> other than smplx/ (e.g. smplx_detail: refined hands + face).
+    faces: when work/<take>/smplx_face/ exists, add the face block (dancecap.face_export: smplx_<role>_face.bin
+    blendshapes + weights, jaw / eye rotations from smplx_face, the face_albedo texture variant: face = portrait look,
+    videolook, bake)."""
     work = PACKAGE_ROOT / "work" / take
+    sdir = work / (smplx_dir or "smplx")
     capture = validate_capture_name(capture or take)
     warnings: list[str] = []
     data = {}
     for r in ROLES:
-        p = work / "smplx" / f"{r}.npz"
+        p = sdir / f"{r}.npz"
         if not p.exists():
             raise FileNotFoundError(f"{p} missing (run the mamma stage, or `python -m dancecap synthetic`)")
         with np.load(p, allow_pickle=True) as z:
             data[r] = {k: z[k] for k in z.files}
     wfs = work / "cameras" / "world_from_sfm.json"
-    if wfs.exists() and min((work / "smplx" / f"{r}.npz").stat().st_mtime for r in ROLES) < wfs.stat().st_mtime:
+    if wfs.exists() and min((sdir / f"{r}.npz").stat().st_mtime for r in ROLES) < wfs.stat().st_mtime:
         warnings.append("smplx/ is older than cameras/world_from_sfm.json: the fit may be in a previous world frame")
     t = np.asarray(data["lead"]["t"], float)
     if len(data["follow"]["t"]) != len(t) or np.abs(np.asarray(data["follow"]["t"]) - t).max() > 1e-6:
@@ -646,7 +651,7 @@ def export(take: str, capture: str | None = None, model: Path | None = None, aud
         "coordinate_system": "unity: left-handed, y-up, metres, floor y=0",
         "world": "right-handed Y-up metres, floor y=0; Unity = (x, y, -z)",
         "smplx": {}, "smplx_skin": {}, "provenance": {"take": take, "source": "dancecap export_unity",
-                                                     "audio": audio_source},
+                                                     "audio": audio_source, "smplx_dir": sdir.name},
     }
     report: dict = {"capture": capture, "frames": T, "fps": fps, "dancers": {}, "audio": audio_source,
                     "warnings": warnings}
@@ -687,6 +692,9 @@ def export(take: str, capture: str | None = None, model: Path | None = None, aud
             fr = json.loads(rep_path.read_text()).get("smplx_freshness", {})
             if fr.get("stale"):
                 warnings.append("avatar albedo was baked on a stale smplx/ (avatar/report.json smplx_freshness)")
+    if faces and (work / "smplx_face").exists():
+        from .face_export import add_faces
+        report["faces"] = add_faces(work, out, manifest, face_albedo, warnings)
     (out / "video_meta.json").write_text(json.dumps({"duration": manifest["duration"], "frame_count": T}))
 
     timing_path = work / "timing" / "timing.json"

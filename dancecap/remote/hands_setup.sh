@@ -91,7 +91,7 @@ part_hamer() {
   [ -s $EXT/hamer_dl/hamer_demo_data.tar.gz ] || { log "hamer data download failed: $(tail -3 $EXT/hamer_dl/curl.log)"; return 1; }
   log "hamer_demo_data.tar.gz $(stat -c %s $EXT/hamer_dl/hamer_demo_data.tar.gz) B from $HAMER_URL"
   if [ ! -f $EXT/hamer/_DATA/hamer_ckpts/checkpoints/hamer.ckpt ]; then
-    (cd $EXT/hamer && tar --warning=no-unknown-keyword --exclude=".*" -xf $EXT/hamer_dl/hamer_demo_data.tar.gz \
+    (cd $EXT/hamer && tar --no-same-owner --warning=no-unknown-keyword --exclude=".*" -xf $EXT/hamer_dl/hamer_demo_data.tar.gz \
        --wildcards '_DATA/hamer_ckpts/*' '_DATA/data/*') || return 1
   fi
   mkdir -p $EXT/hamer/_DATA/data/mano
@@ -102,9 +102,14 @@ part_hamer() {
 }
 
 part_ncpu() {
-  local c
+  local c q p
   c=$(nproc)
   if [ -r /sys/fs/cgroup/cpu.max ] && read -r q p < /sys/fs/cgroup/cpu.max && [ "$q" != max ]; then
+    c=$(( (q + p - 1) / p ))
+  elif [ -r /sys/fs/cgroup/cpu/cpu.cfs_quota_us ] && q=$(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us) && [ "$q" -gt 0 ]; then
+    # cgroup v1 hosts (2026-10-07: an A40 pod with nproc 96 and a 7.65-CPU quota ran the hands build 10x slower
+    # with 96 OpenMP threads)
+    p=$(cat /sys/fs/cgroup/cpu/cpu.cfs_period_us 2>/dev/null || echo 100000)
     c=$(( (q + p - 1) / p ))
   fi
   echo "$c"

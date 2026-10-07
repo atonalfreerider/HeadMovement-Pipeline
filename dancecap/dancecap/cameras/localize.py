@@ -32,6 +32,9 @@ class LocSettings:
     max_focal_change: float = 0.35  # |log f / f_neighbour| above this -> reject the P4Pf solution
     track_passes: int = 3
     fix_focal: bool = False  # True: P3P with the reference focal, pose-only refinement (single-camera sub-models)
+    kf_by_time: bool = False  # True: references = the nearest map images IN TIME of either kind (keyframes too),
+    #   and the cross-camera fallback takes each other camera's nearest image of either kind. For a map reused
+    #   from another take (cameras/reuse.py) whose window images cover only part of this take's window.
 
 
 @dataclass
@@ -180,12 +183,13 @@ class Localizer:
 
     def candidates(self, q: ImageRec, cross: bool) -> list[Ref]:
         same = [r for r in self.cams_reg.get(q.cam, []) if r.key != q.key]
-        win = sorted((r for r in same if r.kind == "win"), key=lambda r: abs(r.t - q.t))[:self.s.n_same_cam]
+        kinds = ("win", "kf") if self.s.kf_by_time else ("win",)
+        win = sorted((r for r in same if r.kind in kinds), key=lambda r: abs(r.t - q.t))[:self.s.n_same_cam]
         out = [self.refs[r.key] for r in win]
         if cross:
-            kf = sorted((r for r in same if r.kind == "kf"), key=lambda r: -len(self.refs[r.key].kp_idx))
+            kf = sorted((r for r in same if r.kind == "kf" and r not in win), key=lambda r: -len(self.refs[r.key].kp_idx))
             out += [self.refs[r.key] for r in kf[:self.s.n_keyframes]]
-            other = [r for r in self.reg if r.cam != q.cam and r.kind == "win"]
+            other = [r for r in self.reg if r.cam != q.cam and r.kind in kinds]
             by_cam: dict[str, list[ImageRec]] = {}
             for r in sorted(other, key=lambda r: abs(r.t - q.t)):
                 by_cam.setdefault(r.cam, []).append(r)

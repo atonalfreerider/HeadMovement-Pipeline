@@ -87,6 +87,8 @@ class TextureConfig:
     face_sharpen: float = 4.0       # on the face: the best-registered, highest-resolution view dominates (no ghosting)
     gain_rounds: int = 2
     gutter_px: int = 16
+    load_threads: int = 4           # view-loading threads (CPU-bound: decode, masks, distance transforms, hair maps);
+                                    # the pod preset uses more (the 4-CPU workstation keeps 4)
     hair_roles: tuple = ("follow",)  # hair-coloured samples are rejected on these dancers' non-scalp texels
     hair_frame_step: int = 6        # frames sampled per camera for the hair colour model
     hair_mode: str = "exclude"      # hair roles: "exclude" = hair mask + colour model hard-excluded (dilated) from body
@@ -95,6 +97,11 @@ class TextureConfig:
     hair_dilate_frac: float = 0.006 # hair exclusion radius r0 (x her mask height, >= 2 px) ...
     hair_ramp_frac: float = 0.006   # ... then a ramp to full weight over this x her height (>= 2 px)
     hair_p_hard: float = 0.6        # P(hair | colour) above which a pixel near her hair mask counts as hair
+    hair_offbody: bool = True       # hair roles: her mask pixels outside her posed model (dilated) that connect to her
+                                    # hair are hair whatever their colour (motion-blurred whip; avatar_hair.offbody_hair)
+    hair_offbody_margin_frac: float = 0.03  # ... silhouette dilation (x her mask height, >= 3 px)
+    hair_whip_area_frac: float = 0.05  # off-body hair >= this x her mask area = a hair-whip view ...
+    hair_whip_mult: float = 3.0     # ... whose exclusion radii (hair_dilate_frac, hair_ramp_frac) are multiplied by this
     fill_classes: int = 4           # hair roles: colour classes of the class-aware body fill (<= 1: plain diffusion)
     fill_ev_bad: float = 0.5        # hair roles: a measured body texel whose sample weight was mostly on her hair
                                     # (evidence > this) never seeds a fill (avatar_hair.fill_guards)
@@ -107,6 +114,9 @@ class TextureConfig:
                                     # "mean" = one weighted mean of the samples (old)
     band_sigma_frac: float = 0.012  # multiband low-pass sigma (fraction of the atlas size; 24.6 texels at 2048)
     band_sigma_high_frac: float = 0.001  # multiband: the high band's camera weights smoothed over ~2 texels at 2048
+    face_sharp_fusion: bool = True  # multiband: face texels keep the one-band sharp fusion (best view ^face_sharpen),
+                                    # feathered over ~4 texels: the two-band mix of one camera's detail with another's
+                                    # local mean left a red-brown rim on the lead's eye and streaks on her profile
     skin_ref_q: float = 0.75        # hair roles' face-core texels where the previous pass saw her hair over the face:
                                     # luminance reference = a weighted quantile ramping from 0.5 (no hair evidence) to
                                     # this (evidence >= 0.3), so lighter skin wins over darker hair there; 0.5 on clean
@@ -131,7 +141,7 @@ class TextureConfig:
 PRESETS = {
     "smoke": dict(size=512, step_s=0.25, t_range=(0.0, 1.5), top_k=3, align_passes=1, allow_stale=True),
     "local": dict(),
-    "pod": dict(step_s=1 / 30, top_k=6, align_passes=2),
+    "pod": dict(step_s=1 / 30, top_k=6, align_passes=2, load_threads=12),
 }
 
 
@@ -233,8 +243,10 @@ def hair_mask_coverage(work: Path, views: list[dict], roles=("follow",)) -> dict
 HAIR_BIN = 8  # OpenCV 8-bit Lab quantised to 32^3 bins
 
 
-def hair_probability(img_rgb: np.ndarray, lut: np.ndarray) -> np.ndarray:
-    lab = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2LAB) // HAIR_BIN
+def hair_probability(img_rgb: np.ndarray, lut: np.ndarray, lab: np.ndarray | None = None) -> np.ndarray:
+    """P(hair | colour) per pixel; lab = the image's binned Lab (cv2 Lab // HAIR_BIN) when already computed."""
+    if lab is None:
+        lab = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2LAB) // HAIR_BIN
     return lut[lab[..., 0], lab[..., 1], lab[..., 2]]
 
 
@@ -291,8 +303,9 @@ def view_data(img_rgb: np.ndarray, full: dict, body: dict, margin_frac: float,
     face_lut = None
     if isinstance(hair_lut, tuple):  # (colour model, face-aware colour model for her face / throat pixels)
         hair_lut, face_lut = hair_lut
+    lab = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2LAB) // HAIR_BIN if hair_lut is not None else None
     out = {"img": img_rgb, "H": H, "W": W, "full": full, "dt": {}, "partner": {}, "sharp": {},
-           "p_hair": hair_probability(img_rgb, hair_lut) if hair_lut is not None else None}
+           "p_hair": hair_probability(img_rgb, hair_lut, lab) if hair_lut is not None else None}
     for r in ROLES:
         out["dt"][r] = cv2.distanceTransform(full[r], cv2.DIST_L2, 3)
         out["dt"][r + "_body"] = out["dt"][r] if body[r] is full[r] or np.array_equal(body[r], full[r]) \
@@ -302,11 +315,13 @@ def view_data(img_rgb: np.ndarray, full: dict, body: dict, margin_frac: float,
         out["sharp"][r] = float(lap[core].var()) if core.sum() > 200 else float("nan")
     if hair is not None and cfg is not None:
         from .avatar_hair import hair_maps
-        out["hair_keep"], out["hair_px"] = {}, {}
+        out["hair_keep"], out["hair_px"], out["hair_in"] = {}, {}, {}
         for r, hm in hair.items():
+            p_face = hair_probability(img_rgb, face_lut, lab) if face_lut is not None else None
             out["hair_keep"][r], out["hair_px"][r] = hair_maps(
                 full[r], hm, out["p_hair"], cfg.hair_dilate_frac, cfg.hair_ramp_frac, cfg.hair_p_hard,
-                face=(face or {}).get(r), p_face=hair_probability(img_rgb, face_lut) if face_lut is not None else None)
+                face=(face or {}).get(r), p_face=p_face)
+            out["hair_in"][r] = (hm, (face or {}).get(r), p_face)  # bake: re-done with the off-body hair
     return out
 
 
@@ -590,12 +605,15 @@ def bake_samples(views: list[dict], bodies: dict, atlas: UVAtlas, cfg: TextureCo
                 stores[r].hair_ev = torch.zeros((2, atlas.n), device=device)
                 stores[r].hair_pixels = []
     stats = []
-    with ThreadPoolExecutor(4) as pool:
-        futs = [pool.submit(loader, v) for v in views[:6]]
+    nthreads = max(1, int(cfg.load_threads))
+    depth = max(6, 2 * nthreads)  # views loaded ahead (each view's dict is 10-70 MB: bounded, released after use)
+    with ThreadPoolExecutor(nthreads) as pool:
+        futs = [pool.submit(loader, v) for v in views[:depth]]
         for vi, view in enumerate(views):
             data = futs[vi].result()
-            if vi + 6 < len(views):
-                futs.append(pool.submit(loader, views[vi + 6]))
+            futs[vi] = None  # the list used to keep every loaded view alive (RAM grew with the view count)
+            if vi + depth < len(views):
+                futs.append(pool.submit(loader, views[vi + depth]))
             st = {"cam": view["cam"], "i": view["i"], "t": view["t"], "roles": {}}
             if data.get("hair_src"):
                 st["hair_src"] = data["hair_src"]
@@ -660,8 +678,23 @@ def bake_samples(views: list[dict], bodies: dict, atlas: UVAtlas, cfg: TextureCo
                 w = vis.float() * inside.float() * w_cos * w_mask * (~partner).float() / foot_mm ** 2 * q_all
                 hk = (data.get("hair_keep") or {}).get(r) if cfg.hair_mode == "exclude" else None
                 if r in cfg.hair_roles and hk is not None:  # hard exclusion around her hair (avatar_hair.py)
-                    from .avatar_hair import collect_hair_pixels, exclude_hair
-                    w = exclude_hair(torch, stores[r], w, px, hk, data["hair_px"][r], hair_tex[r], _sample_nearest)
+                    from .avatar_hair import collect_hair_pixels, exclude_hair, hair_maps, offbody_hair
+                    hpx_ex = data["hair_px"][r]
+                    if cfg.hair_offbody and r in (data.get("hair_in") or {}):  # motion-blurred hair off her model
+                        fm = data["full"][r] > 0
+                        ys = np.nonzero(fm.any(1))[0]
+                        hm_px = float(ys[-1] - ys[0] + 1) if len(ys) else 0.0
+                        sil = ((zb[r] < 1e8) & (zb[r] <= zo)).cpu().numpy()
+                        off = offbody_hair(data["full"][r], sil, hpx_ex, max(3.0, cfg.hair_offbody_margin_frac * hm_px))
+                        if off.any():
+                            frac = float(off.sum()) / max(1.0, float(fm.sum()))
+                            whip = frac >= cfg.hair_whip_area_frac
+                            hm_in, face_in, pf_in = data["hair_in"][r]
+                            hk, hpx_ex = hair_maps(data["full"][r], hm_in, data["p_hair"], cfg.hair_dilate_frac,
+                                                   cfg.hair_ramp_frac, cfg.hair_p_hard, face=face_in, p_face=pf_in,
+                                                   extra_hair=off, whip_mult=cfg.hair_whip_mult if whip else 1.0)
+                            st["roles"][r].update(offbody_px=int(off.sum()), offbody_frac=round(frac, 4), whip=whip)
+                    w = exclude_hair(torch, stores[r], w, px, hk, hpx_ex, hair_tex[r], _sample_nearest)
                     hpx, hz, _ = project(torch, P[head].mean(0, keepdim=True), K, R, tv, float(view["k1"]))
                     collect_hair_pixels(stores[r].hair_pixels, data["img"], data["hair_px"][r],
                                         hpx[0].cpu().numpy(), float(hz[0]), f, vi)
@@ -899,8 +932,10 @@ def fuse_stores(stores: dict, stats: list[dict], view_cam: np.ndarray, cams: lis
             rgb, conf, ncam, lay = fuse(torch, stores[r], gain, sharp_w[r], cfg, device, layers=True)
             sigma = max(1.0, cfg.band_sigma_frac * atlas.size)
             sig_h = cfg.band_sigma_high_frac * atlas.size
+            face_t = stores[r].sharpen > cfg.sharpen + 1e-6 if stores[r].sharpen is not None else None
             fused[r] = (multiband(torch, lay, atlas, (groups or {}).get(r), stores[r].sharpen, sigma,
-                                  sig_h if sig_h >= 0.5 else 0.0), conf, ncam)
+                                  sig_h if sig_h >= 0.5 else 0.0,
+                                  sharp_where=face_t if cfg.face_sharp_fusion else None), conf, ncam)
             del lay
     g = gain.cpu().numpy()
     results, rep = {}, {}
@@ -1001,12 +1036,31 @@ def _plain_model_dir() -> Path:
     return WORKSPACE  # smplx.create(WORKSPACE, model_type='smplx') -> WORKSPACE/smplx/SMPLX_NEUTRAL.npz
 
 
+def view_time_offsets(work: Path) -> dict:
+    """{cam: sync offset} (mamma_dyn.read_sync_offsets; {} without sync/offsets.json). The fitted bodies live on the
+    sync-corrected grid (frame time t + delta), the frames.json times on the audio clocks: a view must pose the bodies
+    at t + delta, else a camera with a large delta (larissa_kadu_38: cam01 +90 ms, cam04 +107 ms) is sampled through
+    a body 3 frames off - 10-30 cm on a moving limb, more than the registration flow's clamp absorbs."""
+    if not (work / "sync" / "offsets.json").exists():
+        return {}
+    from .mamma_dyn import read_sync_offsets
+    return read_sync_offsets(work)
+
+
 def camera_views(work: Path, cams: list[str], t_lo: float, t_hi: float, step_s: float) -> tuple[list[dict], dict]:
+    """Views (cam, frame i, t = sync-corrected time the bodies are posed at, t_frame = frames.json time) in
+    [t_lo, t_hi] of corrected time; the frame choice (_view_list on frames.json time) is unchanged."""
+    from .mamma_dyn import apply_offset
     sim3_p = work / "cameras" / "world_from_sfm.json"
     sim3 = json.loads(sim3_p.read_text()) if sim3_p.exists() else None
     swaps = _roles_swap(work)
+    offs = view_time_offsets(work)
+    pad = max([abs(float(o.get("delta", 0.0))) for o in offs.values()] + [0.0]) + 0.05
     views, cam_info = [], {}
-    for c, i, t in _view_list(work, cams, t_lo, t_hi, step_s):
+    for c, i, t_frame in _view_list(work, cams, t_lo - pad, t_hi + pad, step_s):
+        t = float(apply_offset(np.array([t_frame]), offs.get(c))[0]) if c in offs else t_frame
+        if not t_lo <= t <= t_hi:
+            continue
         if c not in cam_info:
             z = np.load(work / "cameras" / f"{c}.npz")
             Rw, tw = world_cameras(z["R"], z["tvec"], sim3)
@@ -1014,7 +1068,7 @@ def camera_views(work: Path, cams: list[str], t_lo: float, t_hi: float, step_s: 
                            "ok": z["ok"] if "ok" in z.files else np.ones(len(Rw), bool),
                            "attached": bool(z["attached"]) if "attached" in z.files else False}
         ci = cam_info[c]
-        views.append({"cam": c, "i": i, "t": t, "K": ci["K"][i], "R": ci["R"][i], "t_w": ci["t"][i],
+        views.append({"cam": c, "i": i, "t": t, "t_frame": t_frame, "K": ci["K"][i], "R": ci["R"][i], "t_w": ci["t"][i],
                       "k1": float(ci["k1"][i]), "ok": bool(ci["ok"][i]), "swap": swaps.get(c, {}).get(i, 0.0)})
     return views, cam_info
 
@@ -1121,7 +1175,8 @@ def run(take: Take, cfg: TextureConfig | None = None, lock: bool = True, qa: boo
                                          hair_region={r: h[0] for r, h in hair_reg.items()} or None)
             for r in hair_reg:  # face core: lighter-quantile reference only where hair was seen over the face
                 e0 = prev_ev.get(r)
-                frac = np.where(e0[1] > 0, e0[0] / np.maximum(e0[1], 1e-20), 0.0) if e0 is not None                     else np.zeros(atlas.n)
+                frac = (np.where(e0[1] > 0, e0[0] / np.maximum(e0[1], 1e-20), 0.0) if e0 is not None
+                        else np.zeros(atlas.n))
                 q = np.where(regions["skin_pref"], 0.5 + (cfg.skin_ref_q - 0.5) * np.clip(frac / 0.3, 0, 1), 0.5)
                 stores[r].ref_q = torch.as_tensor(q, dtype=torch.float32, device=device)
             groups = {r: ahair.texel_groups(islands, hair_reg[r][0] if r in hair_reg else None) for r in ROLES}
@@ -1155,7 +1210,11 @@ def run(take: Take, cfg: TextureConfig | None = None, lock: bool = True, qa: boo
                 hair_rep_passes.append({"pass": pas, "role": r, **hst})
             prev_ev, last_ev = dict(ev), dict(ev)
             fl = [s["flow"]["median_px"] for s in stats if "flow" in s and "median_px" in s["flow"]]
+            offb = [s["roles"][r] for s in stats for r in cfg.hair_roles if "offbody_px" in s.get("roles", {}).get(r, {})]
             report["passes"].append({"pass": pas, "aligned": ref is not None, "seconds": round(time.time() - t0, 1),
+                                     "hair_offbody": {"views": len(offb), "whip_views": sum(bool(o["whip"]) for o in offb),
+                                                      "px_median": int(np.median([o["offbody_px"] for o in offb]))
+                                                      if offb else 0},
                                      "flow_median_px": round(float(np.median(fl)), 2) if fl else None,
                                      "flow_p90_of_view_medians_px": round(float(np.percentile(fl, 90)), 2) if fl else None})
             print(f"[texture] pass {pas}{' (aligned)' if ref is not None else ''}: {time.time() - t0:.0f} s"

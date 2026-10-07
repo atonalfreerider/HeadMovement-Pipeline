@@ -357,9 +357,12 @@ def time_base(take: Take, sync_offsets: dict | None) -> dict:
     """Which clock beats/audio and poses are on. beats.json, song/beats_studio.json and audio/audio_overlap.wav are
     on the reference camera's AUDIO clock; pose time is sync-corrected VIDEO time t + delta with sync.py's gauge
     (median delta over cameras = 0), which geometry cannot pin. For the same physical instant, pose time - beat time
-    = the reference camera's own delta, assuming its video and audio are simultaneous (its A/V latency is unknown,
-    typically well under a frame). timing/export must record this gauge (or re-gauge poses to the beat clock by
-    subtracting the reference camera's delta from every sync delta) before reading beat-vs-motion offsets < ~50 ms."""
+    = the reference camera's own delta, ASSUMING its video and audio are simultaneous. That is an assumption, not a
+    measurement: with the phones' audio clocks aligned to ~1-2 ms (alignment_studio.json), their sync deltas still
+    spread over tens to >100 ms (larissa_kadu_38: -32..+107 ms), i.e. phone A/V latencies are tens of ms, so the true
+    pose-to-music offset is uncertain by about half that spread ('pose_minus_beat_uncertainty_ms'). timing/export must
+    record this gauge (or re-gauge poses to the beat clock by subtracting the reference camera's delta from every sync
+    delta) and check it by eye on a visible beat cue (a foot strike) before reading beat-vs-motion offsets < ~50 ms."""
     al = json.loads(_alignment_path(take).read_text(encoding="utf-8"))
     ref = next((r["id"] for r in al["sources"] if r["name"] == al["reference"]), None)
     pred = None
@@ -369,11 +372,17 @@ def time_base(take: Take, sync_offsets: dict | None) -> dict:
         pred = ((D.get("per_camera") or {}).get(ref) or {}).get("expected_new_ms")
     meas = (round(1000 * float(sync_offsets[ref]["delta"]), 2) if sync_offsets is not None and ref in sync_offsets
             else None)
+    ds = [1000 * float(v["delta"]) for v in (sync_offsets or {}).values()]
+    unc = round((max(ds) - min(ds)) / 2, 1) if len(ds) >= 2 else None
     return {"reference_camera": ref,
             "beats_and_audio_clock": f"cam{ref} AUDIO (beats.json, song/beats_studio.json, audio/audio_overlap.wav)",
             "pose_clock": "sync-corrected VIDEO time t + delta, sync.py gauge: median delta over cameras = 0",
-            "pose_minus_beat_ms_measured": meas, "pose_minus_beat_ms_predicted": pred,
-            "assumes": f"cam{ref}'s own audio-video latency ~0 (unknown)",
+            # key kept for readers; it is cam<ref>'s sync delta, NOT a measured music-to-motion offset (see 'assumes')
+            "pose_minus_beat_ms_measured": meas, "reference_camera_delta_ms": meas,
+            "pose_minus_beat_ms_predicted": pred, "pose_minus_beat_uncertainty_ms": unc,
+            "assumes": f"cam{ref}'s own audio-video latency ~0 (unknown: the phones' sync deltas spread over "
+                       f"{None if unc is None else 2 * unc} ms with their audio aligned to ~1-2 ms, so phone A/V "
+                       "latencies are tens of ms); check on a visible beat cue (foot strike) before export",
             "to_beat_clock": f"subtract cam{ref}'s sync delta from every camera's delta (pose time - delta_{ref})",
             "note": "pose time - beat time of the same physical instant = the reference camera's sync delta; record "
                     "it in timing/export (or re-gauge) before reading beat-vs-motion offsets under ~50 ms"}
@@ -416,7 +425,8 @@ def take_window(take_name: str) -> dict:
               + (f"; no frames.json for {dec['missing_cameras']}" if dec["missing_cameras"] else ""))
     tb = r["time_base"]
     print(f"[clock] time base: beats/audio on cam{tb['reference_camera']} audio, poses on sync-corrected video "
-          f"(median gauge): pose - beat = {tb['pose_minus_beat_ms_measured']} ms measured, "
+          f"(median gauge): pose - beat = cam{tb['reference_camera']} delta {tb['reference_camera_delta_ms']} ms "
+          f"IF its A/V latency is 0 (+-{tb['pose_minus_beat_uncertainty_ms']} ms unknown), "
           f"{tb['pose_minus_beat_ms_predicted']} ms predicted (validation D)")
     return r
 

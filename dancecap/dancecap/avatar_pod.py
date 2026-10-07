@@ -43,17 +43,19 @@ OUTPUTS = ["avatar/lead_albedo.png", "avatar/follow_albedo.png", "avatar/lead_co
            "review/avatar_texture_follow.jpg", "review/avatar_uv.jpg", "review/avatar_turntable.jpg",
            "review/avatar_face.jpg",
            # hair-aware bake (avatar_hair.py): learned scalp region + hair colour sample for the Unity hair
-           "avatar/follow_hair_region.png", "avatar/follow_hair.json", "avatar/follow_hair_strip.png"]
+           "avatar/follow_hair_region.png", "avatar/follow_hair.json", "avatar/follow_hair_strip.png",
+           "avatar/follow_hair_cover.png"]
 # measured on the A100 pod (2026-10-06, larissa_kadu, 1399 views at 2048^2, 176 grid frames) with the OLD code path
 # (hair_mode soft, blend mean): pass 0 0.031 s/view, each registration pass 0.089 s/view, head fix (leave-one-camera-
 # out, scales with the frames) + hair models + fills + review ~4 min -> modelled as 2 min + 0.012 min per 30 Hz frame.
-# The hair-aware path (exclude + multiband) ran 1.83x (pass 0) / 1.45x (registration pass) slower than the old one on
-# identical views locally (2080 Ti, 352 views), so the old pod rates are scaled by those factors until the pod
-# re-measures them (POD_RATE_BASIS says which numbers are in use).
+# The hair-aware path (exclude + multiband) was RE-MEASURED on the pod (2026-10-07, A100-SXM4-80GB, larissa_kadu 352
+# views at 2048^2, texture-fix validation): 21.3 s pass 0 + 40.2 s aligned pass with 12 loader threads (the pod
+# preset's load_threads) -> 0.061 / 0.114 s/view (per-pass fusion + fills included, so slightly high for long takes).
+# With the old 4 threads it took 73.9 / 112.2 s on an A100 PCIe pod: the new path is CPU-bound in view loading.
 POD_S_PER_VIEW_OLD = {"pass0": 0.031, "aligned": 0.089}
-NEW_PATH_SLOWDOWN = {"pass0": 1.83, "aligned": 1.45}
-POD_S_PER_VIEW = {k: round(v * NEW_PATH_SLOWDOWN[k], 4) for k, v in POD_S_PER_VIEW_OLD.items()}
-POD_RATE_BASIS = "A100 2026-10-06 old-path rates (0.031 / 0.089 s/view) x the local new-path slowdown (1.83 / 1.45)"
+POD_S_PER_VIEW = {"pass0": 0.061, "aligned": 0.114}
+POD_RATE_BASIS = ("A100-SXM4 2026-10-07 hair-aware path re-measured (352 views, 12 loader threads): 0.061 s/view "
+                  "pass 0, 0.114 s/view per registration pass")
 POD_FIXED_MIN = 2.0
 POD_MIN_PER_FRAME = 0.012
 DEFAULT_MAX_COST = 10.0  # $ per standalone texture session (the global cap still applies)
@@ -84,6 +86,8 @@ def input_items(work: Path, cfg: TextureConfig, cams: list[str]) -> list[tuple[P
     items: list[tuple[Path, str]] = []
     for f in (work / "cameras" / "world_from_sfm.json", work / "dancers" / "roles.json"):
         items.append((f, arc(f)))
+    if (work / "sync" / "offsets.json").exists():  # views are posed at sync-corrected times (camera_views)
+        items.append((work / "sync" / "offsets.json", arc(work / "sync" / "offsets.json")))
     frames = needed_frames(work, cfg, cams)
     for c in cams:
         for f in (work / "cameras" / f"{c}.npz", work / "frames" / c / "frames.json", work / "people" / f"{c}.npz"):

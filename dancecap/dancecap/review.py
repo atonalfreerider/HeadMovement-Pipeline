@@ -64,17 +64,27 @@ def _role_masks(work: Path, cam: str, i: int) -> dict:
     return {role: _mask(d / f"mask_{i:04d}_{pid:02d}.png") for role, pid in (("lead", 1), ("follow", 2))}
 
 
-def _role_of_box(box, masks: dict) -> str | None:
-    """Which dancer mask a detection box belongs to (fraction of mask pixels inside the box)."""
-    best, best_frac = None, 0.3
+def _role_scores(box, masks: dict) -> dict:
+    """{role: fraction of the BOX covered by the role's mask} for the masks of which the box holds >= 30 %.
+
+    A fraction of the box, not of the mask: in an embrace the partner's box can hold most of a small mask (larissa_kadu_38
+    cam05 30.43 s: Kadu's box held most of Larissa's mask, so his skeleton was drawn as the follow)."""
     x0, y0, x1, y1 = (int(round(v)) for v in box)
+    area = max(1, (y1 - max(0, y0)) * (x1 - max(0, x0)))
+    out = {}
     for role, m in masks.items():
         if m is None or not m.any():
             continue
-        frac = m[max(0, y0):y1, max(0, x0):x1].sum() / m.sum()
-        if frac > best_frac:
-            best, best_frac = role, frac
-    return best
+        inter = float(m[max(0, y0):y1, max(0, x0):x1].sum())
+        if inter / m.sum() >= 0.3:
+            out[role] = inter / area
+    return out
+
+
+def _role_of_box(box, masks: dict) -> str | None:
+    """Which dancer mask a detection box belongs to (largest share of the box covered by that mask)."""
+    s = _role_scores(box, masks)
+    return max(s, key=s.get) if s else None
 
 
 def _dancer_people(people, i: int, masks: dict, img_shape) -> list[tuple[str, np.ndarray, np.ndarray]]:
@@ -83,10 +93,16 @@ def _dancer_people(people, i: int, masks: dict, img_shape) -> list[tuple[str, np
     boxes, kpts = people["boxes"][i][valid], people["kpts"][i][valid]
     out = []
     if any(m is not None for m in masks.values()):
-        for b, k in zip(boxes, kpts):
-            role = _role_of_box(b, masks)
-            if role:
-                out.append((role, b, k))
+        # one box per role: best (box share covered by the mask) first
+        cand = sorted(((s, role, j) for j, b in enumerate(boxes) for role, s in _role_scores(b, masks).items()),
+                      reverse=True)
+        used_b, used_r = set(), set()
+        for s, role, j in cand:
+            if j in used_b or role in used_r:
+                continue
+            used_b.add(j)
+            used_r.add(role)
+            out.append((role, boxes[j], kpts[j]))
         return out
     # no masks yet: the two largest, most central boxes
     h, w = img_shape[:2]
@@ -151,6 +167,15 @@ def render(take: Take, instants: int = 6, out_dir: Path | None = None, cams: lis
 
     sheets = {"reid": [], "pose": [], "people": []}
     have_smplx = (work / "smplx" / "lead.npz").exists()
+    # sync-corrected time: the fitted bodies are on t + delta (avatar_texture.view_time_offsets); the rows pick each
+    # camera's frame nearest the row time in corrected time and project the bodies at that frame's corrected time
+    from .avatar_texture import view_time_offsets
+    from .mamma_dyn import apply_offset
+    offs = view_time_offsets(work)
+    for c in cams:
+        if c in offs:
+            metas[c] = {**metas[c], "frames": [{**f, "t": float(apply_offset(np.array([f["t"]]), offs[c])[0])}
+                                               for f in metas[c]["frames"]]}
     if have_smplx:
         sheets["smplx"] = []
     for t in times:
@@ -189,7 +214,7 @@ def render(take: Take, instants: int = 6, out_dir: Path | None = None, cams: lis
             tiles = {"reid": reid, "pose": pose, "people": ppl}
             if have_smplx:
                 sm = img.copy()
-                for role, uv in _project_smplx(work, c, i, float(t)).items():
+                for role, uv in _project_smplx(work, c, i, float(metas[c]["frames"][i]["t"])).items():
                     col = LEAD if role == "lead" else FOLLOW
                     for a, b in SMPLX_EDGES:
                         cv2.line(sm, tuple(int(v) for v in uv[a]), tuple(int(v) for v in uv[b]), col, 3, cv2.LINE_AA)

@@ -14,7 +14,11 @@ over all held-out views and per camera, for the body, the upper body (chest / sh
 
 The primary test is leave-one-camera-out (--heldout-cam): the frames-between-step-slots set sits one frame (~33 ms)
 from baked frames, so it is a weak test. Gate (summary.gate, leave-one-camera-out only): no upper-body regression on
-the held-out camera, raw and gain-fitted (after <= before + 0.1 sRGB levels).
+the held-out camera, raw and gain-fitted (after <= before + 0.1 sRGB levels), checked twice: over all her body
+pixels (passed_all_pixels) and over the body pixels the photo does NOT show hair-coloured (avatar_hair.red_cast of the
+photo pixel; passed_hair_free_pixels). The dancers-stage hair masks miss strands, so "body" pixels include some of her
+hanging hair; a texture with hair baked onto the body matches those pixels better, which the all-pixel number rewards.
+The *_nh metrics (and nh_px / upper_nh_px / face_nh_px) are those hair-free pixels; *_hc the hair-coloured ones.
 """
 from __future__ import annotations
 
@@ -142,10 +146,16 @@ def _compare(take: str, before: Path, after: Path, review: Path, extra: dict | N
             continue
         upper = m & (rr[..., 0] > 0.5)
         facem = m & (rr[..., 1] > 0.5)
-        rec = {"cam": v["cam"], "i": v["i"], "t": round(v["t"], 3), "px": int(m.sum()), "upper_px": int(upper.sum()),
-               "face_px": int(facem.sum())}
         imgf = img.astype(np.float32) / 255.0
         photo_rc = red_cast(lab_of(imgf[m]))
+        hc = np.zeros((H, W), bool)  # body pixels the photo shows hair-coloured (strands the hair mask missed)
+        hc[m] = photo_rc
+        m_nh, upper_nh, face_nh = m & ~hc, upper & ~hc, facem & ~hc
+        upper_hc = upper & hc
+        rec = {"cam": v["cam"], "i": v["i"], "t": round(v["t"], 3), "px": int(m.sum()), "upper_px": int(upper.sum()),
+               "face_px": int(facem.sum()), "nh_px": int(m_nh.sum()), "upper_nh_px": int(upper_nh.sum()),
+               "face_nh_px": int(face_nh.sum()), "upper_hc_px": int(upper_hc.sum()),
+               "upper_photo_haircol_pct": round(100 * float(upper_hc.sum() / max(upper.sum(), 1)), 2)}
         tiles = []
         for k in ("before", "after"):
             ren, rid2 = render(torch, geo, posed, cols[k], v["K"], v["R"], v["t_w"], v["k1"], H, W, device)
@@ -160,6 +170,13 @@ def _compare(take: str, before: Path, after: Path, review: Path, extra: dict | N
                       "mae_gain_upper": round(float(errg[upper].mean()), 2) if upper.sum() > 50 else None,
                       "mae_face": round(float(err[facem].mean()), 2) if facem.sum() > 50 else None,
                       "mae_gain_face": round(float(errg[facem].mean()), 2) if facem.sum() > 50 else None,
+                      "mae_nh": round(float(err[m_nh].mean()), 2) if m_nh.sum() > 50 else None,
+                      "mae_gain_nh": round(float(errg[m_nh].mean()), 2) if m_nh.sum() > 50 else None,
+                      "mae_upper_nh": round(float(err[upper_nh].mean()), 2) if upper_nh.sum() > 50 else None,
+                      "mae_gain_upper_nh": round(float(errg[upper_nh].mean()), 2) if upper_nh.sum() > 50 else None,
+                      "mae_face_nh": round(float(err[face_nh].mean()), 2) if face_nh.sum() > 50 else None,
+                      "mae_gain_face_nh": round(float(errg[face_nh].mean()), 2) if face_nh.sum() > 50 else None,
+                      "mae_upper_hc": round(float(err[upper_hc].mean()), 2) if upper_hc.sum() > 50 else None,
                       "false_hair_pct": round(100 * float((rc & ~photo_rc).mean()), 2)}
             bg = np.full_like(img, 40)
             anyb = rid2 >= 0
@@ -195,8 +212,9 @@ def _compare(take: str, before: Path, after: Path, review: Path, extra: dict | N
 def _worse_counts(per_view: list[dict], tol: float = 0.0) -> dict:
     """Views where after > before (+ tol) per metric, of the views where both are defined."""
     out = {}
-    for m in ("mae", "mae_gain", "mae_upper", "mae_gain_upper", "mae_face", "mae_gain_face"):
-        pairs = [(p["before"][m], p["after"][m]) for p in per_view
+    for m in ("mae", "mae_gain", "mae_upper", "mae_gain_upper", "mae_face", "mae_gain_face", "mae_nh", "mae_gain_nh",
+              "mae_upper_nh", "mae_gain_upper_nh", "mae_face_nh", "mae_gain_face_nh", "mae_upper_hc"):
+        pairs = [(p["before"].get(m), p["after"].get(m)) for p in per_view
                  if p["before"].get(m) is not None and p["after"].get(m) is not None]
         out[m] = {"worse": int(sum(a > b + tol for b, a in pairs)), "better": int(sum(a < b - tol for b, a in pairs)),
                   "n": len(pairs)}
@@ -208,11 +226,15 @@ def _gate(cam_summary: dict | None, cam: str, tol: float = 0.1) -> dict:
     if not cam_summary or cam_summary.get("n_views", 0) == 0:
         return {"cam": cam, "passed": None, "why": "no held-out views of this camera"}
     chk = {}
-    for m in ("mae_upper", "mae_gain_upper"):
+    for m in ("mae_upper", "mae_gain_upper", "mae_upper_nh", "mae_gain_upper_nh"):
         b, a = cam_summary.get(f"before_{m}"), cam_summary.get(f"after_{m}")
         chk[m] = {"before": b, "after": a, "ok": None if b is None or a is None else bool(a <= b + tol)}
-    oks = [c["ok"] for c in chk.values() if c["ok"] is not None]
-    return {"cam": cam, "tolerance_srgb_levels": tol, "checks": chk, "passed": bool(oks) and all(oks)}
+    ok = lambda ms: (lambda o: all(o) if o else None)([chk[x]["ok"] for x in ms if chk[x]["ok"] is not None])
+    return {"cam": cam, "tolerance_srgb_levels": tol, "checks": chk,
+            "passed_all_pixels": ok(("mae_upper", "mae_gain_upper")),
+            "passed_hair_free_pixels": ok(("mae_upper_nh", "mae_gain_upper_nh")),
+            "upper_photo_haircol_pct": cam_summary.get("upper_photo_haircol_pct"),
+            "passed": bool(ok(("mae_upper", "mae_gain_upper")) and ok(("mae_upper_nh", "mae_gain_upper_nh")))}
 
 
 def _flow_compare(rb: dict, ra: dict, thr: float = 2.0) -> dict:
@@ -235,14 +257,23 @@ def _tm(d: dict, regions: dict) -> dict:
 def _summarise(per_view: list[dict]) -> dict:
     """Pixel-weighted means over the views (body: px, upper: upper_px, face: face_px)."""
     out = {"n_views": len(per_view), "cams": sorted({p["cam"] for p in per_view})}
+    up = sum(p["upper_px"] for p in per_view)
+    out["upper_photo_haircol_pct"] = round(100 * sum(p.get("upper_hc_px", 0) for p in per_view) / max(up, 1), 2)
     for k in ("before", "after"):
-        for m in ("mae", "mae_gain", "mae_upper", "mae_gain_upper", "mae_face", "mae_gain_face", "false_hair_pct"):
-            wkey = "upper_px" if "upper" in m else ("face_px" if "face" in m else "px")
+        for m in ("mae", "mae_gain", "mae_upper", "mae_gain_upper", "mae_face", "mae_gain_face", "mae_nh", "mae_gain_nh",
+              "mae_upper_nh", "mae_gain_upper_nh", "mae_face_nh", "mae_gain_face_nh", "mae_upper_hc", "false_hair_pct"):
+            part = "upper_" if "upper" in m else ("face_" if "face" in m else "")
+            sub = "nh_" if m.endswith("_nh") else ("hc_" if m.endswith("_hc") else "")
+            wkey = f"{part}{sub}px"
             sel = [p for p in per_view if p[k].get(m) is not None]
             vals = np.array([p[k][m] for p in sel], float)
-            wts = np.array([p[wkey] for p in sel], float)
+            wts = np.array([p.get(wkey, 0) for p in sel], float)
             out[f"{k}_{m}"] = round(float((vals * wts).sum() / max(wts.sum(), 1)), 2) if len(vals) else None
     return out
+
+
+def _pf(x) -> str:
+    return "n/a" if x is None else ("PASS" if x else "FAIL")
 
 
 def _crop_box(mask: np.ndarray, aspect: float = 0.62, pad: float = 0.1):
@@ -301,7 +332,7 @@ def _before_after_sheet(rows, path: Path, take: str, summ: dict, heldout_cam, pa
     sheet = np.concatenate([np.pad(l, ((0, 8), (0, w - l.shape[1]), (0, 0))) for l in lines], 0)
     what = f"leave-one-camera-out: cam {heldout_cam} was never baked" if heldout_cam else \
         "frames the bakes never sampled (1 frame from baked ones: weak test)"
-    head = np.full((170, w, 3), 12, np.uint8)
+    head = np.full((206, w, 3), 12, np.uint8)
     _label(head, f"{take} FOLLOW (Larissa) texture, held-out photos ({what})", (10, 32), (255, 255, 255), 0.8)
     _label(head, "BEFORE = old bake (soft hair down-weighting, one weighted mean); AFTER = hair excluded, anatomical "
                  "scalp, guarded class-aware fill, two-band fusion; same views, same settings", (10, 66), (230, 230, 230), 0.62)
@@ -310,12 +341,20 @@ def _before_after_sheet(rows, path: Path, take: str, summ: dict, heldout_cam, pa
                  f"back raw {summ['before_mae_upper']} -> {summ['after_mae_upper']}, gain-fitted "
                  f"{summ['before_mae_gain_upper']} -> {summ['after_mae_gain_upper']}", (10, 102), (230, 230, 120), 0.62)
     g = summ.get("gate")
-    gtxt = (f"GATE cam {g['cam']} upper body raw {g['checks']['mae_upper']['before']} -> {g['checks']['mae_upper']['after']}, "
-            f"gain-fitted {g['checks']['mae_gain_upper']['before']} -> {g['checks']['mae_gain_upper']['after']}: "
-            f"{'PASS' if g['passed'] else 'FAIL'}") if g and g.get("checks") else ""
     _label(head, f"face raw {summ['before_mae_face']} -> {summ['after_mae_face']}; rendered hair-coloured where the photo "
-                 f"is not {summ['before_false_hair_pct']}% -> {summ['after_false_hair_pct']}%   {gtxt}", (10, 138),
+                 f"is not {summ['before_false_hair_pct']}% -> {summ['after_false_hair_pct']}%; upper body on photo pixels "
+                 f"that are not hair-coloured: raw {summ.get('before_mae_upper_nh')} -> {summ.get('after_mae_upper_nh')}, "
+                 f"gain-fitted {summ.get('before_mae_gain_upper_nh')} -> {summ.get('after_mae_gain_upper_nh')}", (10, 138),
            (230, 230, 120), 0.62)
+    if g and g.get("checks"):
+        c = g["checks"]
+        _label(head, f"GATE cam {g['cam']} upper body, all body pixels: raw {c['mae_upper']['before']} -> "
+                     f"{c['mae_upper']['after']}, gain-fitted {c['mae_gain_upper']['before']} -> "
+                     f"{c['mae_gain_upper']['after']}: {_pf(g['passed_all_pixels'])}  |  pixels the photo "
+                     f"shows as not hair ({100 - (g.get('upper_photo_haircol_pct') or 0):.0f}%): raw "
+                     f"{c['mae_upper_nh']['before']} -> {c['mae_upper_nh']['after']}, gain-fitted "
+                     f"{c['mae_gain_upper_nh']['before']} -> {c['mae_gain_upper_nh']['after']}: "
+                     f"{_pf(g['passed_hair_free_pixels'])}", (10, 174), (120, 230, 255), 0.62)
     sheet = np.concatenate([head, sheet], 0)
     if sheet.shape[1] > 3600:
         s = 3600 / sheet.shape[1]
@@ -468,7 +507,7 @@ def _head_region(torch, geo, bodies, A, B, path: Path, take: str, device, size: 
     ov = ov * (1 - 0.6 * cv_) + 0.6 * cv_ * np.array([0.15, 0.35, 1.0])
     rows = []
     for lab, col in (("BEFORE", B["tex"]["follow"]["srgb"]), ("AFTER", srgb_a),
-                     ("AFTER scalp region (green) / hair cover (blue)", ov.astype(np.float32))):
+                     ("AFTER: scalp green, cover blue", ov.astype(np.float32))):
         tiles = []
         for ang in (0, 35, 90, 270, 180):
             a = np.deg2rad(ang)

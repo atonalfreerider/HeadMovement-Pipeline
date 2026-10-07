@@ -45,6 +45,9 @@ def face_observations(work: Path, role: str, t_grid: np.ndarray, cams: list[str]
     sim3_p = work / "cameras" / "world_from_sfm.json"
     sim3 = json.loads(sim3_p.read_text()) if sim3_p.exists() else None
     roles = json.loads((work / "dancers" / "roles.json").read_text())
+    from .avatar_texture import view_time_offsets
+    from .mamma_dyn import apply_offset
+    offs = view_time_offsets(work)
     out: list[list[dict]] = [[] for _ in t_grid]
     for c in cams:
         pf, cf = work / "people" / f"{c}.npz", work / "cameras" / f"{c}.npz"
@@ -58,6 +61,8 @@ def face_observations(work: Path, role: str, t_grid: np.ndarray, cams: list[str]
             continue
         frames = roles["cams"][c]["frames"]
         ts = np.array([float(f["t"]) for f in json.loads((work / "frames" / c / "frames.json").read_text())["frames"]])
+        if c in offs:  # the fitted bodies are on the sync-corrected grid (avatar_texture.view_time_offsets)
+            ts = apply_offset(ts, offs[c])
         for k, t in enumerate(t_grid):
             i = int(np.argmin(np.abs(ts - t)))
             if abs(ts[i] - t) > max_dt or not ok_cam[i] or i >= len(frames):

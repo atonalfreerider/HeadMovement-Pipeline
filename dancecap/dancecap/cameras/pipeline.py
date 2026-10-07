@@ -15,8 +15,11 @@ from .features import Features, FeatureSettings, ImageRec, list_images
 from .localize import FramePose, Localizer, LocSettings, localize_camera
 from .mapping import (MapSettings, build_database, link_components, map_pairs, match_pairs, model_cams,
                       refine_model, run_mapper, run_sub_mapper, select_map_images, targeted_pairs)
+from .depth_guard import apply as depth_guard
 from .smooth import smooth_track
-from .world import apply, bootstrap, statures_from_take, triangulate_dancers
+from .world import (apply, bootstrap, roles_coverage, scale_checks, scale_rule_from_take, sole_from_take,
+                    statures_from_take, triangulate_dancers)
+from .world_scale import adopt_reference, reference_from_take
 
 STAGES = ("map", "loc", "attach", "world", "qa")
 
@@ -29,8 +32,24 @@ def _K(f: np.ndarray, w: int, h: int) -> np.ndarray:
     return K
 
 
+def map_images(work: Path, recs: dict, ms: MapSettings | None) -> tuple[list[ImageRec], set[str]]:
+    """The map's images: select_map_images, or - for a map reused from another take of the same recordings
+    (cameras/reuse.py) - exactly the images of the reused models (cameras/sfm_work/map_images.json)."""
+    p = work / "cameras" / "sfm_work" / "map_images.json"
+    if p.exists():
+        from .reuse import reused_images
+        return reused_images(work, json.loads(p.read_text())), set()
+    return select_map_images(recs, ms)
+
+
+def loc_settings(take: Take) -> LocSettings:
+    """LocSettings with takes/<take>.toml [cameras] loc = {...} overrides (e.g. kf_by_time for a reused map)."""
+    return LocSettings(**((take.cfg.get("cameras") or {}).get("loc") or {}))
+
+
 def stage_map(work: Path, recs: dict, F: Features, ms: MapSettings) -> dict:
     out = work / "cameras"
+    (out / "sfm_work" / "map_images.json").unlink(missing_ok=True)  # a fresh map replaces a reused one
     images, dense = select_map_images(recs, ms)
     pairs = map_pairs(images, dense, ms)
     print(f"[cameras] map: {len(images)} images ({len(dense)} dense), {len(pairs)} pairs", flush=True)
@@ -113,7 +132,7 @@ def load_model(work: Path):
 
 def stage_loc(work: Path, recs: dict, F: Features, ls: LocSettings, ms: MapSettings, cams: list[str]) -> dict:
     model = load_model(work)
-    images, _ = select_map_images(recs, ms)
+    images, _ = map_images(work, recs, ms)
     L = Localizer(F, model, images, ls)
     out = {}
     with gpu.exclusive("cameras-loc"):
@@ -186,7 +205,7 @@ def main_vertical(work: Path, tracks: dict, main_cams: list[str]) -> dict:
 
 
 def stage_attach(work: Path, recs: dict, F: Features, ls: LocSettings, ms: MapSettings, cams: list[str],
-                 sigma_s: float, max_reproj_px: float, statures: tuple[dict, str]) -> dict:
+                 sigma_s: float, max_reproj_px: float, statures: tuple[dict, str], scale_rule: str = "chain") -> dict:
     """Cameras missing from the main model: localise against their own sub-model, then place that sub-model in
     the main frame (attach.py). Tilt/roll come from the building's vertical (vertical vanishing points of the
     camera's own frames vs the main cameras'), yaw + centre from the dancers' keypoints triangulated by the MAIN
@@ -204,7 +223,7 @@ def stage_attach(work: Path, recs: dict, F: Features, ls: LocSettings, ms: MapSe
     info: dict = {}
     if not missing:
         return info
-    images, _ = select_map_images(recs, ms)
+    images, _ = map_images(work, recs, ms)
     subs = []
     for d in sorted((work / "cameras" / "sfm_work").glob("sub_*/best")):
         if (d / "images.bin").exists():
@@ -247,7 +266,7 @@ def stage_attach(work: Path, recs: dict, F: Features, ls: LocSettings, ms: MapSe
             dancers3d, grid = triangulate_dancers(work, main_tracks, kps=tuple(range(17)), return_grid=True)
             pts_main = np.array([p.xyz for p in main.points3D.values()]).reshape(-1, 3)
             pre = bootstrap(main_tracks, triangulate_dancers(work, main_tracks), pts_main, *statures,
-                            up_cams=main_cams, vertical=vert["fused"])
+                            up_cams=main_cams, vertical=vert["fused"], scale_rule=scale_rule)
             Rw = np.asarray(pre["R"])
             floor_main = (Rw[1], -float(pre["t"][1]) / pre["s"])  # world y = 0  <=>  R[1].X = -t_y / s
             s_world = float(pre["s"])
@@ -396,6 +415,9 @@ def stage_smooth(work: Path, cams: list[str], sigma_s: float, max_reproj_px: flo
         d = dict(np.load(p))
         meta = json.loads((work / "frames" / cam / "frames.json").read_text())
         w, h = int(meta["width"]), int(meta["height"])
+        # zoom-depth guard: frames whose centre is ill-determined along the optical axis are re-centred on an
+        # inverse-variance smooth of the centres, rotation + focal re-solved (depth_guard.py); attached cams skipped
+        d, dg = depth_guard(d, w, h)
         ok_raw = d["ok"].astype(bool)
         wts = np.where(ok_raw, np.clip(d["n_inliers"] / 100.0, 0.2, 1.0), 0.0)
         sm = smooth_track(d["t"], d["R"], d["tvec"], np.where(ok_raw, d["f"], np.nan), ok_raw, wts, sigma_s=sigma_s)
@@ -430,13 +452,14 @@ def stage_smooth(work: Path, cams: list[str], sigma_s: float, max_reproj_px: flo
         n_in = np.where(ok, d["n_inliers"], 0).astype(np.int32)
         if write:
             np.savez(work / "cameras" / f"{cam}.npz", t=d["t"], K=K, R=R_out, tvec=t_out, dist=k1, ok=ok,
-                     reproj_px=rp, n_inliers=n_in, attached=np.bool_(attached))
+                     reproj_px=rp, n_inliers=n_in, attached=np.bool_(attached),
+                     axis_sd=d["axis_sd"].astype(np.float32), recentred=d["recentred"])
         C_out = -np.einsum("fji,fj->fi", R_out, t_out)
         tracks[cam] = {"t": d["t"], "K": K, "k1": k1, "R": R_out, "tvec": t_out, "ok": ok, "C": C_out,
                        "f": f_out, "f_raw": d["f"], "raw_used": int(raw_used.sum()), "ok_raw": ok_raw, "reproj_px": rp, "reproj_raw": d["reproj_px"],
                        "n_inliers": d["n_inliers"], "source": d["source"], "w": w, "h": h, "maxdim": max(w, h),
                        "attached": attached,
-                       "outliers": int(sm["outlier"].sum())}
+                       "outliers": int(sm["outlier"].sum()), "depth_guard": dg}
     return tracks
 
 
@@ -485,7 +508,7 @@ def run(take: Take, cams: list[str] | None = None, stages: tuple[str, ...] = STA
     out = work / "cameras"
     out.mkdir(parents=True, exist_ok=True)
     recs = list_images(work, cams)
-    fs, ms, ls = FeatureSettings(), MapSettings(), LocSettings()
+    fs, ms, ls = FeatureSettings(), MapSettings(), loc_settings(take)
     F = Features(work, out / "cache", fs)
     rep_p = out / "report.json"
     rep = json.loads(rep_p.read_text()) if rep_p.exists() else {}
@@ -495,7 +518,7 @@ def run(take: Take, cams: list[str] | None = None, stages: tuple[str, ...] = STA
         stage_loc(work, recs, F, ls, ms, cams)
     if "attach" in stages:
         rep["attach"] = stage_attach(work, recs, F, ls, ms, cams, sigma_s, max_reproj_px,
-                                     statures_from_take(take.cfg))
+                                     statures_from_take(take.cfg), scale_rule_from_take(take.cfg))
     tracks = stage_smooth(work, cams, sigma_s, max_reproj_px)
     model = load_model(work)
     pts = np.array([p.xyz for p in model.points3D.values()]).reshape(-1, 3)
@@ -509,16 +532,34 @@ def run(take: Take, cams: list[str] | None = None, stages: tuple[str, ...] = STA
         dancers = triangulate_dancers(work, main_tr)  # attached cameras were fitted TO these: never feed them back
         st, src = statures_from_take(take.cfg)
         vert = main_vertical(work, main_tr, main_cams)
+        soles, sole_src = sole_from_take(take.cfg)
         sim3 = bootstrap(main_tr, dancers, pts, st, src, x_cam="06" if "06" in main_cams else main_cams[0],
-                         up_cams=main_cams, vertical=vert["fused"])
+                         up_cams=main_cams, vertical=vert["fused"], scale_rule=scale_rule_from_take(take.cfg),
+                         sole_m=soles)  # per dancer (chain rule); the floor uses their mean
+        sim3["diagnostics"]["sole_source"] = sole_src
+        sim3["diagnostics"]["dancer_roles"] = roles_coverage(work, main_cams)
+        ref = reference_from_take(take.cfg)  # [cameras] scale_reference: inherit a betas-corrected scale
+        if ref is not None:
+            sim3, _ = adopt_reference(work, sim3, ref["work"], ref["sim3"], soles, ref_name=ref["take"],
+                                      statures=st)  # refuses a reference built with other statures / inputs
+            sim3["diagnostics"]["scale_reference"]["sim3_path"] = ref["sim3_path"]
+            sr = sim3["diagnostics"]["scale_reference"]
+            if not sr["adopted"]:
+                print(f"[cameras] WARNING scale reference {ref['take']} NOT adopted: {sr['why']}")
+            elif sr.get("warning"):
+                print(f"[cameras] WARNING scale reference: {sr['warning']}")
         sim3["diagnostics"]["room_metric_check"] = room_check(work, main_tr, pts, vert, sim3)
+        for g, v in scale_checks(sim3).items():
+            if not v["passed"]:
+                bad = {k: c.get("value") for k, c in v["checks"].items() if not c["passed"]}
+                print(f"[cameras] WARNING {g} FAILED: {json.dumps(bad, default=_np)[:600]}")
         if sim3_p.exists():  # keep the previous world frame for comparison (world_from_sfm.prev.json)
             shutil.copyfile(sim3_p, out / "world_from_sfm.prev.json")
         sim3_p.write_text(json.dumps(sim3, indent=1, default=_np))
         np.savez(out / "cache" / "dancers_sfm.npz",
                  **{f"{r}_{k}": v for r, d in dancers.items() for k, v in d.items()})
-        print(f"[cameras] world_from_sfm: s={sim3['s']:.4f} ({sim3['scale_source']}); {sim3['gravity_source']}; "
-              f"{sim3['floor_source']}")
+        print(f"[cameras] world_from_sfm: s={sim3['s']:.4f} ({sim3['scale_source']}; absolute +-1.5 % UNVERIFIED: "
+              f"statures barefoot?); {sim3['gravity_source']}; {sim3['floor_source']}")
     elif sim3_p.exists():
         sim3 = json.loads(sim3_p.read_text())
     if "qa" in stages:
@@ -893,7 +934,8 @@ def build_report(work: Path, cams, recs, model, tracks, pts, rgb, sim3, map_info
                       "reproj_px_p90": float(np.nanpercentile(tr["reproj_px"][tr["ok"]], 90)) if tr["ok"].any() else None,
                       "reproj_raw_median": float(np.nanmedian(tr["reproj_raw"][tr["ok_raw"]])) if tr["ok_raw"].any() else None,
                       "n_inliers_median": float(np.median(tr["n_inliers"][tr["ok"]])) if tr["ok"].any() else 0,
-                      "focal": focal_stats(tr)})
+                      "focal": focal_stats(tr),
+                      "depth_guard": {k: v for k, v in (tr.get("depth_guard") or {}).items() if k != "settings"}})
             if sim3 is not None:
                 Cw = apply(sim3, tr["C"])
                 e["height_m"] = [round(float(np.percentile(Cw[tr["ok"], 1], q)), 3) for q in (5, 50, 95)] \
@@ -931,7 +973,7 @@ def build_report(work: Path, cams, recs, model, tracks, pts, rgb, sim3, map_info
                 ra = attach_review(work, tracks, sim3, projs, att_cams + main_cams[:1],
                                    work / "review" / "cameras_attach_check.jpg", dl)
                 rep["qa_review"]["attach_check"] = str(ra)
-    rep["gates_G2a"] = qa.gates(rep, len(cams))
+    rep["gates_G2a"] = qa.gates(rep, len(cams), sim3)
     # plots
     if tracks:
         wt = {}

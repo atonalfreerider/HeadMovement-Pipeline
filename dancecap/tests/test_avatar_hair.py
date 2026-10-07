@@ -277,6 +277,13 @@ def test_review_gate_counts_and_flow_compare():
     s = hr._summarise(pv)
     g = hr._gate(s, "09")
     assert g["checks"]["mae_upper"]["ok"] and not g["checks"]["mae_gain_upper"]["ok"] and g["passed"] is False
+    assert g["passed_all_pixels"] is False and g["passed_hair_free_pixels"] is None  # no hair-free numbers given
+    for k, v in (("before", 30.0), ("after", 29.0)):
+        pv[0][k].update(mae_upper_nh=v, mae_gain_upper_nh=v)
+    pv[0].update(upper_nh_px=40, upper_hc_px=10)
+    s2 = hr._summarise(pv)
+    g2 = hr._gate(s2, "09")
+    assert g2["passed_hair_free_pixels"] is True and g2["passed"] is False and s2["upper_photo_haircol_pct"] == 20.0
     w = hr._worse_counts(pv)
     assert w["mae_gain_upper"] == {"worse": 1, "better": 0, "n": 1} and w["mae_face"]["n"] == 0
     rb = {"views": [{"cam": "01", "i": 1, "flow": {"p90_px": 3.0}}, {"cam": "01", "i": 2, "flow": {"p90_px": 9.0}}]}
@@ -318,6 +325,31 @@ def test_multiband_removes_exposure_seam_and_keeps_detail():
     out2 = out2[:, 0].reshape(S, S)
     assert np.abs(np.diff(col_mean(out2))[28:36]).max() < 0.25 * jump_sharp
     assert det(out2, 4, 20) > 0.9 * det(sharp, 4, 20) and np.allclose(out2[:, 0:5], sharp[:, 0:5], atol=1e-5)
+
+
+def test_multiband_face_keeps_the_sharp_one_band_fusion():
+    """sharp_where texels (the face) = the plain sharp fusion (best view at both frequencies), feathered; texels far
+    from them keep the two-band result."""
+    import torch
+    S = 64
+    yy, xx = np.mgrid[0:S, 0:S]
+    atlas = SimpleNamespace(texel_yx=np.stack([yy.ravel(), xx.ravel()], 1).astype(np.int32), size=S)
+    N = S * S
+    T = np.zeros((2, N, 3), np.float32)
+    T[0] = 0.3
+    T[1] = 0.6
+    Q = np.ones((2, N), np.float32)
+    Ws = np.where(xx.ravel() < 32, [[1.0], [1e-3]], [[1e-3], [1.0]]).astype(np.float32)
+    lay = tuple(torch.as_tensor(a) for a in (T, Ws, Q))
+    face = torch.as_tensor(xx.ravel() < 16)
+    g = np.zeros(N, np.int32)
+    mb = ah.multiband(torch, lay, atlas, g, torch.full((N,), 4.0), sigma=8.0).numpy()[:, 0].reshape(S, S)
+    fs = ah.multiband(torch, lay, atlas, g, torch.full((N,), 4.0), sigma=8.0, sharp_where=face).numpy()[:, 0]
+    fs = fs.reshape(S, S)
+    sharp = (Ws[..., None] * T).sum(0)[:, 0] / Ws.sum(0)
+    assert np.allclose(fs[:, :8], sharp.reshape(S, S)[:, :8], atol=1e-4)   # face interior = sharp fusion
+    assert np.allclose(fs[:, 32:], mb[:, 32:], atol=1e-5)                   # far from the face: unchanged
+    assert np.abs(np.diff(fs[:, 10:24].mean(0))).max() < 0.05               # feathered, no hard ring
 
 
 def test_lowpass_does_not_cross_groups():

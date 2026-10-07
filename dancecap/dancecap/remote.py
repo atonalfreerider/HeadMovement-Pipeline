@@ -34,6 +34,9 @@ from .take import PACKAGE_ROOT
 
 LEDGER = PACKAGE_ROOT / "work" / "runpod" / "ledger.json"
 SSH_KEY = Path.home() / ".ssh" / "runpod_dancecap"
+# pod host keys change every session: a throwaway known_hosts under work/runpod (git-ignored). 'UserKnownHostsFile=NUL'
+# only works for Windows' own OpenSSH; Git Bash's ssh wrote a file literally named NUL into the cwd (dancecap/NUL).
+KNOWN_HOSTS = PACKAGE_ROOT / "work" / "runpod" / "known_hosts"
 DEFAULT_CAP = 30.0  # raised by the user 2026-10-06 (was $10)
 # preferred 80 GB GPUs, cheapest first; availability changes, so status/gpus shows what's live
 GPU_PREFERENCE = ["NVIDIA A100-SXM4-80GB", "NVIDIA A100 80GB PCIe", "NVIDIA H100 80GB HBM3", "NVIDIA H100 NVL",
@@ -135,6 +138,13 @@ def _echo(s: str) -> None:
         print(s.encode(enc, "replace").decode(enc, "replace"), end="", flush=True)
 
 
+def _known_hosts_opt() -> str:
+    if os.name != "nt":
+        return "UserKnownHostsFile=/dev/null"
+    KNOWN_HOSTS.parent.mkdir(parents=True, exist_ok=True)
+    return f"UserKnownHostsFile={KNOWN_HOSTS.as_posix()}"
+
+
 @dataclass
 class Pod:
     id: str
@@ -148,7 +158,7 @@ class Pod:
 
     def _ssh_base(self) -> list[str]:
         return ["ssh", "-i", str(SSH_KEY), "-p", str(self.port), "-o", "StrictHostKeyChecking=no",
-                "-o", "UserKnownHostsFile=NUL" if os.name == "nt" else "UserKnownHostsFile=/dev/null",
+                "-o", _known_hosts_opt(),
                 "-o", "ServerAliveInterval=30", "-o", "LogLevel=ERROR", f"{self.user}@{self.host}"]
 
     def run(self, cmd: str, check: bool = True, timeout: float | None = None, log: Path | None = None,
@@ -198,7 +208,7 @@ class Pod:
 
     def _scp(self, src: str, dst: str, timeout: float | None) -> None:
         subprocess.run(["scp", "-q", "-i", str(SSH_KEY), "-P", str(self.port), "-o", "StrictHostKeyChecking=no",
-                        "-o", "UserKnownHostsFile=NUL" if os.name == "nt" else "UserKnownHostsFile=/dev/null",
+                        "-o", _known_hosts_opt(),
                         "-o", "ServerAliveInterval=30", "-o", "LogLevel=ERROR", src, dst], check=True, timeout=timeout)
 
     def put(self, local: Path, remote: str, timeout: float | None = None) -> None:
@@ -306,7 +316,10 @@ def pod_session(name: str, max_minutes: float, gpus: list[str] | None = None, im
 def arm_killswitch(p: "Pod", max_minutes: float) -> dict:
     """Start the on-pod timer that deletes the pod after max_minutes; returns what was verified about it."""
     secs = int(max_minutes * 60)
-    ks = (r"set -a; . <(tr '\0' '\n' < /proc/1/environ | grep -E '^RUNPOD_(API_KEY|POD_ID)='); set +a; "
+    # the deadline is also written to /workspace/.dancecap_kill_at (epoch s): long jobs read it to decide whether an
+    # optional step still fits (mamma_chunks gate --fallback full)
+    ks = (f"echo $(( $(date +%s) + {secs} )) > /workspace/.dancecap_kill_at; "
+          r"set -a; . <(tr '\0' '\n' < /proc/1/environ | grep -E '^RUNPOD_(API_KEY|POD_ID)='); set +a; "
           f"sleep {secs}; runpodctl pod delete $RUNPOD_POD_ID || runpodctl remove pod $RUNPOD_POD_ID")
     p.run(f"nohup bash -c {shlex.quote(ks)} >/tmp/killswitch.log 2>&1 < /dev/null &", check=False, timeout=60)
     try:

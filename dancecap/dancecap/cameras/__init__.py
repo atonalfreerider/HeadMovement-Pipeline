@@ -9,6 +9,7 @@
   attach.py    cameras outside the main model: own sub-model placed by the building vertical + the dancers
   vertical.py  building verticals: vertical vanishing points (LSD, people masked) -> gravity; horizontal edges
   world.py     world_from_sfm: gravity (building vertical), floor, metric scale from the dancers, origin
+  world_scale.py  post-fit scale check (betas rest height vs stature), world rescale, cross-take scale compare
   report.py    report.json gates (G2a), layout / focal plots, reprojection overlays
   pipeline.py  orchestration (outputs per CONTRACTS.md: cameras/sfm, cameras/<cam>.npz,
                cameras/world_from_sfm.json, cameras/report.json, cameras/qa/)

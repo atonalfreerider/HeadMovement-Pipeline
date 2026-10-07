@@ -61,6 +61,20 @@ work/<take>/
   dancers/cache/<cam>_sam.npz           raw SAM probabilities (working res) keyed by the label; --reuse-sam
   dancers/qa/<cam>.mp4                  overlay video for review (+ <cam>_sheet.jpg 1 s, <cam>_dense.jpg 0.25 s)
   review/dancers_body_hair.jpg          [dancers] follow FULL | BODY | HAIR on raised-arm and hair-whip frames
+  dancers/geo_veto.json                 [dancers_geoveto] wrong-PERSON check the colour identity cannot make: each role's
+                                          COCO keypoints vs the same role (and the partner) triangulated from the OTHER main
+                                          cameras; explained by neither dancer on >= 3 grid instants -> veto runs per
+                                          camera/role (rule, thresholds, runs, native frame plan). --apply / --manual
+                                          cam:role:i0-i1 (visually verified spans where the camera pose is not ok and
+                                          geometry is blind): masks/body/hair PNGs of that role blanked (originals in
+                                          dancers/geo_veto_backup/<cam>/), roles.json frames[i][role] box None + geo_veto,
+                                          roles.json geo_veto.history [{applied, frames, source}], mamma/ma_2d_native/<cam>.npz
+                                          visibilities of that person 0 (original <cam>.pre_veto.npz); then `mamma prepare
+                                          --skip-2d`. review/reid_veto.png (per-role residual curves; vetoes APPLIED so far
+                                          from roles.json solid - lead top band, follow bottom - and the automatic rule's
+                                          current candidates hatched, not applied), review/reid_veto_cases.jpg (the removed
+                                          masks). --check: re-measure only -> dancers/geo_veto_check.json (+ applied_so_far),
+                                          geo_veto.json (the applied run's record) is left alone
 
   cameras/sfm/                          main COLMAP model (keyframes + every ~0.67 s window frame of the strongly
                                           linked cameras; one camera per image): cameras/images/points3D.bin
@@ -74,6 +88,14 @@ work/<take>/
                                           per-frame median dancer-keypoint residual vs the dancers triangulated by the
                                           OTHER main-model cameras (NaN = no observation; written by the qa step).
                                           Attached cameras: ok=False where dancer_px > max(60 px, 3 x its median).
+                                          axis_sd (F,) f4 posterior SD of the camera centre along its optical axis (SfM
+                                          units, from the frame's inlier correspondences, focal free; NaN when not
+                                          localised), recentred (F,) bool: zoom-depth guard (cameras/depth_guard.py, run
+                                          by stage_smooth on the raw localisation): frames with axis_sd > 0.003 x the
+                                          camera's median static-point depth or < 60 inliers get their centre from an
+                                          inverse-variance robust smooth (0.2 s) of all ok centres, rotation + focal
+                                          re-solved with it fixed; ok=False if the re-solve fits its static points worse
+                                          than 4 px. Attached cameras are skipped. report.json cams.<cam>.depth_guard
   cameras/world_from_sfm.json           {s, R, t, gravity_source, scale_source, floor_source, x_axis, diagnostics}
                                           gravity = the building's vertical (vertical vanishing points of the main
                                           cameras: diagnostics.vertical, adopted=true) when consistent, else the
@@ -203,7 +225,9 @@ work/<take>/
                                           (mamma_dyn.read_sync_offsets -> prepare, load_tracks, hair_reference) refuse
                                           a file whose clocks differ from the frames'/take's ("stale", e.g. copied
                                           between takes) and, for a take with [sync] required = true, a file without
-                                          clocks ("unrecorded"). Never copy offsets.json between takes
+                                          clocks ("unrecorded"). Never copy offsets.json between takes. + workers, host
+                                          (sync --workers N: residual evaluations in a process pool, identical numbers;
+                                          default 1 off-pod, the container CPU quota up to 16 on a pod)
   mamma/                                [mamma] split in prepare (local) / fit (Runpod) / select (mamma_dyn.py):
                                           ma_2d_native/<cam>.npz (+ _boxes.npy, .manifest.json: recomputed when
                                           masks/frames/weights change), ma_2d/<take>_<tag>/cam<cam>.npz + ma_cap/
@@ -378,23 +402,60 @@ work/<take>/
                                           "multiband" = default, "soft"/"mean" = the previous bake): her hair mask + strongly
                                           hair-coloured pixels next to it, dilated (r0 = 0.6 % of her mask height >= 2 px, ramp
                                           to full weight over another 0.6 %), get weight 0 on every non-scalp texel; the scalp
-                                          under the hair is learned from the samples' hair evidence (pass 0: head minus face;
-                                          never the face core); scalp and body are filled separately, body holes per colour
-                                          class (white top / skin / ...); per-camera layers fused in two bands (high: sharp
+                                          under the hair = the ANATOMICAL scalp (avatar_hair.scalp_vertices: head minus face
+                                          minus ears minus everything below the eye line in front of the ear; 98 % inside
+                                          FLAME's scalp mask) with only its hairline learned: texels > 1.5 cm inside it are
+                                          always scalp, the 1.5 cm band on either side of its boundary follows the samples'
+                                          hair evidence (outside only above the eye line, never the face core / ears), so
+                                          hanging hair over a cheek / ear / jaw / neck is never scalp (those texels are body:
+                                          hair excluded, filled from skin). Before the fill (fill_guards) measured upper-body /
+                                          neck / non-scalp head texels that are still DARK hair-coloured (red_cast, L* < 45)
+                                          are dropped (leaked hair; counts in report roles.follow.fill_guards), hair-coloured
+                                          or mostly-hair-seen (evidence > 0.5) texels never seed a fill (no mirror copy, no
+                                          class seed, a red k-means class seeds nothing); scalp and body are filled
+                                          separately, body holes per colour class (white top / skin / ...), neck / nape / face
+                                          / ear holes from the skin class only. Registration passes copy her dilated hair
+                                          pixels from the photo into the render and give them zero flow weight
+                                          (avatar_texture.hair_flow_mask); per-camera layers fused in two bands (high: sharp
                                           weights, face ^4, smoothed over ~2 texels; low, sigma = 1.2 % of the atlas: the same
                                           weights low-passed inside each UV island x hair group) so exposure / white-balance
+                                          (face texels keep the one-band sharp fusion, feathered ~4 texels: face_sharp_fusion)
                                           steps at view boundaries blend over centimetres. Her face: the
                                           dancers-stage hair split often covers warm-lit face skin, so inside her projected
                                           face (front-facing SMPL-X face triangles, FaceProjector) hair = mask AND a face-aware
                                           colour model (her face pixels as skin seeds) >= 0.8, other face pixels get a relative
-                                          (1 - p)^2 weight, face-core texels take the 0.75 weighted luminance quantile as the
-                                          inlier reference (skin beats darker hair) and a face-core texel still fused dark
-                                          hair-coloured is refilled (mirror first). report hair_model.<cam>.face_aware
+                                          (1 - p)^2 weight, face-core texels where the previous pass saw hair over the face
+                                          take a lighter weighted luminance quantile as the inlier reference (0.5 -> 0.75 as
+                                          that evidence rises to 0.3; clean face texels keep the median) and a face texel still
+                                          fused dark hair-coloured is refilled (mirror first). report hair_model.<cam>.face_aware.
+                                          Off-body hair (hair_offbody, default on): in the bake, her full-mask pixels
+                                          outside her posed model's silhouette (dilated 3 % of her mask height) that connect
+                                          to her hair are hair whatever their colour (the motion-blurred outer part of a hair
+                                          whip that the dancers split labels body); a view whose off-body hair is >= 5 % of
+                                          her mask (a whip) multiplies both exclusion radii by 3 (hair_whip_mult), so smeared
+                                          hair beside her neck / shoulders / arms is excluded too. Counts in report.json
+                                          passes[].hair_offbody {views, whip_views, px_median}.
+                                          View times (2026-10-07): every view poses the bodies at the frame's SYNC-CORRECTED
+                                          time (frames.json t + sync delta, avatar_texture.camera_views / view_time_offsets;
+                                          view t_frame = the frames.json time), like the fit's grid; before, a camera with a
+                                          large delta (larissa_kadu_38 cam01 +90 ms, cam04 +107 ms) was sampled through a
+                                          body ~3 frames off. avatar_head face observations and review.render use the same
+                                          times; the pod inputs carry sync/offsets.json.
+                                          hair_mode exclude refuses to bake when < 90 % of the follow's views (with her mask)
+                                          have a real dancers/<cam>/hair mask (--allow-missing-hair-masks only warns); counts
+                                          in report hair_masks.follow {mask, derived (full - body), none, real_fraction}
   avatar/follow_hair_region.png         [texture] S x S uint8 on the UV layout: 255 = scalp under her hair (feathered edge),
-                                          the region the bake gave the hair colour; where the Unity hair cards / strands root
+                                          the region the bake gave the hair colour = anatomical scalp + learned hairline (never
+                                          cheek, ear, jaw, temple below the eye line, face core); where the Unity hair cards /
+                                          strands root
+  avatar/follow_hair_cover.png          [texture] S x S uint8 on the UV layout: share of the sample weight that saw her hair
+                                          over the texel (255 = always hair in the photos, 0 = never / unseen) = where her
+                                          HANGING hair covered body / face / neck in the capture. NOT a root region
   avatar/follow_hair.json               [texture] hair colour sample for Unity hair (exposure-normalised like the albedo):
                                           palette [{srgb8, linear, fraction}] (k-means, dark -> light), gradient [{t (0 root
-                                          .. 1 tips), srgb8, n}], root/mid/tip/mean/median_srgb8, hair_length_m_p95,
+                                          .. 1 tips), srgb8, n}], root/mid/tip/mean/median_srgb8,
+                                          hair_extent_from_head_centre_m_p95 (image spread of the hair pixels from the head
+                                          centre at head depth: NOT the strand length - hair_reference.json measures that),
                                           scalp_albedo_mean_srgb8, n_pixels, n_views, strip
   avatar/follow_hair_strip.png          [texture] 256 x 512 sRGB strand strip: row 0 = root, last row = tips, columns =
                                           strands (luminance quantiles of the measured hair pixels, fixed shuffled order)
@@ -403,7 +464,8 @@ work/<take>/
                                           over the mesh); black outside the UV islands
   avatar/{lead,follow}_texels.npz       [texture] per covered texel (atlas order of avatar_uv.build_atlas): rgb_srgb (N,3)
                                           f16 before gutter, alpha, conf, ncam, source, view_gain (n_views,3) linear gains,
-                                          hair_region (N,) u8 (follow only, 255 = scalp under hair)
+                                          hair_region (N,) u8 (follow only, 255 = scalp under hair), hair_cover (N,) u8
+                                          (follow only, as follow_hair_cover.png)
   avatar/uv_mesh.npz                    [texture] seam-split mesh for a textured skinned mesh: vertex_ids (11313,) i32 =
                                           SMPL-X vertex of each split vertex (copy its rest position / LBS weights from
                                           there), uv (11313,2) f32, faces (20908,3) i32 into the split vertices, WORLD
@@ -424,7 +486,10 @@ work/<take>/
                                           per-role median_view_iou, texture_metrics (% hair-coloured texels per region:
                                           chest/shoulders/back, chest, back, shoulders, neck, face_core, forearms baseline;
                                           avatar_hair.red_cast = CIELAB a* > 9 and a* - b* > 3), follow hair_sample;
-                                          hair_region [{pass, role, head/prior/face hair fractions}]
+                                          hair_region [{pass, role, head/prior/face/face_outside_core/ear hair fractions,
+                                          outside_scalp_hair_fraction_of_head, evidence_above_thresh_outside_allowed_head_
+                                          fraction, leak_guard_dropped(_pct_of_measured), bad_seed_texels}], hair_masks,
+                                          roles.follow.fill_guards (leak guard counts, fill classes, skin class)
                                         Freshness rule: the bake refuses smplx/ older than cameras/world_from_sfm.json (a fit
                                           from a previous world frame) unless allow_stale (--allow-stale; the smoke preset
                                           allows it and stamps "STALE smplx" on its review sheets).
@@ -433,6 +498,9 @@ work/<take>/
                                           2048^2, step 1/15 s, top-k 4, 1 registration pass), pod (step 1/30 s, top-k 6, 2
                                           passes). View frames = first frame of every step slot of ABSOLUTE reference time
                                           (window-independent, so a pod bundle is a superset of any run's frames).
+                                          View loading: load_threads (local 4, pod preset 12) with a bounded prefetch; each
+                                          view's data is released once sampled (it used to stay alive for the whole pass:
+                                          ~13 MB per 1080p / ~66 MB per 4K view, OOM on long takes).
                                           Visibility/renders: avatar_raster.py exact pure-torch triangle z-buffer (CPU/CUDA,
                                           Windows/Linux; no nvdiffrast build)
   avatar/pod_job.json, avatar/pod/      [texture] Runpod job (python -m dancecap texture <take> --write-pod-job | --pod;
@@ -443,7 +511,14 @@ work/<take>/
                                           smplx/: uploads texture_inputs only), standalone, outputs, estimate (views, passes,
                                           bake_min from the measured A100 rates, max_minutes_recommended), code_path
                                           (hair_mode, blend, step_s: the run command passes --hair-mode/--blend explicitly;
-                                          hair masks of EVERY view frame are bundled; --step-ms overrides the preset step);
+                                          hair masks of EVERY view frame are bundled; --step-ms overrides the preset step;
+                                          --hair-mode / --blend are passed through); max_minutes defaults to
+                                          estimate.max_minutes_recommended (bake estimate x 1.3 + 3) and a smaller explicit
+                                          --pod-minutes is REFUSED (write_pod_job / run_pod raise before any pod exists);
+                                          estimate.s_per_view = the per-view rates used (hair-aware path re-measured on an
+                                          A100-SXM4 pod 2026-10-07 with 12 loader threads: 0.061 / 0.114 s/view; old path
+                                          0.031 / 0.089), see bake_min_basis;
+                                          --pod sessions pass --max-cost (default $10) to remote.pod_session;
                                           pod/pod.log,
                                           pod/result.json, texture_out.tar.gz (extracted into work/<take>/); avatar/
                                           pod_texture.log written on the pod. Pod workspace = /workspace/HeadMovement (same
@@ -456,7 +531,19 @@ work/<take>/
                                           --after DIR --review DIR [--heldout-cam C] (avatar_hair_review.py, read-only on
                                           the bakes): held-out photos (frames the bakes never sampled / a left-out camera)
                                           photo | before | after with body-pixel MAE (gain-fitted) and false hair-coloured
-                                          pixels; follow atlas crops; turntables; face close-ups
+                                          pixels; follow atlas crops; turntables; face close-ups; avatar_hair_region_head.jpg
+                                          (her head from 5 angles: before / after / scalp region green + hair cover blue).
+                                          --json: summary {before_/after_ mae, mae_gain, mae_upper, mae_gain_upper, mae_face,
+                                          mae_gain_face, false_hair_pct (raw AND gain-fitted, pixel-weighted), per_cam {same},
+                                          worse_views {metric: worse/better/n}, registration (per-view flow p90 before vs
+                                          after), gate (leave-one-camera-out only: no upper-body regression on the held-out
+                                          camera, raw and gain-fitted, tolerance 0.1 sRGB levels; passed_all_pixels and
+                                          passed_hair_free_pixels = only body pixels the photo does not show hair-coloured,
+                                          because the hair masks miss strands and a texture with hair baked on matches
+                                          those; passed = both), *_nh / *_hc metrics (hair-free / hair-coloured photo
+                                          pixels), upper_photo_haircol_pct, texture_metrics, hair_masks}.
+                                          Leave-one-camera-out is the primary test (the frames-between-step-slots set sits one
+                                          frame from baked frames)
 
   avatar/hair_reference.json            [hair_reference] python -m dancecap.hair_reference <take> [--step N] (likeness data,
                                           local only), version 2: scale (true_per_world = stature + sole over the follow's
@@ -537,10 +624,71 @@ work/<take>/
   face/smirk.npz, degrade.json, smirk_agreement.json   [face_smirk, gated FLAME 2020] per job SMIRK expression (50),
                                           jaw (3), eyelids (2), mouth metrics (mm), smplx_expression (20) via the
                                           SMPL-X<->FLAME vertex correspondence (+ relative transfer residual)
-  face/expr_<role>.npz, expr.json       [face_expr] per 30 Hz grid frame: expression (T, n_expr) SMPL-X, expression_rest,
-                                          jaw_pose (T,3), neck_delta_rotvec, neck_pose (= body_pose[:, 33:36] corrected),
-                                          n_obs, confidence (0 = no observation); expr.json = in-sample + leave-one-camera-out
-  avatar/face/<role>_albedo_face.png    [avatar_face] the bake with the portrait face composited (colour-transferred to the
+  face/expr_<role>.npz, expr.json       [face_expr --research] per 30 Hz grid frame: expression (T, n_expr) SMPL-X,
+                                          expression_rest, jaw_pose (T,3), neck_delta_rotvec, neck_pose (= body_pose[:, 33:36]
+                                          corrected), n_obs, confidence (0 = no observation); expr.json = in-sample +
+                                          leave-one-camera-out. Research only: never adopt its neck_pose
+  face/detections_shard<i>of<n>.npz     [face_worker jobs --shard i/n] partial detections (+ job_index); `face_worker merge
+                                          <take> <n>` -> face/detections.npz (dancecap.face_pod runs n shards on a pod)
+  smplx_face/<role>.npz                 [face_expr] THE face block for the avatar, on the smplx/<role>.npz time grid t (T):
+                                          jaw_pose (T,3) axis-angle of SMPL-X joint 22 (x = opening only), expression (T,
+                                          n_expr=10) SMPL-X expression coefficients, confidence (T,) 0..1, expression_rest
+                                          (adopted; 0 = neutral), shipped = the adopted hold-out candidate (neutral | rest |
+                                          rest_closed | final_expr | final) refitted on all views - exactly the recipe the
+                                          hold-out scored (2026-10-07; rest_closed = a resting expression that keeps the
+                                          neutral lip gap), expression_rest_fitted (+ rest_fitted_kind,
+                                          expression_rest_free / _closed, expression_anchor_perframe), jaw_rest[_fitted]_deg,
+                                          adopted_rest / adopted_expression / adopted_jaw (hold-out model selection: a layer
+                                          that does not beat the simpler one on held-out cameras / time blocks, or raises the
+                                          held-out mouth-opening error beyond max(1.5 x, + 0.005), is replaced by it; the
+                                          per-frame layer must also not lose on co-visible held-out views when there are
+                                          >= 5), expression_captured / jaw_captured_deg (before gating, diagnostics), eyelid
+                                          (T,2) [left, right] weights 0..1 = PROCEDURAL blinks (stylisation, seeded per take
+                                          + dancer), blink_starts, leye_pose / reye_pose (the body fit's, unchanged), n_views
+  smplx_face/face_blendshapes.npz       [face_expr] vertex_ids (Vh,) SMPL-X vertices that move, names (S,) = expr00..09 +
+                                          eyelid_left/right (eyelids only when the gated FLAME files are present), deltas
+                                          (S,Vh,3) f32 metres in the model's rest axes (y up, +z forward; Unity (x, y, -z)),
+                                          i.e. vertex v of the dancer's rest mesh moves by sum_s w_s deltas[s] before LBS.
+                                          SMPL-X / FLAME-derived: local + StreamingAssets only, never committed.
+                                          Unity (IMPLEMENTED 2026-10-07, dancecap.face_export; also run by export_unity
+                                          export when smplx_face/ exists): smplx_<role>.bin joints 22-24 = jaw_pose /
+                                          leye / reye of smplx_face/<role>.npz (same grid, refused otherwise);
+                                          smplx_<role>_face.bin (magic DCXF, blob layout as DCXS): blocks vertex_ids (Vh,)
+                                          i4 (SMPL-X ids; map onto the split skin through its vertex_ids block), deltas
+                                          (S,Vh,3) f4 Unity axes (x, y, -z), weights (T,S) f4 = [expression (T,n_expr),
+                                          eyelid (T,2)], header names / stylised / face (shipped, adopted_*);
+                                          smplx_<role>_skin.bin + the mouth cap (30 triangles appended, header
+                                          "mouth_cap": closes SMPL-X's one open boundary, the mouth bag, so the lip gap shows
+                                          the painted interior); <role>_albedo.png = the chosen variant (face = portrait look
+                                          default, videolook, bake; a face texture older than the bake falls back to the
+                                          bake); capture.json + smplx_face {role: file}, smplx_albedo_variant, provenance.faces.
+                                          head-movement Assets/Avatar/SmplxFace.cs (HeadMovement.AvatarsLoaded) adds the S
+                                          blendshape frames and sets SetBlendShapeWeight(s, 100 w) per frame (Strength,
+                                          Blinks toggles; expression weights are signed and may exceed 1: keep
+                                          legacyClampBlendShapeWeights off)
+  smplx_face/report.json                [face_expr] limitations, per role: views, shipped, shipped_heldout (the shipped
+                                          candidate's own hold-out numbers), rest_fits, adoption + reasons, cross-camera
+                                          (+ covisible) and time-block hold-out scores (aligned mouth NME % IOD, mouth
+                                          opening / width correlation) per candidate, in_sample (neutral / rest /
+                                          rest_closed / shipped)
+  avatar/<role>_albedo_face.png, avatar/<role>_albedo_face_videolook.png   [avatar_face] next to the bake it was built
+                                          on (`--bake ROLE=PNG` for any 2048 SMPL-X UV albedo: <stem>_face.png and
+                                          <stem>_face_videolook.png beside it; the input is never overwritten): portrait look
+                                          and video-matched look (face/look.json targets relative to the cheeks, measured
+                                          on the texture: follow lips = the portrait look's lip contrast x the makeup-free
+                                          ratios, lead chin dL = the video's scaled to full resolution); the user picks.
+                                          Steps (postprocess): composite, follow: refill_face_base (portrait over its own
+                                          skin extrapolation, not the hair-covered bake) + skin repair, head L/R evening,
+                                          gradient-domain clean-up (follow repair / portrait border; lead scalp band with
+                                          the bake seam), follow lip colour (mesh lips take the portrait's lip-vs-cheek
+                                          contrast), mouth interior + slit, lip / beard streak removal, eyes, UV island
+                                          padding. avatar/face/<role>_texel_masks.npz: labels (lips 1 / beard 2 / cheek 8 /
+                                          mesh lips 16), repaired, alpha per atlas texel; report.json: seams (vertical seam /
+                                          portrait / repair border luma steps per stage and for the bake and a previous
+                                          face texture avatar/face/prev_*/), likeness (gain-fitted face MAE / NCC vs held-out
+                                          video crops, posed and landmark-aligned)
+  avatar/face/<role>_albedo_face.png    [avatar_face] legacy copy of avatar/<role>_albedo_face.png (default bake only)
+                                          = the bake with the portrait face composited (colour-transferred to the
                                           bake's lighting, multi-band blended) + procedural eyeballs; <role>_face_layer.png
                                           RGBA (alpha = portrait weight) to re-composite onto a re-baked albedo
                                           (python -m dancecap.avatar_face <take> --composite); <role>_portrait_uv.npz
@@ -548,7 +696,63 @@ work/<take>/
                                           Portraits: <source_dir>/<name lower>.jpg or [dancers.<role>].portrait (likeness
                                           data: never in a repo)
   review/face_*.jpg|png, avatar_face_portrait.jpg, avatar_face_uv.jpg   [face stages] survey, detectors, degrade test,
-                                          portrait fit, expression fits, SMIRK vs landmark fit
+                                          portrait fit, expression fits, SMIRK vs landmark fit; face_expr.jpg (video | avatar
+                                          today | with the face block, close-ups, face-block parts) + face_expr_confidence.png
+                                          [face_expr]; avatar_face_portrait.jpg (reference | old | new | video look at 3 head
+                                          angles), avatar_face_turntable.jpg, avatar_face_video.jpg, avatar_face_likeness.jpg
+                                          [avatar_face; `--review-only` redraws them from the written textures]
+
+  hands/wrist_gate.npz + .json          [refine_hands build = hands_detail] per hand <role>_<side>_wrist (T,3) local
+                                          wrist axis-angle used as the finger IK's start / prior, _weight (T,) share of
+                                          the MANO regressors' (WiLoR + HaMeR) fused wrist (0 = MAMMA's), _disagree_deg,
+                                          _det_views; json: per hand adopted + why + the independent keypoint judge,
+                                          frames_bridged / bridged_share (gated frames whose regressors disagree > 30 deg:
+                                          slerped, never across > 90 deg), contact_check (weight cut where the gated hand
+                                          would sink > max(MAMMA's sink, 1 cm) + 1 cm into the partner)
+  hands/smplx_fingers_build/, fingers_build*.{json,npz}, contact.{json,npz}, smplx/   [build] fingers (hybrid IK, gated
+                                          wrists) and the contact refinement from them; contact.json refined[] carries
+                                          the guard (guard, adopted, attempts[]: arm + hand landmarks all cameras and per
+                                          camera, shoulder / elbow turn, wrist turn beyond its envelope (only back towards
+                                          MAMMA's wrist), wrist / elbow jitter, palm displacement vs its cap, finger
+                                          crossings, arm penetration); an episode whose every attempt fails keeps its
+                                          input pose (refined 'no (guard failed ...)'); merged hand-hand holds carry
+                                          attract_runs (both records + bridged gaps), bridged_gaps, union, partner_side,
+                                          and the twin record merged_into. Gaps: exact point-to-triangle distance, inside
+                                          = generalized winding number of the partner's closed body (mesh_contact)
+  hands/metrics.json + metrics.npz      [build] MAMMA (smplx/) vs fingers vs final: keypoints[<role>_<side>][judge]
+                                          [stage][cam|all] {n, px, len, shape_len, hand_px} (judges fused keypoints /
+                                          hamer / wilor 2D joints), ma2d (MAMMA's 63 hand landmarks, px), contact[]
+                                          per hold/touch episode {<stage>: gap cm p5..p95, touching_within_1cm,
+                                          float_gt_1cm, apart_gt_2cm, sunk_gt_1cm, penetration_cm_max / _p95,
+                                          float_cm_max}, holds[] (hand-to-hand distance on attracted and bridged frames),
+                                          penetration, arm_penetration, finger_crossings (frames, max_pairs, worst_t,
+                                          top_pairs), palm_vs_mamma_cm, jitter (mm residual from a local cubic + shoulder
+                                          / elbow / wrist angular acceleration, wrist and fingertip acceleration); npz
+                                          '<stage>|<role>|<side>|gap|pen|arm_gap|arm_pen|cross' (T,), '<stage>|hold<n>|
+                                          hand_dist' (T,) m
+  smplx_hands/{lead,follow}.npz         [build] the smplx/ contract (same keys, FK joints) with refined fingers, gated
+                                          wrists and contact-refined arms + additive keys: hands_refined (T,) bool,
+                                          wrist_gate_weight (T,2) left/right, contact_state (T,2) int8 0 free 1 touch
+                                          2 hold (both hands of one merged hold share it frame by frame), contact_gap_m
+                                          (T,2) signed hand-to-partner gap (negative = sunk in), contact_episodes (json
+                                          str), hands_source (json str), quality_source. quality, quality_parts,
+                                          reproj_parts_px, reproj_px, parts are RECOMPUTED for this fit (MAMMA's
+                                          definitions, ma_2d landmarks; dropped when there are none); repaired, suspect,
+                                          reproj_px_raw, contact (ma_3d's 512-point contact evidence), floor_contact are
+                                          MAMMA's unchanged
+  smplx_detail/{lead,follow}.npz        [build] smplx_hands + face/expr_<role>.npz: jaw_pose, expression (T,n_expr)
+                                          f4, expression_rest, n_expr, face_confidence; neck only when the face npz
+                                          says adopt_neck (face_neck_adopted); face_source. Same schema as smplx/ (the
+                                          Unity export reads jaw_pose; expression is carried for a blendshape path)
+  review/hands_metrics.png, hands_render.jpg, hands_finger_crossing.jpg   [build, pod: no frames needed] the numbers as
+                                          charts; rendered close-ups of the contacts (surface within 20 cm, sunk hand
+                                          vertices yellow, sunk arm vertices orange); per hand the worst finger-crossing
+                                          frame in each stage (crossing faces red)
+  review/hands_contact.jpg              [refine_hands review <take> --video-only, local: needs frames/] video crops at
+                                          contact moments (deepest sink, bridged hold gaps, largest moves; best 2-3
+                                          visible cameras) before / after with hand skeletons + detections
+  review/hands_contact_timeline.png     [contact] per hand: gap of the contact step's input fit, 2D evidence, score,
+                                          episodes, gap after refinement
 
   room/bundle/                          [room prep, local] compact platform-neutral training bundle (~100 MB): manifest.json
                                           (version, prep_config = cams/bundle_max_side/win_step_s/holdout_*/mirror, inputs =
@@ -628,6 +832,89 @@ pod_commands) and texture (inputs.texture_inputs / pod_commands.run) are still a
 are rewritten to `/workspace/HeadMovement/dancecap`, room `post` is optional, avatar runs after mamma). New writers
 should emit schema 1.
 
+Bootstrap features added 2026-10-06 (front stage): `cameras` (pycolmap 4.2.1 CPU wheel + LightGlue/ALIKED at the local
+commit eb42fee + kornia) and `ma2d` (the lightning / albumentations / omegaconf stack MAMMA's landmarks/run_ma_2d.py
+imports, local versions); every pip line of both runs under a constraints file holding numpy 1.26.4 / torch 2.5.1.
+
+```
+work/<take>/front/pod_job.json          [front_pod] job "front" (python -m dancecap.front_pod write-job <take>): the whole
+                                          capture front-end on one pod - per camera label + SAM 2.1 masks (dancer worker:
+                                          frames decoded once), per-frame localisation (loc) / sub-model presolve (sub),
+                                          ma_2d per camera as its masks land, then dancers merge, cameras attach/world/qa,
+                                          sync, world_scale chain, mamma prepare --skip-2d. Inputs: frames, keyframes,
+                                          people, people masks, the reused SfM map + its cached features, the scale
+                                          reference (+ the reference take's sfm bins / camera npz / frames.json), ALIKED +
+                                          LightGlue weights (TORCH_HOME), the ma_2d checkpoint as a state_dict-only copy
+                                          (work/runpod/weights/ma_2d/, identical tensors, sha256 in its .json); SAM 2.1
+                                          large is fetched on the pod from Meta's CDN and checked against the local sha256
+work/<take>/front/front_pod.json        per task state, rc, seconds, measured RSS peak, restarts; host cpus / memory
+                                          limit / caps; working_set_peak_gb. front/memlog.tsv: working set + per-task RSS
+                                          every 10 s; front/logs/<task>.log. The scheduler admits a task only within its
+                                          kind's cap, an estimate budget (0.6 x the container limit) and the MEASURED
+                                          working set (< 0.62 x limit); above 0.86 x limit the youngest non-critical task is
+                                          killed and re-queued. Resumable: the job's command is `front_pod supervise`
+                                          (3 optional copies) which runs the driver (`run --resume`) in its own session;
+                                          every worker runs in its own session through a wrapper that writes front/rc/
+                                          <task>.rc on exit, so a restarted driver ADOPTS live workers, reads finished
+                                          ones' rc files and re-queues the rest (2026-10-06: the driver process was
+                                          SIGKILLed twice with memory at half the limit while its workers lived on; cause
+                                          not found: front/forensic_<n>.json + host_start.json record cgroup limits, OOM
+                                          counters, rlimits and ps snapshots). Tasks whose outputs exist (uploaded from an
+                                          interrupted session: done dancers cameras, valid dancers/cache/<cam>_sam.npz, loc,
+                                          locsub, ma_2d) are pre-completed. The long-pole camera's localisation runs in two
+                                          halves (front_pod loc-part -> cameras/cache/locpart_<cam>_<a>_<b>.npz, loc-join ->
+                                          loc_<cam>.npz + cameras/<cam>.npz)
+work/<take>/front/gates.json            [front gates, local] frames/PTS, labels + per-dancer coverage, geometric re-ID
+                                          swap test (review/reid_geometry.png), localisation / gravity / scale / sync /
+                                          prepare numbers
+dancers/label_<cam>.json, pod_cam_<cam>.json   per-camera label and roles/report entries written by the pod workers
+                                          (merged into labels.json / roles.json / report.json by dancers_pod merge)
+mamma/ma_2d_native/<cam>.manifest.json  + host, seconds, weights_note: pod-computed landmarks carry the POD's mask
+                                          signature, so a local `mamma prepare` must use --skip-2d (else it recomputes)
+
+work/<take>/mamma/chunks.json           [mamma_chunks plan] tag, seq, cams, T, overlap, chunks [{a, b, run_tag, t}],
+                                          estimate_min {chunk_parallel, single_fit_solo, basis}; optional holdout {tag
+                                          h<cam>, cam, chunk, a, b, run_tag, t, seq} (plan --holdout-cam C: that chunk is also
+                                          fitted from the prepared set h<C> = the fit set without C, side by side; merge
+                                          reports chunks_merge.json holdout {cam, frames, lead/follow {held_out_median_px,
+                                          in_fit_median_px, ratio}}: informational, never gates)
+work/<take>/mamma_chunks/pod_job.json   job "mamma" (so the avatar bake runs after it): fit_chunks (every chunk = `mamma
+                                          fit --tag <tag> --fit-frames a:b`, side by side under CUDA MPS) -> merge -> select
+                                          --no-qa; outputs fits/, logs/, select.json, report.json, chunks_fit.json,
+                                          chunks_merge.json, smplx/
+work/<take>/mamma/fits/<tag>/           merged chunk fit (partial false, chunked true): smplx/<role>.npz = the smplx
+                                          contract + chunk_owner (T,) i2, chunk_ranges (n,2); one betas per dancer (frame-
+                                          weighted mean of the chunks'), each chunk re-expressed with it keeping the pelvis
+                                          trajectory, cosine cross-fade over the central half of every overlap (per-joint
+                                          slerp, linear translation / contacts), FK + reprojection + outlier repair as
+                                          export_smplx; fit.json residuals on the eval set
+work/<take>/mamma/chunks_merge.json     per role: betas_chunks / betas_sd / betas, betas_swap_mm (joint displacement from
+                                          the shape unification, per chunk median/p95), seam_mm (the two chunks'
+                                          disagreement inside each overlap, median/p95/pelvis), chunks_had_repairs; merged
+                                          vs per-chunk median reprojection; chunk_frames; gate {passed, why, checks,
+                                          thresholds}: per role every seam p95 <= 60 mm and pelvis median <= 40 mm, betas
+                                          swap p95 <= 40 mm, merged median reprojection <= 1.25 x the chunks' + 0.5 px, no
+                                          chunk above 2 x the chunks' median reprojection
+work/<take>/mamma/chunks_gate.json      [mamma_chunks gate, pod, between merge and select] {gate, fallback {mode, need_min,
+                                          kill_minutes_left, result, seconds}}: gate failed -> --fallback full re-fits the
+                                          whole grid in one run (`mamma fit --tag <tag>`, the rejected merge moved to
+                                          fits/<tag>_merged_rejected/) when the pod's kill switch (/workspace/
+                                          .dancecap_kill_at, written by remote.arm_killswitch) leaves time, else exit 3:
+                                          select and the avatar bake (after: mamma) do not run. write_job budgets the
+                                          fallback fit in the job's max_minutes (--fallback none: not)
+work/<take>/mamma/chunks_seams.json     [mamma_seams, local after download] continuity of the merged fit at each blend
+                                          window (central half of an overlap), per role and seam: disagree_mm (the two
+                                          chunks over the overlap: median / p95 / pelvis median / pelvis max),
+                                          pelvis_acc / body_acc (pelvis-relative body joints) / speed_step {merged_max,
+                                          prev_max, next_max, ratio_vs_chunks} over the window, merged_pelvis_acc_vs_take_p99
+                                          (context), smooth (all three ratios <= 1.25: the cross-fade added no motion of
+                                          its own); take_outside_windows p95/p99; top_pelvis_acc [5] {frame, t, acc,
+                                          in_blend_window}; merged_is_chunked false = the gate's full-fit fallback won
+work/<take>/review/pose_seams.jpg       [mamma_seams] whole-take pelvis speed (blend windows shaded) + per seam: pelvis path
+                                          from above and pelvis speed (merged vs both chunks) per dancer, chunk-vs-chunk
+                                          joint distance over the overlap
+```
+
 ```
 work/runpod/ledger.json                 every pod created (price, created/deleted, cost) -> budget cap (remote.py)
 work/runpod/bundles/bundle_<key>.tar.gz content-keyed upload bundle + bundle_<key>.json manifest (files, hard links
@@ -659,7 +946,11 @@ Backwards compatible with v2 (figure1/2.json, video_meta.json still written). Ad
 "timing": "timing.json", "physics": "physics.json",
 "contacts": "contacts.json"            (reserved, not written yet)
 "smplx_albedo": {"lead": "lead_albedo.png", "follow": "follow_albedo.png"},   photoreal albedo (copy of
-                                         avatar/<role>_albedo.png) when the texture stage ran; needs skin version 2
+                                         avatar/<role>_albedo.png) when the texture stage ran; needs skin version 2;
+                                         with smplx_face/ the face variant (avatar_face portrait look by default)
+"smplx_albedo_variant": {"lead": "face"|"videolook"|"bake", ...}   which texture <role>_albedo.png is (face_export)
+"smplx_face": {"lead": "smplx_lead_face.bin", ...}   DCXF expression / blink blendshapes + weights (face_export;
+                                         read by Assets/Avatar/SmplxFace.cs; see smplx_face/ above)
 "room": {"mesh": "room_mesh.bin", "shading", "triangles", "vertices", "cleared_triangles", "textures", "bounds_min",
          "bounds_max"},                  Quest room mesh (from room/room_mesh.obj, else room_mesh.ply vertex colours)
 "environment_splat": {"path": "splat_quest.ply", "scene_to_unity": [16 row-major], "frame"}   room/splat_quest.ply
@@ -712,6 +1003,19 @@ rest height over model.rest_height_m, rest shape settled under gravity on the re
 per CAPTURE frame (times.json intervals, substeps interpolate the head and capsules; seek / loop back / jumps > 8 frames
 re-hang + 0.5 s static settle + 20-frame pre-roll), one dynamic ribbon mesh (Resources/HM_HairStrands, Kajiya-Kay,
 alpha-to-coverage, tip emission). v3 captures never create the old LineRenderer HairSimulation.
+
+`shoes.json` (optional, dancecap.shoes; likeness data - work/ and git-ignored StreamingAssets only): per dancer
+{style court_platform|runner|neutral, upper, sole, sole_heel, outsole, accent, lace, lining, heel_tab (#rrggbb sRGB,
+graded like the albedo bake; white parts balanced to a neutral white), sole_heel_m, sole_fore_m, toe_spring_m,
+heel_bevel_m, source, confidence, measured}.
+Every avatar gets procedural sneakers (head-movement Assets/Shoes/SneakerPair; neutral without the file). They are built
+on a worker thread at load from the dancer's fitted rest feet and fitted to the capture's motion:
+- The outsole bottom is the fitted sole plane (the fit's sole = the shoe sole, see the world scale above).
+- Floor contact is baked per frame: never below the floor, stances planted by at most 2 cm.
+- The bare feet are cut along each shoe's top edge (SmplxAvatar.SetFootHeights / HideFeet).
+- The rear upper and the collar are sized to the visible leg over the whole capture.
+- The shoes share the avatar's opacity.
+`python -m dancecap.shoes <take> --export-only` re-copies it after every export.
 
 Unity (head-movement): `CaptureTimeline` maps audio time -> frame by binary search over times[] + time_to_audio
 (nearest frame); `SmplxAvatar` builds a 55-bone SkinnedMeshRenderer per dancer (layer `avatars`; textured with

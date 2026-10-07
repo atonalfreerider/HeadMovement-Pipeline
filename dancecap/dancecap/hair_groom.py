@@ -4,8 +4,36 @@ colour and collision capsules, measured from the take -> avatar/hair_groom.json 
     python -m dancecap.hair_groom larissa_kadu                 -> avatar/hair_groom.json, review/hair_groom.jpg,
                                                                   copies into every capture of the take
     python -m dancecap.hair_groom larissa_kadu --export-only [--capture 02_LarissaKadu]
+    python -m dancecap.hair_groom larissa_kadu --restyle       -> upgrade avatar/hair_groom.json to the current
+                                                                  version (style, cards, face box, colliders, render,
+                                                                  dynamics) WITHOUT re-measuring; the cap's hairline
+                                                                  is measured on the exported follow albedo (the
+                                                                  hairline painted into the texture); then export
     python -m dancecap.hair_groom larissa_kadu --sheet         -> review/hair_sheet.jpg from the Unity review shots
                                                                   (head-movement Tools/playtest_hair.ps1)
+
+Version 2 (2026-10-06, "sleek and straight like the portrait"): the measured roots, lengths and colours of version 1
+plus the blocks the Unity game-style hair reads (head-movement Assets/Hair, docs: dancecap/docs/HAIR_REFERENCE.md):
+  style      sleek straight, deep side part on her left, swept to her right: comb directions per root zone (front
+             right over the temple to the front of the right shoulder, front left behind the ear, back down with a
+             right bias), low root lift and outward bias, groom stand-off ~1 cm
+  cards      the layered hair cards (cap / inner / mid / outer / part / flyaway) driven by the 160 guides, the
+             procedural strand atlas (generated in Unity: no texture in the repo) and the LOD switch
+  face_box   the head-attached exclusion box in front of the face (settle AND every simulation step): no strand
+             ever hangs over her face
+  colliders  head = a capsule fitted to the scalp (the skull is longer than it is wide), neck / shoulders / chest /
+             mid-back, plus upper-arm and forearm capsules (points 5+ only, frictionless, capped push-out) so the
+             hair slides off a raised arm
+  render     albedo (observed mid x gain, same hue; tuned against the image statistics of HAIR_REFERENCE 4) for the
+             video and the portrait (albedo_default = portrait: "like the portrait"), Kajiya-Kay dual lobe (white
+             primary, coloured secondary) + transmission, the original tip bloom curve as sparse soft glows (core +
+             halo + round end) on real atlas strands
+  dynamics   stiffer, more damped, sleek: little volume, natural swing in turns; the front-right section is held
+             further down its length (no hooks under the chin in fast turns)
+2026-10-07 review fixes: cards.cap reaches down to the hairline PAINTED into the follow's albedo (measured here by
+painted_hairline; the texture's baked hair showed as a dark band under the cards), lighter cap occlusion at the
+hairline, front card roots dropped toward it (cards.root_drop); inner cards to 97 % of the length.
+Unity reads version 1 and 2 (missing blocks fall back to the same defaults).
 
 Inputs (nothing take-specific in the code): smplx/follow.npz (her fit; the SMPL-X model it names), cameras via
 mamma_dyn.load_tracks (sync-corrected world cameras), frames/<cam>, dancers/<cam>/{hair,body,masks} follow masks;
@@ -35,7 +63,8 @@ Method (CPU, ~1 min)
      sRGB; zones along the visible hair (root < 25 % < mid < 75 % < tip of the head-centre distance range); per-camera
      medians, median across cameras; shadow / highlight = luminance bands; strand palette = luminance quantiles.
   6. Colliders: capsules between SMPL-X joints (+ rest-frame offsets) with radii from her rest mesh (p40 distance of
-     the segment's dominant vertices): head sphere, neck, shoulder bar, chest and mid-back bars (no arms).
+     the segment's dominant vertices): head (a front-back capsule fitted to the scalp), neck, shoulder bar, chest and
+     mid-back bars, upper arms and forearms (version 2; listed first so the body always wins).
   7. Motion: head angular speed per grid frame (Kabsch of the posed head vertices) -> the fastest head moments
      (review screenshots) and the turn / calm split.
 
@@ -59,15 +88,130 @@ from .take import WORKSPACE, Take
 ROLE, PID = "follow", 2
 J_PELVIS, J_LHIP, J_RHIP, J_SPINE2, J_SPINE3, J_NECK, J_HEAD = 0, 1, 2, 6, 9, 12, 15
 J_LCOLLAR, J_RCOLLAR, J_LSH, J_RSH, J_LELB, J_RELB, J_JAW = 13, 14, 16, 17, 18, 19, 22
+J_LWR, J_RWR = 20, 21
 HEAD_JOINTS = (15, 23, 24)  # head + eyes (the jaw region is the chin, never scalp)
 UNITY_STREAMING = WORKSPACE / "head-movement" / "Assets" / "StreamingAssets"
-VERSION = 1
+VERSION = 2
 
 # hairline: minimum elevation (deg, from the head-sphere centre) of scalp vertices vs |azimuth| (0 = facing)
 HAIRLINE_EL = ((0, 50), (30, 45), (55, 34), (75, 24), (100, 20), (120, 2), (150, -26), (180, -34))
 # original head-movement tip bloom (docs/HAIR_REFERENCE.md section 5): linear white emission along the strand
 TIP_EMISSION = {"s": [0.0, 0.2, 0.4, 0.6, 0.8, 1.0], "e": [0.0, 0.012, 0.024, 0.219, 1.398, 3.10],
                 "source": "LineRenderer.BakeMesh vertex colours x 3.1 of the original HairSimulation (HAIR_REFERENCE.md 5)"}
+
+# ---- version 2: sleek straight style (all vectors in Unity head-bone axes: +x = her left, +y up, +z = BACKWARD; the
+# avatar faces -z). The portrait: deep side part on her left, swept over to her right, the right front section over
+# the temple and down in front of the right shoulder, the left front tucked behind the ear, no fringe.
+STYLE = {
+    "type": "sleek_straight",
+    "part_x_unity": 0.025,
+    "sweep": -1,
+    "front_right": "front_of_shoulder",
+    "front_left": "behind_ear",
+    "comb_unity": {"front_right": [-1.0, -0.2, -0.1], "front_left": [0.5, -0.3, 0.9], "back": [-0.2, -1.0, 0.5]},
+    "front_abs_az_deg": [60.0, 150.0],
+    "root_lift": 0.15,
+    "outward_bias": 0.06,
+    "down_slerp_per_segment": 0.30,
+    "front_dev_abs_az_deg": 100.0,
+    "hug_volume_m": 0.045,
+    "hug_below_r": 0.3,
+    "face_clear_m": 0.02,
+    "front_right_forward": 0.5,
+    "settle_comb_hold": 0.08,
+    "settle_comb_falloff": 0.12,
+    "settle_comb_falloff_front_right": 0.3,
+    "note": "comb = direction the strand leaves its root in (projected onto the scalp); front comb up to |az| 60 deg, "
+            "blended to the back comb by 150 deg. Above the skull's equator (hug_below_r x head radius below the head "
+            "capsule) a strand runs along the skull at a hug distance that grows with its root's elevation by up to "
+            "hug_volume_m (crown hair lies over the lower layers); in front of the face it keeps sweeping sideways "
+            "(face_clear_m past the face box); below, it turns down by down_slerp_per_segment, the front-right section "
+            "toward the front of the right shoulder (front_right_forward). The Unity settle then drapes it under gravity "
+            "over the body colliders and the face box with the comb held near the roots (settle_comb_*)",
+}
+SLEEK_STANDOFF_M = 0.010  # hair layer over the scalp (version 1: 0.6 x the hull's back-layer stand-off = puffy)
+FACE_BOX = {"fwd_min_r": 0.25, "y_lo_r": -1.55, "y_hi_r": 0.45, "half_width_r": 0.80, "margin_m": 0.006,
+            "side_bias_r": 0.35,
+            "frame": "head-bone space around model.head_sphere_centre_unity, r = model.head_radius_m; forward = -z; "
+                     "a point is inside when (c - p).z > fwd_min_r r, y_lo_r r < p.y - c.y < y_hi_r r and "
+                     "|p.x - c.x| < half_width_r r; it is pushed out sideways (velocity-neutral) to half_width_r r + "
+                     "particle radius + margin_m on its guide's side of the part, or down under the chin when that is "
+                     "shorter - never up (a box that pushes up is a shelf over the eyes)"}
+CARDS = {
+    "layers": [
+        {"name": "inner", "count": 24, "width_m": [0.040, 0.030], "offset_m": -0.003, "length_factor": [0.97, 0.97],
+         "tiles": [0, 1], "bulge": 0.08, "ao": 0.55, "edge_fade": False},
+        {"name": "mid", "count": 40, "width_m": [0.030, 0.018], "offset_m": 0.0, "length_factor": [0.97, 1.0],
+         "tiles": [2, 4], "bulge": 0.15, "ao": 0.8, "edge_fade": True},
+        {"name": "outer", "count": 48, "width_m": [0.022, 0.006], "offset_m": 0.004, "length_factor": [0.95, 1.03],
+         "tiles": [5, 6], "bulge": 0.15, "ao": 1.0, "edge_fade": True,
+         "regions": [{"name": "crown_back", "count": 24, "abs_az": [110, 180], "el_above": 62},
+                     {"name": "right_side", "count": 9, "az": [-110, -50]},
+                     {"name": "left_side", "count": 5, "az": [50, 110]},
+                     {"name": "front_right", "count": 7, "az": [-50, 50], "side": -1},
+                     {"name": "behind_left_ear", "count": 3, "az": [-50, 50], "side": 1}]},
+        {"name": "part", "count": 8, "width_m": [0.020, 0.014], "offset_m": 0.002, "length_m": [0.10, 0.16],
+         "tiles": [2, 4], "bulge": 0.10, "ao": 0.9, "edge_fade": True},
+        {"name": "flyaway", "count": 16, "width_m": [0.006, 0.003], "offset_m": 0.008, "length_factor": [0.90, 1.02],
+         "tiles": [7, 7], "bulge": 0.0, "ao": 1.0, "edge_fade": True, "short": 6, "short_length_m": [0.10, 0.16],
+         "wobble_m": [0.006, 0.012]},
+    ],
+    "cap": {"offset_m": 0.0015, "ao": [0.85, 0.6], "fade_deg": 5.0, "strands_per_m": 1400, "hairline_jitter": 0.6,
+            "softness": 0.25,
+            "note": "scalp cap down to hairline_el_deg_vs_abs_az (painted_hairline: where the follow albedo's baked hair "
+                    "ends, minus a margin; absent = model.hairline_el_deg_vs_abs_az), coverage 0.5 at that line +- a "
+                    "per-strand jitter (fringed), fade_deg wide, softened over softness (coverage units); occlusion "
+                    "ao[0] at the hairline -> ao[1] under the cards; procedural strands across the comb (strands_per_m)"},
+    "root_fade_m": 0.015,
+    "root_drop": {"abs_az_max": 70.0, "near_hairline_deg": 8.0, "above_cap_deg": 3.0, "min_el_deg": 31.0,
+                  "face_abs_az": 55.0, "fade_m": 0.07, "offset_m": 0.002,
+                  "note": "cards whose primary guide's root is within near_hairline_deg of the root hairline (|az| <= "
+                          "abs_az_max) start lower: root offset down to above_cap_deg above the cap's hairline (never "
+                          "below min_el_deg where |az| < face_abs_az: the face box), fading out over fade_m"},
+    "atlas": {"size": [1024, 1024], "tiles": 8, "seed": 1, "note": "procedural strand atlas generated in Unity "
+              "(R coverage, G strand id, B depth, A strand end); coverage-preserving mips"},
+    "lod_head_px": [160, 60],
+    "note": "each card follows a weighted blend of 3 neighbouring guides on the same side of the part (one coherent "
+            "sheet); widths / offsets in metres of the rest model (scaled by Unity's LengthScale)",
+}
+RENDER_V2 = {
+    "albedo_gain": 1.85,
+    "albedo_default": "portrait",
+    "var_lo": 0.88, "var_hi": 1.12,
+    "copper_lift": [1.12, 1.18, 1.0], "copper_lift_m": 0.10,
+    "kajiya_kay": {"version": 2, "primary_shift": 0.04, "primary_exponent": 220, "primary_strength": 0.22,
+                   "primary_tint": [1.0, 0.92, 0.88], "secondary_shift": -0.10, "secondary_exponent": 24,
+                   "secondary_strength": 0.5, "shift_jitter": 0.015, "sparkle": [0.45, 1.0],
+                   "convention": "T root->tip, T' = normalize(T + shift N): positive = highlight toward the root"},
+    "tt": {"colour": [1.0, 0.24, 0.17], "strength": 0.8, "beta": 0.10, "alpha": 0.035,
+           "source": "Karis 2016 transmission approximation (backlit red rim)"},
+    "body_soft_clamp": [0.5, 0.66],
+    "tip_glow": {"window_m": 0.10, "ribbon_m": 0.05, "end_fraction": 0.92, "per_outer_card": 1, "outer_card_stride": 2, "per_flyaway": 1,
+                 "points": 9, "width_m": [0.0010, 0.0004], "core_px": 1.5, "halo_px": [2.0, 5.0], "halo_m": 0.004,
+                 "halo": 0.25, "anchor_to_strands": True, "spacing_m": 0.02, "min_abs_az_deg": 80.0, "camera_nudge_m": 0.003,
+                 "note": "white emission E(s) of tip_emission along the last ribbon_m of a real atlas strand (its clump "
+                         "centre, ending where it visibly ends) of every outer_card_stride-th outer card and of the end "
+                         "flyaways (no two tips within spacing_m; none on the front sections, |az| < min_abs_az_deg: they "
+                         "hang over her chest in every face-on view), s = 1 - (distance to the tip) / window_m: the "
+                         "original curve (above the bloom threshold for its last 27 %) compressed to the last ~2.7 cm - 'a "
+                         "little stylisation with the tips' (user, 2026-10-06; the original window was 0.32 m). Drawn as a "
+                         "SOFT glow: Gaussian core >= core_px wide + a halo below the bloom threshold (halo x the core, "
+                         "radius halo_m clamped to halo_px) + a round end, so it reads as a bloom with or without URP's "
+                         "bloom; faded out with the avatar's opacity (smoothstep 0..0.1), not with the hair's"},
+}
+DYNAMICS_V2 = {"gravity_mps2": 9.81, "substeps": 8, "iterations": 2, "damping_per_s": 2.4, "bend_compliance": 1e-6,
+               "shape_stiffness_root": 0.6, "shape_falloff": 0.22, "friction": 0.35, "particle_radius_m": 0.005,
+               "max_stretch": 1.02, "max_deviation_back": 1.0, "max_deviation_front": 0.6,
+               "head_standoff_fraction": 0.6, "settle_s": 0.5, "preroll_frames": 20,
+               "front_right": {"abs_az_max": 60.0, "shape_stiffness_root": 0.8, "shape_falloff": 1.0, "max_deviation": 0.25,
+                               "side": {"abs_az_max": 95.0, "shape_stiffness_root": 0.6, "shape_falloff": 0.4,
+                                        "max_deviation": 0.5},
+                               "note": "the front-right section (|az| < abs_az_max, right of the part: draped in front "
+                                       "of the right shoulder) is held to its rest shape further down the strand, with "
+                                       "a tighter deviation cone: in fast turns it swings as a sleek sheet instead of "
+                                       "curling into hooks under the chin. The right side beyond it (|az| < "
+                                       "side.abs_az_max: drapes forward over the shoulder) gets a moderate hold; a "
+                                       "strong one folds those strands where a raised arm pushes them"}}
 
 
 # ------------------------------------------------------------------------------------------------ small helpers
@@ -227,8 +371,28 @@ def sample_roots(rm: RestModel, sp: dict, n_roots: int, seed: int = 0, oversampl
             "scalp_area_m2": float(A.sum())}
 
 
+def fit_head_capsule(P: np.ndarray, c0: np.ndarray, r0: float) -> tuple[np.ndarray, float, float, float]:
+    """Capsule along the rest z axis (front-back) through scalp points P (N,3): centre, half length h, radius r and
+    the p95 |residual|. The skull is longer than it is wide, so a sphere through the scalp floats 1.5 cm off the sides
+    (puffy hair); the capsule fits within a few mm. Falls back to the sphere when scipy is missing."""
+    def resid(x):
+        a = x[:3] - [0, 0, x[3]]
+        b = x[:3] + [0, 0, x[3]]
+        return segment_distance(P, a, b) - x[4]
+    try:
+        from scipy.optimize import least_squares
+        sol = least_squares(resid, np.r_[c0, 0.01, r0], bounds=([-np.inf] * 3 + [0.0, 0.02], [np.inf] * 3 + [0.06, 0.2]))
+        x = sol.x
+    except ImportError:
+        x = np.r_[c0, 0.0, r0]
+    return x[:3], float(x[3]), float(x[4]), float(np.percentile(np.abs(resid(x)), 95))
+
+
 def colliders(rm: RestModel, sp: dict) -> list[dict]:
-    """Capsules (bone a + offset a -> bone b + offset b, radius) from the rest mesh; offsets in rest axes."""
+    """Capsules (bone a + offset a -> bone b + offset b, radius) from the rest mesh; offsets in rest axes. The arm
+    capsules come first (Unity processes them before the body, so the body always wins) and only push points 5+
+    (the scalp-hugging top is never squeezed between an arm and the head), frictionless, push-out capped per
+    substep (trapped hair slides instead of jittering)."""
     v, J, dom = rm.v, rm.J, rm.dom
     half_sh = 0.5 * abs(J[J_LSH, 0] - J[J_RSH, 0])
 
@@ -236,8 +400,15 @@ def colliders(rm: RestModel, sp: dict) -> list[dict]:
         d = segment_distance(v[sel], a, b)
         return float(np.percentile(d, q)) if len(d) else 0.05
 
-    out = [{"name": "head", "a": J_HEAD, "oa": sp["centre"] - J[J_HEAD], "b": J_HEAD, "ob": sp["centre"] - J[J_HEAD],
-            "r": float(np.percentile(np.linalg.norm(v[sp["scalp_v"]] - sp["centre"], axis=1), 40))}]
+    out = []
+    for name, ja, jb in (("upperarm_l", J_LSH, J_LELB), ("upperarm_r", J_RSH, J_RELB),
+                         ("forearm_l", J_LELB, J_LWR), ("forearm_r", J_RELB, J_RWR)):
+        r = float(np.clip(radius(dom == ja, J[ja], J[jb]), 0.03, 0.06))
+        out.append({"name": name, "a": ja, "oa": np.zeros(3), "b": jb, "ob": np.zeros(3), "r": r,
+                    "first_point": 5, "friction": 0.0, "max_push_m": 0.01})
+    hc, hh, hr, hres = fit_head_capsule(v[sp["scalp_v"]], sp["centre"], sp["radius"])
+    out.append({"name": "head", "a": J_HEAD, "oa": hc - [0, 0, hh] - J[J_HEAD], "b": J_HEAD,
+                "ob": hc + [0, 0, hh] - J[J_HEAD], "r": hr, "fit_p95_mm": round(1000 * hres, 1)})
     neck_sel = dom == J_NECK
     out.append({"name": "neck", "a": J_NECK, "oa": np.zeros(3), "b": J_HEAD, "ob": np.zeros(3),
                 "r": radius(neck_sel, J[J_NECK], J[J_HEAD])})
@@ -248,12 +419,164 @@ def colliders(rm: RestModel, sp: dict) -> list[dict]:
         a, b = J[j] + oa, J[j] + ob
         sel = np.isin(dom, sel_j) & (np.abs(v[:, 1] - a[1]) < 0.06)
         out.append({"name": name, "a": j, "oa": oa, "b": j, "ob": ob, "r": radius(sel, a, b, 35)})
-    # no arm capsules: a raised arm next to the head traps strands between two capsules (jitter); hair passing
-    # through an arm for a frame is the lesser artefact
     for c in out:
         c["r"] = round(float(np.clip(c["r"], 0.03, 0.16)), 4)
         c["oa_unity"], c["ob_unity"] = r3(to_unity(c.pop("oa"))), r3(to_unity(c.pop("ob")))
     return out
+
+
+def painted_hairline(vertices: np.ndarray, weights: np.ndarray, faces: np.ndarray, uv: np.ndarray,
+                     head_joint: np.ndarray, centre_unity, albedo_rgb: np.ndarray, model_table=HAIRLINE_EL,
+                     margin_deg: float = 2.0, max_abs_az: float = 65.0, skin_ratio: float = 0.7,
+                     samples: int = 28) -> list:
+    """Hairline painted into the avatar texture: [[|az| deg, el deg], ...] for the scalp cap (Unity skin, head-bone
+    axes: az 0 = facing -z, + = her left; el from the head-sphere centre). The skin's head triangles (dominant joint
+    15 / 23 / 24) are sampled densely (fixed barycentric pattern) and textured (nearest texel of albedo_rgb, float
+    0..1, PNG rows: v up = row 0 at the top); per 10-deg |azimuth| bin up to max_abs_az, going down from the crown in
+    2-deg elevation steps, the hairline is the first step whose median luminance is skin (at least skin_ratio x the
+    forehead's median, |az| < 30, 5..15 deg), minus margin_deg (the cap covers the painted edge). Beyond max_abs_az
+    (ears, sides and back, covered by the hanging hair) the model's root hairline is kept."""
+    rng = np.random.default_rng(0)
+    head = np.isin(np.asarray(weights).argmax(1), HEAD_JOINTS)
+    tri = np.asarray(faces)[head[np.asarray(faces)].all(1)]
+    b = rng.random((samples, 2))
+    flip = b.sum(1) > 1
+    b[flip] = 1 - b[flip]
+    bc = np.c_[1 - b.sum(1), b]
+    P = np.einsum("sk,tkd->tsd", bc, np.asarray(vertices)[tri]).reshape(-1, 3)
+    T = np.einsum("sk,tkd->tsd", bc, np.asarray(uv)[tri]).reshape(-1, 2)
+    d = P - np.asarray(head_joint) - np.asarray(centre_unity, float)
+    az = np.degrees(np.arctan2(d[:, 0], -d[:, 2]))
+    el = np.degrees(np.arcsin(np.clip(d[:, 1] / np.maximum(np.linalg.norm(d, axis=1), 1e-9), -1, 1)))
+    h, w = albedo_rgb.shape[:2]
+    px = np.clip((T[:, 0] * w).astype(int), 0, w - 1)
+    py = np.clip(((1 - T[:, 1]) * h).astype(int), 0, h - 1)
+    lum = albedo_rgb[py, px] @ np.array([0.2126, 0.7152, 0.0722])
+    fore = (np.abs(az) < 30) & (el > 5) & (el < 15)
+    thr = skin_ratio * float(np.median(lum[fore])) if fore.sum() > 20 else 0.4
+    a_m, e_m = np.array(model_table, float).T
+    out = []
+    for lo in np.arange(0.0, max_abs_az, 10.0):
+        sel = (np.abs(az) >= lo) & (np.abs(az) < lo + 10)
+        hl = None
+        for e0 in np.arange(70.0, -6.0, -2.0):
+            ss = sel & (el >= e0) & (el < e0 + 2)
+            if ss.sum() >= 5 and np.median(lum[ss]) >= thr:
+                hl = e0 + 2.0
+                break
+        model = float(np.interp(lo + 5, a_m, e_m))
+        out.append([round(float(lo + 5), 1), round(min(model, hl - margin_deg) if hl is not None else model, 1)])
+    for a, e in zip(a_m, e_m):
+        if a > max_abs_az + 5:
+            out.append([round(float(a), 1), round(float(e), 1)])
+    return out
+
+
+def painted_hairline_of_capture(capture: Path, groom: dict, role: str = ROLE) -> list | None:
+    """painted_hairline of an exported capture folder (smplx_<role>_skin.bin + <role>_albedo.png); None when missing."""
+    skin_p, alb_p = capture / f"smplx_{role}_skin.bin", capture / f"{role}_albedo.png"
+    if not (skin_p.exists() and alb_p.exists()):
+        return None
+    from .export_unity import read_skin
+    _, sk = read_skin(skin_p)
+    if sk.uv is None:
+        return None
+    img = cv2.imread(str(alb_p), cv2.IMREAD_COLOR)
+    if img is None:
+        return None
+    rgb = img[:, :, ::-1].astype(np.float32) / 255.0
+    centre = (groom.get("model") or {}).get("head_sphere_centre_unity")
+    if centre is None:
+        return None
+    return painted_hairline(sk.vertices, sk.weights, sk.faces, sk.uv, sk.joints[J_HEAD], centre, rgb,
+                            model_table=(groom.get("model") or {}).get("hairline_el_deg_vs_abs_az") or HAIRLINE_EL)
+
+
+def albedo_from(mid_linear, gain: float) -> list:
+    """Albedo start for the lit shader: the OBSERVED mid colour (it already contains the hair's own shading) scaled
+    up at the same hue, clipped to 0.95."""
+    a = np.clip(np.asarray(mid_linear, float) * gain, 0.0, 0.95)
+    return r3(a)
+
+
+def apply_style(groom: dict, rm: RestModel | None = None, sp: dict | None = None, ref: dict | None = None,
+                cap_hairline: list | None = None) -> dict:
+    """Upgrade a groom (version 1 or 2) to the current version: style, cards, face box, render and dynamics blocks;
+    colliders re-derived when the rest model is given; the cap's hairline = cap_hairline (painted_hairline of the
+    exported texture) when given. Measured data (roots, lengths, colours, 2D measurement, motion) are kept as they are."""
+    g = json.loads(json.dumps(groom))
+    g["version"] = VERSION
+    g["style"] = STYLE
+    g["face_box"] = FACE_BOX
+    g["cards"] = json.loads(json.dumps(CARDS))
+    if cap_hairline:
+        g["cards"]["cap"]["hairline_el_deg_vs_abs_az"] = cap_hairline
+        g["cards"]["cap"]["hairline_source"] = "painted_hairline: the follow albedo's baked hair edge - 2 deg (|az| <= 65)"
+
+    sh = g.setdefault("shape", {})
+    sh["standoff_m"] = SLEEK_STANDOFF_M
+    sh["part_x_unity"] = STYLE["part_x_unity"]
+    sh["texture"] = "sleek, straight, glossy; deep side part on her left, swept to her right; tapered piecey ends"
+    if rm is not None and sp is not None:
+        g["colliders"] = colliders(rm, sp)
+    col = g.get("colour") or {}
+    mid = (col.get("mid") or {}).get("linear_srgb")
+    render = dict(g.get("render") or {})
+    render.update(json.loads(json.dumps(RENDER_V2)))
+    render["tip_emission"] = TIP_EMISSION
+    if mid is not None:
+        render["albedo_linear"] = albedo_from(mid, RENDER_V2["albedo_gain"])
+        render["albedo_source"] = "video: colour.mid x albedo_gain (same hue)"
+    hl = (col.get("highlight") or {}).get("linear_srgb")
+    if hl is not None:
+        render["kajiya_kay"]["highlight_linear"] = r3(np.clip(np.asarray(hl, float) * 1.05, 0, 1))
+    pal = (((ref or {}).get("colour") or {}).get("portrait") or {}).get("palette", {})
+    pm = pal.get("mid", {}).get("linear_srgb")
+    if pm is not None:
+        render["albedo_portrait_linear"] = albedo_from(pm, RENDER_V2["albedo_gain"])
+        render["albedo_portrait_source"] = "portrait (white-balanced on her top): palette.mid x albedo_gain (same hue)"
+    ph = pal.get("highlight", {}).get("linear_srgb")
+    if ph is not None:
+        # the portrait's highlight hue at the video highlight's brightness (the gloss band of the TRT lobe)
+        ref_max = max(render["kajiya_kay"].get("highlight_linear") or [0.66])
+        render["kajiya_kay"]["highlight_portrait_linear"] = r3(np.clip(np.asarray(ph, float) * ref_max / max(max(ph), 1e-6), 0, 1))
+    if render.get("albedo_default") == "portrait" and "albedo_portrait_linear" not in render:
+        render["albedo_default"] = "video"  # no portrait measured
+    g["render"] = render
+    targets = (g.get("dynamics") or {}).get("targets")
+    g["dynamics"] = {**DYNAMICS_V2, "targets": targets}
+    st = g.setdefault("strands", {})
+    st["note"] = ("guides are simulated and drive the layered hair cards (cards block); children / child_spread_m / "
+                  "width_*_m / tip_clump only feed the legacy ribbon renderer (hm_hair --mode ribbons)")
+    return g
+
+
+def restyle(take: Take, do_export: bool = True) -> dict:
+    """avatar/hair_groom.json -> the current version without re-measuring (rest model only, for the colliders)."""
+    p = take.work / "avatar" / "hair_groom.json"
+    if not p.exists():
+        raise FileNotFoundError(f"{p} missing (run python -m dancecap.hair_groom {take.name})")
+    groom = json.loads(p.read_text(encoding="utf-8"))
+    rm = RestModel(take.work)
+    sp = scalp(rm)
+    ref_p = take.work / "avatar" / "hair_reference.json"
+    ref = json.loads(ref_p.read_text(encoding="utf-8")) if ref_p.exists() else None
+    cap = None
+    for d in captures_for(take.name):
+        cap = painted_hairline_of_capture(d, groom)
+        if cap:
+            print(f"[hair_groom] painted hairline of {d.name}: {cap}")
+            break
+    g = apply_style(groom, rm, sp, ref, cap_hairline=cap)
+    g["restyled"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    p.write_text(json.dumps(g, indent=1), encoding="utf-8")
+    head = next(c for c in g["colliders"] if c["name"] == "head")
+    print(f"[hair_groom] restyled {p} -> version {g['version']}: {sum(l['count'] for l in g['cards']['layers'])} cards, "
+          f"head capsule r {head['r']} (fit p95 {head.get('fit_p95_mm')} mm), albedo {g['render'].get('albedo_linear')}")
+    if do_export:
+        for q in export(take):
+            print(f"[hair_groom] -> {q}")
+    return g
 
 
 # ------------------------------------------------------------------------------------------------ 2D measurement
@@ -531,6 +854,8 @@ def build(take: Take, guides: int = 160, segments: int = 16, step: int = 6, cams
                    "grid_frames": int(len(head_t))},
         "runtime_s": None,
     }
+    groom["shape"]["hull_standoff_m"] = standoff  # version 1 stand-off (0.6 x hull, an upper bound); version 2 is sleek
+    groom = apply_style(groom, rm, sp, ref)
     groom["runtime_s"] = round(time.time() - t0, 1)
     return groom, {"rm": rm, "sp": sp, "roots": roots, "meas": meas, "lengths": lengths}
 
@@ -696,7 +1021,7 @@ def sheet(take: Take, out: Path | None = None, tile_w: int = 640) -> Path:
     for s in shots:
         rows.setdefault((s["peak"], s["tipGlow"]), []).append(s)
     sw = meta.get("sweep") or {}
-    lines = [f"{meta.get('capture')} - follow hair (Unity, Assets/Hair): groomed guide strands, Kajiya-Kay ribbons",
+    lines = [f"{meta.get('capture')} - follow hair (Unity, Assets/Hair): guide-driven hair cards, sleek side-swept (portrait)",
              f"sweep {sw.get('frames')} frames: spread r95 calm {sw.get('spreadR95CalmMedianM', float('nan')):.3f} m, "
              f"turn {sw.get('spreadR95TurnMedianM', float('nan')):.3f} m (p90 {sw.get('spreadR95TurnP90M', float('nan')):.3f}), "
              f"trailing {sw.get('trailingDegTurnMedian', float('nan')):.0f} deg; CPU {sw.get('stepMsMean', float('nan')):.2f} ms "
@@ -752,10 +1077,16 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--capture", help="capture folder name (default: every capture of the take)")
     ap.add_argument("--no-export", action="store_true")
     ap.add_argument("--sheet", action="store_true", help="only compose review/hair_sheet.jpg from the Unity review shots")
+    ap.add_argument("--restyle", action="store_true",
+                    help="upgrade avatar/hair_groom.json to the current version (style, cards, face box, colliders, "
+                         "render, dynamics) without re-measuring, then export (unless --no-export)")
     a = ap.parse_args(argv)
     take = Take.load(a.take)
     if a.sheet:
         print(f"[hair_groom] {sheet(take)}")
+        return
+    if a.restyle:
+        restyle(take, do_export=not a.no_export)
         return
     if a.export_only:
         for p in export(take, a.capture):

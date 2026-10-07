@@ -10,7 +10,12 @@ i. The residual in c is minimal at the true delta. A timing error only moves a l
 curve minimised is the median |residual . motion direction| over each camera's fastest 30 % of landmarks
 ("along_px"; the plain median residual over all landmarks is reported too but is far too flat to locate delta).
 
-    python -m dancecap sync larissa_kadu [--cams 01,02,..] [--range-ms 300]
+    python -m dancecap sync larissa_kadu [--cams 01,02,..] [--range-ms 300] [--workers N]
+
+Workers: the residual evaluations of one joint iteration (each camera's step and its finite differences) and the
+per-camera curve searches are independent, so they run in a process pool (fork; identical numbers to the serial
+path). Default: serial off-pod (the 4-CPU workstation), the container's CPU quota (max 16) on a pod
+(larissa_kadu_38 serial on an A100 pod: 1565 s).
 
 Solve: all offsets jointly (solve_joint). For each camera a Gauss-Newton step is the median over its fast landmarks
 of -(d . v)/|v|^2 (d = projected - observed, v = image velocity); the dependence of each camera's optimum on the
@@ -32,6 +37,7 @@ without its own verified file.
 from __future__ import annotations
 
 import json
+import os
 import time
 import warnings
 from pathlib import Path
@@ -346,8 +352,11 @@ def _subwindows(c: CamData, length_s: float = SUB_WINDOW_S) -> list[tuple[float,
 
 
 def estimate(work: Path, cams: list[str] | None = None, range_ms: float = 300.0, passes: int = 8,
-             log=print) -> dict:
-    return estimate_data(load(work, cams), range_ms, passes, log)
+             log=print, workers: int | None = None) -> dict:
+    data = load(work, cams)
+    w = default_workers(len(data) * len(data)) if workers is None else max(1, int(workers))
+    log(f"[sync] {len(data)} cameras, {w} worker process(es)")
+    return estimate_data(data, range_ms, passes, log, workers=w)
 
 
 def _step(c: CamData, others: list[CamData], offs: dict[str, float], frames: np.ndarray | None = None) -> float:
@@ -357,8 +366,66 @@ def _step(c: CamData, others: list[CamData], offs: dict[str, float], frames: np.
     return residual(c, others, offs, offs.get(c.name, 0.0), frames)["tau_s"]
 
 
+# ----------------------------------------------------------------------------------------------- process pool
+
+_POOL_DATA: dict | None = None  # the cameras, inherited by forked workers (or sent once per spawned worker)
+
+
+def _pool_init(data):
+    global _POOL_DATA
+    if data is not None:
+        _POOL_DATA = data
+
+
+def _step_task(args) -> float:
+    c, offs = args
+    return _step(_POOL_DATA[c], _others(_POOL_DATA, c), offs)
+
+
+def _curves_task(args):
+    c, offs, range_ms = args
+    return _camera_curves(_POOL_DATA, c, offs, range_ms)
+
+
+def default_workers(n_tasks: int) -> int:
+    """Serial off-pod; on a pod the container's CPU quota (front_pod.cgroup_cpus), at most 16 and n_tasks."""
+    from . import env
+    if not env.is_pod():
+        return 1
+    from .front_pod import cgroup_cpus
+    return max(1, min(16, n_tasks, cgroup_cpus()))
+
+
+class _Mapper:
+    """map() over a process pool (workers > 1; fork where available so the cameras are not pickled) or serially."""
+
+    def __init__(self, data: dict, workers: int):
+        self.data, self.workers, self.pool = data, workers, None
+
+    def __enter__(self):
+        global _POOL_DATA
+        _POOL_DATA = self.data
+        if self.workers > 1:
+            import multiprocessing as mp
+            fork = "fork" in mp.get_all_start_methods()
+            ctx = mp.get_context("fork" if fork else "spawn")
+            self.pool = ctx.Pool(self.workers, initializer=_pool_init, initargs=(None if fork else self.data,))
+        return self
+
+    def map(self, fn, items):
+        return self.pool.map(fn, items, chunksize=1) if self.pool is not None else [fn(x) for x in items]
+
+    def __exit__(self, *exc):
+        global _POOL_DATA
+        if self.pool is not None:
+            self.pool.close()
+            self.pool.join()
+        _POOL_DATA = None
+        return False
+
+
 def solve_joint(data: dict[str, CamData], offs: dict[str, float] | None = None, iters: int = 8, h: float = 0.010,
-                max_step: float = 0.060, log=print) -> tuple[dict[str, float], np.ndarray, dict]:
+                max_step: float = 0.060, log=print, mapper: "_Mapper | None" = None) -> tuple[dict[str, float], np.ndarray, dict]:
     """All offsets at once. Each camera's best offset delta*_c depends on the other cameras' offsets (their
     resampled landmarks feed the triangulation), with geometry-dependent and sometimes negative or > 1 gains, so
     per-camera searches iterated Jacobi-style oscillate (seen on larissa_kadu: cam 01 +72 / +29 / +67 ms). Here
@@ -374,17 +441,26 @@ def solve_joint(data: dict[str, CamData], offs: dict[str, float] | None = None, 
         t0 = time.time()
         star = np.zeros(n)
         G[:] = 0.0
+        # every camera's step at offs and with each triangulating camera nudged by h: independent evaluations
+        tasks, keys = [], []
+        for c in names:
+            tasks.append((c, dict(offs)))
+            keys.append((c, None))
+            for o in _others(data, c):
+                o2 = dict(offs)
+                o2[o.name] = offs.get(o.name, 0.0) + h
+                tasks.append((c, o2))
+                keys.append((c, o.name))
+        steps = dict(zip(keys, mapper.map(_step_task, tasks) if mapper is not None else
+                         [_step(data[c], _others(data, c), o) for c, o in tasks]))
         for i, c in enumerate(names):
-            others = _others(data, c)
-            s0 = _step(data[c], others, offs)
+            s0 = steps[(c, None)]
             if not np.isfinite(s0):
                 star[i] = offs[c]
                 continue
             star[i] = offs[c] + s0
-            for o in others:
-                o2 = dict(offs)
-                o2[o.name] = offs.get(o.name, 0.0) + h
-                s1 = _step(data[c], others, o2)
+            for o in _others(data, c):
+                s1 = steps[(c, o.name)]
                 if np.isfinite(s1):
                     G[i, names.index(o.name)] = (s1 - s0) / h
         cur = np.array([offs[c] for c in names])
@@ -415,28 +491,37 @@ def solve_joint(data: dict[str, CamData], offs: dict[str, float] | None = None, 
     return offs, G, info
 
 
-def estimate_data(data: dict[str, CamData], range_ms: float = 300.0, passes: int = 8, log=print) -> dict:
+def _camera_curves(data: dict[str, CamData], c: str, offs: dict[str, float], range_ms: float) -> tuple[dict, list]:
+    """Camera c's residual curve with the others at offs, and its 2 s sub-window curves."""
+    others = _others(data, c)
+    r = _search(data[c], others, offs, range_ms)
+    rows = []
+    for tm, fr in _subwindows(data[c]):
+        rr = _search(data[c], others, offs, range_ms, frames=fr, centre_ms=r["delta_ms"], coarse=False)
+        d = rr["delta_ms"]
+        if not np.isfinite(d) or abs(d - r["delta_ms"]) >= FINE_HALF_MS - 0.5:  # minimum outside the window
+            rr = _search(data[c], others, offs, range_ms, frames=fr)
+            d = rr["delta_ms"]
+        rows.append({"t_mid": tm, "delta_ms": round(float(d), 2) if np.isfinite(d) else None,
+                     "min_px": rr.get("min_px"), "n_frames": int(len(fr)), "fine": rr["fine"]})
+    return r, rows
+
+
+def estimate_data(data: dict[str, CamData], range_ms: float = 300.0, passes: int = 8, log=print,
+                  workers: int = 1) -> dict:
     """Offsets of in-memory cameras (see the module docstring). The joint Gauss-Newton solve handles the coupling
     between cameras; the reported delta of each camera is then the minimum of its own residual curve with the other
     cameras at their solved offsets (the definition of delta), re-gauged to median 0. Sub-windows use the same curve
     estimator. Agreement between the two estimators is reported (estimator_gap_ms)."""
     names = sorted(data)
-    offs, G, info = solve_joint(data, iters=passes, log=log)
+    with _Mapper(data, workers) as mapper:
+        offs, G, info = solve_joint(data, iters=passes, log=log, mapper=mapper)
+        per_cam = mapper.map(_curves_task, [(c, offs, range_ms) for c in names])
+    info["workers"] = workers
     curves, subs, final = {}, {}, {}
-    for c in names:
-        others = _others(data, c)
-        r = _search(data[c], others, offs, range_ms)
+    for c, (r, rows) in zip(names, per_cam):
         curves[c] = r
         final[c] = r["delta_ms"] / 1000.0 if np.isfinite(r["delta_ms"]) else offs[c]
-        rows = []
-        for tm, fr in _subwindows(data[c]):
-            rr = _search(data[c], others, offs, range_ms, frames=fr, centre_ms=r["delta_ms"], coarse=False)
-            d = rr["delta_ms"]
-            if not np.isfinite(d) or abs(d - r["delta_ms"]) >= FINE_HALF_MS - 0.5:  # minimum outside the window
-                rr = _search(data[c], others, offs, range_ms, frames=fr)
-                d = rr["delta_ms"]
-            rows.append({"t_mid": tm, "delta_ms": round(float(d), 2) if np.isfinite(d) else None,
-                         "min_px": rr.get("min_px"), "n_frames": int(len(fr)), "fine": rr["fine"]})
         subs[c] = rows
         log(f"[sync] cam {c}: joint {1000 * offs[c]:+.1f} ms, curve minimum {r['delta_ms']:+.1f} ms "
             f"({r.get('at_zero_px', np.nan):.2f} -> {r.get('min_px', np.nan):.2f} px); sub-windows "
@@ -555,12 +640,12 @@ def plot(res: dict, out_png: Path, audio: dict | None = None) -> Path:
     return out_png
 
 
-def run(take_name: str, cams: list[str] | None = None, range_ms: float = 300.0) -> dict:
+def run(take_name: str, cams: list[str] | None = None, range_ms: float = 300.0, workers: int | None = None) -> dict:
     work = md.take_work(take_name)
     if not (work / "mamma" / "ma_2d_native").exists():
         raise SystemExit("[sync] needs mamma/ma_2d_native/<cam>.npz (python -m dancecap mamma prepare first)")
     t0 = time.time()
-    res = estimate(work, cams, range_ms)
+    res = estimate(work, cams, range_ms, workers=workers)
     audio = _audio_offsets(work)
     doc = {"version": 1, "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
            "what": "per-camera residual video offset: corrected reference time = t + delta (+ rate * (t - t_ref) "
@@ -576,7 +661,8 @@ def run(take_name: str, cams: list[str] | None = None, range_ms: float = 300.0) 
            "offsets": res["offsets"], "audio_beat_offsets_ms": audio,
            # the audio clocks these deltas sit on top of (offsets_check refuses the file on any other clocks)
            "clocks": {"alignment": (take_clocks(work) or {}).get("alignment"), "sources": frame_clocks(work)},
-           "seconds": round(time.time() - t0, 1)}
+           "seconds": round(time.time() - t0, 1), "workers": res["solve"].get("workers", 1),
+           "host": "pod" if os.environ.get("DANCECAP_POD") == "1" else "local"}
     out = work / "sync" / "offsets.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(doc, indent=1))
