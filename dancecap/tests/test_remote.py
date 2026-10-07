@@ -53,10 +53,10 @@ def test_spent_counts_open_and_closed_rows(tmp_path, monkeypatch):
     assert abs(remote.remaining() - 0.2) < 0.01
 
 
-def test_default_cap_is_30(monkeypatch):
+def test_default_cap_is_80(monkeypatch):
     monkeypatch.delenv("DANCECAP_RUNPOD_CAP", raising=False)
-    assert remote.DEFAULT_CAP == 30.0
-    assert remote.cap() == 30.0
+    assert remote.DEFAULT_CAP == 80.0  # raised by the user 2026-10-07
+    assert remote.cap() == 80.0
 
 
 def test_create_args_request_direct_ssh(monkeypatch):
@@ -301,7 +301,8 @@ def test_validation_bundle_contents():
         assert "__pycache__" not in parts and ".git" not in parts and not a.endswith(".pyc")
         assert not a.startswith(("mamma-turing/docs/", "mamma-turing/gui/", "mamma-turing/data/", "dancecap/weights/"))
         assert not a.startswith("dancecap/work/") or a.startswith(("dancecap/work/synthetic_mamma/gt120/",
-                                                                     "dancecap/work/runpod/wheelhouse/"))
+                                                                     "dancecap/work/runpod/wheelhouse/",
+                                                                     "dancecap/work/runpod/pywheels/"))
     links = {f.arc: f.link for f in files if f.link}
     assert links.get("smplx/SMPLX_NEUTRAL.npz") == "mamma/data/body_models/smplx_locked_head/smplx/SMPLX_NEUTRAL.npz"
     # a room-only batch carries no body models

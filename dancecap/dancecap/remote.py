@@ -37,7 +37,7 @@ SSH_KEY = Path.home() / ".ssh" / "runpod_dancecap"
 # pod host keys change every session: a throwaway known_hosts under work/runpod (git-ignored). 'UserKnownHostsFile=NUL'
 # only works for Windows' own OpenSSH; Git Bash's ssh wrote a file literally named NUL into the cwd (dancecap/NUL).
 KNOWN_HOSTS = PACKAGE_ROOT / "work" / "runpod" / "known_hosts"
-DEFAULT_CAP = 30.0  # raised by the user 2026-10-06 (was $10)
+DEFAULT_CAP = 80.0  # raised by the user 2026-10-07 (was $30; $10 before 2026-10-06)
 # preferred 80 GB GPUs, cheapest first; availability changes, so status/gpus shows what's live
 GPU_PREFERENCE = ["NVIDIA A100-SXM4-80GB", "NVIDIA A100 80GB PCIe", "NVIDIA H100 80GB HBM3", "NVIDIA H100 NVL",
                   "NVIDIA H100 PCIe"]
