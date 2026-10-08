@@ -56,6 +56,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from . import progress as _progress  # dancecap.progress/1 (stdlib; a no-op unless DANCECAP_PROGRESS is set)
 from .avatar_raster import EMPTY_Z, pixel_bary, rasterize
 from .avatar_uv import UVAtlas, build_atlas, write_uv_mesh, Body
 from .mamma_dyn import SMPLX_MODELS, world_cameras
@@ -121,7 +122,11 @@ class TextureConfig:
                                     # luminance reference = a weighted quantile ramping from 0.5 (no hair evidence) to
                                     # this (evidence >= 0.3), so lighter skin wins over darker hair there; 0.5 on clean
                                     # face texels (a light quantile everywhere picked specular / over-exposed samples)
-    align_passes: int = 1           # extra passes that register each view to a render of the previous texture
+    body_ref_q: float = 0.5         # the same on the hair roles' upper body / neck texels (not scalp): ramp from 0.5 to
+                                    # this with the previous pass's hair evidence. Hair over her white top or skin only
+                                    # darkens / reddens it, so a lighter reference keeps the clean samples (2026-10-07,
+                                    # larissa_kadu_38: mauve hair residue on her back). 0.5 = off (CLI --body-ref-q)
+    align_passes: int = 1          # extra passes that register each view to a render of the previous texture
     flow_sigma_frac: float = 0.02   # smoothing of the alignment flow (fraction of the dancers' crop height)
     flow_max_frac: float = 0.06     # alignment flow clamp (fraction of the crop height)
     head_fix: str = "auto"          # neck-rotation fix to the COCO face keypoints (avatar_head.py): auto|on|off;
@@ -715,7 +720,11 @@ def bake_samples(views: list[dict], bodies: dict, atlas: UVAtlas, cfg: TextureCo
                 stores[r].add(torch, cam_ids.index(view["cam"]), w, rgb, vi)
             if (vi + 1) % 50 == 0:
                 print(f"[texture] {vi + 1}/{len(views)} views", flush=True)
+            _progress.tick(_PROGRESS_STEP[0], vi + 1, len(views), "views")
     return stores, stats
+
+
+_PROGRESS_STEP = ["bake/pass0"]  # the bake pass bake_samples is running (progress events only)
 
 
 def _weighted_median(torch, x, w, q=None):
@@ -1117,6 +1126,10 @@ def run(take: Take, cfg: TextureConfig | None = None, lock: bool = True, qa: boo
     print(f"[texture] preset {cfg.preset}: {len(views)} views from {len(cams)} cameras over t={t_lo:.2f}..{t_hi:.2f} s, "
           f"atlas {cfg.size}^2 with {atlas.n} texels, "
           "FK " + ", ".join(f"{r} {v['fk_max_err_mm']} mm" for r, v in body_info.items()), flush=True)
+    _n_pass = 1 + max(0, cfg.align_passes)
+    _progress.plan([("bake/load", None, None)] + [(f"bake/pass{k}", len(views), "views") for k in range(_n_pass)]
+                   + [("bake/finish", None, None)], step="bake", preset=cfg.preset, views=len(views), passes=_n_pass)
+    _progress.end("bake/load", seconds=round(time.time() - t_start, 1))
     luts, hair_rep = {}, {}
     from . import avatar_hair as ahair
     face_proj = {r: ahair.FaceProjector(bodies[r], model_dir_for(load_smplx(work, r))) for r in cfg.hair_roles}         if cfg.hair_mode == "exclude" else {}
@@ -1171,6 +1184,8 @@ def run(take: Take, cfg: TextureConfig | None = None, lock: bool = True, qa: boo
             torch.cuda.reset_peak_memory_stats()
         for pas in range(1 + max(0, cfg.align_passes)):
             t0 = time.time()
+            _PROGRESS_STEP[0] = f"bake/pass{pas}"
+            _progress.start(_PROGRESS_STEP[0], total=len(views), unit="views")
             stores, stats = bake_samples(views, bodies, atlas, cfg, cams, loader, device, ref_colors=ref,
                                          hair_region={r: h[0] for r, h in hair_reg.items()} or None)
             for r in hair_reg:  # face core: lighter-quantile reference only where hair was seen over the face
@@ -1178,6 +1193,9 @@ def run(take: Take, cfg: TextureConfig | None = None, lock: bool = True, qa: boo
                 frac = (np.where(e0[1] > 0, e0[0] / np.maximum(e0[1], 1e-20), 0.0) if e0 is not None
                         else np.zeros(atlas.n))
                 q = np.where(regions["skin_pref"], 0.5 + (cfg.skin_ref_q - 0.5) * np.clip(frac / 0.3, 0, 1), 0.5)
+                if cfg.body_ref_q != 0.5:  # upper body / neck under her hanging hair (scalp keeps its hair samples)
+                    bt = (regions["upper"] | regions["neck"]) & ~regions["skin_pref"] & ~np.asarray(hair_reg[r][0], bool)
+                    q = np.where(bt, 0.5 + (cfg.body_ref_q - 0.5) * np.clip(frac / 0.3, 0, 1), q)
                 stores[r].ref_q = torch.as_tensor(q, dtype=torch.float32, device=device)
             groups = {r: ahair.texel_groups(islands, hair_reg[r][0] if r in hair_reg else None) for r in ROLES}
             results, fusion_rep = fuse_stores(stores, stats, view_cam, cams, cfg, device, gain=None, atlas=atlas,
@@ -1219,6 +1237,10 @@ def run(take: Take, cfg: TextureConfig | None = None, lock: bool = True, qa: boo
                                      "flow_p90_of_view_medians_px": round(float(np.percentile(fl, 90)), 2) if fl else None})
             print(f"[texture] pass {pas}{' (aligned)' if ref is not None else ''}: {time.time() - t0:.0f} s"
                   + (f", flow median {np.median(fl):.1f} px" if fl else ""), flush=True)
+            _progress.end(f"bake/pass{pas}", done=len(views), aligned=ref is not None,
+                          flow_median_px=float(np.median(fl)) if fl else None)
+            if pas == max(0, cfg.align_passes):
+                _progress.start("bake/finish")
             ref = {r: torch.as_tensor(final[r][0], device=device) for r in ROLES}
         for r in ROLES:
             report["roles"][r].update(fusion_rep[r])
@@ -1277,4 +1299,5 @@ def run(take: Take, cfg: TextureConfig | None = None, lock: bool = True, qa: boo
         report["review"] = [str(p) for p in paths]
     report["runtime_s"]["total"] = round(time.time() - t_start, 1)
     (out / "report.json").write_text(json.dumps(report, indent=1, default=float))
+    _progress.end("bake/finish", seconds_total=report["runtime_s"]["total"])
     return report

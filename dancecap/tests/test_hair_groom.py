@@ -197,3 +197,23 @@ def test_apply_style_review_fixes():
     # no portrait measured: the video stays the default
     g3 = hg.apply_style(g1)
     assert g3["render"]["albedo_default"] == "video" and "hairline_el_deg_vs_abs_az" not in g3["cards"]["cap"]
+
+
+def test_style_part_forward_rest_back():
+    """2026-10-07 evening (user: "larissa's hair part can also be brought forward again over her forehead"): the side part
+    starts at the hairline (no pull back), the front section right of the part is swept across the forehead to her right
+    (forehead_sweep toward comb_unity.forehead: -x = her right, a little down, -z = forward), while the rest stays back:
+    the front-right section drapes BEHIND the right shoulder, the temple comb runs back over the ear and the sides lean
+    back - and apply_style carries all of it into the groom Unity reads."""
+    st = hg.STYLE
+    assert st["front_right"] == "behind_shoulder" and st["front_right_forward"] < 0
+    assert st["comb_unity"]["front_right"][2] > 0  # temple hair combed back over the ear (+z = backward, Unity head)
+    fh = st["comb_unity"]["forehead"]
+    assert fh[0] < -0.5 and fh[1] < 0 and fh[2] <= 0  # across the forehead to her right, slightly down / forward
+    assert 0 < st["forehead_sweep"] <= 1 and st["forehead_sweep_abs_az_deg"] > 0
+    assert st["front_pull"] == 0 and st["part_start_back_m"] == 0
+    assert st["side_drape_back"] > 0
+    g = hg.apply_style({"version": 1, "guides": [], "shape": {}, "colour": {}, "render": {}, "dynamics": {}, "strands": {},
+                        "colliders": []})
+    assert g["style"]["forehead_sweep"] == st["forehead_sweep"] and g["style"]["front_right"] == "behind_shoulder"
+    assert "across the forehead" in g["shape"]["texture"]

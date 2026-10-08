@@ -855,10 +855,22 @@ def red_cast(lab: np.ndarray) -> np.ndarray:
     return (lab[:, 1] > 9) & (lab[:, 1] - lab[:, 2] > 3)
 
 
+def hair_residue(lab: np.ndarray) -> np.ndarray:
+    """Hair residue on a light top / skin, including DESATURATED and DARKENED hair (hair-over-white mixes, blur):
+    pinkish-mauve and darker than the clean top (a* - b* > 1.5, a* > 6.5, L* < 72) or dark hair (red_cast, L* < 45).
+    Her clean white top is about (79, 5, 6), skin has b* > a*. Calibrated on larissa_kadu_38's follow (back texels
+    hair-covered in > 30 % of the sample weight 14 %, never covered 1.5 %; the lead's back 0.5 %). The pink print on
+    her top's front also counts: compare the back."""
+    L, a, b = lab[:, 0], lab[:, 1], lab[:, 2]
+    return ((a - b > 1.5) & (a > 6.5) & (L < 72)) | (red_cast(lab) & (L < 45))
+
+
 def texture_metrics(srgb: np.ndarray, regions: dict, hair: np.ndarray | None = None) -> dict:
-    """Percent of texels classified hair-coloured (red_cast; dark_hair = red_cast and L* < 45) per body region."""
+    """Percent of texels classified hair-coloured (red_cast; dark_hair = red_cast and L* < 45; hair_residue incl.
+    desaturated / darkened hair, see hair_residue) per body region."""
     lab = lab_of(srgb)
     rc = red_cast(lab)
+    res = hair_residue(lab)
     dark = rc & (lab[:, 0] < 45)
     sel = {"chest_shoulders_back": regions["upper"], "chest": regions["upper"] & regions["front"] & ~regions["neck"],
            "back": regions["upper"] & ~regions["front"] & ~regions["neck"], "shoulders": regions["shoulders"],
@@ -869,7 +881,8 @@ def texture_metrics(srgb: np.ndarray, regions: dict, hair: np.ndarray | None = N
     for k, m in sel.items():
         if m.any():
             out[k] = {"hair_coloured_pct": round(100 * float(rc[m].mean()), 2),
-                      "dark_hair_pct": round(100 * float(dark[m].mean()), 2), "texels": int(m.sum())}
+                      "dark_hair_pct": round(100 * float(dark[m].mean()), 2),
+                      "hair_residue_pct": round(100 * float(res[m].mean()), 2), "texels": int(m.sum())}
     return out
 
 

@@ -27,8 +27,10 @@ Prefer the fractions of avatar height: they carry over to a rescaled avatar (lar
 Long, layered, red hair. Seen from behind, the tips fall **between the lower tips of the shoulder blades and the
 mid-back**, about **0.52 m (true) below the crown** (31 % of her height); a back strand runs about **0.60 m (true)**
 from the crown over the skull and down the back. **Styled like the portrait (user, 2026-10-06): sleek, straight and
-glossy**, lying flat on the skull, a deep side part on her left, the hair swept over to her right, the right front
-section falling over the right temple and down in front of the right shoulder, the left front tucked behind the ear;
+glossy**, lying flat on the skull, a deep side part on her left, the hair swept over to her right **and pulled back**
+(user, 2026-10-07: "her hair part needs to be pulled back more"): the part starts a little behind the hairline, the
+right front section sweeps over the temple and ear to **behind** the right shoulder (until 2026-10-07 it fell over the
+right temple and down in front of the right shoulder), the face clear, the left front tucked behind the ear;
 tapered, slightly piecey ends; no fringe. (The demo video shows it fuller with soft loose waves; that texture is no
 longer the target.) Front sections reach at least the collarbone (longer in the portrait). The silhouette is widest around the neck and shoulders (about 0.6 x her shoulder width) and tapers to a
 narrow tip end. Colour: an even, saturated **brick / scarlet red** from root to tip (no darker regrowth), deep
@@ -180,8 +182,11 @@ How to keep it on the photoreal hair (measured colour as the base, the tip emiss
    lower end of the hull's upper bounds 0.21-0.28), tapering to 0.11-0.15 m near the tips; about 1.2 x head width at
    ear level; flat on the skull (about 1 cm hair layer on top); the hair layer stands 1.5-3.5 cm off her back.
 3. **Texture and styling (the portrait)**: sleek, straight, glossy, **no waves**; no fringe; deep side part on her
-   left, the top swept over to her right; the right front section over the right temple and **in front of the right
-   shoulder** (rest shape: tips at least 2 cm in front of the right shoulder joint); the left front behind the ear;
+   left, the top swept over to her right and **pulled back** (2026-10-07): the forehead / part hair combed back and
+   flat over the crown, the part starting ~2 cm behind the hairline, the right front section over the temple and ear
+   to **behind the right shoulder** (rest shape: tips at least 2 cm behind the right shoulder joint; no guide point
+   beside or in front of the face; before: tips in front of the shoulder, 94 guide points beside the face); the left
+   front behind the ear;
    one coherent sheet with a continuous highlight band (no crimped stripes); tapered, slightly piecey ends. **No dark
    band under the hairline**: the scalp cap reaches the hairline painted into the follow's texture
    (`hair_groom.painted_hairline`: el 28 deg at the front, 20-22 deg at the temples on 02_LarissaKadu; the root

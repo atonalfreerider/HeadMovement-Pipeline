@@ -11,6 +11,11 @@ colour and collision capsules, measured from the take -> avatar/hair_groom.json 
                                                                   hairline painted into the texture); then export
     python -m dancecap.hair_groom larissa_kadu --sheet         -> review/hair_sheet.jpg from the Unity review shots
                                                                   (head-movement Tools/playtest_hair.ps1)
+    python -m dancecap.hair_groom larissa_kadu_38 --from-take larissa_kadu
+                                                               -> a take of the same dancer without its own
+                                                                  measurement: the source take's groom re-based onto
+                                                                  THIS take's fit (roots, head, colliders, lengths x
+                                                                  rest-height ratio), restyled, exported
 
 Version 2 (2026-10-06, "sleek and straight like the portrait"): the measured roots, lengths and colours of version 1
 plus the blocks the Unity game-style hair reads (head-movement Assets/Hair, docs: dancecap/docs/HAIR_REFERENCE.md):
@@ -33,6 +38,20 @@ plus the blocks the Unity game-style hair reads (head-movement Assets/Hair, docs
 2026-10-07 review fixes: cards.cap reaches down to the hairline PAINTED into the follow's albedo (measured here by
 painted_hairline; the texture's baked hair showed as a dark band under the cards), lighter cap occlusion at the
 hairline, front card roots dropped toward it (cards.root_drop); inner cards to 97 % of the length.
+2026-10-07 "pulled back" (user: "larissa's hair part needs to be pulled back more"): the front-right section is combed
+to her right AND back, over the temple and ear to BEHIND the right shoulder (style.front_right "behind_shoulder",
+front_right_forward < 0), the sides lean back as they hang (side_drape_back), the forehead / part zone is pulled toward
+the back (front_pull, flattened over the crown: front_pull_flatten) and the side part starts part_start_back_m behind
+the hairline (no part cards ahead of it): the face, temples and the front of the shoulders are clear, sleek and
+straight like the portrait (whose hair falls behind her right shoulder). Re-export: --restyle (this take) or
+--from-take (another take of the same dancer, e.g. larissa_kadu_38 from larissa_kadu).
+2026-10-07 evening "part forward again" (user: "larissa's hair part can also be brought forward again over her
+forehead"): the side part starts at the hairline again (part_start_back_m 0) and the forehead hair is no longer pulled
+back (front_pull 0); instead the front section right of the part is swept from the part ACROSS her forehead to her right
+(forehead_sweep: roots with |az| < forehead_sweep_abs_az_deg, fading out by twice that, comb slerped toward
+comb_unity.forehead = to her right, a little down and forward) - over the upper forehead, never into the face box (eyes
+clear); the rest stays sleek and back off the face (the temple hair combed over the ear, the front-right section draped
+behind the right shoulder, the sides leaning back).
 Unity reads version 1 and 2 (missing blocks fall back to the same defaults).
 
 Inputs (nothing take-specific in the code): smplx/follow.npz (her fit; the SMPL-X model it names), cameras via
@@ -100,15 +119,17 @@ TIP_EMISSION = {"s": [0.0, 0.2, 0.4, 0.6, 0.8, 1.0], "e": [0.0, 0.012, 0.024, 0.
                 "source": "LineRenderer.BakeMesh vertex colours x 3.1 of the original HairSimulation (HAIR_REFERENCE.md 5)"}
 
 # ---- version 2: sleek straight style (all vectors in Unity head-bone axes: +x = her left, +y up, +z = BACKWARD; the
-# avatar faces -z). The portrait: deep side part on her left, swept over to her right, the right front section over
-# the temple and down in front of the right shoulder, the left front tucked behind the ear, no fringe.
+# avatar faces -z). The portrait: deep side part on her left, swept over to her right and pulled back (2026-10-07: the
+# right front section over the temple and ear to behind the right shoulder, not hanging in front of it), the left front
+# tucked behind the ear, no fringe, the face clear.
 STYLE = {
-    "type": "sleek_straight",
+    "type": "sleek_straight",  # 2026-10-07 evening: part forward over the forehead (forehead_sweep), rest back
     "part_x_unity": 0.025,
     "sweep": -1,
-    "front_right": "front_of_shoulder",
+    "front_right": "behind_shoulder",
     "front_left": "behind_ear",
-    "comb_unity": {"front_right": [-1.0, -0.2, -0.1], "front_left": [0.5, -0.3, 0.9], "back": [-0.2, -1.0, 0.5]},
+    "comb_unity": {"front_right": [-0.75, -0.15, 0.6], "front_left": [0.4, -0.25, 0.95], "back": [-0.2, -1.0, 0.5],
+                   "pull_back": [0.0, -0.25, 1.0], "forehead": [-1.0, -0.3, -0.15]},
     "front_abs_az_deg": [60.0, 150.0],
     "root_lift": 0.15,
     "outward_bias": 0.06,
@@ -117,7 +138,15 @@ STYLE = {
     "hug_volume_m": 0.045,
     "hug_below_r": 0.3,
     "face_clear_m": 0.02,
-    "front_right_forward": 0.5,
+    "front_right_forward": -0.45,
+    "front_pull": 0.0,
+    "front_pull_abs_az_deg": 25.0,
+    "front_pull_flatten": 0.0,
+    "forehead_sweep": 0.6,
+    "forehead_sweep_abs_az_deg": 28.0,
+    "side_drape_back": 0.45,  # 0.35 -> 0.45 (2026-10-07 evening; 0.6 folded strands): less hanging in front of the collarbone
+    "side_drape_abs_az_deg": 120.0,
+    "part_start_back_m": 0.0,
     "settle_comb_hold": 0.08,
     "settle_comb_falloff": 0.12,
     "settle_comb_falloff_front_right": 0.3,
@@ -126,8 +155,16 @@ STYLE = {
             "capsule) a strand runs along the skull at a hug distance that grows with its root's elevation by up to "
             "hug_volume_m (crown hair lies over the lower layers); in front of the face it keeps sweeping sideways "
             "(face_clear_m past the face box); below, it turns down by down_slerp_per_segment, the front-right section "
-            "toward the front of the right shoulder (front_right_forward). The Unity settle then drapes it under gravity "
-            "over the body colliders and the face box with the comb held near the roots (settle_comb_*)",
+            "toward the drape down + front_right_forward x forward (negative = BEHIND the right shoulder), the other "
+            "side strands (|az| < side_drape_abs_az_deg) toward down + side_drape_back x back. Pulled back (2026-10-07): "
+            "roots with |az| < front_pull_abs_az_deg (fading out by twice that) have their comb slerped by front_pull "
+            "toward comb_unity.pull_back, and their layered volume over the crown reduced by front_pull_flatten (flat, "
+            "sleek); the part cards start part_start_back_m behind the front-most root near the part. Part forward "
+            "(2026-10-07 evening, front_pull 0, part_start_back_m 0): right of the part, roots with |az| < "
+            "forehead_sweep_abs_az_deg (fading out by twice that) have their comb slerped by forehead_sweep toward "
+            "comb_unity.forehead: swept from the part across the forehead to her right. The Unity settle "
+            "then drapes it under gravity over the body colliders and the face box with the comb held near the roots "
+            "(settle_comb_*)",
 }
 SLEEK_STANDOFF_M = 0.010  # hair layer over the scalp (version 1: 0.6 x the hull's back-layer stand-off = puffy)
 FACE_BOX = {"fwd_min_r": 0.25, "y_lo_r": -1.55, "y_hi_r": 0.45, "half_width_r": 0.80, "margin_m": 0.006,
@@ -139,8 +176,11 @@ FACE_BOX = {"fwd_min_r": 0.25, "y_lo_r": -1.55, "y_hi_r": 0.45, "half_width_r": 
                      "shorter - never up (a box that pushes up is a shelf over the eyes)"}
 CARDS = {
     "layers": [
-        {"name": "inner", "count": 24, "width_m": [0.040, 0.030], "offset_m": -0.003, "length_factor": [0.97, 0.97],
-         "tiles": [0, 1], "bulge": 0.08, "ao": 0.55, "edge_fade": False},
+        # inner: shorter than the outer layers (0.86-0.90 of the strand) and lighter AO with soft edges since 2026-10-07
+        # evening: at 0.97 / AO 0.55 an inner card swinging out in front of her shoulder read as a stray dark "blade"
+        # across the neck / collarbone
+        {"name": "inner", "count": 24, "width_m": [0.040, 0.030], "offset_m": -0.003, "length_factor": [0.86, 0.90],
+         "tiles": [0, 1], "bulge": 0.08, "ao": 0.72, "edge_fade": True},
         {"name": "mid", "count": 40, "width_m": [0.030, 0.018], "offset_m": 0.0, "length_factor": [0.97, 1.0],
          "tiles": [2, 4], "bulge": 0.15, "ao": 0.8, "edge_fade": True},
         {"name": "outer", "count": 48, "width_m": [0.022, 0.006], "offset_m": 0.004, "length_factor": [0.95, 1.03],
@@ -206,8 +246,9 @@ DYNAMICS_V2 = {"gravity_mps2": 9.81, "substeps": 8, "iterations": 2, "damping_pe
                "front_right": {"abs_az_max": 60.0, "shape_stiffness_root": 0.8, "shape_falloff": 1.0, "max_deviation": 0.25,
                                "side": {"abs_az_max": 95.0, "shape_stiffness_root": 0.6, "shape_falloff": 0.4,
                                         "max_deviation": 0.5},
-                               "note": "the front-right section (|az| < abs_az_max, right of the part: draped in front "
-                                       "of the right shoulder) is held to its rest shape further down the strand, with "
+                               "note": "the front-right section (|az| < abs_az_max, right of the part: draped behind "
+                                       "the right shoulder since 2026-10-07, in front of it before) is held to its rest "
+                                       "shape further down the strand, with "
                                        "a tighter deviation cone: in fast turns it swings as a sleek sheet instead of "
                                        "curling into hooks under the chin. The right side beyond it (|az| < "
                                        "side.abs_az_max: drapes forward over the shoulder) gets a moderate hold; a "
@@ -418,7 +459,9 @@ def colliders(rm: RestModel, sp: dict) -> list[dict]:
         oa, ob = np.array([frac * half_sh, dy, 0.0]), np.array([-frac * half_sh, dy, 0.0])
         a, b = J[j] + oa, J[j] + ob
         sel = np.isin(dom, sel_j) & (np.abs(v[:, 1] - a[1]) < 0.06)
-        out.append({"name": name, "a": j, "oa": oa, "b": j, "ob": ob, "r": radius(sel, a, b, 35)})
+        # the shoulder bar at the 65th percentile (2026-10-07 evening; was 35): at 35 the right-side strands slipped
+        # through the trapezius and folded across the collarbone ("a stray dark card across the neck", 02 frame 29-32)
+        out.append({"name": name, "a": j, "oa": oa, "b": j, "ob": ob, "r": radius(sel, a, b, 65 if name == "shoulders" else 35)})
     for c in out:
         c["r"] = round(float(np.clip(c["r"], 0.03, 0.16)), 4)
         c["oa_unity"], c["ob_unity"] = r3(to_unity(c.pop("oa"))), r3(to_unity(c.pop("ob")))
@@ -516,7 +559,8 @@ def apply_style(groom: dict, rm: RestModel | None = None, sp: dict | None = None
     sh = g.setdefault("shape", {})
     sh["standoff_m"] = SLEEK_STANDOFF_M
     sh["part_x_unity"] = STYLE["part_x_unity"]
-    sh["texture"] = "sleek, straight, glossy; deep side part on her left, swept to her right; tapered piecey ends"
+    sh["texture"] = ("sleek, straight, glossy; deep side part on her left, the front swept across the forehead to her "
+                     "right, the rest back behind the right shoulder; tapered piecey ends")
     if rm is not None and sp is not None:
         g["colliders"] = colliders(rm, sp)
     col = g.get("colour") or {}
@@ -574,6 +618,81 @@ def restyle(take: Take, do_export: bool = True) -> dict:
     print(f"[hair_groom] restyled {p} -> version {g['version']}: {sum(l['count'] for l in g['cards']['layers'])} cards, "
           f"head capsule r {head['r']} (fit p95 {head.get('fit_p95_mm')} mm), albedo {g['render'].get('albedo_linear')}")
     if do_export:
+        for q in export(take):
+            print(f"[hair_groom] -> {q}")
+    return g
+
+
+def seed_from(take: Take, src: Take, do_export: bool = True, out: Path | None = None) -> dict:
+    """avatar/hair_groom.json of ANOTHER take of the same dancer (her hair does not change between takes) -> this take,
+    without re-measuring: the measured roots (SMPL-X vertex ids + barycentrics), per-root lengths, colours, 2D
+    measurement and dynamics targets are kept and RE-BASED onto THIS take's rest model (her shaped SMPL-X of this take's
+    fit): root positions / normals / az / el, head joint, head sphere, crown, scalp and the colliders come from it; the
+    lengths and tip levels scale with the rest-height ratio (the cut keeps its levels on the body). Then restyled to the
+    current version (style, cards, face box, render, dynamics; the cap's hairline painted into this take's exported
+    follow albedo when a capture of this take exists) and exported to every capture of this take.
+        python -m dancecap.hair_groom larissa_kadu_38 --from-take larissa_kadu"""
+    sp_path = src.work / "avatar" / "hair_groom.json"
+    if not sp_path.exists():
+        raise FileNotFoundError(f"{sp_path} missing (run python -m dancecap.hair_groom {src.name})")
+    g = json.loads(sp_path.read_text(encoding="utf-8"))
+    rm = RestModel(take.work)
+    sp = scalp(rm)
+    h0 = float(g["model"]["rest_height_m"])
+    k = rm.height / h0
+    Jh = rm.J[J_HEAD]
+    c = sp["centre"]
+    moved = []
+    for gd in g["guides"]:
+        vid = np.asarray(gd["vid"], np.int64)
+        b = np.asarray(gd["bary"], float)
+        pos = (rm.v[vid] * b[:, None]).sum(0)
+        nrm = (rm.n[vid] * b[:, None]).sum(0)
+        nrm /= max(np.linalg.norm(nrm), 1e-9)
+        az, el = az_el((pos - c)[None])
+        old = np.asarray(gd["pos_unity"], float)
+        gd["pos_unity"] = r3(to_unity(pos - Jh))
+        moved.append(float(np.linalg.norm(np.asarray(gd["pos_unity"]) - old)))
+        gd["normal_unity"] = r3(to_unity(nrm))
+        gd["az"], gd["el"] = round(float(az[0]), 1), round(float(el[0]), 1)
+        gd["len"] = round(float(gd["len"]) * k, 4)
+    m = g["model"]
+    m.update({"path": str(rm.model_path.relative_to(WORKSPACE)) if rm.model_path.is_relative_to(WORKSPACE) else str(rm.model_path),
+              "fit_model": rm.model, "num_betas": int(len(rm.betas)), "rest_height_m": round(rm.height, 4),
+              "head_joint_rest": r3(rm.J[J_HEAD]), "head_sphere_centre_unity": r3(to_unity(c - Jh)),
+              "head_radius_m": round(float(sp["radius"]), 4), "crown_rest_y": round(float(sp["crown_y"]), 4),
+              "scalp_vertices": int(sp["scalp_v"].sum())})
+    sh = g.setdefault("shape", {})
+    for key in ("tip_level_back_rest_m", "tip_level_front_rest_m", "crown_strand_m", "implied_drop_below_head_centre_m"):
+        if isinstance(sh.get(key), (int, float)):
+            sh[key] = round(float(sh[key]) * k, 4)
+    if isinstance(sh.get("length_m"), dict):
+        sh["length_m"] = {q: round(float(v) * k, 4) for q, v in sh["length_m"].items()}
+    g["take"] = take.name
+    g["seeded_from"] = {"take": src.name, "rest_height_ratio": round(k, 5), "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                        "root_shift_mm_median": round(1000 * float(np.median(moved)), 2),
+                        "root_shift_mm_max": round(1000 * float(np.max(moved)), 2),
+                        "note": "measured on the source take (same dancer, same hair); motion.* times are the source take's"}
+    ref_p = take.work / "avatar" / "hair_reference.json"
+    if not ref_p.exists():
+        ref_p = src.work / "avatar" / "hair_reference.json"
+    ref = json.loads(ref_p.read_text(encoding="utf-8")) if ref_p.exists() else None
+    cap = None
+    for d in captures_for(take.name):
+        cap = painted_hairline_of_capture(d, g)
+        if cap:
+            print(f"[hair_groom] painted hairline of {d.name}: {cap}")
+            break
+    if cap is None:
+        cap = ((g.get("cards") or {}).get("cap") or {}).get("hairline_el_deg_vs_abs_az")  # the source take's (same texture look)
+    g = apply_style(g, rm, sp, ref, cap_hairline=cap)
+    g["restyled"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    dst = out or take.work / "avatar" / "hair_groom.json"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_text(json.dumps(g, indent=1), encoding="utf-8")
+    print(f"[hair_groom] seeded {dst} from {src.name}: rest height {h0:.4f} -> {rm.height:.4f} m (x{k:.4f}), roots moved "
+          f"median {g['seeded_from']['root_shift_mm_median']} mm / max {g['seeded_from']['root_shift_mm_max']} mm")
+    if do_export and out is None:
         for q in export(take):
             print(f"[hair_groom] -> {q}")
     return g
@@ -993,12 +1112,36 @@ def captures_for(take: str, streaming: Path = UNITY_STREAMING) -> list[Path]:
     return out
 
 
+def sibling_groom_take(take: Take) -> Take | None:
+    """Another take of the SAME recordings (same source_dir, e.g. larissa_kadu for larissa_kadu_38) that has its own
+    avatar/hair_groom.json, else None."""
+    from .take import PACKAGE_ROOT
+    mine = Path(take.sources[0].path).parent.resolve() if take.sources else None
+    for t in sorted((PACKAGE_ROOT / "takes").glob("*.toml")):
+        if t.stem == take.name:
+            continue
+        try:
+            other = Take.load(t)
+        except Exception:  # an unrelated, half-configured take
+            continue
+        theirs = Path(other.sources[0].path).parent.resolve() if other.sources else None
+        if mine is not None and theirs == mine and (other.work / "avatar" / "hair_groom.json").exists():
+            return other
+    return None
+
+
 def export(take: Take, capture: str | None = None, streaming: Path = UNITY_STREAMING) -> list[Path]:
     """Copy avatar/hair_groom.json into StreamingAssets/<capture>/ (and work/<take>/export/<capture>/ when it
-    exists). Re-run after every `python -m dancecap export` (that rewrites the capture folder)."""
+    exists). Re-run after every `python -m dancecap export` (that rewrites the capture folder). A take without its own
+    groom (larissa_kadu_38) first seeds it from a sibling take of the same recordings (seed_from: re-based onto this
+    take's fit; needs work/<take>/smplx/follow.npz)."""
     src = take.work / "avatar" / "hair_groom.json"
     if not src.exists():
-        raise FileNotFoundError(f"{src} missing (run python -m dancecap.hair_groom {take.name})")
+        sib = sibling_groom_take(take)
+        if sib is None:
+            raise FileNotFoundError(f"{src} missing (run python -m dancecap.hair_groom {take.name}, or --from-take <take>)")
+        print(f"[hair_groom] {take.name} has no groom: seeding it from {sib.name} (same recordings)")
+        seed_from(take, sib, do_export=False)
     dirs = [Path(streaming) / capture] if capture else captures_for(take.name, streaming)
     out = []
     for d in dirs:
@@ -1077,6 +1220,8 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--capture", help="capture folder name (default: every capture of the take)")
     ap.add_argument("--no-export", action="store_true")
     ap.add_argument("--sheet", action="store_true", help="only compose review/hair_sheet.jpg from the Unity review shots")
+    ap.add_argument("--from-take", help="seed avatar/hair_groom.json from this other take of the same dancer (re-based "
+                                         "onto this take's fit, restyled, exported) instead of measuring")
     ap.add_argument("--restyle", action="store_true",
                     help="upgrade avatar/hair_groom.json to the current version (style, cards, face box, colliders, "
                          "render, dynamics) without re-measuring, then export (unless --no-export)")
@@ -1084,6 +1229,9 @@ def main(argv: list[str] | None = None) -> None:
     take = Take.load(a.take)
     if a.sheet:
         print(f"[hair_groom] {sheet(take)}")
+        return
+    if a.from_take:
+        seed_from(take, Take.load(a.from_take), do_export=not a.no_export)
         return
     if a.restyle:
         restyle(take, do_export=not a.no_export)
