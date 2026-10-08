@@ -4,6 +4,10 @@
     python -m dancecap.moves annotate --video <any.mp4>               video time (a dance not processed yet)
     python -m dancecap.moves annotate transcribe --take T --audio narration.wav [--log log.json | --start S --rate R]
     python -m dancecap.moves annotate asr-check                       which speech recognisers work offline
+    python -m dancecap.moves annotate retranscribe --take T [--id ID] [--engine auto]   earlier narrations again
+    python -m dancecap.moves annotate propagate --take T --id ID [--to T2 T3 --master T3 --beats-from T3=T2] [--write]
+                                       one narration -> labels.json of every take on the same reference clock
+                                       (each take's own clocks + beat grid, clipped to its window; review kept)
 
 Local only: the server binds 127.0.0.1, refuses other Host headers, and never sends video or voice anywhere. The
 optional TypeSafe judgment for ambiguous phrases (--typesafe or the UI toggle; off by default) sends only the
@@ -17,10 +21,16 @@ USER GUIDE
              starts ("corredor", "viradinha", "sarrada" ...). Pause (Space), seek, change speed or camera at will -
              the player is logged against the recording clock. Tap M at a transition if you like (taps beat the
              beat grid for the start). Say "scratch that" / "undo" to drop the last move, "again" to repeat it.
-             Press R again: the narration is transcribed locally (faster-whisper when installed, else the Windows
-             recogniser), phrases are matched to the dance graph's moves (names, Portuguese names, aliases, your
+             Press R again: the narration is transcribed locally by Whisper large-v3 (.venv-asr, GPU; an English
+             and a Portuguese pass fused, the move vocabulary as hotwords; 'auto' never falls back to the English-
+             only Windows recogniser - if Whisper is missing the status line says why and how to fix it), phrases
+             are matched to the dance graph's moves (names, Portuguese names and spellings, English aliases, your
              learned spellings), starts are moved back by the reaction lag (0.4 s default) and snapped to the beat
-             grid (half measures by default) or to proposal boundaries. Review the list, then Apply.
+             grid (half measures by default) or to proposal boundaries. Review the list, then Apply. 'Re-transcribe'
+             runs an earlier narration through the current recogniser again (the old files are kept as
+             transcript.<engine-model-mode>.json, never overwritten). When a pipeline stage holds the GPU and too
+             little VRAM is free beside it, the narration waits in a GPU queue ('Transcribe on CPU now' skips it:
+             turbo, English only, weaker on Portuguese names); such results say 're-transcribe recommended'.
   Correct    narrated segments are hatched (provenance 'narration') until you confirm them (Enter -> 'human').
              Drag segment edges (snap to eighths; hold Alt for free), M / S split at the playhead, J merges with the
              next, Delete removes, E / the picker changes the move (search names, aliases, English names). Unknown
@@ -64,13 +74,19 @@ def cmd_annotate(args: argparse.Namespace) -> int:
     if args.action == "asr-check":
         from . import asr
         st = asr.engines(refresh=True)
-        print(json.dumps(st, indent=1))
+        print(json.dumps(st, indent=1, ensure_ascii=False))
+        print(st["summary"])
         if not st["faster-whisper"].get("available"):
-            print(asr.setup_help())
+            print(st["faster-whisper"].get("fix") or asr.setup_help())
         return 0
+    if args.action == "propagate":  # several takes: builds its own sessions (no video probing)
+        from .propagate import cmd_propagate
+        return cmd_propagate(args)
     s = _session(args)
     if args.action == "transcribe":
         return cmd_transcribe(s, args)
+    if args.action == "retranscribe":
+        return cmd_retranscribe(s, args)
     from .server import serve
     serve(s, port=args.port, open_browser=not args.no_browser)
     return 0
@@ -106,10 +122,52 @@ def cmd_transcribe(s, args) -> int:
     return 0
 
 
+def cmd_retranscribe(s, args) -> int:
+    """Earlier narrations (all, or --id) through the current recogniser again; transcript.json / result.json are
+    replaced, the previous files kept as transcript.<engine-model-mode>.json / result.<...>.json (pipeline.
+    keep_previous). A busy GPU queues the job (DANCECAP_ASR_GPU_BUSY=cpu: CPU at once instead)."""
+    import time
+
+    from .pipeline import NarrationSettings, process
+    ids = [args.id] if args.id else [n["id"] for n in s.narrations()]
+    rc = 0
+    for nid in ids:
+        nd = s.narration_dir / nid
+        if not (nd / "log.json").exists():
+            print(f"[annotate] {nid}: no log.json - skipped")
+            continue
+        try:
+            saved = json.loads((nd / "settings.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            saved = {}
+        over = {k: v for k, v in (("engine", args.engine), ("lag", args.lag), ("snap", args.snap),
+                                  ("typesafe", True if args.typesafe else None)) if v is not None}
+        st = NarrationSettings.from_dict({**s.settings, **saved, **over, "annotator": saved.get("annotator")
+                                          or s.annotator})
+        t0 = time.time()
+        try:
+            res = process(nd, s.context(), s.lexicon, st, retranscribe=True)
+        except Exception as e:  # noqa: BLE001 - report and go on with the next narration
+            print(f"[annotate] {nid}: FAILED: {e}")
+            rc = 1
+            continue
+        a = res.get("asr") or {}
+        print(f"[annotate] {nid}: {a.get('engine')} {a.get('model')} ({a.get('gpu') or a.get('device')}, "
+              f"{a.get('language')}) in {time.time() - t0:.0f} s; {res['summary']['moves']} moves, "
+              f"{res['summary']['unknown']} unknown")
+        if a.get("retranscribe"):
+            print("  re-transcribe recommended:", a["retranscribe"])
+        for w in res["warnings"]:
+            print("  warning:", w)
+    return rc
+
+
 def register(sub) -> None:
     p = sub.add_parser("annotate", help="narration annotation tool (local web UI) for move labels",
                        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("action", nargs="?", default="serve", choices=["serve", "transcribe", "asr-check"])
+    p.add_argument("action", nargs="?", default="serve",
+                   choices=["serve", "transcribe", "retranscribe", "propagate", "asr-check"])
+    p.add_argument("--id", help="retranscribe: one narration id (default: all of the take); propagate: the narration")
     p.add_argument("--take", help="take name (reference time base)")
     p.add_argument("--video", help="any mp4 (video time base unless it is a source of a take)")
     p.add_argument("--video-time", action="store_true", help="keep the video clock even for a take source")
@@ -122,11 +180,19 @@ def register(sub) -> None:
     p.add_argument("--typesafe", action="store_true", help="ask TypeSafe about ambiguous phrases (text only)")
     p.add_argument("--lag", type=float, help="reaction lag in seconds (default 0.4)")
     p.add_argument("--snap", choices=["measure", "half", "beat", "eighth", "none"], help="start snapping (half)")
-    p.add_argument("--engine", choices=["auto", "faster-whisper", "sapi"], help="speech recogniser (auto)")
+    p.add_argument("--engine", choices=["auto", "faster-whisper", "faster-whisper:large-v3",
+                                        "faster-whisper:large-v3-turbo", "sapi"],
+                   help="speech recogniser (auto = Whisper large-v3, never SAPI; :large-v3-turbo is faster but "
+                        "weaker on Portuguese move names)")
     p.add_argument("--audio", help="transcribe: the narration recording")
     p.add_argument("--log", help="transcribe: the player log JSON {entries:[{a, v, cam, rate, paused, ev}]}")
     p.add_argument("--start", type=float, help="transcribe without a log: label time at recording start")
     p.add_argument("--rate", type=float, default=1.0, help="transcribe without a log: playback rate")
+    p.add_argument("--to", nargs="+", help="propagate: the other takes (same reference clock; remembered)")
+    p.add_argument("--master", help="propagate: the take the narration is reviewed in (remembered)")
+    p.add_argument("--beats-from", action="append", metavar="TAKE=OTHER",
+                   help="propagate: TAKE has no beats.json yet - use OTHER's grid (remembered)")
+    p.add_argument("--write", action="store_true", help="propagate: write (default: dry run, report only)")
     p.set_defaults(func=cmd_annotate)
 
 

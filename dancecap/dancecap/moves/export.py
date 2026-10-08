@@ -8,7 +8,8 @@ Capture time base: `capture time = reference time + time_to_audio` (capture.json
 audio_offset - times[0]) - exactly the clock of the viewer's CaptureTimeline.AudioTimes, so a segment is current
 when t0 <= audio time < t1 and its frames are CaptureTimeline.FrameAt(t). Every exported time keeps its reference
 value next to it (t0_reference / t1_reference) plus the nearest capture frames f0 / f1 and in_capture (the segment
-overlaps the capture's frames). The labelled range may extend beyond the capture (the fingerprint covers the whole
+overlaps the capture's frames); labels.json 'unresolved' items (unknown narrated phrases = unlabelled gaps) are
+converted the same way. The labelled range may extend beyond the capture (the fingerprint covers the whole
 labelled dance; the capture only the reconstructed window).
 
 Coordinates: graph positions stay as authored in Zouk1 (that app is Unity: left-handed, y-up - already Unity
@@ -95,8 +96,11 @@ def _times(item: dict, clock: CaptureClock) -> dict:
 def convert_labels(labels_doc: dict, clock: CaptureClock) -> dict:
     from .labels import Labels
     lab = to_reference(Labels.from_dict(labels_doc))
-    d = lab.to_dict()
+    d = json.loads(json.dumps(lab.to_dict()))
     d["segments"] = [_times(s, clock) for s in d["segments"]]
+    if isinstance(d.get("unresolved"), list):  # unknown narrated phrases (unlabelled gaps): same clock as segments
+        d["unresolved"] = [_times(u, clock) if isinstance(u, dict) and u.get("t0") is not None
+                           and u.get("t1") is not None else u for u in d["unresolved"]]
     d["video"] = None
     if lab.provenance == "placeholder":
         d["banner"] = PLACEHOLDER_BANNER

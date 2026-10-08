@@ -11,14 +11,18 @@ transition
   no_link_cost      no connection in either direction  -> flagged new_link (a candidate to add to the graph)
   + distance_weight x |position(prev) - position(next)| (metres in the graph) as a small tie-breaker.
 Staying on the same node (consecutive segments of one move) costs 0. A gap longer than max_gap_s between segments
-breaks the path: no transition is scored or reported across it. A segment with `node` set is pinned to that node.
+breaks the path: no transition is scored or reported across it. So does (break_on_unknown, default on) an unknown
+narrated move between two segments - a labels.json 'unresolved' item (a phrase the narration could not map) lying in
+the gap: the dance went A -> ? -> B, so A -> B is neither scored nor reported as a new link, however short the gap.
+A segment with `node` set is pinned to that node.
 
 path.json:
   {version:1, take, provenance (of the labels: human|narration|auto|placeholder|mixed:...), time_base:'reference',
    labels:<file>, params:{...},
    steps:[{t0, t1, node, move, link:<link id or null; the first link in travel order>, new_link:bool,
            + segment, stay, reverse, via:[blank node ids passed through, in travel order],
-             links:[every link id in travel order], break_before, gap_before}],
+             links:[every link id in travel order], break_before, gap_before,
+             unknown_before:[phrases of the unresolved items in the gap] (only when there are some)}],
    new_links:[{from, to, count, + from_move, to_move}], cost, labels_sha256_16, note}
 """
 from __future__ import annotations
@@ -50,10 +54,24 @@ class PathParams:
     distance_weight: float = 0.05
     max_gap_s: float = 1.0
     strict_direction: bool = False
+    break_on_unknown: bool = True  # an unresolved (unknown) narrated move in the gap breaks the path
 
 
 def path_file(take: str) -> Path:
     return moves_dir(take) / "path.json"
+
+
+def unknown_between(a: float, b: float, unresolved: list[dict], eps: float = 1e-6) -> list[str]:
+    """Phrases of the unresolved items (reference time) lying in the gap [a, b] between two segments."""
+    out = []
+    for u in unresolved:
+        try:
+            u0, u1 = float(u["t0"]), float(u["t1"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if u1 > u0 and u0 >= a - eps and u1 <= b + eps:
+            out.append(str(u.get("unresolved") or u.get("anchor_word") or "unknown"))
+    return out
 
 
 def _transition(graph: Graph, a: str, b: str, p: PathParams) -> tuple[float, dict]:
@@ -88,7 +106,10 @@ def resolve_path(labels: Labels, graph: Graph, params: PathParams | None = None,
             raise PathError(f"segment {s.id}: move {s.move!r} has no node in the graph")
         cands.append(inst)
     n = len(segs)
-    breaks = [False] + [segs[k].t0 - segs[k - 1].t1 > p.max_gap_s for k in range(1, n)]
+    unresolved = [u for u in lab.extra.get("unresolved") or [] if isinstance(u, dict) and u.get("tier", "couple") == "couple"]
+    unknown = [unknown_between(segs[k - 1].t1, segs[k].t0, unresolved) if k and p.break_on_unknown else []
+               for k in range(n)]
+    breaks = [False] + [segs[k].t0 - segs[k - 1].t1 > p.max_gap_s or bool(unknown[k]) for k in range(1, n)]
 
     # Viterbi
     cost = [np.zeros(len(c)) for c in cands]
@@ -117,6 +138,8 @@ def resolve_path(labels: Labels, graph: Graph, params: PathParams | None = None,
         st = {"t0": round(s.t0, 6), "t1": round(s.t1, 6), "node": node, "move": s.move, "link": None,
               "new_link": False, "segment": s.id, "stay": False, "reverse": False, "via": [], "links": [],
               "break_before": bool(breaks[k]), "gap_before": round(s.t0 - segs[k - 1].t1, 6) if k else None}
+        if unknown[k]:
+            st["unknown_before"] = unknown[k]
         if k and not breaks[k]:
             prev = cands[k - 1][choice[k - 1]]
             _, info = _transition(graph, prev, node, p)
@@ -215,7 +238,8 @@ def cmd_path(args: argparse.Namespace) -> int:
     params = PathParams(no_link_cost=args.no_link_cost, reverse_cost=args.reverse_cost,
                         via_cost=getattr(args, "via_cost", PathParams.via_cost),
                         distance_weight=args.distance_weight, max_gap_s=args.max_gap,
-                        strict_direction=args.strict_direction)
+                        strict_direction=args.strict_direction,
+                        break_on_unknown=not getattr(args, "no_unknown_breaks", False))
     doc = resolve_path(labels, graph, params, labels_file=_rel(src), labels_sha=_sha(src))
     out = Path(args.out) if args.out else path_file(args.take)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -241,4 +265,6 @@ def register(sub) -> None:
     p.add_argument("--distance-weight", type=float, default=d.distance_weight)
     p.add_argument("--max-gap", type=float, default=d.max_gap_s, help="seconds; longer gaps break the path")
     p.add_argument("--strict-direction", action="store_true", help="a reverse traversal counts as a new link")
+    p.add_argument("--no-unknown-breaks", action="store_true",
+                   help="score transitions across unresolved (unknown) narrated moves too (default: they break the path)")
     p.set_defaults(func=cmd_path)

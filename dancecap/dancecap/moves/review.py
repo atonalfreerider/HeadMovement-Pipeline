@@ -249,12 +249,16 @@ def draw_fingerprint(graph: Graph, fp: dict, path_doc: dict | None, out: Path) -
         for k, st in enumerate(path_doc["steps"]):
             b = graph.nodes[st["node"]]["band"]
             ax_time.plot([st["t0"], st["t1"]], [b, b], color=SEQ[5], lw=3, solid_capstyle="butt", zorder=3)
-            if k:
+            if k and not st.get("break_before"):  # no connector across a path break (gap / unknown move)
                 pb = graph.nodes[path_doc["steps"][k - 1]["node"]]["band"]
                 ax_time.plot([st["t0"], st["t0"]], [pb, b], color=INK2 if st.get("new_link") else SEQ[3],
                              lw=1.2, ls="--" if st.get("new_link") else "-", zorder=2)
-            ax_time.text((st["t0"] + st["t1"]) / 2, b + 0.18, node_label(graph.nodes[st["node"]]), ha="center",
-                         va="bottom", fontsize=8, color=INK, rotation=0)
+            if st.get("unknown_before"):  # an unknown narrated move in the gap before this step
+                gap0 = path_doc["steps"][k - 1]["t1"] if k else st["t0"]
+                ax_time.text((gap0 + st["t0"]) / 2, -0.38, "?", ha="center", va="bottom", fontsize=9, color=INK2)
+            ax_time.text((st["t0"] + st["t1"]) / 2, b + (0.18 if k % 2 == 0 else 0.42),
+                         node_label(graph.nodes[st["node"]]), ha="center", va="bottom", fontsize=8, color=INK,
+                         rotation=0)
         ax_time.set_yticks(range(len(bands)), [b.get("label", "") for b in bands])
         ax_time.set_ylim(-0.5, len(bands) - 0.2)
         ax_time.set_xlabel("reference seconds")
@@ -266,6 +270,8 @@ def draw_fingerprint(graph: Graph, fp: dict, path_doc: dict | None, out: Path) -
         ax_time.axis("off")
 
     title = f"Dance fingerprint - {fp['take']}"
+    if not placeholder and fp.get("provenance"):
+        title += f"  (labels: provenance {fp['provenance']})"
     if placeholder:
         title = f"PLACEHOLDER - NOT AN ANALYSIS  |  {title}  (seeded random walk on the graph, beat grid)"
     fig.suptitle(title, fontsize=17 if placeholder else 14, x=0.01, ha="left", y=0.99,

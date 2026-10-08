@@ -106,3 +106,24 @@ footer#tlWrap { flex: 0 0 auto; border-top: 1px solid var(--line); background: v
 kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; font-size: 11px;
   background: var(--panel2); }
 table.keys td { padding: 2px 8px 2px 0; vertical-align: top; }
+/* camera type of the shown video (dancecap.camera_types) */
+.camtype { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+.camtype .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.camtype.ct-suggested, .camtype.ct-unset { border-style: dashed; }
+.camtype.ct-suggested { border-color: var(--warn); }
+.camtype.ct-confirmed { border-color: #2f6b47; }
+.camtype.ct-conflict { border-color: var(--bad); background: #2a1619; }
+.ctseg { display: inline-flex; }
+.ctseg button { border-radius: 0; padding: 2px 8px; }
+.ctseg button:first-child { border-radius: 5px 0 0 5px; }
+.ctseg button:last-child { border-radius: 0 5px 5px 0; border-left: none; }
+.ctseg button.on { background: #23477a; border-color: #3a6db4; }
+.camtype.ct-suggested .ctseg button.on { background: #4a3a14; border-color: var(--warn); }
+.ctstate { font-size: 12px; }
+.ctstate.ok { color: var(--ok); }
+.ctstate.sug { color: var(--warn); }
+.ctstate.bad { color: var(--bad); font-weight: 600; }
+.ctdetail { margin-top: 2px; }
+/* narration recogniser quality: 're-transcribe recommended' (turbo / CPU fallback / English only / SAPI) */
+.retx { color: var(--warn); border: 1px solid var(--warn); border-radius: 5px; padding: 3px 6px; margin: 4px 0; }
+button.attention { border-color: var(--warn); color: var(--warn); }

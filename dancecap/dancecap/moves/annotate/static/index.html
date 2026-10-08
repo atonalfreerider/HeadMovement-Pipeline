@@ -36,6 +36,7 @@
         <button data-rate="0.25">0.25x</button><button data-rate="0.5">0.5x</button><button data-rate="0.75">0.75x</button><button data-rate="1">1x</button>
       </span>
     </div>
+    <div id="camType" class="camtype hidden" role="group" aria-label="Camera type of this video"></div>
     <div id="clock" class="mono clock"></div>
   </section>
   <section id="right">
@@ -48,18 +49,23 @@
       <div class="row small settings">
         <label title="Your reaction time: segment starts are moved this much earlier (wall-clock seconds)">lag <input id="lag" type="number" step="0.05" min="0" max="3"> s</label>
         <label title="Where segment starts snap to">snap <select id="snap"><option value="measure">measure</option><option value="half">half measure</option><option value="beat">beat</option><option value="eighth">eighth</option><option value="none">none</option></select></label>
-        <label title="Speech recogniser (all local)">engine <select id="engine"><option value="auto">auto</option><option value="faster-whisper">faster-whisper</option><option value="sapi">Windows (SAPI)</option></select></label>
+        <label title="Speech recogniser (all local). auto = Whisper large-v3 (English + Portuguese passes); it never falls back to the Windows recogniser. Turbo is ~2.5x faster but gets clearly fewer Portuguese move names right.">engine <select id="engine"><option value="auto">auto (Whisper large-v3)</option><option value="faster-whisper:large-v3-turbo">Whisper turbo (faster; weaker on Portuguese names)</option><option value="sapi">Windows SAPI (English only; not recommended)</option></select></label>
         <label title="Ask TypeSafe which move an unclear phrase means. Sends only the words, never audio or video."><input type="checkbox" id="typesafe"> TypeSafe for unclear phrases</label>
       </div>
       <div id="asrStatus" class="small muted"></div>
+      <div id="engineNote" class="small warnText hidden"></div>
+      <div id="queueRow" class="row small hidden"><span class="warnText">waiting for the GPU (a pipeline stage holds it)</span>
+        <button id="btnCpuNow" title="Stop waiting and transcribe on the CPU now: Whisper turbo, English pass only - weaker on Portuguese move names; re-transcribe later">Transcribe on CPU now</button></div>
       <div id="narrResult" class="hidden">
         <div class="row"><b id="narrTitle"></b><span class="spacer"></span>
           <button id="btnApply" class="primary" title="Merge these segments into the timeline (human labels are kept)">Apply</button>
           <button id="btnRemap" title="Map again with the current lag / snap / TypeSafe settings">Re-map</button>
+          <button id="btnRetranscribe" title="Transcribe this recording again with the selected engine (the previous transcript is kept as transcript.&lt;engine-model-mode&gt;.json, never overwritten)">Re-transcribe</button>
           <button id="btnNarrAudio" title="Play the recording">&#9654; audio</button>
           <label class="filebtn" title="Import a transcript JSON [{word, start, end, prob}] for this recording">transcript...<input id="trFile" type="file" accept=".json,application/json"></label>
           <button id="btnDiscard" title="Close this narration (the files stay in moves/narration/)">Close</button>
         </div>
+        <div id="narrRetx" class="small retx hidden"></div>
         <div id="narrWarn" class="small warnText"></div>
         <div id="narrEvents" class="events"></div>
       </div>
@@ -105,6 +111,11 @@
   </table>
   <p class="small muted">Hatched = narrated, not yet confirmed. Red = unknown phrase. Orange outline = low confidence.
      Dashed lines = automatic proposal boundaries (not labels). Yellow strip = counterbalance.</p>
+  <h3>Camera type</h3>
+  <p class="small">Under the video: how the shown camera was held. <b>Handheld | Tripod</b> and <b>Zoom: no | yes</b>
+     (a tripod can zoom). A dashed box is an automatic suggestion from the video / the camera track: click
+     <i>Confirm</i> or pick the right values; your answer is saved to the take and always wins. The camera stages use
+     it: a tripod gets one rigid pose for the whole video, "no zoom" one focal length per video.</p>
   <button id="helpClose">Close</button>
 </div></div>
 <div id="modal" class="modal hidden"><div class="box"><h3 id="modalTitle"></h3><pre id="modalText"></pre><button id="modalClose">Close</button></div></div>

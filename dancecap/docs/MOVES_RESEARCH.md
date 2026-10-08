@@ -157,6 +157,19 @@ These are the decisions the other stages of this workflow need. IDs are for cros
 
 ### Speech-to-text (annotate stage)
 - **A1. Engine.**
+  - *Status 2026-10-07 (implemented, measured on the user's two narrations: work/larissa_kadu/moves/narration/<id>/
+    transcript.json vs the kept transcript.sapi.json):* `.venv-asr` (Python 3.11, faster-whisper 1.2.1, ctranslate2 4.8.2, nvidia-cublas-cu12
+    12.9.2.10; no cuDNN needed) with **large-v3** as the default (turbo is the faster option), two passes
+    (`language="en"` and `"pt"`) fused per utterance by vocabulary match x word probability, Silero VAD regions
+    joined with 1 s silences (faster-whisper's own `vad_filter` moved words across the joins), hotwords =
+    Portuguese name words first. `auto` never falls back to SAPI. Code: `dancecap/moves/annotate/asr.py`.
+    Review fixes (same day): turbo is clearly weaker on Portuguese names (24 IPA-synthesised Brazilian names:
+    large-v3 24/24, turbo 17/24 - Sahada, Shikachi, Solchinho, Piel, Torcel, Avial), so a busy GPU now QUEUES a
+    narration instead of silently running CPU turbo (English pass only); 'Transcribe on CPU now' or
+    `DANCECAP_ASR_GPU_BUSY=cpu` skips the queue, and such results are marked 're-transcribe recommended'.
+    Re-transcription keeps every earlier transcript (`transcript.<engine-model-mode>.json`, timestamped when the
+    name is taken). A word split by a hyphen ("Yo -Yo" = Ioiô) is no longer merged as a decoder repetition, and
+    short Portuguese names match their Brazilian respelling ("Piau" -> Pião).
   - Model: **faster-whisper 1.2.x** with `large-v3-turbo`, run with `device="cuda"`,
     `compute_type="float16"`. Never bf16: Turing cannot run it, and CTranslate2 would fall back to fp32.
   - Settings: `language="en"`, `word_timestamps=True`, `vad_filter=True` (min_silence_duration_ms 300-500),

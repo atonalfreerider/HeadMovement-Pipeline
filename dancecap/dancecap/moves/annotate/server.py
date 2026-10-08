@@ -15,6 +15,9 @@ API (JSON):
   POST /api/narration (multipart)       audio + log (+ settings) -> background job: transcribe + map -> result
   GET  /api/narration/<id>              result.json (or the job state)
   POST /api/narration/<id>/remap        new settings (lag, snap, typesafe), no re-transcription
+  POST /api/narration/<id>/retranscribe {settings} -> job: transcribe the kept audio again (current engine; the
+                                        previous transcript/result are kept as *.<engine-model-mode>.json)
+  POST /api/narration/<id>/cpu-now      a job of this narration waiting in the GPU queue goes to the CPU now
   POST /api/narration/<id>/transcript   import a transcript JSON [{word, start, end, prob}] for this narration
   GET  /api/narration/<id>/audio        the recorded narration (Range)
   GET  /api/narrations                  list
@@ -25,6 +28,13 @@ API (JSON):
   POST /api/proxy/<camera>              H.264 proxy of a camera the browser cannot decode
   GET  /api/jobs/<id>                   background job state
   GET  /api/asr[?refresh=1]             recogniser status
+Camera types (take mode; dancecap.camera_types, the same CameraType JSON as the Pipeline Monitor):
+  GET  /api/cameras/types               {enabled, types: [CameraType], toml_etag, summary}; a lone video: enabled false
+  PUT  /api/cameras/types/<cam>         {mount: handheld|tripod, zoom: true|false} (If-Match: toml_etag) -> the user's
+                                        answer in takes/<take>.toml [cameras."NN"]; ?preview=1 -> {rerun_needed} only;
+                                        412 when the TOML changed since it was read, 422 for bad values
+  DELETE /api/cameras/types/<cam>       remove the answer (the automatic suggestion stays)
+  POST /api/cameras/types/accept        {cams?: [..], min_confidence?: 0.7}: confident suggestions become answers
 """
 from __future__ import annotations
 
@@ -41,10 +51,11 @@ import uuid
 import webbrowser
 from email.utils import formatdate
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from ...take import PACKAGE_ROOT
 from . import asr
-from .pipeline import NarrationSettings, merge_segments, process
+from .pipeline import NarrationSettings, keep_previous, merge_segments, process
 from .session import Session
 from .taxonomy_edit import TaxonomyEditError, append_alias, append_proposed_move, rebuild_graph
 
@@ -188,6 +199,15 @@ def create_app(session: Session, allowed_hosts: set[str] | None = None, check_as
     def guard():
         if allowed_hosts is not None and request.host not in allowed_hosts:
             abort(403)
+        if request.method not in ("GET", "HEAD", "OPTIONS"):  # no cross-site writes (CSRF): a page elsewhere can
+            # target 127.0.0.1 directly, so the Host check alone does not stop a text/plain POST
+            if request.headers.get("Sec-Fetch-Site") == "cross-site":
+                abort(403)
+            origin = request.headers.get("Origin")
+            if origin and origin != "null" and urlsplit(origin).netloc != request.host:
+                abort(403)
+            if origin == "null":
+                abort(403)
 
     @app.after_request
     def headers(resp):
@@ -247,7 +267,8 @@ def create_app(session: Session, allowed_hosts: set[str] | None = None, check_as
     @app.get("/api/asr")
     def api_asr():
         st = asr_status(refresh=request.args.get("refresh") == "1")
-        return jsonify({**st, "help": None if st.get("faster-whisper", {}).get("available") else asr.setup_help()})
+        fw = st.get("faster-whisper", {})
+        return jsonify({**st, "help": None if fw.get("available") else (fw.get("fix") or asr.setup_help())})
 
     # -- labels -----------------------------------------------------------------------------------------------
     @app.post("/api/validate")
@@ -316,6 +337,17 @@ def create_app(session: Session, allowed_hosts: set[str] | None = None, check_as
             return jsonify({"job": jobs.start("remap", run_process, d, s, False)})
         return jsonify(run_process(d, s, False))
 
+    @app.post("/api/narration/<nid>/retranscribe")
+    def api_retranscribe(nid):
+        d = ndir_of(nid)
+        s = settings_of(body().get("settings"))
+        return jsonify({"job": jobs.start("retranscribe", run_process, d, s, True)})
+
+    @app.post("/api/narration/<nid>/cpu-now")
+    def api_cpu_now(nid):
+        asr.skip_gpu_queue(ndir_of(nid) / "audio16k.wav")
+        return jsonify({"ok": True})
+
     @app.post("/api/narration/<nid>/transcript")
     def api_transcript(nid):
         d = ndir_of(nid)
@@ -323,6 +355,7 @@ def create_app(session: Session, allowed_hosts: set[str] | None = None, check_as
             tr = asr.load_transcript_json(request.get_json(silent=True))
         except asr.ASRError as e:
             return jsonify({"error": str(e)}), 400
+        keep_previous(d)
         (d / "transcript.json").write_text(json.dumps(tr, indent=1, ensure_ascii=False), encoding="utf-8")
         return jsonify(run_process(d, settings_of(body().get("settings")), False))
 
@@ -396,6 +429,113 @@ def create_app(session: Session, allowed_hosts: set[str] | None = None, check_as
         if j is None:
             abort(404)
         return jsonify(j)
+
+    # -- camera types (take mode): mount handheld | tripod, zoom yes | no per source video -----------------------
+    def ct_take_cam(cam: str | None = None):
+        if session.mode != "take":
+            return None, (jsonify({"error": "camera types belong to a take; a lone video gets its type when it "
+                                            "joins one (Pipeline Monitor new-capture wizard)"}), 404)
+        if cam is not None and cam not in session.cameras:
+            return None, (jsonify({"error": f"unknown camera {cam}"}), 404)
+        return session.name, None
+
+    def rerun_needed(take: str, cam: str, mount: str, zoom: bool) -> bool:
+        """True when the cameras stage already ran for this camera with another class than the new answer: the class
+        its export was made with (cameras/<cam>.npz camera_class; an export without one is the general model)."""
+        import numpy as np
+
+        from ...camera_types import class_of
+        p = session.work / "cameras" / f"{cam}.npz"
+        if not p.exists():
+            return False
+        try:
+            with np.load(p) as z:
+                before = str(z["camera_class"]) if "camera_class" in z.files else "handheld_zoom"
+        except (OSError, ValueError):
+            return True
+        return before != class_of(mount, zoom)
+
+    def if_match(d: dict) -> str | None:
+        return request.headers.get("If-Match") or d.get("toml_etag") or None
+
+    @app.get("/api/cameras/types")
+    def api_camera_types():
+        from ...camera_types import MIN_CONFIDENCE, CameraTypeError, load, summary
+        if session.mode != "take":
+            return jsonify({"enabled": False, "types": [], "reason": "lone video: no take"})
+        try:
+            types, etag = load(session.name, list(session.cameras))
+        except CameraTypeError as e:
+            return jsonify({"enabled": False, "types": [], "error": str(e)}), 500
+        resp = jsonify({"enabled": True, "types": types, "toml_etag": etag, "summary": summary(types),
+                        "min_confidence": MIN_CONFIDENCE})
+        resp.headers["ETag"] = f'"{etag}"'
+        return resp
+
+    @app.put("/api/cameras/types/<cam>")
+    def api_camera_type_put(cam):
+        from ...camera_types import CameraTypeError, StaleEtag, set_type
+        take, err = ct_take_cam(cam)
+        if err:
+            return err
+        if not request.is_json:
+            return jsonify({"error": "JSON body {mount, zoom} expected"}), 415
+        d = body()
+        mount, zoom = d.get("mount"), d.get("zoom")
+        if mount not in ("handheld", "tripod") or not isinstance(zoom, bool):
+            return jsonify({"error": "mount must be handheld | tripod and zoom true | false"}), 422
+        rerun = rerun_needed(take, cam, mount, zoom)
+        if request.args.get("preview") in ("1", "true"):
+            return jsonify({"rerun_needed": rerun})
+        with edit_lock:
+            try:
+                t, etag = set_type(take, cam, mount, zoom, if_match(d))
+            except StaleEtag as e:
+                return jsonify({"error": "the take TOML changed since it was read (another tool saved it): reload",
+                                "toml_etag": e.etag}), 412
+            except CameraTypeError as e:
+                return jsonify({"error": str(e)}), 422
+        return jsonify({"type": t, "toml_etag": etag, "rerun_needed": rerun})
+
+    @app.delete("/api/cameras/types/<cam>")
+    def api_camera_type_delete(cam):
+        from ...camera_types import CameraTypeError, StaleEtag, clear
+        take, err = ct_take_cam(cam)
+        if err:
+            return err
+        with edit_lock:
+            try:
+                t, etag = clear(take, cam, if_match(body()))
+            except StaleEtag as e:
+                return jsonify({"error": "the take TOML changed since it was read: reload", "toml_etag": e.etag}), 412
+            except CameraTypeError as e:
+                return jsonify({"error": str(e)}), 422
+        return jsonify({"type": t, "toml_etag": etag})
+
+    @app.post("/api/cameras/types/accept")
+    def api_camera_types_accept():
+        from ...camera_types import MIN_CONFIDENCE, CameraTypeError, StaleEtag, accept, summary
+        take, err = ct_take_cam()
+        if err:
+            return err
+        if not request.is_json:
+            return jsonify({"error": "JSON body {cams?, min_confidence?} expected"}), 415
+        d = body()
+        cams = d.get("cams") or list(session.cameras)
+        if not isinstance(cams, list) or not all(c in session.cameras for c in cams):
+            return jsonify({"error": "cams: camera ids of this take"}), 400
+        try:
+            mc = float(d.get("min_confidence", MIN_CONFIDENCE))
+        except (TypeError, ValueError):
+            return jsonify({"error": "min_confidence: a number"}), 400
+        with edit_lock:
+            try:
+                types, etag = accept(take, cams, mc, if_match(d))
+            except StaleEtag as e:
+                return jsonify({"error": "the take TOML changed since it was read: reload", "toml_etag": e.etag}), 412
+            except CameraTypeError as e:
+                return jsonify({"error": str(e)}), 422
+        return jsonify({"types": types, "toml_etag": etag, "summary": summary(types)})
 
     app.config["session"] = session
     app.config["jobs"] = jobs

@@ -61,8 +61,11 @@ howl-down = ["head movement down"]
 # Portuguese alternates from the terminology research (only for renamed moves; terms that name another move skipped):
 back-and-forth = ["Básico Frente e Trás", "Passo Frente e Trás", "Vai e Vem", "Básico Frontal", "Passo Básico"]
 back-basic = ["Passo Básico para Trás"]
-bent-spin = ["Giro com Inclinação", "Giro com Cabeça Inclinada"]
-body-roll = ["Ondulação Frontal", "Ondulação Lateral", "Corporal", "Rolos de Corpo"]
+bent-spin = ["Giro com Inclinação", "Giro com Cabeça Inclinada",
+             # user decision 2026-10-08: the narrated "Tilted Turn" is the Giro Inclinado (Bent Spin) - an alias, not
+             # a new move (answers vocabulary research H4)
+             "Tilted Turn", "tilted turn", "tilt turn"]
+body-roll =["Ondulação Frontal", "Ondulação Lateral", "Corporal", "Rolos de Corpo"]
 boomerang = ["Bumerang", "Boomerangue"]
 crosswalk = ["Cruzado", "Passo Cruzado da Dama", "Básico Lateral Cruzado", "Cruzado Lateral"]
 dip-back = ["Cambret"]

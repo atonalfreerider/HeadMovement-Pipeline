@@ -712,6 +712,7 @@ function loadCamera(id) {
   const wasPlaying = !video.paused;
   S.cam = id; S.switching = true;
   $('camSel').value = id;
+  renderCameraType();
   $('videoNote').classList.add('hidden');
   const c = camObj();
   video.src = c.url + (c.bust ? '?v=' + c.bust : '');
@@ -868,12 +869,41 @@ async function stopRec() {
   try {
     const { id, job } = await api('POST', '/api/narration', fd, true);
     $('recStatus').textContent = 'transcribing locally ...';
-    const j = await pollJob(job, (jj) => { if (jj.log && jj.log.length) $('recStatus').textContent = jj.log[jj.log.length - 1]; });
+    const j = await pollJob(job, jobTick(id)).finally(() => showQueue(null));
     if (j.state !== 'done') throw new Error(j.error || 'failed');
     showNarration(j.result);
     $('recStatus').textContent = '';
     refreshNarrationList(id);
   } catch (e) { $('recStatus').textContent = ''; toast('narration failed: ' + e.message, true); }
+}
+// a transcription job's progress line; while it waits in the GPU queue (a pipeline stage holds the GPU and too
+// little VRAM is free to run beside it) 'Transcribe on CPU now' is offered (turbo, English only: weaker on Portuguese)
+function jobTick(id) {
+  return (jj) => {
+    const last = jj.log && jj.log.length ? String(jj.log[jj.log.length - 1]) : '';
+    if (last) $('recStatus').textContent = last;
+    showQueue(jj.state === 'running' && last.includes('GPU queue:') ? id : null);
+  };
+}
+function showQueue(id) {
+  if (id !== S.queuedNarr) $('btnCpuNow').disabled = false;
+  S.queuedNarr = id;
+  $('queueRow').classList.toggle('hidden', !id);
+}
+async function cpuNow() {
+  if (!S.queuedNarr) return;
+  try {
+    await api('POST', `/api/narration/${S.queuedNarr}/cpu-now`, {});
+    $('btnCpuNow').disabled = true;
+    toast('going to the CPU at the next check (within ~20 s); re-transcribe later when the GPU is free');
+  } catch (e) { toast('could not skip the GPU queue: ' + e.message, true); }
+}
+function showEngineNote() {
+  const e = $('engine').value;
+  const note = e === 'sapi' ? 'Windows SAPI is English-only and mishears Portuguese move names ("one role", "at a") - use auto.'
+    : e.includes('turbo') ? 'Whisper turbo is faster but gets clearly fewer Portuguese move names right than auto (large-v3).' : '';
+  $('engineNote').textContent = note;
+  $('engineNote').classList.toggle('hidden', !note);
 }
 function currentSettings() {
   return { lag: parseFloat($('lag').value) || 0, snap: $('snap').value, engine: $('engine').value,
@@ -888,9 +918,13 @@ function showNarration(res) {
   S.taps = res.taps || [];
   $('narrResult').classList.remove('hidden');
   const sm = res.summary || {};
-  $('narrTitle').textContent = `${res.id}: ${sm.moves || 0} moves, ${sm.unknown || 0} unknown (${res.engine || 'no recogniser'})`;
+  $('narrTitle').textContent = `${res.id}: ${sm.moves || 0} moves, ${sm.unknown || 0} unknown (${asrLabel(res)})`;
   $('narrWarn').textContent = (res.warnings || []).join(' | ');
-  const evs = (res.events || []).filter((e) => e.kind !== 'ignored' || e.phrase);
+  const retx = (res.asr || {}).retranscribe;  // turbo / CPU fallback / English pass only / SAPI
+  $('narrRetx').innerHTML = retx ? `<b>Re-transcribe recommended:</b> ${esc(retx)}` : '';
+  $('narrRetx').classList.toggle('hidden', !retx);
+  $('btnRetranscribe').classList.toggle('attention', !!retx);
+  const evs =(res.events || []).filter((e) => e.kind !== 'ignored' || e.phrase);
   $('narrEvents').innerHTML = evs.map((e, i) => {
     const t = e.t0 != null ? e.t0 : e.anchor_t;
     const what = e.kind === 'move' ? `${esc(e.name || e.move)} <span class="muted">${esc(e.status || '')} ${e.confidence != null ? e.confidence.toFixed(2) : ''}</span>`
@@ -938,7 +972,7 @@ async function openNarration(id) {
 async function refreshNarrationList(select) {
   try {
     const list = await api('GET', '/api/narrations');
-    $('narrSel').innerHTML = list.map((n) => `<option value="${esc(n.id)}">${esc(n.id)}${n.summary ? ` (${n.summary.moves} moves)` : n.has_transcript ? '' : ' (not processed)'}</option>`).join('');
+    $('narrSel').innerHTML = list.map((n) => `<option value="${esc(n.id)}">${esc(n.id)}${n.summary ? ` (${n.summary.moves} moves)` : n.has_transcript ? '' : ' (not processed)'}${n.retranscribe ? ' - re-transcribe recommended' : ''}</option>`).join('');
     if (select) $('narrSel').value = select;
   } catch (e) { /* ignore */ }
 }
@@ -971,6 +1005,168 @@ async function exportUnity() {
   $('btnExport').disabled = false;
 }
 function showModal(title, text) { $('modalTitle').textContent = title; $('modalText').textContent = text; $('modal').classList.remove('hidden'); }
+
+// ------------------------------------------------------------------------------------------------ camera types
+// The user's answer per video: mount Handheld | Tripod, zoom No | Yes (dancecap.camera_types; the same CameraType JSON
+// and TOML keys as the Pipeline Monitor's Video Review). The automatic suggestion pre-fills a dashed box; the user
+// confirms or changes it. The user always wins; a conflict (the camera track contradicts the answer) is shown in red.
+const CT = { enabled: false, types: {}, etag: null, minConf: 0.7, saving: false, drafts: {} };
+const CT_LABEL = { tripod: 'tripod, fixed focal', tripod_zoom: 'tripod + zoom', handheld: 'handheld, fixed focal', handheld_zoom: 'handheld + zoom' };
+const CT_SHORT = { tripod: 'T', tripod_zoom: 'TZ', handheld: 'H', handheld_zoom: 'HZ' };
+const CT_EFFECT = {
+  tripod: 'one rigid pose for the whole video (keyframes localised, ~10 % of the per-frame work), one focal length',
+  tripod_zoom: 'fixed camera centre; per-frame rotation + focal length',
+  handheld: 'per-frame pose, ONE focal length + lens distortion for the whole video',
+  handheld_zoom: 'per-frame pose + focal length (the general model, used when nothing is set)',
+};
+const CT_EVIDENCE = [
+  ['centre_p95_m', 'centre moves', (v) => `${(v * 100).toFixed(1)} cm`],
+  ['axis_p95_deg', 'axis turns', (v) => `${v.toFixed(1)}°`],
+  ['hf_rot_deg', 'hand jitter', (v) => `${v.toFixed(3)}°`],
+  ['focal_ratio', 'focal range', (v) => `×${v.toFixed(2)}`],
+  ['parallax_px', 'background parallax', (v) => `${v.toFixed(2)} px`],
+  ['jitter_hf', 'image shake', (v) => `${v.toFixed(2)} px`],
+  ['zoom_scale', 'scale drift', (v) => `${((v - 1) * 100).toFixed(1)} %`],
+];
+const ctClass = (m, z) => (m && (z === true || z === false)) ? m + (z ? '_zoom' : '') : null;
+
+function ctBase(t) {
+  if (!t) return { mount: null, zoom: null };
+  const s = t.suggestion;
+  if (t.state === 'confirmed' || t.state === 'conflict') return { mount: t.mount, zoom: t.zoom };
+  if (t.state === 'suggested' && s) return { mount: s.mount ?? t.mount, zoom: s.zoom ?? t.zoom };
+  return { mount: t.mount ?? null, zoom: t.zoom ?? null };
+}
+// what the selector shows: the saved answer / the suggestion, overridden by the fields picked in this view (unsaved)
+function ctDraft(t, cam) {
+  const d = CT.drafts[cam || (t && t.cam) || S.cam];
+  return d ? { ...ctBase(t), ...d.v } : ctBase(t);
+}
+function ctChip(t) {
+  if (!t || t.state === 'unset') return '[?]';
+  const c = ctClass(ctDraft(t).mount, ctDraft(t).zoom);
+  const refused = t.model_check && t.model_check.refused;
+  return `[${CT_SHORT[c] || '?'}${t.state === 'confirmed' ? (refused ? '!' : '') : t.state === 'conflict' ? '!' : '?'}]`;
+}
+async function loadCameraTypes() {
+  let r = null;
+  try { r = await api('GET', '/api/cameras/types'); } catch (e) { r = null; }
+  CT.enabled = !!(r && r.enabled);
+  CT.types = {}; CT.drafts = {}; CT.etag = r ? r.toml_etag : null;
+  if (r && r.min_confidence) CT.minConf = r.min_confidence;
+  for (const t of (r && r.types) || []) CT.types[t.cam] = t;
+  renderCamOptions();
+  renderCameraType();
+}
+function renderCamOptions() {
+  const sel = $('camSel');
+  for (const o of sel.options) {
+    const c = S.cams[o.value]; if (!c) continue;
+    const base = `${c.id} ${c.name}${c.playable === false ? ' (' + c.codec + ')' : ''}`;
+    o.textContent = CT.enabled ? `${base}  ${ctChip(CT.types[c.id])}` : base;
+  }
+}
+function renderCameraType() {
+  const box = $('camType');
+  const t = CT.enabled ? CT.types[S.cam] : null;
+  if (!CT.enabled || !S.cam) { box.classList.add('hidden'); return; }
+  box.classList.remove('hidden');
+  const st = t ? t.state : 'unset';
+  const d = ctDraft(t, S.cam);
+  const s = t && t.suggestion;
+  const seg = (field, opts) => `<span class="ctseg" data-field="${field}">` + opts.map(([v, lab]) =>
+    `<button type="button" data-v="${v}" class="${String(d[field]) === String(v) ? 'on' : ''}" ${CT.saving ? 'disabled' : ''}>${lab}</button>`).join('') + '</span>';
+  let state = '';
+  if (st === 'confirmed' && t.model_check && t.model_check.refused) state = `<span class="ctstate bad" title="saved in the take, but the cameras stage could not use it (see below)">&#10003; yours, not used</span>`;
+  else if (st === 'confirmed') state = `<span class="ctstate ok" title="saved in the take">&#10003; yours</span>`;
+  else if (st === 'conflict') state = `<span class="ctstate bad" title="${esc((t.conflict || {}).message || '')}">! conflict</span>`;
+  else if (st === 'suggested') {
+    const conf = s && s.confidence != null ? Math.round(100 * s.confidence) + ' %' : '?';
+    state = `<span class="ctstate sug" title="automatic suggestion (${esc((s && s.by) || 'probe')}), not confirmed">suggested ${conf}</span>` +
+      (d.mount && (d.zoom === true || d.zoom === false) ? ` <button type="button" class="primary" data-act="confirm" ${CT.saving ? 'disabled' : ''}>Confirm</button>` : '');
+  } else state = `<span class="ctstate muted" title="the pipeline uses handheld + zoom (general model) until you answer">not set</span>`;
+  const sugN = Object.values(CT.types).filter((x) => x.state === 'suggested' && x.suggestion && (x.suggestion.confidence || 0) >= CT.minConf).length;
+  const cls = ctClass(d.mount, d.zoom);
+  const ev = [];
+  const evd = (s && s.evidence) || {};
+  for (const [k, lab, f] of CT_EVIDENCE) if (evd[k] != null && isFinite(evd[k])) ev.push(`${lab} ${f(evd[k])}`);
+  if (evd.mount_judgeable === false) ev.push('mount: centre fixed by the attach model (from the video)');
+  if (evd.zoom_judgeable === false) ev.push('zoom: focal fixed by the attach model (from the video)');
+  if (evd.mount_lean === 'tripod' && s && s.mount === 'handheld') ev.push('very still (leans tripod, below the confidence bar)');
+  let detail = cls ? `pipeline: ${CT_EFFECT[cls]}` : 'pick both answers to save';
+  if (st === 'suggested' && cls) detail += ' &middot; not saved until you confirm (or pick both answers)';
+  if (st === 'conflict' && t.conflict) detail = `<b>${esc(t.conflict.message)}</b> - keep your answer (click it again) or change it`;
+  const mc = t && t.model_check;
+  if (st === 'confirmed' && mc && mc.refused) {
+    const kept = mc.model === 'per_frame' ? 'the general per-frame model' : mc.model === 'fixed_focal' ? 'per-frame poses with one focal' : (mc.model || 'a safer model');
+    detail = `<b>the cameras stage could not use this type: ${esc(mc.why || 'the data contradicts it')}</b> - it kept ${esc(kept)}; change the answer or keep it (nothing is blocked)`;
+  }
+  box.className = `camtype ct-${st}`;
+  box.innerHTML = `<div class="row"><span class="muted small">camera ${esc(S.cam)}</span>` +
+    seg('mount', [['handheld', 'Handheld'], ['tripod', 'Tripod']]) +
+    `<span class="muted small" title="Did the focal length change during this video (pinch / zoom buttons)? Every phone can zoom; this asks whether it did.">zoomed during the video:</span>` +
+    seg('zoom', [['false', 'No'], ['true', 'Yes']]) + state +
+    (sugN ? ` <button type="button" data-act="accept" class="small" title="Confirm every suggestion with confidence >= ${Math.round(100 * CT.minConf)} %" ${CT.saving ? 'disabled' : ''}>Accept ${sugN}</button>` : '') +
+    (st === 'confirmed' ? ` <button type="button" data-act="clear" class="small" title="Remove your answer (the suggestion stays)" ${CT.saving ? 'disabled' : ''}>Reset</button>` : '') +
+    `</div><div class="small muted ctdetail">${detail}${ev.length ? ' &middot; evidence: ' + esc(ev.join(', ')) + (s && s.by ? ` (${esc(s.by)})` : '') : ''}</div>`;
+  box.querySelectorAll('.ctseg button').forEach((b) => {
+    b.onclick = () => {
+      const cam = S.cam;
+      const field = b.parentElement.dataset.field;
+      const v = field === 'zoom' ? b.dataset.v === 'true' : b.dataset.v;
+      const dr = CT.drafts[cam] || (CT.drafts[cam] = { v: {}, touched: new Set() });
+      dr.v[field] = v; dr.touched.add(field);
+      const t0 = CT.types[cam];
+      const nd = ctDraft(t0, cam);
+      const answered = t0 && (t0.state === 'confirmed' || t0.state === 'conflict');
+      // an answer already given changes field by field; a pre-filled suggestion is saved only by Confirm or once both
+      // fields were picked here: one click must not confirm the other (pre-filled) field
+      if (nd.mount && (nd.zoom === true || nd.zoom === false) && (answered || dr.touched.size === 2)) saveCameraType(cam, nd.mount, nd.zoom);
+      else renderCameraType();
+    };
+  });
+  const act = (a) => box.querySelector(`[data-act="${a}"]`);
+  if (act('confirm')) act('confirm').onclick = () => saveCameraType(S.cam, d.mount, d.zoom);
+  if (act('accept')) act('accept').onclick = acceptCameraTypes;
+  if (act('clear')) act('clear').onclick = clearCameraType;
+}
+async function ctFetch(method, url, body) {
+  const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json', ...(CT.etag ? { 'If-Match': CT.etag } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) });
+  let d = null;
+  try { d = await r.json(); } catch (e) { d = null; }
+  if (r.status === 412) { await loadCameraTypes(); throw new Error('the take file changed in another tool: reloaded, please click again'); }
+  if (!r.ok) throw new Error((d && d.error) || `${r.status} ${r.statusText}`);
+  return d;
+}
+async function saveCameraType(cam, mount, zoom) {
+  if (CT.saving) return;
+  CT.saving = true; renderCameraType();
+  try {
+    const pv = await ctFetch('PUT', `/api/cameras/types/${encodeURIComponent(cam)}?preview=1`, { mount, zoom });
+    if (pv.rerun_needed && !confirm(`Camera ${cam} -> ${CT_LABEL[ctClass(mount, zoom)]}.\n\nThe cameras stage already ran for this camera with another type: its cameras (and everything computed from them) must be re-run to use the new type. Save the answer?`)) return;
+    const r = await ctFetch('PUT', `/api/cameras/types/${encodeURIComponent(cam)}`, { mount, zoom });
+    CT.types[cam] = r.type; CT.etag = r.toml_etag; delete CT.drafts[cam];
+    toast(`camera ${cam}: ${CT_LABEL[ctClass(mount, zoom)]} saved`);
+  } catch (e) { toast('camera type not saved: ' + e.message, true); } finally { CT.saving = false; renderCamOptions(); renderCameraType(); }
+}
+async function acceptCameraTypes() {
+  if (CT.saving) return;
+  CT.saving = true; renderCameraType();
+  try {
+    const r = await ctFetch('POST', '/api/cameras/types/accept', { min_confidence: CT.minConf });
+    CT.etag = r.toml_etag;
+    for (const t of r.types || []) { CT.types[t.cam] = t; if (t.state === 'confirmed') delete CT.drafts[t.cam]; }
+    toast('suggestions confirmed');
+  } catch (e) { toast('not saved: ' + e.message, true); } finally { CT.saving = false; renderCamOptions(); renderCameraType(); }
+}
+async function clearCameraType() {
+  if (CT.saving) return;
+  CT.saving = true; renderCameraType();
+  try {
+    const r = await ctFetch('DELETE', `/api/cameras/types/${encodeURIComponent(S.cam)}`);
+    CT.types[S.cam] = r.type; CT.etag = r.toml_etag; delete CT.drafts[S.cam];
+  } catch (e) { toast('not reset: ' + e.message, true); } finally { CT.saving = false; renderCamOptions(); renderCameraType(); }
+}
 
 // ------------------------------------------------------------------------------------------------ keyboard
 document.addEventListener('keydown', (e) => {
@@ -1025,6 +1221,8 @@ function wire() {
   document.querySelectorAll('.speeds button').forEach((b) => { b.onclick = () => setRate(+b.dataset.rate); });
   $('btnApply').onclick = applyNarration;
   $('btnRemap').onclick = remapNarration;
+  $('btnRetranscribe').onclick = retranscribeNarration;
+  $('btnCpuNow').onclick = cpuNow;
   $('btnDiscard').onclick = () => { S.narr = null; S.words = []; S.spans = []; S.taps = []; $('narrResult').classList.add('hidden'); S.needDraw = true; };
   $('btnNarrAudio').onclick = () => { if (!S.narr) return; const a = $('narrAudio'); a.src = `/api/narration/${S.narr.id}/audio`; a.play(); };
   $('trFile').onchange = (e) => importTranscript(e.target.files[0]);
@@ -1037,17 +1235,39 @@ function wire() {
     renderAll();
   };
   for (const id of ['lag', 'snap', 'engine', 'typesafe']) {
-    $(id).onchange = () => { const st = currentSettings(); store('settings', { lag: st.lag, snap: st.snap, engine: st.engine, typesafe: st.typesafe }); };
+    $(id).onchange = () => { const st = currentSettings(); store('settings', { lag: st.lag, snap: st.snap, engine: st.engine, typesafe: st.typesafe, v: 2 }); showEngineNote(); };
   }
   window.addEventListener('beforeunload', (e) => { if (S.dirty || S.rec) { e.preventDefault(); e.returnValue = ''; } });
 }
 function banner(html) { const b = $('banner'); b.innerHTML = html; b.classList.toggle('hidden', !html); }
 function asrText(a) {
   if (!a) return 'checking speech recognisers ...';
-  const fw = a['faster-whisper'] || {}, sp = a.sapi || {};
-  if (fw.available) return `speech: faster-whisper ${fw.model || ''} (${(fw.cuda_devices || 0) > 0 ? 'GPU' : 'CPU'}), local`;
-  if (sp.available) return 'speech: Windows recogniser (SAPI, local). faster-whisper is not installed (better for Portuguese names) - see `annotate asr-check`.';
-  return 'no speech recogniser available: type labels, use M taps, or import a transcript JSON.';
+  const fw = a['faster-whisper'] || {};
+  $('asrStatus').classList.toggle('warnText', !fw.available);
+  if (a.summary) return a.summary;  // the server's one line: engine + model + device, or why Whisper is unavailable + the fix
+  if (fw.available) return `speech: Whisper ${fw.model || ''} (${(fw.cuda_devices || 0) > 0 ? 'GPU' : 'CPU'}), local`;
+  return 'speech: Whisper UNAVAILABLE - narrations are not transcribed (the Windows recogniser is never used automatically). Fix: python -m dancecap.moves annotate asr-check';
+}
+function asrLabel(res) {
+  const a = res.asr || {};
+  if (!res.engine) return 'no recogniser';
+  const where = a.gpu === 'cpu' || a.device === 'cpu' ? 'CPU' : a.gpu ? `GPU${a.gpu === 'guest' ? ' (beside a pipeline job)' : ''}` : (a.device || '');
+  return [res.engine === 'faster-whisper' ? 'Whisper' : res.engine, res.model, where, a.language].filter(Boolean).join(' · ');
+}
+async function retranscribeNarration() {
+  if (!S.narr) return;
+  $('btnRetranscribe').disabled = true;
+  try {
+    const { job } = await api('POST', `/api/narration/${S.narr.id}/retranscribe`, { settings: currentSettings() });
+    $('recStatus').textContent = 'transcribing again ...';
+    const j = await pollJob(job, jobTick(S.narr.id)).finally(() => showQueue(null));
+    if (j.state !== 'done') throw new Error(j.error || 'failed');
+    showNarration(j.result);
+    refreshNarrationList(S.narr.id);
+    toast(`transcribed again: ${asrLabel(j.result)}`);
+  } catch (e) { toast('re-transcribe failed: ' + e.message, true); }
+  $('recStatus').textContent = '';
+  $('btnRetranscribe').disabled = false;
 }
 async function pollAsr() {
   for (let i = 0; i < 60; i++) {
@@ -1080,9 +1300,12 @@ async function boot() {
   S.settings.lag = saved.lag != null ? saved.lag : (d.lag != null ? d.lag : 0.4);
   S.settings.snap = saved.snap || d.snap || 'half';
   S.settings.engine = saved.engine || d.engine || 'auto';
+  if (![...$('engine').options].some((o) => o.value === S.settings.engine)) S.settings.engine = 'auto';  // e.g. an old 'faster-whisper'
+  if (S.settings.engine === 'sapi' && !(saved.v >= 2)) S.settings.engine = 'auto';  // remembered from before Whisper: back to auto once
   S.settings.typesafe = saved.typesafe != null ? saved.typesafe : !!d.typesafe;
   $('lag').value = S.settings.lag; $('snap').value = S.settings.snap; $('engine').value = S.settings.engine;
   $('typesafe').checked = S.settings.typesafe;
+  showEngineNote();
   setRate(recall('speed', 0.5));
   if (!S.grid.length) { $('snap').value = 'none'; $('snap').title = 'no beat grid for this video'; }
   $('btnExport').disabled = !info.export_enabled;
@@ -1097,6 +1320,7 @@ async function boot() {
   await refreshNarrationList();
   loadCamera(recall('camera.' + info.name, info.default_camera) in S.cams ? recall('camera.' + info.name, info.default_camera) : info.default_camera);
   $('camSel').addEventListener('change', (e) => store('camera.' + info.name, e.target.value));
+  loadCameraTypes();
   renderAll();
   requestAnimationFrame(frame);
   await deepLink();

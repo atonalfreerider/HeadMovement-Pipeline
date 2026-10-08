@@ -22,6 +22,7 @@ Merge policy (merge_segments): placeholder segments are dropped; human segments 
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -47,7 +48,7 @@ class NarrationSettings:
     tap_lag: float = 0.15     # reaction time of an 'M' tap
     min_len: float = MIN_LEN
     typesafe: bool = False    # ask TypeSafe about ambiguous phrases (sends only the words)
-    engine: str = "auto"      # auto | faster-whisper | sapi
+    engine: str = "auto"      # auto (Whisper large-v3; never SAPI) | faster-whisper[:large-v3-turbo] | sapi
     annotator: str | None = None
 
     @classmethod
@@ -166,16 +167,80 @@ def map_and_build(transcript: dict, log_doc: dict, ctx: TimelineContext, lex: Le
     warnings = list(transcript.get("warnings") or [])
     if tm.empty:
         warnings.append("the player log is empty: times are recording seconds, not video times")
+    asr_info = {k: transcript.get(k) for k in ("engine", "model", "device", "gpu", "language", "seconds")
+                if transcript.get(k) is not None}
+    why = asr.retranscribe_reason(transcript)
+    if why:  # the UI marks the narration 're-transcribe recommended' (turbo / CPU fallback / English only / SAPI)
+        asr_info["retranscribe"] = why
     return {"version": VERSION, "kind": "narration", "id": narration_id, "take": ctx.take,
-            "engine": transcript.get("engine"), "model": transcript.get("model"),
+            "engine": transcript.get("engine"), "model": transcript.get("model"), "asr": asr_info,
             "settings": asdict(settings), "spans": tm.spans(), "taps": [round(tm.label_time(a), 4) for a in tm.taps()],
             "events": events, "segments": segs, "words": words, "summary": summary(events),
             "warnings": warnings, "created": now_iso()}
 
 
+def transcript_tag(tr: dict | None) -> str:
+    """File tag of a transcript's recogniser setup: 'sapi', 'import', 'faster-whisper-large-v3' (GPU, en+pt),
+    'faster-whisper-large-v3-turbo', 'faster-whisper-large-v3-turbo-cpu-en' (CPU fallback, English pass only)."""
+    tr = tr or {}
+    eng = str(tr.get("engine") or "previous")
+    parts = [eng]
+    if eng == "faster-whisper":
+        parts.append(str(tr.get("model") or "unknown"))
+        if tr.get("gpu") == "cpu" or tr.get("device") == "cpu":
+            parts.append("cpu")
+        lang = str(tr.get("language") or "")
+        if lang and lang != "en+pt":
+            parts.append(lang.replace("+", "-"))
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", "-".join(parts)).strip("-.") or "previous"
+
+
+def _stamp(tr: dict, path: Path) -> str:
+    c = str(tr.get("created") or "")
+    m = re.match(r"(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)", c)
+    if m:
+        return "{}{}{}-{}{}{}".format(*m.groups())
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).strftime("%Y%m%d-%H%M%S")
+    except OSError:
+        return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+
+
+def keep_previous(ndir: Path, new_engine: str | None = None) -> list[Path]:
+    """Before transcript.json is replaced (re-transcription, transcript import): copy transcript.json + result.json
+    to transcript.<tag>.json / result.<tag>.json, tag = engine + model + CPU / single-language mode (transcript_tag),
+    e.g. transcript.faster-whisper-large-v3.json. A backup of that name that holds something else is never
+    overwritten: the pair then goes to transcript.<tag>.<created>.json (UTC). Returns the new files ([] when an
+    identical copy is already kept). new_engine is unused (kept for callers): every overwrite keeps a copy."""
+    ndir = Path(ndir)
+    tp = ndir / "transcript.json"
+    if not tp.exists():
+        return []
+    try:
+        old = json.loads(tp.read_text(encoding="utf-8"))
+        old = old if isinstance(old, dict) else {}
+    except (OSError, ValueError):
+        old = {}
+    tag, stamp = transcript_tag(old), _stamp(old, tp)
+    srcs = [(name, ndir / f"{name}.json") for name in ("transcript", "result") if (ndir / f"{name}.json").exists()]
+    data = {name: src.read_bytes() for name, src in srcs}
+    for suffix in [tag, f"{tag}.{stamp}"] + [f"{tag}.{stamp}-{i}" for i in range(2, 1000)]:
+        dsts = [(name, ndir / f"{name}.{suffix}.json") for name, _ in srcs]
+        if all(not d.exists() or d.read_bytes() == data[name] for name, d in dsts):
+            kept = []
+            for name, d in dsts:
+                if not d.exists():
+                    d.write_bytes(data[name])
+                    kept.append(d)
+            return kept
+    raise OSError(f"no free backup name for {tp} ({tag})")
+
+
 def process(ndir: Path, ctx: TimelineContext, lex: Lexicon, settings: NarrationSettings,
             retranscribe: bool = False, log=print, client=None) -> dict:
-    """narration/<id>/: audio.(wav|webm|ogg) + log.json -> audio16k.wav, transcript.json, result.json."""
+    """narration/<id>/: audio.(wav|webm|ogg) + log.json -> audio16k.wav, transcript.json, result.json. Re-transcribing
+    keeps the previous files as transcript.<tag>.json / result.<tag>.json (keep_previous: tag = engine + model +
+    mode, e.g. faster-whisper-large-v3; a timestamped name when that one is taken)."""
     ndir = Path(ndir)
     log_doc = json.loads((ndir / "log.json").read_text(encoding="utf-8"))
     tp = ndir / "transcript.json"
@@ -186,6 +251,8 @@ def process(ndir: Path, ctx: TimelineContext, lex: Lexicon, settings: NarrationS
             raise asr.ASRError(f"no audio in {ndir}")
         wav = asr.to_wav16k(src, ndir / "audio16k.wav")
         tr = asr.transcribe(wav, settings.engine, lex, log=log)
+        for k in keep_previous(ndir, tr.get("engine")):
+            log(f"[annotate] previous {k.name} kept")
         tp.write_text(json.dumps(tr, indent=1, ensure_ascii=False), encoding="utf-8")
     else:
         tr = json.loads(tp.read_text(encoding="utf-8"))

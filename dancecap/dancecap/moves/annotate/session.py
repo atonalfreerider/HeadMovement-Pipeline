@@ -398,7 +398,8 @@ class Session:
             if r["has_result"]:
                 try:
                     res = json.loads((d / "result.json").read_text(encoding="utf-8"))
-                    r.update(summary=res.get("summary"), engine=res.get("engine"), spans=res.get("spans"))
+                    r.update(summary=res.get("summary"), engine=res.get("engine"), spans=res.get("spans"),
+                             retranscribe=(res.get("asr") or {}).get("retranscribe"))
                 except (OSError, ValueError):
                     pass
             out.append(r)

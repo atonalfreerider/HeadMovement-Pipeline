@@ -316,6 +316,15 @@ def test_real_taxonomy_files():
     assert g.resolve_move("little-turn") == "viradinha" and "little-turn" not in g.moves
     assert g.moves["hug"]["name"] == "Abraço" and g.resolve_move("hug") == "hug"
     assert g.moves["simple-turn"]["name"] == "Giro Simples" and "Simple Turn" in g.moves["simple-turn"]["aliases"]
+    # user decision 2026-10-08: the narrated "Tilted Turn" is the Giro Inclinado (an alias of bent-spin, no new move);
+    # a narrated "Tilted Turn," item is a full match, no longer a partial 'turn'
+    for text in ("Tilted Turn", "tilted turn", "tilt turn"):
+        assert g.resolve_move(text) == "bent-spin"
+    assert "tilted-turn" not in g.moves and g.moves["bent-spin"]["name"] == "Giro Inclinado"
+    from dancecap.moves.narration import Lexicon, map_utterances
+    ws = [{"word": w, "start": 1.0 + i, "end": 1.4 + i, "prob": 0.95} for i, w in enumerate(["Tilted", "Turn,"])]
+    ev = map_utterances([{"start": 1.0, "end": 2.4, "words": ws}], Lexicon.from_graph(g_doc, vocabulary=None))
+    assert [(e["kind"], e["move"], e["status"]) for e in ev] == [("move", "bent-spin", "matched")]
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -464,6 +473,39 @@ def test_new_link_reverse_and_break(raw):
     # consecutive segments of one move stay on one node
     d4 = resolve_path(lab([(0, 1, "hug"), (1, 2, "hug")]), g)
     assert d4["steps"][1]["stay"] and d4["steps"][0]["node"] == d4["steps"][1]["node"]
+
+
+def test_unknown_narrated_move_breaks_the_path(raw):
+    """A narrated phrase the tool could not map (labels.json 'unresolved') between two segments: the dance went
+    A -> ? -> B, so A -> B is neither scored nor reported as a new link, even across a gap < max_gap_s."""
+    g = G.Graph(raw)
+    labels = lab([(0, 1, "fast-pirouette"), (1.5, 2.5, "stand"), (2.5, 3.5, "fast-pirouette")])
+    labels.extra["unresolved"] = [{"id": "u1", "t0": 1.0, "t1": 1.5, "unresolved": "foot spin", "tier": "couple"},
+                                  {"id": "u2", "t0": 10.0, "t1": 11.0, "unresolved": "elsewhere"}]
+    d = resolve_path(labels, g)
+    s = d["steps"]
+    assert s[1]["break_before"] and not s[1]["new_link"] and s[1]["unknown_before"] == ["foot spin"]
+    assert not s[2]["break_before"] and s[2]["new_link"] and "unknown_before" not in s[2]
+    assert [(x["from_move"], x["to_move"]) for x in d["new_links"]] == [("stand", "fast-pirouette")]
+    assert validate_path(d, g, labels) == [] and d["params"]["break_on_unknown"]
+    off = resolve_path(labels, g, PathParams(break_on_unknown=False))
+    assert not off["steps"][1]["break_before"] and off["steps"][1]["new_link"]
+    fp = compute_fingerprint(d, g)
+    assert fp["transitions"] == 1 and validate_fingerprint(fp) == []
+
+
+def test_unresolved_items_follow_the_clock(raw, tmp_path):
+    """Unknown phrases (labels 'unresolved') are converted with the segments: capture copies and back."""
+    times = [56.0 + i / 30 for i in range(180)]
+    c = CaptureClock.from_capture(_capture(tmp_path / "CapU", "tk", times, time_to_audio=-2.5))
+    labels = lab([(56.0, 57.0, "hug"), (57.5, 59.0, "lateral")], take="tk")
+    labels.extra["unresolved"] = [{"id": "u", "t0": 57.0, "t1": 57.5, "unresolved": "shadow"}]
+    out = convert_labels(labels.to_dict(), c)
+    u = out["unresolved"][0]
+    assert u["t0"] == pytest.approx(54.5) and u["t0_reference"] == 57.0 and u["in_capture"]
+    assert labels.extra["unresolved"][0]["t0"] == 57.0  # the source labels are not modified
+    back = to_reference(Labels.from_dict(out))
+    assert back.extra["unresolved"][0]["t0"] == pytest.approx(57.0) and back.segments[1].t0 == pytest.approx(57.5)
 
 
 # ---------------------------------------------------------------------------------------------------------------

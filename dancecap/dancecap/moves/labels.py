@@ -236,8 +236,23 @@ def reference_to_video(t: float, take: str, video: str | Path) -> float:
     return float(source_for_video(take, video).to_source(t))
 
 
+def _map_unresolved(out: Labels, fn) -> None:
+    """The 'unresolved' items (unknown narrated phrases, annotation tool) on the new clock too (copies, not shared)."""
+    items = out.extra.get("unresolved")
+    if not isinstance(items, list):
+        return
+    conv = []
+    for u in items:
+        u = dict(u) if isinstance(u, dict) else u
+        if isinstance(u, dict) and u.get("t0") is not None and u.get("t1") is not None:
+            u["t0"], u["t1"] = fn(float(u["t0"])), fn(float(u["t1"]))
+        conv.append(u)
+    out.extra["unresolved"] = conv
+
+
 def to_reference(labels: Labels) -> Labels:
-    """A copy of the labels on the reference clock (video-time labels mapped through the camera's affine clock)."""
+    """A copy of the labels on the reference clock (video-time labels mapped through the camera's affine clock);
+    the 'unresolved' items (unknown narrated phrases) are converted with the segments."""
     d = labels.to_dict()
     out = Labels.from_dict(d)
     if labels.time_base == "reference":
@@ -246,6 +261,7 @@ def to_reference(labels: Labels) -> Labels:
         src = source_for_video(labels.take, labels.video)
         for s in out.segments:
             s.t0, s.t1 = float(src.to_reference(s.t0)), float(src.to_reference(s.t1))
+        _map_unresolved(out, lambda t: float(src.to_reference(t)))
         out.extra["converted_from"] = {"time_base": "video", "video": labels.video, "camera": src.id,
                                        "slope": src.slope, "offset": src.offset}
         out.time_base, out.video = "reference", None
@@ -256,6 +272,7 @@ def to_reference(labels: Labels) -> Labels:
         tta = float(labels.extra["time_to_audio"])
         for s in out.segments:
             s.t0, s.t1 = s.t0 - tta, s.t1 - tta
+        _map_unresolved(out, lambda t: t - tta)
         out.time_base = "reference"
         return out
     raise LabelsError(f"unknown time_base {labels.time_base!r}")
