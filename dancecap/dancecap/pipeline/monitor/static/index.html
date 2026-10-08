@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Pipeline Monitor</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="style.css">
+<script type="module" src="app.js"></script>
+</head>
+<body>
+<div id="ribbon" class="ribbon" hidden></div>
+<header class="topbar">
+  <a class="brand" href="#/" title="Pipeline Monitor (g t)">
+    <img src="icon.svg" alt="" width="20" height="20">
+    <span>Pipeline Monitor</span>
+  </a>
+  <nav id="nav" class="nav" aria-label="Main">
+    <a href="#/" data-nav="takes">Takes</a>
+    <a href="#/new" data-nav="new">New capture</a>
+    <a href="#/runpod" data-nav="runpod">Runpod</a>
+    <a href="#/runs" data-nav="runs">Runs</a>
+    <a href="#/logs" data-nav="logs">Logs</a>
+    <a href="#/settings" data-nav="settings">Settings</a>
+  </nav>
+  <div id="top-right" class="top-right"></div>
+</header>
+<div id="alerts" class="alerts" hidden></div>
+<div class="layout">
+  <aside id="sidebar" class="sidebar" aria-label="Takes"></aside>
+  <main id="main" class="main" tabindex="-1"></main>
+</div>
+<footer id="statusbar" class="statusbar" aria-live="polite"></footer>
+<noscript><p style="padding:24px">The Pipeline Monitor needs JavaScript.</p></noscript>
+</body>
+</html>
