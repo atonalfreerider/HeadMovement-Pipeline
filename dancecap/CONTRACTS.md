@@ -96,6 +96,14 @@ work/<take>/
                                           inverse-variance robust smooth (0.2 s) of all ok centres, rotation + focal
                                           re-solved with it fixed; ok=False if the re-solve fits its static points worse
                                           than 4 px. Attached cameras are skipped. report.json cams.<cam>.depth_guard
+                                          Camera types (2026-10-07, additive; only for a camera whose take TOML gives
+                                          it a confirmed type, see "Camera types" below): camera_class () str
+                                          tripod | tripod_zoom | handheld | handheld_zoom, type_model () str
+                                          per_frame | fixed_focal | constant | fixed_centre (the model applied by
+                                          cameras/typed.py, after its residual / drift check), type_held (F,) bool
+                                          (frames whose pose is the constant tripod pose; ok on frames without static
+                                          points of their own). A typed camera skips the zoom-depth guard (axis_sd NaN,
+                                          recentred False). Files without these keys = today's general model.
   cameras/world_from_sfm.json           {s, R, t, gravity_source, scale_source, floor_source, x_axis, diagnostics}
                                           gravity = the building's vertical (vertical vanishing points of the main
                                           cameras: diagnostics.vertical, adopted=true) when consistent, else the
@@ -176,8 +184,9 @@ work/<take>/
                                           the cameras stage passes the take's statures and prints a WARNING when the
                                           reference is not adopted. world_scale check + absolute {verified false,
                                           uncertainty_rel, note, verdict_means} and floor.<role> {n_frames, median_mm,
-                                          p5_mm, p95_mm, min_mm, n_below_15mm, frac_below, warning (> 10 % of frames)}
-                                          = posed lowest mesh vertex over all frames (LBS, no pose correctives;
+                                          p5_mm, p95_mm, min_mm, max_mm, n_below_15mm, frac_below, warning (> 10 % of
+                                          frames), n_above_15mm, frac_above (floating: no body point within 15 mm of the
+                                          floor)} = posed lowest mesh vertex over all frames (LBS, no pose correctives;
                                           --no-floor skips). New action `chain <take> [--no-sync]`: chain rule
                                           re-measured on the main cameras with sync/offsets.json applied to the frame
                                           times -> {s_world, s_chain, chain_vs_world, passed (|.| <= 2 %),
@@ -201,7 +210,9 @@ work/<take>/
   review/cameras_vertical_check.jpg     [cameras] vertical edges used + new/previous world up per camera
   review/cameras_attach_check.jpg       [cameras] attached cameras: dancers from the main cameras vs detected
   cameras/sfm_work/, cameras/cache/     COLMAP databases, raw models, sub_<cam>/ sub-models, ALIKED features and
-                                          LightGlue matches, raw per-frame localisation (loc_<cam>.npz), attach_<cam>.npz,
+                                          LightGlue matches, raw per-frame localisation (loc_<cam>.npz; additive
+                                          camera-type marker loc_mode () keyframes|all, loc_class (), loc_policy (),
+                                          loc_localised () int: see "Camera types"), attach_<cam>.npz,
                                           vertical_*.pkl / horizontal_main.pkl / locsub_<cam>.pkl (keyed caches: inputs'
                                           mtimes + settings + code version)
                                         Cameras without strong static links to the main model (05, 06 on
@@ -228,6 +239,8 @@ work/<take>/
                                           clocks ("unrecorded"). Never copy offsets.json between takes. + workers, host
                                           (sync --workers N: residual evaluations in a process pool, identical numbers;
                                           default 1 off-pod, the container CPU quota up to 16 on a pod)
+                                          + camera_models {<cam>: per_frame | fixed_focal | constant | fixed_centre}
+                                          (2026-10-07, additive: the camera-type model of each track measured on)
   mamma/                                [mamma] split in prepare (local) / fit (Runpod) / select (mamma_dyn.py):
                                           ma_2d_native/<cam>.npz (+ _boxes.npy, .manifest.json: recomputed when
                                           masks/frames/weights change), ma_2d/<take>_<tag>/cam<cam>.npz + ma_cap/
@@ -237,7 +250,9 @@ work/<take>/
                                           second_run), prepare.json (grid t + grid.trim {window, start/end_limited_by:
                                           cameras whose sync-corrected coverage trimmed the take window}, sets, eval
                                           set, sync offsets used + sync.required,
-                                          world_frame), pod_job.json (what the pod uploads/runs/downloads),
+                                          world_frame, camera_types {<cam>: {class, model}} (additive 2026-10-07: from
+                                          cameras/<cam>.npz; a 'constant' tripod track gives one cam_ext for every grid
+                                          frame)), pod_job.json (what the pod uploads/runs/downloads),
                                           ma_3d/<tag>/<seq>/ raw output, fits/<tag>/{smplx/, fit.json} (export +
                                           per-camera residuals incl. held-out cameras), select.json + report.json
                                           (chosen set and why). smplx_v1/ = first fit in the OLD world frame.
@@ -485,11 +500,19 @@ work/<take>/
                                           platform, GPU), smplx_freshness, t_window (exact bake window), peak_gpu_gb,
                                           per-role median_view_iou, texture_metrics (% hair-coloured texels per region:
                                           chest/shoulders/back, chest, back, shoulders, neck, face_core, forearms baseline;
-                                          avatar_hair.red_cast = CIELAB a* > 9 and a* - b* > 3), follow hair_sample;
+                                          avatar_hair.red_cast = CIELAB a* > 9 and a* - b* > 3; hair_residue_pct =
+                                          avatar_hair.hair_residue: also desaturated / darkened hair on a light top or
+                                          skin, a* - b* > 1.5 and a* > 6.5 and L* < 72, or red_cast and L* < 45 - the pink
+                                          print on her top's front counts too, compare the back), follow hair_sample;
                                           hair_region [{pass, role, head/prior/face/face_outside_core/ear hair fractions,
                                           outside_scalp_hair_fraction_of_head, evidence_above_thresh_outside_allowed_head_
                                           fraction, leak_guard_dropped(_pct_of_measured), bad_seed_texels}], hair_masks,
                                           roles.follow.fill_guards (leak guard counts, fill classes, skin class)
+                                        config.body_ref_q (CLI texture --body-ref-q, default 0.5 = off): the hair roles'
+                                          upper body / neck texels (not scalp) use a lighter luminance quantile as the
+                                          fusion's inlier reference, ramped 0.5 -> body_ref_q with the previous pass's hair
+                                          evidence (as skin_ref_q on the face core): hair over her white top / skin only
+                                          darkens or reddens it (larissa_kadu_38 avatar_fix: 0.7)
                                         Freshness rule: the bake refuses smplx/ older than cameras/world_from_sfm.json (a fit
                                           from a previous world frame) unless allow_stale (--allow-stale; the smoke preset
                                           allows it and stamps "STALE smplx" on its review sheets).
@@ -702,6 +725,7 @@ work/<take>/
                                           angles), avatar_face_turntable.jpg, avatar_face_video.jpg, avatar_face_likeness.jpg
                                           [avatar_face; `--review-only` redraws them from the written textures]
 
+  RETIRED 2026-10-07 by the user: hands refinement (hands_survey / hands_pod / hands_build, S3_hands) - the pipeline no longer runs it and nothing reads the hands/, smplx_hands/, smplx_detail/ files below (historical).
   hands/wrist_gate.npz + .json          [refine_hands build = hands_detail] per hand <role>_<side>_wrist (T,3) local
                                           wrist axis-angle used as the finger IK's start / prior, _weight (T,) share of
                                           the MANO regressors' (WiLoR + HaMeR) fused wrist (0 = MAMMA's), _disagree_deg,
@@ -787,8 +811,126 @@ work/<take>/
   review/room_*.jpg                     [room] room_renders (held-out real | model | diffuse | Quest splat | Quest
                                           mesh), room_overview (top-down + obliques + Gaussian height section),
                                           room_overview_quest, room_mesh
+  dancer_splats/bundle/                 [dancer_splats prepare, local CPU] one short window (takes/<take>.toml
+                                          [dancer_splats] window, else the approved prototype window): manifest.json
+                                          (version, prep_config, input mtimes + prep code sha1 -> stale check),
+                                          views.json (crop K/R/t_w world frame, sync-corrected t, split train |
+                                          test_cam | test_time, swap_prob, sharpness weight, camera type, IOD),
+                                          images/<i>.jpg (undistorted crops), labels/<i>.png (0 bg, 1 lead, 2 follow,
+                                          3 follow hair, 4 both, 255 ignore), bodies.npz (posed fit + global joint
+                                          rotations + posed joints + rest mesh + top-4 LBS weights), init_<role>.npz,
+                                          hair.npz (groom guides as rest polylines in the head frame, draped over the
+                                          groom's capsules; head_centre_local = flip_z(head_sphere_centre_unity), the
+                                          groom's offsets being from the head joint; colliders a, b, r, first_point +
+                                          collider_oa / collider_ob in rest axes), eval/ (textured
+                                          avatar renders of the held-out views + novel camera), novel.json
+  dancer_splats/pod_job.json            [dancer_splats write-pod-job] dancecap.pod_job/1 (needs gsplat; train, eval)
+  dancer_splats/                        [dancer_splats] avatar-guided dancer splats, world frame (right-handed, Y up,
+                                          metres, floor y = 0): model.pt (Gaussian groups lead / follow / hair with
+                                          their bindings - SMPL-X triangle + barycentrics / groom guide + segment + u -,
+                                          cosine residual coefficients, hair node tracks, pose corrections, per-image
+                                          colour transforms), pose_delta.npz (per grid frame and dancer: r (22 body
+                                          joints, axis-angle rad, child side), dT (m), max_deg, dT_cm, hair node
+                                          offsets; a QA signal - smplx/ is NEVER written), metrics.json (held-out
+                                          metrics vs the avatar, gates 1-8; tables.splat_vs_avatar per group / camera /
+                                          dancer and tables.crops = face / hair crops of cameras 02, 06, 09),
+                                          report.json, progress.json, train.log, cache/ckpt.pt (deleted after a
+                                          finished train; packed with the outputs after a failure = a retry's input);
+                                          review_extra.json (after `review`); after `export`:
+                                          canonical_<role>.ply (rest pose), frames/frame_<n>.ply (standard 3DGS PLY per
+                                          window grid frame), splat_sequence.json (CaptureManifest.splat_sequence)
+  review/splats/                        [dancer_splats eval] dancer_splats_t<t>_cam<c>.jpg (held-out real | splat |
+                                          avatar | error), dancer_splats_heldout.jpg, dancer_splats_novel.jpg,
+                                          dancer_splats_pose_delta.png (smoke runs: <out name>_*); [dancer_splats
+                                          review, local] sheet_cam03_heldout.jpg / sheet_cam02_train.jpg (video |
+                                          textured avatar | splats, 6 moments), turntable_t<t>.jpg, hair_closeups.jpg,
+                                          face_closeups.jpg, temporal_strip_cam03.jpg, temporal_strip_novel.jpg
  head-movement StreamingAssets capture (see below)
 ```
+
+## Camera types - `takes/<take>.toml [cameras."NN"]` (dancecap.camera_types, 2026-10-07)
+
+The user's answer per source video: **mount** `handheld | tripod` (exclusive) and **zoom** `true | false` (independent:
+a tripod can zoom), entered in the narration tool (camera panel under the video), the Pipeline Monitor wizard and its
+Video Review. One table per two-digit source id, beside the reserved `[cameras]` keys `scale_rule`, `scale_reference`,
+`loc`:
+
+```toml
+[cameras."05"]              # camera type (Pipeline Monitor / narration tool; block written by dancecap.camera_types)
+mount = "tripod"            # handheld | tripod                 (user)
+zoom = false                # true | false, independent of mount (user)
+source = "user"             # user = confirmed | auto = suggestion, not confirmed yet
+set_at = "2026-10-07T18:02:11Z"
+# written by the probe, kept for the record; never overrides the user:
+suggested = { mount = "tripod", zoom = false, pans = false, confidence = 0.64, by = "probe_a", at = "...", evidence = { parallax_px = 0.3, jitter_hf = 0.05 } }
+pans = false                # tripod only, automatic
+zoom_events = []            # automatic: [t0, t1, focal ratio] in reference seconds
+```
+
+| Rule | |
+|---|---|
+| Missing / unconfirmed | handheld + zoom = the general model = the solver before camera types; old takes are unchanged |
+| Precedence | the user always wins; probe-B evidence measured AFTER the answer (confidence >= 0.7) that contradicts it -> CameraType `state: conflict` (camera_types gate), never a changed value; answering again acknowledges it. Evidence the track cannot judge (an attached camera: centre and focal fixed by the attach model) is never a conflict |
+| Pre-fill | a measured 'tripod' below confidence 0.7 pre-fills handheld (the prior), evidence `mount_lean: tripod` |
+| Effective type (camera stages) | policy `user` (default of the CLI, the pod jobs and the orchestrator): confirmed answers only; `auto`: + suggestions with confidence >= 0.7; `off`: none. `python -m dancecap cameras --camera-types`, or `DANCECAP_CAMERA_TYPES`. CameraType.effective is the `user` policy; each cameras run records its policy (report.json `camera_types.policy`, loc_<cam>.npz `loc_policy`) and the monitor's stale check compares under that policy |
+| Applied (CameraType.model_check) | from report.json `cams.<cam>.camera_type`: `{declared, model, passed, why, at, current, refused}`; `refused` = the stage could not use the current declared type and kept a safer model: a warning next to the answer, summary count `refused`, a monitor alert - never a block |
+| Writes | owned blocks only (header to next header, rewritten whole; comments typed inside are not kept), etag = `sha1:` + hex of the bytes (If-Match / 412), tomllib re-parse + everything outside the camera tables compared, backup `work/<take>/monitor/toml_backups/<YYYYmmdd-HHMMSS-mmm>-<take>.toml` (never overwritten), atomic replace. No tomlkit. Only `[cameras."NN"]` table headers are supported: a hand-written inline (`cameras = { "01" = {...} }`) or dotted (`cameras."01".mount = ...`) form makes every save refuse (nothing written) |
+| Readers | `dancecap.camera_types` (`load`, `get`, `stage_types`, `effective`, `set_type`, `accept`, `clear`, `write_suggestion`); `Take.camera_type(cam)` / `Take.camera_types()` for stage code |
+
+Effect on the camera stages (`cameras/typed.py`, applied by `stage_smooth` to the raw localisation; `stage_loc`
+localises a LOCKED tripod (no zoom, no pans) on keyframes only - one frame pair every ~2 s + the map's frames - when one
+constant pose fits them, else every frame; `front_pod` never splits a locked tripod into `loc_part`s, and parts always
+localise every frame):
+
+| class | model tried first | when the residual / drift check fails |
+|---|---|---|
+| handheld_zoom | per-frame pose + focal (unchanged code path) | - |
+| handheld | per-frame 6-dof pose, ONE focal + k1 per video (joint robust fit) | per-frame focal (today) + check failed |
+| tripod | ONE pose + focal + k1 for the whole video, every frame held | shared centre + per-frame rotation (pans), then the handheld model + check failed |
+| tripod_zoom | shared centre, per-frame rotation + focal | today's model + check failed |
+
+Fits: the joint (shared-parameter) fits use <= 300 correspondences per frame over <= 40-80 frames; the FINAL
+per-frame solves (per-frame pose with a fixed focal, per-frame rotation [+ focal] with a fixed centre) use every
+correspondence of each frame. Check: median over frames of the per-frame median static reprojection within
+max(1.5 x, +1 px) of today's per-frame solution and p90 <= max(4 px, 1.5 x today's); fixed-centre models also need the
+0.25 s low-pass of today's per-frame centres to drift <= max(4 x its noise, 0.0015 (locked) / 0.002 (pans) x the
+median static-point depth; lateral only with zoom; on keyframes the pair noise is taken out of the keyframes' spread);
+a fixed focal also needs today's per-frame focal within x1.05 of it (p90); every per-frame model needs its
+high-frequency jitter <= 1.25 x today's + 0.000125 x depth (centre, ~1 mm at 8 m) / + 0.003 deg (rotation) (a wrong
+"no zoom" otherwise becomes a dolly-zoom slide that still fits the static points: larissa_kadu cam09 1.85 px, centre
+jitter 17 -> 412 mm). A keyframes-only `loc_<cam>.npz` (`loc_mode` keyframes) is valid for the constant pose only:
+`stage_smooth` does not export such a camera under any other model and `cameras` runs without `loc` refuse it before
+any work (`KeyframeCacheError`: re-run `--stages loc --cams <cam>`). `report.json` (additive):
+`camera_types {policy, applied {<cam>: {cam, mount, zoom, pans, source, confidence, class}}, localised {<cam>: {mode,
+class, policy, localised, frames}}}`, `cams.<cam>.camera_type {class, source, model, tried [...], check, intrinsics,
+centre_drift, pose, localised, at}`, `cams.<cam>.camera_type_probe_b` (the suggestion below).
+
+Automatic suggestion files (pre-fill the UI; `python -m dancecap.camera_types suggest <take> [--probe a|b|both]`):
+
+```
+work/<take>/probe/camera_types_suggested.json   probe A (before calibration, local CPU, below-normal priority): {version,
+                                                take, by, at, cameras {<cam>: {mount, zoom, pans, confidence,
+                                                mount_confidence, zoom_confidence, by: probe_a, at, evidence {parallax_px,
+                                                jitter_hf, zoom_scale, pan_px, kf_*}, windows [...], keyframe_scan {...},
+                                                file {name, size, mtime_ns}, version}}} (a result is reused for the same
+                                                video file in another take)
+work/<take>/probe/camera_types_probe_b.json     probe B (after calibration; also written by the cameras qa step): {version,
+                                                take, by, at, metric, cameras {<cam>: {mount (null when the attach model
+                                                fixes the centre), zoom (null when it fixes the focal: every attached
+                                                camera), pans, confidence, mount_confidence, zoom_confidence, by:
+                                                probe_b, at, evidence {centre_p95_m, axis_p95_deg, angvel_p50_dps,
+                                                hf_rot_deg, hf_centre_mm, focal_ratio, focal_step_pct, frames,
+                                                mount_judgeable, zoom_judgeable, mount_lean?, attached,
+                                                keyframes_only?}, zoom_events}}} - always from today's general per-frame
+                                                track (never the typed export: circular)
+```
+
+Narration tool API (take mode; the same CameraType JSON as the monitor, PIPELINE_MONITOR.md 7.3):
+`GET /api/cameras/types`, `PUT /api/cameras/types/<cam>` `{mount, zoom}` (If-Match; `?preview=1` -> `{rerun_needed}`),
+`DELETE /api/cameras/types/<cam>`, `POST /api/cameras/types/accept` `{cams?, min_confidence?}` (JSON only, 415
+otherwise). Writes from another origin (`Origin` not the tool's own, `Origin: null`, `Sec-Fetch-Site: cross-site`) are
+refused (403) on every endpoint of the tool. `rerun_needed` compares with the class the export was made with
+(`cameras/<cam>.npz camera_class`; none = the general model).
 
 ## Runpod pod jobs - `work/<take>/<stage>/pod_job.json` (schema `dancecap.pod_job/1`)
 
@@ -808,6 +950,7 @@ stage code using `dancecap.env` paths runs unchanged; commands get `DANCECAP_POD
                                           sum of jobs + 13 min unless --max-minutes)
  "needs": ["mamma"],                    bootstrap features: base (always) | mamma (MAMMA ma_3d deps + pytorch_sdf)
                                           | room (gsplat 1.5.3, open3d, xatlas, plyfile) | texture (base only)
+                                          | gsplat (gsplat 1.5.3 + plyfile only: dancer_splats)
  "inputs": ["dancecap/work/<take>/mamma/prepare.json",               workspace-relative: same path locally and
             {"local": "<abs or ws-relative>", "pod": "<ws-relative>"}],  on the pod; files or directories
  "inputs_if_alone": [...],              added only when none of the `after` jobs is in the batch
@@ -876,8 +1019,10 @@ work/<take>/mamma/chunks.json           [mamma_chunks plan] tag, seq, cams, T, o
                                           estimate_min {chunk_parallel, single_fit_solo, basis}; optional holdout {tag
                                           h<cam>, cam, chunk, a, b, run_tag, t, seq} (plan --holdout-cam C: that chunk is also
                                           fitted from the prepared set h<C> = the fit set without C, side by side; merge
-                                          reports chunks_merge.json holdout {cam, frames, lead/follow {held_out_median_px,
-                                          in_fit_median_px, ratio}}: informational, never gates)
+                                          reports chunks_merge.json holdout {cam, frames, baseline, lead/follow
+                                          {held_out_median_px, in_fit_median_px (= the same-frames chunk WITH C when it
+                                          exists, else the merged fit), in_fit_same_chunk_median_px,
+                                          in_fit_merged_median_px, ratio}}: informational, never gates)
 work/<take>/mamma_chunks/pod_job.json   job "mamma" (so the avatar bake runs after it): fit_chunks (every chunk = `mamma
                                           fit --tag <tag> --fit-frames a:b`, side by side under CUDA MPS) -> merge -> select
                                           --no-qa; outputs fits/, logs/, select.json, report.json, chunks_fit.json,
@@ -889,16 +1034,32 @@ work/<take>/mamma/fits/<tag>/           merged chunk fit (partial false, chunked
                                           slerp, linear translation / contacts), FK + reprojection + outlier repair as
                                           export_smplx; fit.json residuals on the eval set
 work/<take>/mamma/chunks_merge.json     per role: betas_chunks / betas_sd / betas, betas_swap_mm (joint displacement from
-                                          the shape unification, per chunk median/p95), seam_mm (the two chunks'
-                                          disagreement inside each overlap, median/p95/pelvis), chunks_had_repairs; merged
-                                          vs per-chunk median reprojection; chunk_frames; gate {passed, why, checks,
-                                          thresholds}: per role every seam p95 <= 60 mm and pelvis median <= 40 mm, betas
-                                          swap p95 <= 40 mm, merged median reprojection <= 1.25 x the chunks' + 0.5 px, no
-                                          chunk above 2 x the chunks' median reprojection
+                                          the shape unification, per chunk median/p95), seam_mm (mamma_chunks.seam_stats:
+                                          the two chunks' disagreement inside each overlap: frames [a, b), pooled median /
+                                          p95 / p95_body (joints 0-21) / p95_fingers / pelvis_median, and PER JOINT for
+                                          blend (the cross-faded central half; gated) and overlap (informational):
+                                          {joint_p95_max + joint (worst non-arm body joint 0-17), arm_p95_max + arm_joint
+                                          (worst elbow / wrist), fingers_rel_wrist_p95_max (finger joints relative to
+                                          their wrist), per_joint_p95 {22 names}, frames}), chunks_had_repairs; merged vs
+                                          per-chunk median reprojection; chunk_frames; gate {passed, why, checks,
+                                          thresholds}: per role and seam, over the blend window, every body joint 0-17
+                                          p95 <= 60 mm, every elbow / wrist p95 <= 75 mm, every finger joint relative to
+                                          its wrist p95 <= 80 mm (a pooled p95 over 22 joints cannot see ONE wrong limb:
+                                          larissa_kadu_38 follow seam 2 pooled 44 mm, her left wrist 107 mm; reports
+                                          without per-joint stats fall back to the pooled all-joint p95 <= 60 mm), pelvis
+                                          median <= 40 mm, betas swap p95 <= 40 mm, merged median reprojection <= 1.25 x
+                                          the chunks' + 0.5 px, no chunk above 2 x the chunks' median reprojection
+work/<take>/mamma/chunks_recheck.json   [mamma_chunks recheck, local] the merge's checks re-run from the chunk fits with
+                                          the current code (seam_mm per joint, holdout vs the same-frames chunk, gate;
+                                          gate_at_merge = the pod's verdict); chunks_merge.json is left as the pod wrote it.
+                                          larissa_kadu_38: FAILED (follow seam 2 l_wrist 107 mm > 75, seam 3 l_foot 74 mm
+                                          > 60; both next to chunk c8_f368-600) -> the full fit in smplx/ stands
 work/<take>/mamma/chunks_gate.json      [mamma_chunks gate, pod, between merge and select] {gate, fallback {mode, need_min,
                                           kill_minutes_left, result, seconds}}: gate failed -> --fallback full re-fits the
                                           whole grid in one run (`mamma fit --tag <tag>`, the rejected merge moved to
-                                          fits/<tag>_merged_rejected/) when the pod's kill switch (/workspace/
+                                          fits/<tag>_merged_rejected/, its fit.json re-tagged <tag>_merged_rejected +
+                                          partial/rejected true so `mamma select` never reads it as <tag>) when the
+                                          pod's kill switch (/workspace/
                                           .dancecap_kill_at, written by remote.arm_killswitch) leaves time, else exit 3:
                                           select and the avatar bake (after: mamma) do not run. write_job budgets the
                                           fallback fit in the job's max_minutes (--fallback none: not)
@@ -913,6 +1074,215 @@ work/<take>/mamma/chunks_seams.json     [mamma_seams, local after download] cont
 work/<take>/review/pose_seams.jpg       [mamma_seams] whole-take pelvis speed (blend windows shaded) + per seam: pelvis path
                                           from above and pelvis speed (merged vs both chunks) per dancer, chunk-vs-chunk
                                           joint distance over the overlap
+
+Stitch of a long take's fits (2026-10-08, dancecap.stitch + dancecap.stitch_job; new, additive; larissa_kadu_full = a,
+38, b, c, d). RUNS ON RUNPOD (FARM.md 0.10: all analysis): numpy + scipy only, headless (no torch / smplx / mamma_dyn;
+matplotlib only for the two sheets), so a CPU pod runs it from the volume's env; locally only its unit tests run:
+python -m dancecap.stitch <dance> [--chunks chunks.json] [--work-root ROOT] [--out DIR] [--check] [--seam b|c] [--partial]
+        [--no-refined] [--no-sheets] [--force] [--gate-exit strict|report] [--allow-mixed-world] [--require-world]
+python -m dancecap.stitch <take> --write-chunks FILE   the take's chunk list as JSON (paths relative to the work root)
+work root                                 $DANCECAP_WORK_ROOT / --work-root, default dancecap/work (pod: the workspace's
+                                          dancecap/work or any /workspace/hm/... folder): every relative path (the chunk list,
+                                          --out) resolves against it. --out DIR = the output folder (default <root>/<dance>);
+                                          --check writes no motion (with --out: stitch_check.json + review sheets there);
+                                          --gate-exit report exits 0 on a failed gate (the verdict is in stitch.json, the motion
+                                          in stitch_rejected/) so a pod job's results are pulled; exit 3 = world mismatch
+                                          (chunks with different pose_id refused unless --allow-mixed-world; ids from the chunk
+                                          entry, its `header` json or the list's world_id / pose_id), 1 = missing fit
+python -m dancecap.stitch_job build <dance> [--mode stitch|check] [--chunks F] [--tar CHUNK=PATH] [--world-id ...]   the
+                                          farm job (dancecap.farm.job/1, kind analyse, needs_gpu false, cwd dancecap/, env
+                                          DANCECAP_WORK_ROOT={WS}/dancecap/work): [stage = extract chunks/<id>/out/result.tar
+                                          of the volume, sha256-checked, only when the list names tars] + stitch (STEP_TEMPLATES
+                                          "stitch" / "stitch_check", register() adds them to farm.chunks.STEP_TEMPLATES without
+                                          touching it); outputs dancecap/work/<dance>/{stitch.json, smplx/, <refined>/, review/,
+                                          stitch_rejected/} (check: <dance>_check/{stitch_check.json, review/}); the chunk list
+                                          is the job's one input file (farm/stitch/<id>.chunks.json). `python -m
+                                          dancecap.stitch_job stage --chunks F` is the pod-side staging step
+takes/<take>.toml [segments.*] [reuse] [stitch]   the chunk list: segment fit windows (fit_k; the fit's own t wins), the
+                                          reused analysed take (motion_span, motion_raw, motion_refined; its first and last
+                                          [stitch] reuse_margin_s = 0.5 s are never used), blend_s = 2.0, gate_mm {body_p95,
+                                          elbow_wrist_p95, fingers_rel_wrist_p95, pelvis_median, betas_swap_p95},
+                                          mono / low_view / <role>_absent spans (reference s). chunks.json (any chunk list,
+                                          e.g. 30 s gap-fill chunks): {take, work, anchor, hz, blend_s, edge_margin_s, gate_mm,
+                                          beats, mono, low_view, lead_absent, chunks: [{name, src, refined, k [k0, k1],
+                                          margin_s, reference, prepare, ma_2d, world_id, pose_id, header, tar}], world_id,
+                                          pose_id}; relative paths resolve against the work root (default dancecap/work)
+fused grid                                t_k = 30.151176844227862 + k / 30 s (larissa_kadu_38's lattice; its frame i is k = i,
+                                          full-grid frame i + 998 for k from -998 to 4645, T = 5644). A chunk's window is the
+                                          lattice index of its own `t` (checked on the lattice to 1 us and contiguous)
+work/<take>/smplx/{lead,follow}.npz       [stitch] the smplx contract on the fused grid (t, pose keys, transl, betas =
+                                          the reference chunk's, joints, contact, floor_contact, reproj_px, quality, ...) +
+                                          chunk_names (n,), segment_owner (T,) str (the owning chunk's name, "" = uncovered),
+                                          segment_index (T,) i2 (its index into chunk_names, -1 = uncovered),
+                                          blend_seam (T,) i2 (-1 outside a window), blend_weight (T,) f4 (weight of the later
+                                          chunk), covered (T,), n_cams (T,) i2 (cameras seeing this dancer: >= 50 of 512
+                                          ma_2d landmarks visible, else the prepare.json camera spans), quality_flag (T,) i1
+                                          0 absent / 1 mono / 2 two_view / 3 multi (>= 3 cameras) + quality_flag_names, absent
+                                          (T,) bool (quality and quality_parts are 0 there: the lead before he enters is never
+                                          tracked motion; a zero-camera run >= 1 s is absent too, a shorter one is mono).
+                                          Frames a chunk owns outside every blend window are BIT-IDENTICAL copies of its
+                                          source (stitch.json bit_identity: max abs diff 0.0 for pose, transl, joints, ...;
+                                          t is the clean lattice). Inside a window: per-joint slerp (axis-angle branch
+                                          nearest the linear blend), linear transl / contacts, joints = FK with the common
+                                          betas, reprojection fields = the worse chunk, quality = the lower. Written
+                                          byte-deterministically (fixed zip timestamps): running twice gives the same files
+work/<take>/smplx_rf2_noslip/             [stitch] the chunks' refined folders stitched with the SAME windows (same extra
+                                          keys; smoothing = json of each chunk's pose_refine record; stance carried). Only
+                                          written when every chunk has a refined folder
+work/<take>/stitch.json                   [stitch] dancecap.stitch/1: grid {anchor, hz, k, T, frame_offset per chunk}, chunks
+                                          {k, owned_k, margin_frames, sha256, betas {pinned, max_abs_diff, swap_mm}, n_cams
+                                          source}, world {world_ids, pose_ids, unknown, warnings}, seams [{name, ok,
+                                          window_k [k0, k1] inclusive (what farm.timeline.parse_stitch reads), overlap,
+                                          allowed, window k / t, centre_t, utilisation,
+                                          tie_break {method beat_phase | motion, n_tied}, scan, roles {lead, follow}
+                                          {blend per-joint p95 stats, checks, continuity {pelvis / body acc ratio, max joint
+                                          step}}, gate {passed, why}, refit}], gate, bit_identity, flags (runs, counts,
+                                          first tracked frame), refined, coverage {frames complete / partial / none, tiles:
+                                          1 char per second C / P / N}, outputs {promoted, sha256}, verified_on_disk
+                                          (the written files re-read and compared with the sources)
+                                          Window: ONE per seam, 2 s (60 frames) inside the overlap and inside both chunks'
+                                          trusted frames (reuse margin 0.5 s, fits 0.2 s), after the previous window; centre =
+                                          the position with the lowest worst-gate utilisation over both dancers (per-joint p95
+                                          over the window / limit); positions within 5 % (+0.02) of the best are ties, broken
+                                          toward the beat phase of lowest motion (beats.json), else the lowest local motion.
+                                          Gate per role and seam over the window: body joints 0-17 p95 <= 60 mm, elbows /
+                                          wrists <= 75, fingers relative to the wrist <= 80, pelvis median <= 40, betas swap
+                                          p95 <= 40 (betas not within 2e-5 of the reference's are re-expressed keeping the
+                                          pelvis trajectory, as mamma_chunks.merge). A failing seam names the gate and
+                                          `refit`: the centred 12 s window (360 frames, k and t, which chunk's prepared grid
+                                          contains it)
+work/<take>/stitch_rejected/              [stitch] the outputs of a run whose gate failed (smplx/ is not touched; --force
+work/<take>/stitch_partial/               promotes); stitch_partial/ when chunks are still missing (--partial; gaps are
+                                          flagged absent and counted "none" in coverage)
+work/<take>/review/pose_seams_full.png    [stitch] per seam: pelvis paths (chunks vs stitch), chunk-vs-chunk distance with
+                                          the window, per-joint p95 vs the gate lines, window scan
+work/<take>/review/stitch_overview.png    [stitch] ownership bars + blend windows, coverage strip, cameras per dancer,
+                                          reprojection, pelvis speed, quality flags
+
+larissa_kadu_38 pod-stage review fix (2026-10-07; scratch scripts, take-specific outputs):
+work/larissa_kadu_38/review/pose_seam_joints.png   per-joint p95 per seam (chunks_recheck.json) with the gate limits
+work/larissa_kadu_38/scale/floor_diagnosis.json    final fit's lowest body point per frame, BOTH directions (below /
+                                          above +-15 mm, both feet up), fast (< 0.5 s) vs slow part, correlation of the
+                                          fast part with pelvis height, planted-foot height (0.5 s running minimum) by 0.5 m
+                                          floor cell + plane fit, lead/follow time correlation, float / sink runs >= 5
+                                          frames -> input for physics; review/floor_contact.png
+work/larissa_kadu_38/avatar_fix/pod_job.json        pod job: re-bake (pod preset, hair exclude, multiband, 133.3 ms,
+                                          --body-ref-q 0.7) + avatar_face portrait composite + hair metrics; the previous
+                                          bake is kept in avatar/prev_pod1_20261007/ (+ review/prev_pod1_20261007/);
+                                          avatar/{fix_metrics,compare_fix,hair_metrics_fix}.json, pod_{texture,face}_fix.log;
+                                          review/avatar_back_residue_before_after.jpg (torso atlas, residue in magenta),
+                                          review/avatar_face_portrait_video.jpg (photo | avatar with the portrait-face
+                                          albedo where each face is seen best), review/avatar_fix/*_before_after.jpg
+
+Post-fit motion clean-up + quality (2026-10-07, dancecap.pose_refine / dancecap.pose_quality; new, additive):
+work/<take>/<dst>/{lead,follow}.npz     [pose_refine] the smplx/ contract (same keys; joints re-computed by FK, plain
+                                          LBS) + smoothing (json str: mode, filter {root_hz, rot_hz, transl_change_mm_rms,
+                                          stance_frac}, refine {iters, w_floor, data_term_before_after,
+                                          data_per_cam_before_after, root_offset_mm, leg_rot_offset_deg_p95, history}) +
+                                          stance (T,2) bool left/right. smplx/ is never written. Modes: filter (zero-phase
+                                          low-pass: root 5 Hz, joint rotations 8 Hz via sign-continuous quaternions) |
+                                          root / ik / root+ik (scripted floor fixes, image-blind) | refine (default: filter
+                                          + VERTICAL root and hip/knee/ankle offsets per frame minimising the 2D
+                                          Geman-McClure error of MAMMA's 512 points vs the same ma_2d landmarks + w_feet x
+                                          each foot's own points (--w-feet, default 1) + stance lowest-sole height /
+                                          --floor-mm + penetration + slip only on near-static stance (--slip-max-v 0.15
+                                          m/s) + horizontal ankle/foot anchor to the filtered input (--w-anchor 1,
+                                          --anchor-mm 10) + second differences + offset prior; torch, --device cuda on a
+                                          pod). The first run's energy = --w-feet 0 --slip-max-v 0 --w-anchor 0 --root-xz.
+                                          refine metadata adds floor_mm, w_feet, w_slip, slip_max_v, root_xz, w_anchor,
+                                          anchor_mm, slip_pairs, feet_data_per_cam_before_after. Every mode RECOMPUTES
+                                          reproj_px, reproj_parts_px, quality, quality_parts for the new motion
+                                          (pose_refine.requality = export_smplx's definition; --no-quality drops them);
+                                          contact, floor_contact, repaired, suspect, reproj_px_raw are the source's
+                                          (smoothing.carried_from_source). Refuses a fit whose t differs from the grid's t
+                                          (full-span fits only).
+  pose_refine.json                      per role the same metadata as the npz 'smoothing'
+work/<take>/quality/quality_<tag>.json  [pose_quality] reproj_px {whole, window, all_cams_per_frame_median(_window)}
+  + quality_<tag>_frames.npz              per camera / dancer (median + p90 of the per-frame median px of the 512 points,
+                                          smplx FK with correctives, chosen set's landmarks); compare {take, reproj_px,
+                                          all_cams_per_frame_median, jitter_4p5_12hz_rms_mm} (--compare-take);
+                                          jitter_4p5_12hz_mm per dancer {whole_rms, turn_rms, no_turn_rms, turn_fraction,
+                                          window_rms, worst_0p5s_windows, p95_0p5s_window} (turn = pelvis yaw rate > 200
+                                          deg/s +-3 frames); floor per dancer {lowest_sole_mm, frac_below_15mm,
+                                          frac_above_15mm, frac_above_30mm, stance_sole_mm, stance_abs_gt_15mm_frac,
+                                          stance_slip_mm (max deviation from the run mean: grows with run length, not a
+                                          per-frame slip), lowest_foot_joint_minus_rest_mm}; rest_height_m vs stature +
+                                          sole; physics {dir, per dancer mass, contact_fraction, band} (--physics).
+                                          frames npz: t, px_<cam>_<role>, jit_<role>, turn_<role>, low_<role>,
+                                          stance_l/r_<role> (+ cmp_* for the compare take).
+                                          Added 2026-10-07 (post review): reproj_feet_px (same layout, feet only = 88 of
+                                          the 512 points, + per_foot_all_cams); slip per dancer on FIXED frames = the
+                                          reference fit's own-stance runs (--ref-dir, default smplx/): contact-point speed
+                                          (median horizontal speed of the sole vertices within 1 cm of the lowest point,
+                                          same vertices in both frames: heel-toe roll is not slip), ref_run_drift_mm, and
+                                          for pose_refine folders pinned_in_sample (the frames the slip term minimised) /
+                                          ref_stance_not_pinned; displacement_vs_ref_mm per joint (pelvis, ankles, feet:
+                                          horiz / vert, stance / swing; median, p95, p99); notes (jitter band is removed by
+                                          a root low-pass by construction). frames npz adds allpx_<role>, fpx_<cam>_<role>,
+                                          fpx_<role>, fpx_l/r_<role>, slipv_l/r_<role> (T-1), rst_l/r_<role>,
+                                          sole_l/r_<role>, refsole_l/r_<role>, pin_l/r_<role>, dh_/dv_<joint>_<role>
+work/<take>/quality/variants.json       [pose_quality --variants <tags> --ref-tag final] per variant and dancer:
+                                          reprojection all / feet (+ per camera and delta vs ref), feet px change on ref
+                                          stance frames with the ref sole > 15 mm above / within 15 mm of the floor,
+                                          stance ankle displacement, floor fractions, slip on fixed frames (+ ref vs
+                                          variant on the variant's pinned frames), jitter; review/pose_refine_variants.png
+work/<take>/physics_<smplx dir>/        [pose_quality --physics] physics.run on that folder (beats from timing/timing.json).
+                                          Its bands are OPTIMISTIC for a pre-filtered input (the residual bootstrap sees
+                                          little above 5 Hz); physics/ (always on smplx/) is the one with honest bands
+takes/<take>.toml [export] smplx_dir    the motion folder of EVERY exporter when --smplx-dir is not given
+                                          (export_unity.resolve_smplx_dir: `python -m dancecap export` and demo_export;
+                                          default smplx/); recorded in capture.json provenance smplx_dir +
+                                          smplx_dir_source
+
+larissa_kadu_38 final stage (2026-10-07; two pod sessions, $0.75):
+work/larissa_kadu_38/final/pod_job.json, pod_job_b.json   pose_refine variants + pose_quality + timing + physics on
+                                          A100 pods (the local PC's CPU was starved: timing ran > 25 min locally without
+                                          finishing; 133 s on the pod)
+work/larissa_kadu_38/smplx_refined/     FIRST refinement (superseded 2026-10-07 by smplx_rf2_noslip, kept for comparison):
+                                          refine with every stance frame pinned against slip, free horizontal root. vs
+                                          smplx/: floats 22 / 29 % -> 0.2 / 1.5 %, sinks 13 / 9 % -> 0, all-points
+                                          reprojection 5.71 / 7.32 -> 6.05 / 7.70 px BUT feet-only 7.57 / 8.56 -> 9.04 /
+                                          9.58 px (cam02 feet +6.6 / +7.0 px) and stance ankles moved 29.5 / 26.4 mm
+                                          sideways (median, p95 94 / 75 mm); per camera all points lead 02 +1.21, 03
+                                          +0.47, 04 +0.27, 05 +0.35, 09 +0.31; follow 02 +1.38, 03 +1.03, 04 +0.75, 06
+                                          +0.20, 09 +1.54 (cost on 6 of 8 cameras for the follow)
+work/larissa_kadu_38/smplx_rf2_noslip/  ADOPTED for Unity ('post' review fix; takes/larissa_kadu_38.toml [export]; =
+                                          pose_refine defaults): vertical root + leg offsets, each foot's own 2D term,
+                                          ankles/feet anchored horizontally, no slip term. vs smplx/ (lead / follow):
+                                          floats 22 / 29 % -> 0.6 / 1.5 %, sinks 13 / 9 % -> 0; stance ankles 2.5 / 2.8 mm
+                                          sideways (p95 6.5 / 7.2), 7 / 8 mm vertically; all points 5.71 / 7.32 -> 6.05 /
+                                          7.42 px (lead 02 +0.62, 03 +0.74, 04 +0.45, 09 +0.87, 06 -0.28, 07 -0.36; follow
+                                          02 +0.58, 03 +0.77, 04 +0.50, 09 +1.29, 01 -0.30, 05 -0.26, 06 -0.53, 07 -0.39);
+                                          feet 7.57 / 8.56 -> 7.43 / 8.37 px (in-sample); contact-point slip on smplx/'s
+                                          stance frames 99 / 127 -> 93 / 119 mm/s (filter alone 93 / 113); jitter 0.58 /
+                                          0.98 mm (the 5 Hz low-pass, by construction)
+work/larissa_kadu_38/smplx_vert/, smplx_rf2/, smplx_rf2_noanchor/, smplx_rf2_feet10/, smplx_rf2_feet30/   the other
+                                          'post'-fix variants (quality/variants.json, review/pose_refine_variants.png):
+                                          vert = mode root (whole-body vertical shift: +1.15 / +0.96 px all points, sinks
+                                          2.4 / 6 %); rf2 = + slip term below 0.15 m/s (slip 77 / 113 mm/s, +0.09 / +0.10 px
+                                          more than noslip); noanchor = no horizontal anchor (ankles 12 / 13 mm sideways);
+                                          feet10 / feet30 = --w-feet 10 / 30 (leg offsets p95 11-16 deg, ankles 8-12 mm
+                                          sideways). physics_smplx_{vert,rf2,rf2_feet10}/ = physics on those (rf2's COM
+                                          is 4.6 / 5.9 mm (median) from physics/'s; noslip's joints differ from rf2's by
+                                          0.5 / 0.8 mm median)
+work/larissa_kadu_38/final/pod_job_postfix.json + postfix_pod.sh   the 'post'-fix pod batch ($0.32): 6 refine
+                                          variants in parallel on one A100, timing re-run (qa_timing.png now on the take's
+                                          span), pose_quality of 9 folders (+ physics for 3), variants table;
+                                          logs/postfix/*.log, logs/postfix_pod_session.log. The re-run timing's MC CIs
+                                          moved by a few ms (workers 256 -> 31 changes the draw pairing; point estimates,
+                                          hit rates and p-values identical); the previous timing/ is in
+                                          backup_postfix_20261007/
+work/larissa_kadu_38/smplx_filtered/    filter only (image-neutral: 5.70 / 7.34 px; jitter 0.58 / 0.98 mm; floor
+                                          unchanged). quality_smplx_refined_w{1,03,01}.json = first-run variants with a
+                                          biased soft-min floor term (soles ~7 mm above the floor; folders deleted)
+work/larissa_kadu_38/quality/quality_final.json   the MAMMA fit (smplx/) + the 6 s c8 fit of larissa_kadu on 56-62 s
+work/larissa_kadu_38/timing/            timing on the raw fit with the studio grid (--no-refine) and the correlated MC
+                                          convention (--mc-corr-noise-mm 10 --mc-corr-time-s 0.1)
+work/larissa_kadu_38/physics/           physics on the raw fit (statures 1.727 / 1.651 m + 2.5 cm sole): 83.2 / 57.2 kg
+work/larissa_kadu_38/final/room_from_larissa_kadu.json   similarity larissa_kadu world -> this world (x0.9545, 2.0
+                                          deg, t); the room is not exported (dancers-only viewer)
+review/pose_smoothing_before_after.png (adopted smplx_rf2_noslip, + feet per camera), pose_refine_variants.png,
+review/timing_physics_38.png, review/unity_*.png (04 playtest; quality/unity_playtest_postfix.json)
 ```
 
 ```
@@ -922,12 +1292,45 @@ work/runpod/bundles/bundle_<key>.tar.gz content-keyed upload bundle + bundle_<ke
 work/runpod/wheelhouse/<key>/*.whl      CUDA wheels built on a pod (pytorch_sdf, gsplat; cp311 torch2.5.1 cu124
                                           sm_80/90), uploaded with later bundles so bootstrap installs instead of
                                           compiling. Licensed/third-party binaries: never committed
+work/runpod/pywheels/cp311-linux/       linux cp311 wheels (+ 2 sdists) of the bootstrap's PyPI packages (base + mamma
+                                          features), filled locally with `pip download` (command in remote_jobs.PYWHEELS);
+                                          bundled when present (~200 MB) and installed first with --no-index by
+                                          bootstrap.sh pipq, PyPI only as fallback (a host that stalls on large PyPI
+                                          pages cost a 20 min bootstrap on 2026-10-07). bootstrap.sh also sets
+                                          PIP_TIMEOUT 60 s / PIP_RETRIES 10 and the runner retries a failed bootstrap
+                                          once on the same pod. Third-party binaries: never committed
 work/runpod/sessions/<sid>/             state.json (per job fingerprint/status, step timings), result.json (pod, GPU,
                                           price, ledger cost, bootstrap seconds, per-job status/missing files),
                                           runner.log, bootstrap.log, bootstrap_check.json (import checks),
                                           bootstrap_timings.tsv, downloads/<job>.tar.gz, pod_logs/<job>/<cmd>.{log,rc},
                                           outputs/ (jobs with extract=session)
+                                          + (progress, 2026-10-07; docs/PIPELINE_PROGRESS.md) runner.json {sid, pid,
+                                          started, attempt, label, jobs} (no argv/env), progress/runner.jsonl (runner
+                                          phases, dancecap.progress/1), progress/pod.jsonl (pod events mirrored by the
+                                          puller + log-tail events src "tail", each with pod/rx/skew), progress/
+                                          puller.json (offset, last_ok/last_err, rtt, skew, kill_at, gpu[], load1, cpus,
+                                          upload_part_bytes, tails{}, front{}). state.pod gains port + kill_at_est,
+                                          state.jobs[j] gains current + pack_bytes (all additive)
+pod: <ws>/dancecap/work/runpod/sessions/<sid>/progress.jsonl   every pod command appends (DANCECAP_PROGRESS set by
+                                          remote_jobs.command_script); never packed; read only by the puller's probe
+work/<take>/progress/<stage>[.<pid>].jsonl   local stages (DANCECAP_PROGRESS set by the launcher; one file per process
+                                          on Windows)
+work/progress/rates.json                 ETA history (python -m dancecap.progress rates --rebuild; also at each
+                                          session end): {v, built, sessions, keys{"<job>/<kind>/<unit>@<gpu>": {n, p10,
+                                          p50, p90, sigma, samples[]}}}. Derived, rebuildable, never hand-edited
 ```
+
+Progress events (`dancecap.progress/1`, one JSON object per line, <= 1024 bytes, plan <= 4000): `{v: 1, ts, job, step,
+kind: plan|start|tick|end|fail|note|metric|heartbeat, done?, total?, unit?, msg? (plain text, redacted), lane?, cmd?,
+rc?, eta_s?, steps? (plan), extra?, sid?, take?, pid}`; ticks are throttled (>= 2 s and >= 0.5 % apart). Metric
+`camera_motion` (cameras stage qa step = camera_types probe B, lane = camera): `extra {source: "probe_b",
+constrained: false, metric_scale, at, centre_p95_m, axis_p95_deg, angvel_p50_dps, hf_rot_deg, hf_centre_mm,
+focal_ratio, focal_step_pct, frames, mount_judgeable, attached, mount, zoom, pans, confidence, mount_confidence,
+zoom_confidence}` measured on today's UNCONSTRAINED per-frame track (never the type-constrained export) and checked
+against the user's camera types with `dancecap.camera_types`' thresholds; events without `source: "probe_b"` (the
+first version's `{centre_spread_m, rot_spread_deg, focal_ratio}`) are ignored. Writers: `dancecap.progress` (stdlib,
+a no-op unless DANCECAP_PROGRESS is set). Readers: `dancecap.progress_eta.snapshot()/live_snapshot()/budget()`
+(read-only; `live_snapshot` keeps one background-polled Tracker per watched session in the monitor process).
 
 ## Unity capture (export) - capture.json version 3
 
@@ -984,6 +1387,28 @@ timing.json `jerk_reliable`.
   (v, vt) pair of (f, ft) -> V = 11313, rest positions and weights duplicated, plus blocks uv (V,2) f4 (Unity UV,
   PNG row 0 = v 1), normals (V,3) f4 (area-weighted normals of the UNSPLIT rest mesh, so seams do not crease) and
   vertex_ids (V,) i4 (SMPL-X vertex; equals avatar/uv_mesh.npz vertex_ids).
+  Rest-shape edits: takes/<take>.toml `[dancers.<role>.shape_edits]` (dancecap.shape_edits, every export unless
+  `--no-shape-edits`) move the rest_vertices after the betas - midsection_scale (waist / abdomen width and depth, lower
+  ribs .. hips, cosine ramps into chest and hips; midsection_reference = another take's unedited body as the base,
+  midsection_depth_pivot), shoe_length_m / foot_height_scale / foot_scale (feet scaled about the ankle's vertical line
+  on the sole plane, so the sneaker built round the foot comes out at the length measured in the video). Joints,
+  weights, faces, UVs and the motion are unchanged; the header records `shape_edits` (shape_edits.summary) and
+  capture.json `provenance.shape_edits`.
+  The optional `[dancers.<role>.shape_edits.face]` table (lower face / jaw / chin / under-chin / neck top; eyes, brows,
+  nose, forehead, scalp = the hair roots, ears and the neck-shoulder seam stay exactly in place so the face texture and
+  the hair keep lining up) has three layers, applied in this order: (1) `identity` (+ `identity_weight` 0..1.5,
+  `identity_mouth` 0..1, `identity_neck` 0..1): the dancer's own FLAME 2020 identity (dancecap.face_identity: SMIRK from
+  her portrait + video faces, work/<take>/face_shape/*.npz, likeness data, git-ignored) transplanted onto the rest head
+  through SMPL-X__FLAME_vertex_ids, re-targeted per take (different betas) and cached in
+  work/<take>/face_shape/<role>_identity_disp.npz (keyed on the rest head, the identity file and the mask parameters; FLAME
+  is only needed on a cache miss); the neck is a biharmonic fade-out of the chin's move, never FLAME's own neck;
+  (2) the height / width / depth factors (`lower_face_height_scale`, `chin_height_scale`, `chin_width_scale`,
+  `jaw_width_scale`, `cheek_scale`, `lower_face_depth_scale`, `submental_height_scale`); (3) the petite taper (`jaw_taper`,
+  `cheekbone_keep`, `chin_point`, `neck_under_jaw`) and `chin_forward_mm` (-6..12 mm: the chin proper moves forward,
+  fading out at the lower-lip fold, under the chin and sideways: the identity fit sets the chin back, a front photo does
+  not constrain its depth). Every field is C1 (cosine ramps / smoothstep / thin-plate), zero
+  below ~5.5 cm under the menton and on the arms; shape_edits.summary records the non-default factors and the identity
+  file / weight / max move. Candidates and numbers: work/larissa_kadu_38/review/face_shape_v4/.
 - `room_mesh.bin` (magic `DCXR`, likeness-free but capture data: git-ignored): blocks positions (N,3) f4 in Unity
   capture coordinates, uv (N,2) f4 or colors (N,4) u1, indices (M,) i4; header submeshes [{name, start, count,
   texture, vertex_start, vertices}] ("room" -> room_tex.png, "floor" -> floor_tex.png, PNGs resized to
@@ -994,6 +1419,8 @@ timing.json `jerk_reliable`.
   footsteps.{lead,follow}[{t, foot, async_ms, beat_t, sigma, ...}], asynchrony.{role}.{n, mean_ms, ci95_ms,
   hit_rate, R}, and when timing/kinematics.npz exists jerk.{lead,follow} (T,24) |jerk| m/s^3 of the SMPL-24 joints
   (SMPL-X 0..21 + left/right_middle1) on the capture grid - Unity uses it instead of finite differences.
+  `absolute_timing` {valid, av_sync_event, note} when timing.json has it (2026-10-07): valid false (no audio-video sync
+  event) makes the viewer print step offsets "vs beat (unsynced)" with no on beat / late / early verdict and no hit rate.
 - `physics.json` is copied verbatim (world frame; the Unity overlay converts (x,y,z) -> (x,y,-z)).
 - `zouk-time-analysis.json` holds the beat grid in audio-clip time ([[t + time_to_audio, type]]).
 
@@ -1007,7 +1434,10 @@ alpha-to-coverage, tip emission). v3 captures never create the old LineRenderer 
 `shoes.json` (optional, dancecap.shoes; likeness data - work/ and git-ignored StreamingAssets only): per dancer
 {style court_platform|runner|neutral, upper, sole, sole_heel, outsole, accent, lace, lining, heel_tab (#rrggbb sRGB,
 graded like the albedo bake; white parts balanced to a neutral white), sole_heel_m, sole_fore_m, toe_spring_m,
-heel_bevel_m, source, confidence, measured}.
+heel_bevel_m, source, confidence, measured}. takes toml `[dancers.<role>] shoe_geometry = {sole_heel_m, sole_fore_m,
+toe_spring_m, heel_bevel_m}` (measured sole stack) overrides the style's numbers, also on `--export-only`.
+Real sizes: `python -m dancecap.shoe_size <take> [--detect]` -> avatar/shoe_size.json (outer length / width / toe-box
+height from SAM2 silhouettes along the RTMW-triangulated foot axis, planted feet; review/demo/shoe_size_<take>.jpg).
 Every avatar gets procedural sneakers (head-movement Assets/Shoes/SneakerPair; neutral without the file). They are built
 on a worker thread at load from the dancer's fitted rest feet and fitted to the capture's motion:
 - The outsole bottom is the fitted sole plane (the fit's sole = the shoe sole, see the world scale above).
@@ -1016,6 +1446,9 @@ on a worker thread at load from the dancer's fitted rest feet and fitted to the 
 - The rear upper and the collar are sized to the visible leg over the whole capture.
 - The shoes share the avatar's opacity.
 `python -m dancecap.shoes <take> --export-only` re-copies it after every export.
+`python -m dancecap.demo_export <take> --capture <Name>` does the export (no room, studio soundtrack when present)
+and every add-on (hair groom + its colliders re-sized for the shape edits, shoes, faces, counterbalance, moves) and
+validates the folder (work/<take>/export/<Name>_demo_export.json); `--hooks-only` re-runs the add-ons.
 
 Unity (head-movement): `CaptureTimeline` maps audio time -> frame by binary search over times[] + time_to_audio
 (nearest frame); `SmplxAvatar` builds a 55-bone SkinnedMeshRenderer per dancer (layer `avatars`; textured with
@@ -1043,4 +1476,195 @@ work/<take>/counterbalance/counterbalance.json   [counterbalance] intervals (piv
 StreamingAssets/<capture>/moves/{graph,labels,path,fingerprint}.json   capture time (= reference + time_to_audio),
                                         Unity frame; written by `python -m dancecap.moves export <take>` - re-run it
                                         after every `python -m dancecap export` (that wipes the capture folder)
+```
+
+## counterbalance/ and floorcraft/ - the floor record (2026-10-07)
+
+```
+work/<take>/counterbalance/truth_user.json   [human label] {"counterbalance": [{t0, t1 (reference s), hud, capture_time}],
+                                        statement, time_base_check}: the user's interval read in the viewer HUD
+                                        (HUD = reference - times.json[0]); `counterbalance detect` scores against it
+                                        (else work/<take>/truth.json for synthetic takes)
+work/<take>/counterbalance/counterbalance.json   [counterbalance] version 1, additive fields: intervals[].overhang_m
+                                        {lead, follow} (median COM beyond the own support edge, m), intervals[].hanger
+                                        (role that hangs), track.overhang_{follow,lead}_m; params.lean_mode
+                                        ('counterweight' | 'both'), overhang_m, counter_lean_m, support_soft_m,
+                                        supported_w, hand_body_extension; source.code_sha1 (sha1 of
+                                        counterbalance.py: counterbalance.is_current = same lead npz, beat grid AND
+                                        detector code -> a changed criterion / threshold re-detects)
+work/<take>/floorcraft/floorcraft.json  [floorcraft] python -m dancecap.floorcraft <take> [--export-capture <name>]
+                                        [--review-dir <dir>]
+                                        version 3 (2026-10-07; ADDITIVE over version 2: every v2 key below keeps its
+                                        meaning; new: t_axes, transitions, axis_pivots, dials, balance, evaluations -
+                                        renderer-facing schema with drawing notes: work/larissa_kadu_38/review/
+                                        floorcraft2/SCHEMA_V2.md), kind "floorcraft", frame "world", time_base
+                                        "reference". The track is CUT at every counterbalance pivot: no plant, move or
+                                        rotation overlaps a pivot (the pivot owns the leader's circling: pivots[].
+                                        leader_axis); a renderer draws every record as it is, nothing is skipped:
+  axis       {long_m 2.0, short_m 0.8, origin, source}: the live leader-axis size (VIEWER_SPEC 3.6) and how it is built
+             (spine3 joint on the floor; long = spine3 global +x projected = the leader's LEFT; forward = its floor
+             perpendicular on the chest's front)
+  track      {t, origin [[x,0,z]], yaw_deg (unwrapped), speed_m_s, step_s}: the smoothed axis at 15 Hz
+  plants[]   {id, t0, t1, duration_s, duration_beats, origin [x,0,z] (centroid), radius_m, radius_p90_m, drift_m_s,
+             yaw_deg / forward / long_axis (unit [x,0,z]) = the axis he ESTABLISHED: circular-mean yaw over `held`
+             [t0, t1], the plant's longest stretch without a rotation in progress (yaw_source 'held'; 'mean' /
+             'mean (turning throughout)' = the whole-plant mean), yaw_mean_deg (whole-plant circular mean),
+             yaw_start_deg, yaw_end_deg, turn_deg}. One stand = one plant: neighbours whose union passes the plant
+             test, or that touch with centroids <= 0.20 m apart, are merged; plants never overlap
+  moves[]    {id, kind step|travel, t0, t1, duration_s, from_plant, to_plant (null at the take edges and next to a
+             pivot), from_pivot, to_pivot (the pivot it leaves / reaches, else null), from, to (plant origins, or the
+             axis origin at a take edge / pivot edge), path {t, pos} = from -> axis origin -> to (draw `path` alone: it
+             joins the plant crosses), length_m (of path), origin_path_m (the origin's own path between the plants),
+             displacement_m, heading_deg, from_yaw_deg, to_yaw_deg, yaw_change_deg (unwrapped, full turns kept)}.
+             kind 'step' = one step between two plants (origin_path_m < 0.5 m within 1 beat; when two plants touch,
+             the step is cut out of their edges at the origin's speed peak, else it sits at their junction, 1-3
+             frames); 'travel' = the rest
+  rotations[] {id, t0, t1, duration_s, from_yaw_deg, to_yaw_deg, signed_deg, direction ccw|cw, rate_deg_s,
+             context plant|move, plant (owner plant | null), plants (every plant it touches), move (owner step /
+             travel move | null), centre [x,0,z] (owner plant origin, else the axis origin mid-rotation),
+             swing {index, deg, t, parts}}. Swings split only where they cross a travel move: plants chained by
+             steps are one context, so a turn while stepping to the next stand stays one rotation
+  pivots[]   the counterbalance.json pivots {id, counterbalance (interval index), t0, t1, counterbalance_t, pivot,
+             pivot_foot, leader_radius_m, swept_deg, swept_signed_deg, direction, arc_start_deg, confidence,
+             leader_path, beat_ticks} + leader_axis {t0, t1, path {t, pos} (his chest on the floor), length_m,
+             from_yaw_deg, to_yaw_deg, turn_deg (net, unwrapped), direction} (null when the pivot lies outside the
+             fits); counterbalances[] {id, kind, t0, t1, confidence, com_floor, connection, pivots}
+  events[]   {type plant|move|rotation|pivot|counterbalance|t_axis|transition|axis_pivot|dial, id, t0, t1 (+ kind
+             for moves and dials)} by t0 - the viewer's accumulating record
+  --- version 3: the leader's STABLE T, its reorientations, dials, the balance axis (user 2026-10-07) ---
+  --- revision 3.1 (review fixes 2026-10-07, additive: top-level "revision"; from_t / to_t may be null) ---
+  t_axes[]   {id, t0, t1 (episode: forming start .. the first frame of the sustained exit / rotation that ended it),
+             t_formed (end of the forming window), origin [x,0,z] (MEDIAN chest-on-floor over ALL the T's active
+             frames inside its region with the heading within 30 deg; 3.0: over the forming window), yaw_deg
+             (wrapped) / yaw_unwrapped_deg (MEAN heading over the same frames), formed_origin / formed_yaw_deg (the
+             forming window's values), dropped_before (brief Ts dropped since the previous T), forward (the stem) /
+             parallel (the crossbar = the leader's LEFT) unit [x,0,z], start_reason / end_reason start|exit|rotation|
+             exit+rotation|counterbalance|gap|end, same_place_as (id of the previous T when this one is that T
+             rotated in place: origin copied), prev, next, pivot_in, pivot_out (axis_pivots ids), dial, excursions,
+             occupancy {forward_m [min,max], side_m [min,max], in_region_share, yaw_dev_p90_deg, centre_offset_m
+             (median chest over all its active frames -> origin)}}. Origin and heading are averaged and the end
+             re-checked against them (t_refine_iter), then FIXED; the T holds while his chest stays in the ALLOWED
+             REGION = stem corridor (|side|
+             <= 0.30 m, |forward| <= 1.2 m) U crossbar corridor (|forward| <= 0.30 m, |side| <= 1.2 m) with his
+             heading within 30 deg; >= 1 beat outside ('exit') or turned > 30 deg ('rotation') starts a new T. A
+             forming window (1 beat) is SETTLED: all its frames in its own region, headings within 20 deg of its mean,
+             net drift <= 0.20 m/s along the stem OR the crossbar (a diagonal arrival forms no T). A new T within
+             0.25 m of the previous one and within 30 deg of its heading CONTINUES it (excursions + 1). No T forms
+             inside a counterbalance pivot (its dial owns that motion). A T holding < 1 beat after forming is DROPPED
+             (it would only flash; the take's last T is kept) - its heading stays a WAYPOINT of the axis pivots.
+             Between Ts there may be no current T (travelling / turning)
+  transitions[] {id, from_t, to_t, t0 (from_t's t1), t1 (to_t's t0), from, to (T origins), distance_m, same_place,
+             reason (= to_t's start_reason), axis_pivot (the first between them, null across a counterbalance),
+             axis_pivots [ids on the way], dropped_ts, dial, counterbalance_pivot, path {t, pos} (his chest between
+             them, informative)} - consecutive T origins = the dotted line
+  axis_pivots[] {id, t0, t1 (heading leaves the old T heading / reaches the new one, within min(15 deg, 25 % of the
+             turn)), at [x,0,z] (the old origin when stayed, else his chest mid-turn), from_t, to_t, from_yaw_deg,
+             to_yaw_deg, signed_deg (unwrapped, + = ccw, may exceed 360), abs_deg, direction, stayed, dial,
+             context between_ts | lead_in | into_counterbalance | out_of_counterbalance | lead_out, from_kind / to_kind
+             t_axis | brief_t | track_start | track_end | counterbalance (from_t / to_t null at a non-T end),
+             via_brief, counterbalance_pivot, evaluation} - every reorientation of his axis > 30 deg: T -> T through
+             the waypoints (a heading change <= 30 deg to a waypoint is passed over), track start -> first T, T -> his
+             heading where a counterbalance pivot begins, where it ends -> T, last T -> track end (the counterbalance
+             dial owns only the circling inside the pivot)
+  dials[]    {id, kind counterbalance|leader_spin|couple_turn|leader_around_follower, t0, t1, centre [x,0,z],
+             degrees (signed cumulative, + = ccw, can exceed 360), abs_deg, turns, direction, who (text), subject
+             lead|couple|both, radius_m, arc_start_deg (needle at t0, from +x towards -z), heading_deg, orbit_deg,
+             centre_spread_m, counterbalance_pivot, axis_pivots [ids], t_axis (the associated T: the one it starts
+             from), evaluation}. counterbalance = every counterbalance pivot (centre = her anchored foot, degrees =
+             swept_signed_deg); the others = consecutive same-sign axis pivots (each <= 2 beats after the previous)
+             summing to >= 180 deg while one point stays put (p90 distance to its median <= 0.30 m): the leader's
+             chest (leader_spin), the couple's combined COM (couple_turn) or her chest (leader_around_follower) -
+             tried from the least moving; the last two only when the leader's orbit about the centre has the turn's
+             sign and >= 0.6 x its degrees (3.1; else it is his own spin, not a turn about that point); a chain that
+             fails is tried in its contiguous sub-chains (3.1); pivots chain through a T or a waypoint; turning into /
+             out of a counterbalance is never a dial; a turn while travelling is no dial (params.turn_groups lists
+             every chain tried with spreads, orbits and rejections)
+  balance    {t (every analysed frame), frame_step_s, stance_codes, com_source, lead|follow {stance [0 none|1 left|2
+             right], double [0|1], support [[x,0,z] | null], chest [[x,y,z]] (spine3), com [[x,y,z]], com_offset_m,
+             tilt_deg, score}, couple {com, support, com_offset_m, tilt_deg, score, pivot} (null outside the
+             counterbalance pivots)}: the BALANCE AXIS chest -> support of the stance foot. Contact per foot = joint
+             height above the dancer's floor (4..9 cm) x foot speed (0.4..1.0 m/s); stance = the foot in contact
+             whose sole line (ankle + s (ball - ankle), s -0.35..1.35 = heel..toe tip) is nearest the COM's floor
+             point; support = that nearest sole point; score = min(offset ramp 4..12 cm, tilt ramp 3..9 deg) in 0..1
+             (line brightness). couple: the combined COM (masses: takes/<take>.toml mass_kg, else the body-model
+             mass) over the follower's ANCHORED foot inside each counterbalance pivot. COM = shaped SMPL-X mass
+             elements (counterbalance.body_com = physics_body) on the analysed fits, 5 Hz spline
+  evaluation {subject, measure, frames, aligned_share (score >= 0.5 = COM <= 8 cm off the sole line and tilt <= 6
+             deg), mean / median / p90_offset_m, mean_tilt_deg, mean_score, verdict good (>= 60 % aligned) | ok (>= 35
+             %) | needs work | unknown, text, window [t0, t1] (the turn, widened to >= 0.5 beat), per_dancer {lead,
+             follow}, worse (subject both), note, graded} on axis_pivots[], dials[], pivots[] (= its dial's) and
+             rotations[] (subject lead). 3.1: reorientations (axis_pivots, rotations) also carry turn_kind one_foot |
+             both_feet | stepped | airborne, turn_kind_label, feet {double_share, contact_share, ball_travel_m,
+             stance_share, stance_changes, pivot_foot}: only a ONE-FOOT pivot (one foot in contact >= 80 % of the
+             turn, the weight on it >= 70 % of the stance frames, its ball within 10 cm) is graded - over the frames
+             with the weight on that foot; both feet (>= 70 % double support) / stepped -> verdict "not graded",
+             graded false, balance_verdict (the COM test alone). Dials are always graded. ESTIMATES from the fitted
+             bodies
+  params     + t_axis {half_width_m, forward_m, side_m, pivot_deg, sustain_beats, form_beats, form_yaw_deg,
+             form_drift_m_s, same_place_m, pivot_edge_deg, draw_forward_m, draw_side_m, min_hold_beats, refine_iter},
+             dial {min_deg, place_m, max_hold_beats, orbit_ratio}, turn {double_share, pivot_contact, pivot_stance,
+             pivot_travel_m}, balance {...}, t_axis_share, turn_groups, com_source, counts + dropped_short_ts,
+             axis_pivots_by_context, axis_pivots_by_turn_kind, axis_pivots_graded (also flat: t_*, dial_*, bal_*,
+             turn_*)
+  source     {smplx_dir, lead_sha1, follow_sha1, lead_probe, t_range, counterbalance, counterbalance_sha1,
+             masses_kg, code_sha1, ...} (floorcraft.is_current: version 3, same lead AND follow npz, beat grid
+             (beats_sha1), counterbalance.json and floorcraft.py (code_sha1) -> no re-analysis)
+  File layout: one key per line, arrays of numbers / points on one line (floorcraft.dumps; plain JSON).
+  Dashing: a counterbalance is drawn dashed when its INTERVAL confidence (counterbalances[].confidence =
+  counterbalance.json intervals[].confidence) is < 0.6; pivots[].confidence is the pivot-geometry score (informative,
+  not used for dashing).
+  Angles: yaw = angle of the forward axis on the floor from +x towards -z = ccw seen from above (right-handed about
+  +Y); signed angles + = ccw. Thresholds in params (plant radius 0.20 m, drift 0.15 m/s, >= 1 beat; touch
+  0.10 m / 0.15 s; step < 0.5 m within 1 beat; rotation 25 deg).
+work/<take>/review/floorcraft_map.png, floorcraft_timeline.png   [floorcraft review] overhead map + segmentation
+work/<take>/review/taxis_map.png, taxis_timeline.png   [floorcraft review, version 3] the Ts (current bright, old
+                                        faded teal), dotted transitions, axis pivots / dials with verdicts, the
+                                        viewer's floor at six instants; lanes + heading vs held T heading + offsets
+                                        from the current T + balance scores (--review-dir moves all four)
+StreamingAssets/<capture>/floorcraft.json   Unity copy (frame "unity" = (x, y, -z) before the dance-origin offset,
+                                        time_base "capture" = reference + time_to_audio; *_reference keep the
+                                        reference seconds; yaw / signed angle numbers unchanged (ccw from above) plus
+                                        *_euler_y_deg = 90 - yaw (Quaternion.Euler(0, y, 0) * forward) and
+                                        *_unity_euler_y = -signed; plants also euler_y_mean_deg, held_reference;
+                                        pivots[].leader_axis converted like a move; version 3: t_axes euler_y_deg /
+                                        euler_y_unwrapped_deg, t_formed_reference, axis_pivots *_euler_y_deg +
+                                        signed_deg_unity_euler_y, dials degrees_unity_euler_y + arc_start_deg_unity
+                                        (= arc_start_deg: from +x towards Unity +z), evaluation.window(_reference),
+                                        balance t (capture) + t_reference, support / chest / com mirrored, nulls
+                                        kept); capture.json gets "floorcraft": "floorcraft.json".
+                                        Written by `python -m dancecap.floorcraft <take> --export-capture <name>` and by
+                                        every `python -m dancecap.demo_export` (with counterbalance.json; both
+                                        re-analysed only when missing or stale, both validated)
+```
+
+## Pipeline Monitor and orchestrator - `dancecap.pipeline` (2026-10-07)
+
+What the orchestrator, the run wrapper and the monitor write (docs/PIPELINE.md, docs/PIPELINE_MONITOR.md, user guide
+docs/PIPELINE_MONITOR_GUIDE.md). All under work/ (git-ignored); nothing here is read by a stage as an input except
+the clock file of a wizard take.
+
+```
+work/<take>/intake.json                 [intake] the registered videos (path, size, probe, exclusions), warnings
+work/<take>/probe/probe.json            [probe] ffprobe facts per camera
+work/<take>/probe/camera_types_suggested.json   [probe A] suggestions per camera (+ `file` = {name, size, mtime_ns}:
+                                        the wizard's staged result is written here at intake and reused by the
+                                        probe stage instead of decoding the video again)
+work/<take>/clock/alignment.json        [audio_sync] the audio clocks of a WIZARD take (identity for a single view);
+                                        older takes keep theirs outside work/ (never overwritten)
+work/<take>/pipeline/state.json         [orchestrator] per-stage state of the last run (dry runs say dry_run: true and
+                                        never mark a stage running / failed)
+work/<take>/pipeline/events.jsonl       [orchestrator] append-only: plan, start, would_run, would_pause (what-if),
+                                        end, fail, gate, note, stop, finish
+work/<take>/pipeline/run.lock           one orchestrator per take (CLI or monitor)
+work/<take>/pipeline/gates.json         review gates the orchestrator opened (fit_qa, geoveto) and their decisions
+work/<take>/pipeline/camera_types_applied.json  {stage: {cam: class}, policy} the type-reading stages applied
+work/<take>/pipeline/accepted_inputs.json       stale stages kept on purpose ("Keep outputs")
+work/<take>/monitor/probe_cache.json, toml_backups/   the monitor's ffprobe cache; a backup before every TOML write
+work/pipeline/plans/<sha1>.json         plans (no side effects); an approval is bound to one run id and used once;
+                                        a what-if plan (options.assume_reviews) is dry-run only
+work/pipeline/runs/<run id>/            run.json, pid.json, launcher.json, output.log, current.json, stop.json, rc.json
+work/pipeline/runs_archive/             finished runs older than 14 days
+work/pipeline/slots/, work/pipeline/pod_session.lock   the local CPU / GPU slots and the one-pod-session lock
+work/monitor/                           monitor.lock (single instance), server.json {pid, port, instance} (never the
+                                        token), settings.json, staging/h-*.json (picked files), logs/{monitor,launcher}.log
 ```
