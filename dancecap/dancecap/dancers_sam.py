@@ -27,6 +27,7 @@ from typing import Callable
 import cv2
 import numpy as np
 
+from . import progress as _progress  # dancecap.progress/1 (stdlib; no-op unless DANCECAP_PROGRESS)
 from .take import WORKSPACE
 
 CHECKPOINT = WORKSPACE / "mamma" / "data" / "weights" / "sam2" / "sam2.1_hiera_large.pt"
@@ -189,6 +190,7 @@ def propagate(predictor, files: list[Path], native_wh: tuple[int, int], anchor: 
     anchors: dict[int, Boxes] = {}
     t0 = time.time()
     n_inf = 0
+    n_done = 0  # distinct frames with a mask (progress: the reverse / re-anchored passes revisit frames)
     with torch.inference_mode(), torch.autocast("cuda", dtype=gpu.amp_dtype()):
         state = init_state(predictor, files, work_wh)
 
@@ -209,7 +211,9 @@ def propagate(predictor, files: list[Path], native_wh: tuple[int, int], anchor: 
                     order = [list(obj_ids).index(o) for o in OBJ_IDS]
                     p = torch.sigmoid(logits[order, 0].float()).mul_(255).to(torch.uint8).cpu().numpy()
                     probs[fi] = p
+                    n_done += not done[fi]
                     done[fi] = True
+                    _progress.tick("sam", n_done, f, "frames")
                     if check is None or fi in anchors or min(abs(fi - a) for a in anchors) < min_gap:
                         continue
                     new = check(fi, p)

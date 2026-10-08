@@ -30,6 +30,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from . import progress as _progress  # dancecap.progress/1 (stdlib; no-op unless DANCECAP_PROGRESS)
 from .take import PACKAGE_ROOT, WORKSPACE, Take
 
 WEIGHTS = PACKAGE_ROOT / "weights"
@@ -394,8 +395,11 @@ def detect_take(take: Take, cams: list[str] | None = None, keyframes: bool = Tru
     t0 = time.time()
     with gpu.exclusive(f"detect {take.name}"):
         model = Detector(s)
+        _progress.plan([{"step": "detect", "lane": c, "unit": "frames"} for c in cams], step="detect")
         for cam in cams:
+            _progress.start("detect", lane=cam, unit="frames")
             r = detect_camera(take, cam, model, keyframes)
+            _progress.end("detect", done=r.get("frames"), lane=cam, ms_per_frame=r["runtime_s"]["per_frame_ms"])
             report["cams"][cam] = r
             print(f"[detect] {cam}: {r['frames']} frames @{'+'.join(map(str, r['imgsz']))}, {r['people_per_frame']['mean']:.1f} people/frame, "
                   f"pair {100 * r['dancer_pair_rate']:.1f}%, {r['runtime_s']['per_frame_ms']:.0f} ms/frame, "

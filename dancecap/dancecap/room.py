@@ -55,6 +55,7 @@ import cv2
 import numpy as np
 
 from . import gpu
+from . import progress as _progress  # dancecap.progress/1 (stdlib; no-op unless DANCECAP_PROGRESS)
 
 MAIN_CAMS = ("01", "02", "03", "04", "07", "09")
 STAGES = ("prep", "train", "quest", "mesh", "eval")
@@ -865,6 +866,7 @@ def train(work: Path, views: list[View], geo: dict, cfg: RoomConfig, log=print):
         sched.step()
         run_l = 0.98 * run_l + 0.02 * l1 if step else l1
         run_psnr = 0.98 * run_psnr + 0.02 * psnr if step else psnr
+        _progress.tick("train", step + 1, cfg.iters, "steps")  # throttled; no extra GPU syncs
         if step % cfg.log_every == 0 or step == cfg.iters - 1:
             hist.append({"step": step, "l1": run_l, "psnr": run_psnr, "n": len(splat),
                          "s": round(time.time() - t0, 1), "reflectance": refl.betas()})
@@ -875,6 +877,7 @@ def train(work: Path, views: list[View], geo: dict, cfg: RoomConfig, log=print):
         dead = behind_reflectors(p["means"], geo, cfg.floor_margin) | \
             (torch.sigmoid(p["opacities"]) < strat.min_opacity)
     _keep_only(splat, ~dead)
+    _progress.end("train", done=cfg.iters, gaussians=len(splat))
     return splat, app, refl, {"history": hist, "train_s": time.time() - t0, "n_final": len(splat),
                               "reflections": cfg.reflections,
                               "removed_behind_reflectors_or_dead": int(dead.sum()), "reflectance": refl.betas()}
