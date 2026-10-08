@@ -638,6 +638,20 @@ def _pid_alive(pid: int | None) -> bool:
     return bool(pid) and pod_detach._alive(int(pid))
 
 
+def _remove_retry(op, tries: int = 300, wait_s: float = 0.01) -> None:
+    """Run `unlink`/`rmdir`; on Windows the removal fails with a sharing violation while another session is just reading
+    the ticket (or looking at the lock), which used to leave a stale ticket behind and a queue that never moved. A path
+    that is already gone is fine."""
+    for _ in range(tries):
+        try:
+            op()
+            return
+        except FileNotFoundError:
+            return
+        except OSError:
+            time.sleep(wait_s)
+
+
 def commitments() -> dict:
     p = FIT_DIR / "commitments.json"
     try:
@@ -726,20 +740,35 @@ class UploadSlot:
             time.sleep(self.poll_s)
 
     def acquire(self) -> None:
-        """Take the upload lock (only when nobody is ahead in the queue)."""
-        self.wait_turn(0)
+        """Take the upload lock (only when nobody is ahead in the queue). The queue is looked at again once the lock is
+        held: a session that registered while we were waiting for the running upload, with an earlier order, goes first
+        (the lock is handed back), so the uploads follow the launch order and not the order in which the waiters happen
+        to poll."""
+        self.lock.parent.mkdir(parents=True, exist_ok=True)
         said = False
+        busy_errors = 0
         while True:
+            self.wait_turn(0)
             try:
                 self.lock.mkdir()
-                break
             except FileExistsError:
+                busy_errors = 0
                 try:
                     if time.time() - self.lock.stat().st_mtime > 3 * 3600:
                         self.lock.rmdir()
                         continue
                 except OSError:
                     pass
+            except OSError:
+                # Windows answers "path not found" / "access denied" while another session is just removing the lock
+                busy_errors += 1
+                if busy_errors > 50:
+                    raise
+            else:
+                if not self._ahead():
+                    break
+                _remove_retry(self.lock.rmdir)
+                continue
             if not said:
                 self.log("waiting for the running upload to finish")
                 said = True
@@ -749,11 +778,9 @@ class UploadSlot:
 
     def release(self) -> None:
         if self.held:
-            with contextlib.suppress(OSError):
-                self.lock.rmdir()
+            _remove_retry(self.lock.rmdir)
             self.held = False
-        with contextlib.suppress(OSError):
-            self.ticket.unlink()
+        _remove_retry(self.ticket.unlink)
 
 
 # ------------------------------------------------------------------------------------------------ local: session
