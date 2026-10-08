@@ -1,0 +1,9 @@
+# hm-guard allow list: paths (glob, "*" also matches "/") that are exempt from the SIZE and the
+# NEW-IMAGE / NEW-3D-MODEL rules only.  Keys, gated models, weights, audio/video and secret
+# patterns can never be allow-listed.
+#
+# Add an entry only with the repository owner's approval, in a commit of its own, with a reason:
+#   <glob>   # why this file is safe to commit
+#
+# The list is read from the last commit (HEAD), so an entry applies from the commit AFTER the one
+# that adds it.  No entries are needed today: the workspace tracks code, configs and small docs.

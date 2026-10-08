@@ -3,10 +3,12 @@
 # files (smplx/), footage (dances/, carlos-aline-spin/), venvs and generated outputs stay out.
 /*
 !/.gitignore
+!/.gitattributes
 !/README.md
 !/atlas_bridge/
 !/dancecap/
 !/prototype/
+!/tools/
 
 **/__pycache__/
 *.pyc
@@ -27,5 +29,76 @@
 /prototype/larissa_kadu/*
 !/prototype/larissa_kadu/*.json
 
+# tools: the Pipeline Monitor launcher source + scripts; the exe is built locally (tools/PipelineMonitor/build.ps1)
+/tools/PipelineMonitor/PipelineMonitor.exe
+
 # gated body models downloaded by the user (MANO, FLAME) - licence forbids redistribution
 /models/
+
+# ---- defence in depth inside the tracked trees ---------------------------------------------------
+# tools/githooks/guard.py rejects the same classes at commit time (docs: dancecap/docs/GIT.md).
+# Ignore rules never touch files that are already tracked. To add a file of a class below on purpose
+# (for example a small test image) use `git add -f` AND an entry in tools/githooks/allow.txt.
+
+# junk, profiler output, logs
+*.out
+*.prof
+*.log
+*.bak
+*.tmp
+.pytest_cache/
+
+# audio and video: footage, songs, narration, renders (copyrighted and personal data)
+*.wav
+*.mp3
+*.flac
+*.m4a
+*.aac
+*.ogg
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+*.m4v
+
+# model weights, arrays, pickles, point clouds, splats, meshes, captures (gated body models, likeness)
+*.npz
+*.npy
+*.pkl
+*.pickle
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.h5
+*.ply
+*.splat
+*.glb
+*.gltf
+*.fbx
+*.obj
+*.blend
+*.vrm
+
+# raster images: portraits, textures, grooms, renders (vector .svg and .ico stay allowed)
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.bmp
+*.tif
+*.tiff
+*.exr
+*.tga
+
+# secrets and the private forbidden-terms list
+*-key.txt
+*.key
+*.pem
+*.token
+.env
+.env.*
+!.env.example
+.hm-forbidden-terms*

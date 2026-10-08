@@ -1,0 +1,8 @@
+#!/bin/sh
+# hm-guard commit-msg hook (workspace profile): keeps secrets out of commit messages.
+# Install: tools/install_hooks.sh   Rules and bypass: dancecap/docs/GIT.md
+HM_GUARD_PROFILE=workspace
+here=$(cd "$(dirname "$0")" && pwd)
+. "$here/hm-guard.sh"
+hm_guard commit-msg --commit-msg "$1"
+exit $?

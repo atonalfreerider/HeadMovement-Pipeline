@@ -1,0 +1,9 @@
+#!/bin/sh
+# hm-guard pre-commit hook (workspace profile): rejects keys, gated body models, weights,
+# audio/video, new images and 3D models, oversize files and secret patterns in what is staged.
+# Install: tools/install_hooks.sh   Rules and bypass: dancecap/docs/GIT.md
+HM_GUARD_PROFILE=workspace
+here=$(cd "$(dirname "$0")" && pwd)
+. "$here/hm-guard.sh"
+hm_guard pre-commit --staged
+exit $?
