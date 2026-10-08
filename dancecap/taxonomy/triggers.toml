@@ -1,0 +1,76 @@
+# Viewer trigger rules (docs/PIPELINE.md section 8): which visualisation layers switch on while a classified interval
+# plays. Read by `python -m dancecap.pipeline triggers <take>` (stage `triggers`), which maps the producers' intervals
+# (counterbalance.json, floorcraft.json, moves/labels.json) to layers; it never re-thresholds (the producers keep
+# their own hysteresis). No dancer data here. Missing keys fall back to the built-in defaults of
+# dancecap/dancecap/pipeline/triggers.py. Edit, then re-run the triggers stage (and the export hook).
+
+[defaults]
+threshold = 0.5        # below this confidence a trigger is drawn dashed ("uncertain")
+fade_s = 0.2           # viewer cross-fade at the interval edges
+
+# The viewer's layer ids (head-movement Assets/Tour/DanceLayers.cs, Handles()): every trigger carries
+# viewer_layers = the ids below that draw its detailed layers (map). An id not listed here is never emitted.
+[viewer]
+layers = ["counterbalance", "traces", "graph", "neck", "axis", "floorcraft", "balance"]
+
+[viewer.map]
+"counterbalance.axis" = "counterbalance"
+"counterbalance.pivot_ring" = "counterbalance"
+"leader.arc" = "counterbalance"
+"follower.spiral" = "traces"
+"follower.head_axis" = "neck"
+"leader.floor_axis" = "axis"
+"leader.plant_ring" = "floorcraft"
+"leader.rotation_arc" = "floorcraft"
+"leader.floor_path" = "floorcraft"
+"caption" = "graph"
+"graph_inset" = "graph"
+# physics view only (BalanceAxisOverlay, floorcraft.json balance): the couple COM over her anchored foot
+"couple.balance_axis" = "balance"
+
+# one table per trigger kind: layers (detailed visual elements, mapped above) + a director hint
+[kinds.counterbalance]
+layers = ["counterbalance.axis", "counterbalance.pivot_ring", "leader.arc", "couple.balance_axis"]
+director = { shot = "overhead", priority = 2 }
+
+[kinds.pivot]
+layers = ["counterbalance.pivot_ring", "leader.arc", "follower.spiral", "couple.balance_axis"]
+director = { shot = "overhead", priority = 2 }
+
+[kinds.plant]
+layers = ["leader.floor_axis", "leader.plant_ring"]
+director = { shot = "wide", priority = 0 }
+
+[kinds.rotation]
+layers = ["leader.rotation_arc"]
+director = { shot = "wide", priority = 1 }
+
+[kinds.travel]
+layers = ["leader.floor_path"]
+director = { shot = "wide", priority = 0 }
+
+[kinds.move]
+layers = ["caption", "graph_inset"]
+director = { shot = "medium", priority = 1 }
+
+# extra layers per move family (taxonomy/zouk_graph.json "family" of the labelled move)
+[families.turn]
+layers = ["follower.head_axis", "follower.spiral"]
+
+[families.giro]
+layers = ["follower.head_axis", "follower.spiral"]
+
+[families.head]
+layers = ["follower.head_axis"]
+
+[families.cambre]
+layers = ["follower.head_axis"]
+
+[families.chicote]
+layers = ["follower.head_axis", "follower.spiral"]
+
+[families.travel]
+layers = ["leader.floor_axis"]
+
+[families.corredor]
+layers = ["leader.floor_axis"]

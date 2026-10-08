@@ -1,0 +1,2616 @@
+{
+ "schema": "dancecap.pipeline.stages/draft-1",
+ "created": "2026-10-07",
+ "doc": "dancecap/docs/PIPELINE.md",
+ "status": "DRAFT from the research stage 'dag'. The pipeline backend owns the final registry; ids, deps and outputs here follow the code and CONTRACTS.md as of 2026-10-07. 'exists' says what is implemented: yes | partial | in_progress | new (proposed here) | future (gated by a user decision).",
+ "retired": [
+  {
+   "ids": [
+    "hands_survey",
+    "hands_pod",
+    "hands_build"
+   ],
+   "session": "S3_hands",
+   "date": "2026-10-07",
+   "by": "user",
+   "why": "hands refinement (detectors, WiLoR/HaMeR, fingers, contact -> smplx_hands / smplx_detail) was estimated at ~10 h (hands_pod) + ~8 h (hands_build) for larissa_kadu_full: permanently removed from the pipeline. The modules stay in the repo, unreferenced; nothing downstream reads hands/, smplx_hands/ or smplx_detail/ (exports play takes/<take>.toml [export] smplx_dir, else smplx/)."
+  }
+ ],
+ "conventions": {
+  "cwd": "dancecap/ (the package root); python = ../.venv-nopo4d/Scripts/python.exe. Never launch envs/mamma/python.exe directly.",
+  "paths": "outputs/inputs are relative to dancecap/work/<take>/ unless they start with takes/, taxonomy/, work/ (= dancecap/work/), prototype/ or head-movement/",
+  "placeholders": {
+   "{take}": "take name (takes/<take>.toml)",
+   "{capture}": "Unity capture folder name",
+   "{cam}": "camera id (2 digits)",
+   "{tag}": "MAMMA camera-set tag, e.g. c8",
+   "{sid}": "remote session id"
+  },
+  "runs_on": {
+   "local": "workstation CPU (4 logical CPUs): orchestration, light checks, review images",
+   "local_gpu": "the shared 2080 Ti (11 GB, sm_75, fp16 only); take work/gpu.lock (dancecap.gpu.exclusive); only short jobs",
+   "pod": "Runpod 80 GB GPU (A100/H100) via dancecap.remote_jobs batched sessions; budget-capped; never created by the monitor without the user",
+   "pod_secure": "pod in Runpod SECURE cloud only (bundle carries MANO/FLAME-licensed files)",
+   "human": "a person decides or provides input in a UI (wizard, review sheet, narration tool)",
+   "unity": "the head-movement Unity editor/player on the workstation"
+  },
+  "units": {
+   "V": "video minutes in the analysis window",
+   "C": "number of cameras used",
+   "CM": "camera-minutes at 30 fps equivalent = canonical frames / 1800 (a 59.94 fps camera counts twice); larissa_kadu_38: 10366 frames = 5.76 CM for V = 0.64",
+   "T": "30 Hz master-grid frames = 1800 x V",
+   "views": "texture views = C x window_s / step_s"
+  },
+  "est": "wall_min = fixed + per_CM*CM + per_V*V + per_cam*C + per_view*views + per_image*map_images on 'host'. For stages with 'concurrency' (per-camera tasks in one pod), wall_min is the SUMMED task time (work): ETA wall ~ max(work / concurrency, the long-pole task); front_pod runs SAM, loc and ma2d tasks of different cameras at the same time on one A100 + ~28 vCPU (larissa_kadu_38: ~265 task-minutes -> ~100 min wall for a clean run). 'billed' = pod minutes cost money (pricing.price_per_hr). risk_min = extra minutes when a known failure mode triggers (e.g. the seam-gate fallback). 'basis' names the measurement; confidence: measured (this repo's logs) | derived (scaled from a measurement) | estimate (no measurement yet). The monitor should replace the model by the live rate once a progress source reports.",
+  "status_rule": "done = every path in done_when exists and is newer than every dep's done_when files; stale = exists but older than a dep (CONTRACTS freshness rules); running = a progress source is live; failed = last log ends with a non-zero rc; waiting = deps not done; blocked = a human gate open",
+  "gpu_lock": "local_gpu stages are serialised by work/gpu.lock; the monitor must never start two of them at once"
+ },
+ "pricing": {
+  "price_per_hr": {
+   "NVIDIA A100-SXM4-80GB community": 1.39,
+   "NVIDIA A100-SXM4-80GB secure": 1.59,
+   "NVIDIA A100 80GB PCIe community": 1.19,
+   "NVIDIA A40 secure": 0.49,
+   "NVIDIA L40S community": 0.79
+  },
+  "basis": "work/runpod/ledger.json + session state.json pod.cost_per_hr, 2026-10-06/07",
+  "cap_usd": 30.0,
+  "session_overhead": {
+   "upload_mb_per_s": {
+    "model": 2.5,
+    "measured_range": [
+     0.9,
+     2.8
+    ],
+    "note": "the pod is created BEFORE the upload, so upload time is billed GPU time"
+   },
+   "download_mb_per_s": 12.0,
+   "bootstrap_min": {
+    "typical": [
+     1.5,
+     6
+    ],
+    "outliers": [
+     13,
+     20
+    ],
+    "note": "remote_jobs.BOOTSTRAP_MIN(_CACHED); PyPI stalls cost up to 20 min (2026-10-07)"
+   },
+   "kill_switch_margin_min": 13
+  },
+  "data_volume": {
+   "frames_jpeg_mb_per_CM": {
+    "480p30": 280,
+    "1080p30": 800,
+    "1080p60_per_camera_minute": 1930,
+    "basis": "du of work/larissa_kadu_38/frames (38.4 s): 142-183 MB per 480p camera, 517 MB cam06 1080p30, 1235 MB cam02 1080p60"
+   },
+   "front_bundle_gb_per_V_8cams": 6.5,
+   "source_mp4_vs_jpeg": "the 9 source recordings (whole files) total 805 MB vs 2.66 GB of q95 frames for a 38 s window: stream-copied source trims are ~10x smaller than the frame store"
+  }
+ },
+ "camera_types": {
+  "storage": "takes/<take>.toml [cameras.\"<cam>\"] mount = \"handheld\"|\"tripod\", zoom = true|false, source = \"user\"|\"auto\", optional pans = true|false (tripod only, auto), suggested = {mount, zoom, pans, confidence, by, at}, zoom_events = [[t0, t1, f_ratio], ...] (auto)",
+  "default_when_missing": {
+   "mount": "handheld",
+   "zoom": true,
+   "why": "the most general model = today's behaviour, so takes without metadata are unchanged"
+  },
+  "precedence": "user > auto suggestion; a data conflict never overrides the user: it opens the camera_types gate with the evidence",
+  "reserved_cameras_keys": [
+   "scale_rule",
+   "scale_reference",
+   "loc"
+  ],
+  "classes": {
+   "tripod": "fixed camera centre for the whole video; rotation constant (locked: one pose, keyframe localisation) or panning (pans = true); one intrinsic set; refused (safer model kept) when the data shows the camera moves (a bumped tripod is not split into segments yet)",
+   "tripod_zoom": "fixed centre; per-frame rotation + focal (pure-rotation self-calibration); no zoom-depth ambiguity",
+   "handheld": "per-frame 6-dof pose; one intrinsic set per video (tight prior, phone EIS can drift it slightly)",
+   "handheld_zoom": "per-frame 6-dof pose + focal (today's solver: P4Pf/P3P race, log-focal smoothing, zoom-depth guard)"
+  },
+  "suggest": {
+   "probe_a": "pre-calibration, after ingest: background homographies at 10 Hz on 480p grey frames (people boxes masked when detect exists); parallax test (rotation-only vs fundamental model on 1 s pairs), HF (2-12 Hz) background jitter, cumulative zoom scale",
+   "probe_b": "post-calibration, from cameras/<cam>.npz in world metres: centre deviation p95 from the video median, optical-axis angle p95, angular velocity p50, focal p95/p5 and focal steps",
+   "thresholds": {
+    "tripod_if": "centre dev p95 < 0.02 m AND angular velocity p50 < 0.3 deg/s outside pans",
+    "handheld_if": "centre dev p95 > 0.05 m OR angular velocity p50 > 0.5 deg/s with 2-12 Hz jitter",
+    "pans_if": "tripod AND axis angle p95 > 0.3 deg",
+    "zoom_if": "focal p95/p5 > 1.05 OR any focal step > 3 % within 0.5 s",
+    "uncertain": "between the bounds -> confidence < 0.7 -> camera_types gate blocks the camera stages",
+    "attached_cameras": "probe_b cannot judge mount for cameras localised rotation-only (centre fixed BY THE MODEL, e.g. larissa_kadu 05/06): use probe_a"
+   },
+   "validation_larissa_kadu_38": {
+    "01": {
+     "centre_p95_m": 0.112,
+     "axis_p95_deg": 11.3,
+     "angvel_p50_dps": 1.5,
+     "focal_ratio": 1.0,
+     "suggest": "handheld, no zoom"
+    },
+    "02": {
+     "centre_p95_m": 0.112,
+     "axis_p95_deg": 14.2,
+     "focal_ratio": 1.0,
+     "suggest": "handheld, no zoom"
+    },
+    "03": {
+     "centre_p95_m": 0.053,
+     "axis_p95_deg": 7.0,
+     "focal_ratio": 1.0,
+     "suggest": "handheld, no zoom"
+    },
+    "04": {
+     "centre_p95_m": 0.049,
+     "axis_p95_deg": 11.2,
+     "angvel_p50_dps": 1.0,
+     "focal_ratio": 1.59,
+     "suggest": "handheld (borderline centre), zoom (one step 1.45 -> 0.93 f/maxdim near 36 s)"
+    },
+    "05": {
+     "attached": true,
+     "suggest": "probe_a only (rotation-only attach fixes the centre)"
+    },
+    "06": {
+     "attached": true,
+     "suggest": "probe_a only"
+    },
+    "07": {
+     "centre_p95_m": 0.178,
+     "axis_p95_deg": 5.3,
+     "angvel_p50_dps": 1.0,
+     "focal_ratio": 1.12,
+     "suggest": "handheld, zoom (one step 0.86 -> 0.97 near 38-40 s)"
+    },
+    "09": {
+     "centre_p95_m": 0.223,
+     "axis_p95_deg": 12.1,
+     "angvel_p50_dps": 2.1,
+     "focal_ratio": 2.16,
+     "suggest": "handheld, zoom (continuous 0.96-2.10)"
+    }
+   }
+  }
+ },
+ "variants": {
+  "multi": {
+   "when": "C >= 3",
+   "stages": "all stages with 'multi' in variants"
+  },
+  "two": {
+   "when": "C == 2",
+   "replaces": {
+    "sync": "pair_calib (epipolar sync + relative pose from the dancers)",
+    "cam_world.attach": "pair_calib",
+    "mamma_loo": "temporal hold-out"
+   },
+   "adds": [
+    "pair_calib",
+    "mono_init"
+   ]
+  },
+  "single": {
+   "when": "C == 1",
+   "replaces": {
+    "cam_map": "mono_camera",
+    "cam_loc": "mono_camera",
+    "cam_world": "mono_camera",
+    "sync": null,
+    "mamma_prepare": null,
+    "scale_probe": null,
+    "mamma_fit": "mono_hmr + couple_refine",
+    "mamma_loo": null,
+    "cam_refine_body": "couple_refine (joint)"
+   },
+   "adds": [
+    "mono_camera",
+    "mono_hmr",
+    "couple_refine"
+   ]
+  }
+ },
+ "loops": [
+  {
+   "id": "loop_scale",
+   "from": "fit_qa",
+   "to": "mamma_prepare",
+   "via": [
+    "cam_world (python -m dancecap.cameras.world_scale rescale {take} --factor f)"
+   ],
+   "when": "world_scale check verdict == rescale (mean or either dancer > 1.5 % off stature + shoe sole) after a full fit (scale_probe normally prevents this)",
+   "max_iterations": 1,
+   "invalidates": [
+    "smplx/",
+    "timing/",
+    "physics/",
+    "avatar/",
+    "export/"
+   ]
+  },
+  {
+   "id": "loop_refine",
+   "from": "cam_refine_body",
+   "to": "mamma_prepare",
+   "via": [
+    "mamma_prepare reads cameras_refined/ + sync/offsets_body.json (to build)"
+   ],
+   "when": "cam_refine_body gates: held-out residual improves >= 5 % AND cameras moved > 2 cm / 0.2 deg / 1 % focal on > 10 % of frames, OR any |delta sync| > 5 ms",
+   "max_iterations": {
+    "multi": 1,
+    "two": 2,
+    "single": 0
+   },
+   "cost": "one extra mamma_fit (~75 A100-min per video minute, 8 cams)"
+  },
+  {
+   "id": "loop_types",
+   "from": "cam_world",
+   "to": "camera_types",
+   "via": [
+    "probe/camera_types_probe_b.json"
+   ],
+   "when": "probe_b contradicts a user camera type or an auto suggestion (e.g. a 'tripod' with 10 cm of centre motion = bumped or wrong)",
+   "max_iterations": 1,
+   "invalidates": [
+    "cam_loc for that camera",
+    "cam_world",
+    "everything downstream"
+   ]
+  }
+ ],
+ "sessions": [
+  {
+   "id": "S1_front",
+   "cloud": "community",
+   "gpu": "A100-80GB",
+   "stages": [
+    "detect(optional)",
+    "dancers_sam",
+    "ma2d",
+    "cam_loc",
+    "cam_world",
+    "sync",
+    "scale_chain",
+    "geoveto(check)",
+    "mamma_prepare"
+   ],
+   "cli": "python -m dancecap.front_pod write-job {take} && python -m dancecap remote run --jobs dancecap/work/{take}/front/pod_job.json --max-cost 5",
+   "measured": "larissa_kadu_38: upload 4191 MB in 77 min, bootstrap 4 min, front 73 min (resumed: 4 SAM + 3 loc tasks pre-completed by a 29 min OOM-killed run), download 2 min; $3.77 for that session, $6.17 for the stage incl. two OOM-killed sessions"
+  },
+  {
+   "id": "S2_fit",
+   "cloud": "community",
+   "gpu": "A100-80GB",
+   "stages": [
+    "scale_probe(new)",
+    "mamma_fit",
+    "texture",
+    "hair_reference(hull)",
+    "face_pod"
+   ],
+   "cli": "python -m dancecap remote run --take {take} --jobs work/{take}/mamma_chunks/pod_job.json,avatar[,hair_ref,face] --max-cost 5",
+   "measured": "larissa_kadu_38: chunks 47 min + merge 4 min + seam-gate full-fit fallback 53 min + select; then the bake (re-run on a secure A100 after a crash); MAMMA session $2.73"
+  },
+  {
+   "id": "S_room",
+   "cloud": "community",
+   "gpu": "A100-80GB",
+   "stages": [
+    "room"
+   ],
+   "optional": true,
+   "measured": "larissa_kadu: train 36.6 min + mesh/eval 7.7 min"
+  },
+  {
+   "id": "S_splats",
+   "cloud": "community",
+   "gpu": "A100-80GB",
+   "stages": [
+    "dancer_splats"
+   ],
+   "optional": true,
+   "cli": "python -m dancecap.dancer_splats {take} prepare && python -m dancecap.dancer_splats {take} write-pod-job && python -m dancecap remote run --take {take} --jobs dancer_splats --max-cost 1.5 --max-minutes 55",
+   "budget": "user approval 2026-10-08: one session <= $1.50 (kill switch 55 min), at most $2 including one retry",
+   "measured": "not yet (prototype larissa_kadu 58.0-61.5 s: bundle ~100 MB, 8 cameras x 105 instants)"
+  }
+ ],
+ "stages": [
+  {
+   "id": "intake",
+   "name": "New capture: videos, soundtrack, take metadata, consent",
+   "phase": "0-intake",
+   "exists": "new",
+   "variants": [
+    "multi",
+    "two",
+    "single"
+   ],
+   "deps": [],
+   "runs_on": "human",
+   "cli": [
+    "(monitor new-capture wizard) -> writes takes/{take}.toml"
+   ],
+   "inputs": [
+    "source videos (any phone format, VFR)",
+    "soundtrack (studio file, optional)",
+    "dance: level professional|intermediate|novice, category demo|lesson|jack_and_jill, song, artist",
+    "dancers: role lead|follow, name, stature_m, shoe_sole_m, description, portrait (optional)",
+    "consent table (TMR_SOMA_PLAN G0)",
+    "camera types per video (pre-filled by probe)"
+   ],
+   "outputs": [
+    "takes/{take}.toml",
+    "intake.json"
+   ],
+   "done_when": [
+    "takes/{take}.toml"
+   ],
+   "est": {
+    "host": "human",
+    "wall_min": {
+     "fixed": 5
+    },
+    "confidence": "estimate"
+   },
+   "gates": [
+    "every dancer has role + stature",
+    "level/category set (data is siloed by level)",
+    "consent recorded before any pod upload",
+    "soundtrack/lyrics/portraits stay local (never a repo)"
+   ],
+   "retry": "edit the TOML; downstream stages go stale by mtime"
+  },
+  {
+   "id": "probe",
+   "name": "Probe sources + camera-motion suggestion",
+   "phase": "0-intake",
+   "exists": "new",
+   "variants": [
+    "multi",
+    "two",
+    "single"
+   ],
+   "deps": [
+    "intake"
+   ],
+   "runs_on": "local",
+   "cli": [
+    "python -m dancecap.pipeline probe {take}"
+   ],
+   "inputs": [
+    "source videos"
+   ],
+   "outputs": [
+    "probe/probe.json (ffprobe: duration, fps median, VFR, rotation, size, codec, audio)",
+    "probe/camera_types_suggested.json (probe_a per camera: mount, zoom, pans, confidence, evidence)"
+   ],
+   "done_when": [
+    "probe/probe.json"
+   ],
+   "est": {
+    "host": "local",
+    "wall_min": {
+     "fixed": 0.5,
+     "per_cam": 0.5
+    },
+    "confidence": "estimate"
+   },
+   "gates": [
+    "every video decodes; has audio (else excluded from audio_sync)",
+    "VFR reported (never assume constant fps)"
+   ],
+   "retry": "safe to re-run (read-only on sources)"
+  },
+  {
+   "id": "camera_types",
+   "name": "Camera types confirmed (mount + zoom per video)",
+   "phase": "0-intake",
+   "exists": "new",
+   "variants": [
+    "multi",
+    "two",
+    "single"
+   ],
+   "deps": [
+    "probe"
+   ],
+   "runs_on": "human",
+   "cli": [
+    "monitor wizard / per-take video review screen / python -m dancecap.moves annotate --take {take} (camera panel)"
+   ],
+   "outputs": [
+    "takes/{take}.toml [cameras.\"{cam}\"] mount, zoom, source = \"user\""
+   ],
+   "done_when": [
+    "takes/{take}.toml"
+   ],
+   "est": {
+    "host": "human",
+    "wall_min": {
+     "fixed": 1,
+     "per_cam": 0.2
+    },
+    "confidence": "estimate"
+   },
+   "gates": [
+    "blocks cam_map / cam_loc / cam_world only when a camera has no user value AND its suggestion confidence < 0.7, or when probe_b contradicts the user's value"
+   ],
+   "retry": "changing a type later makes cam_map/cam_loc (that camera) and everything downstream stale",
+   "camera_types": {
+    "note": "pre-filled from probe_a; re-checked by probe_b after cam_world (conflicts reopen this gate)"
+   }
+  },
+  {
+   "id": "audio_sync",
+   "name": "Phone audio clocks (multi-anchor)",
+   "phase": "0-clocks",
+   "exists": "partial",
+   "variants": [
+    "multi",
+    "two"
+   ],
+   "deps": [
+    "intake"
+   ],
+   "runs_on": "local",
+   "cli": [
+    "python -m dancecap.pipeline audio-sync {take}   (to build: port of prototype/sync_larissa_kadu.py, 10 s anchors, fractional PHAT 300-2800 Hz, affine fit, outlier anchors rejected)"
+   ],
+   "outputs": [
+    "clock/alignment.json (reference_time = slope * source_time + offset; reference = the cleanest long recording)"
+   ],
+   "done_when": [
+    "clock/alignment.json"
+   ],
+   "est": {
+    "host": "local",
+    "wall_min": {
+     "fixed": 1,
+     "per_cam": 0.5
+    },
+    "confidence": "estimate"
+   },
+   "gates": [
+    "every camera >= 5 accepted anchors, residual median < 5 ms",
+    "drift (slope - 1) plausible (< 1e-3)"
+   ],
+   "retry": "exclude a camera without usable audio (mark it in the TOML exclude list) and re-run",
+   "notes": "today prototype/<take>/alignment.json is written by prototype/sync_larissa_kadu.py; audio clocks do NOT fix video-frame sync (sync stage)"
+  },
+  {
+   "id": "song_align",
+   "name": "Studio soundtrack on the reference clock",
+   "phase": "0-clocks",
+   "exists": "yes",
+   "variants": [
+    "multi",
+    "two",
+    "single"
+   ],
+   "deps": [
+    "audio_sync"
+   ],
+   "runs_on": "local",
+   "optional": "only when a soundtrack is given",
+   "cli": [
+    "python -m dancecap.song align --take {take}",
+    "python -m dancecap.song soundtrack --take {take}",
+    "python -m dancecap.song compare --take {take}"
+   ],
+   "outputs": [
+    "song/song.json",
+    "song/studio_reference.wav (+ .json)",
+    "review/song_alignment.png"
+   ],
+   "done_when": [
+    "song/song.json",
+    "song/studio_reference.json"
+   ],
+   "est": {
+    "host": "local",
+    "wall_min": {
+     "fixed": 3,
+     "per_cam": 0.5
+    },
+    "confidence": "estimate"
+   },
+   "gates": [
+    "residual_ms_p95 < 5",
+    "every camera cross-check agrees"
+   ],
+   "retry": "re-run; the studio track never leaves work/ (copyright)"
+  },
+  {
+   "id": "clock_studio",
+   "name": "Studio-derived phone clocks + validation",
+   "phase": "0-clocks",
+   "exists": "yes",
+   "variants": [
+    "multi",
+    "two"
+   ],
+   "deps": [
+    "song_align"
+   ],
+   "runs_on": "local",
+   "optional": "only with a soundtrack (else audio_sync's clocks are used)",
+   "cli": [
+    "python -m dancecap.clock_studio build --base {take} --out <clock dir>/alignment_studio.json",
+    "python -m dancecap.clock_studio validate --base {take} --alignment <...>/alignment_studio.json"
+   ],
+   "outputs": [
+    "alignment_studio.json (phone audio within ~1-2 ms of the reference)",
+    "clock_studio/validation.json",
+    "review/clock_studio_validation.png"
+   ],
+   "done_when": [
+    "clock_studio/validation.json"
+   ],
+   "est": {
+    "host": "local",
+    "wall_min": {
+     "fixed": 2,
+     "per_cam": 0.3
+    },
+    "confidence": "estimate"
+   },
+   "gates": [
+    "validation (A)-(C) pass"
+   ],
+   "retry": "re-run; switching clocks after ingest invalidates frames.json t and everything downstream (needs a fresh take)"
+  },
+  {
+   "id": "window",
+   "name": "Analysis window (largest all-camera span or user span)",
+   "phase": "0-clocks",
+   "exists": "yes",
+   "variants": [
+    "multi",
+    "two",
+    "single"
+   ],
+   "deps": [
+    "audio_sync"
+   ],
+   "soft_deps": [
+    "clock_studio"
+   ],
+   "runs_on": "local",
+   "cli": [
+    "python -m dancecap.clock_studio window --alignment <alignment> --exclude <cams> --within <t0> <t1>"
+   ],
+   "outputs": [
+    "takes/{take}.toml window, keyframe_span, keyframe_step",
+    "clock_studio/window.json"
+   ],
+   "done_when": [
+    "takes/{take}.toml"
+   ],
+   "est": {
+    "host": "local",
+    "wall_min": {
+     "fixed": 0.5
+    },
+    "confidence": "measured"
+   },
+   "gates": [
+    "window inside every used camera's coverage (re-checked after sync: clock_studio window --take {take})",
+    "user confirms the span (cost scales with V)"
+   ],
+   "retry": "a new window = a new take name (frame indices change)"
+  },
+  {
+   "id": "ingest",
+   "name": "Canonical frame store + room keyframes",
+   "phase": "1-frames",
+   "exists": "yes",
+   "variants": [
+    "multi",
+    "two",
+    "single"
+   ],
+   "deps": [
+    "window"
+   ],
+   "runs_on": "local",
+   "pod_alt": "new: pod-side ingest from stream-copied source trims (10x smaller upload)",
+   "cli": [
+    "python -m dancecap ingest {take}"
+   ],
+   "outputs": [
+    "frames/{cam}/NNNNNN.jpg + frames.json",
+    "keyframes/{cam}/ + keyframes.json"
+   ],
+   "done_when": [
+    "frames/*/frames.json",
+    "keyframes/*/keyframes.json"
+   ],
+   "progress": {
+    "source": "stdout",
+    "pattern": "^\\[ingest\\] (\\d+): (\\d+) frames"
+   },
+   "est": {
+    "host": "local",
+    "wall_min": {
+     "fixed": 0.5,
+     "per_CM": 0.35
+    },
+    "confidence": "measured",
+    "basis": "larissa_kadu_38: 2.0 min for 5.76 CM (logs/ingest.log)"
+   },
+   "gates": [
+    "frame count vs fps x window within 2 %",
+    "rotation applied",
+    "t monotonic"
+   ],
+   "retry": "idempotent; keyframes can be reused for a take of the same recordings (clock_studio reuse-keyframes)",
+   "camera_types": {
+    "tripod": "keyframes: 2-3 sharp frames suffice for the room (one viewpoint); window frames unchanged",
+    "handheld": "keyframes every keyframe_step"
+   }
+  },
+  {
+   "id": "beats",
+   "name": "Phone music + zouk beat grid",
+   "phase": "1-audio",
+   "exists": "yes",
+   "variants": [
+    "multi",
+    "two",
+    "single"
+   ],
+   "deps": [
+    "audio_sync"
+   ],
+   "soft_deps": [
+    "clock_studio"
+   ],
+   "runs_on": "local_gpu",
+   "cli": [
+    "python -m dancecap beats {take}"
+   ],
+   "outputs": [
+    "audio/audio_overlap.wav + .json",
+    "beats/beats.json",
+    "beats/tempo.json",
+    "beats.json",
+    "review/beats_waveform.png"
+   ],
+   "done_when": [
+    "beats/beats.json",
+    "audio/audio_overlap.json"
+   ],
+   "est": {
+    "host": "local_gpu",
+    "wall_min": {
+     "fixed": 2,
+     "per_cam": 0.5
+    },
+    "confidence": "estimate"
+   },
+   "gates": [
+    "tempo stable (linear-fit residual small)",
+    "bar phase decided",
+    "no split_measures halving"
+   ],
+   "parallel": "runs alongside all visual stages (needs only clocks)",
+   "retry": "re-run; --source to force a phone"
+  },
+  {
+   "id": "song_beats",
+   "name": "Studio beat grid (preferred when a soundtrack exists)",
+   "phase": "1-audio",
+   "exists": "yes",
+   "variants": [
+    "multi",
+    "two",
+    "single"
+   ],
+   "deps": [
+    "song_align",
+    "beats"
+   ],
+   "runs_on": "local",
+   "cli": [
+    "python -m dancecap.song beats --take {take}"
+   ],
+   "outputs": [
+    "song/beats_studio.json (drop-in --beats, measure-aligned with beats.json)"
+   ],
+   "done_when": [
+    "song/beats_studio.json"
+   ],
+   "est": {
+    "host": "local",
+    "wall_min": {
+     "fixed": 2
+    },
+    "confidence": "estimate"
+   },
+   "gates": [
+    "measure 0 matches beats.json's first downbeat"
+   ],
+   "retry": "re-run"
+  },
+  {
+   "id": "detect",
+   "name": "All-person detection, COCO keypoints, people masks",
+   "phase": "1-2d",
+   "exists": "yes",
+   "variants": [
+    "multi",
+    "two",
+    "single"
+   ],
+   "deps": [
+    "ingest"
+   ],
+   "runs_on": "local_gpu",
+   "pod_alt": "pod (recommended above ~1 CM: batch in S1_front)",
+   "cli": [
+    "python -m dancecap detect {take}"
+   ],
+   "outputs": [
+    "people/{cam}.npz",
+    "people_masks/{cam}/",
+    "people_masks_kf/{cam}/",
+    "people/report.json"
+   ],
+   "done_when": [
+    "people/*.npz",
+    "people/report.json"
+   ],
+   "progress": {
+    "source": "stdout",
+    "pattern": "^\\[detect\\] (\\d+): (\\d+) frames"
+   },
+   "est": {
+    "host": "local_gpu",
+    "wall_min": {
+     "fixed": 1,
+     "per_CM": 7.7
+    },
+    "pod_wall_min": {
+     "fixed": 2,
+     "per_CM": 2.7
+    },
+    "confidence": "measured",
+    "basis": "larissa_kadu_38 local 39.2 min for 7 cameras (5.12 CM, 160-350 ms/frame); cam09 on an A100 pod 105 s for 1151 frames"
+   },
+   "gates": [
+    "dancer pair present on > 80 % of frames per camera (people/report.json dancer_pair_rate)"
+   ],
+   "retry": "per camera (--cams); AGPL weights stay in dancecap/weights (git-ignored)"
+  },
+  {
+   "id": "dancers_labels",
+   "name": "Couple tracks + lead/follow labels",
+   "phase": "1-2d",
+   "exists": "yes",
+   "variants": [
+    "multi",
+    "two",
+    "single"
+   ],
+   "deps": [
+    "detect"
+   ],
+   "runs_on": "local",
+   "cli": [
+    "python -m dancecap dancers-labels {take} [--typesafe]"
+   ],
+   "outputs": [
+    "dancers/labels.json",
+    "dancers/labels_review.jpg"
+   ],
+   "done_when": [
+    "dancers/labels.json"
+   ],
+   "est": {
+    "host": "local",
+    "wall_min": {
+     "fixed": 1,
+     "per_cam": 0.5
+    },
+    "confidence": "estimate"
+   },
+   "gates": [
+    "per-camera label confidence"
+   ],
+   "retry": "dancers/labels_override.json {cam: {swap: true}} then re-run"
+  },
+  {
+   "id": "labels_review",
+   "name": "Human check of the lead/follow label sheet",
+   "phase": "1-2d",
+   "exists": "yes",
+   "variants": [
+    "multi",
+    "two",
+    "single"
+   ],
+   "deps": [
+    "dancers_labels"
+   ],
+   "runs_on": "human",
+   "cli": [
+    "open dancers/labels_review.jpg; write dancers/labels_override.json if a camera is swapped"
+   ],
+   "outputs": [
+    "dancers/labels_override.json (optional)",
+    "intake.json labels_reviewed_at"
+   ],
+   "done_when": [
+    "intake.json"
+   ],
+   "est": {
+    "host": "human",
+    "wall_min": {
+     "fixed": 2
+    },
+    "confidence": "estimate"
+   },
+   "gates": [
+    "must pass before the SAM pod run (a swapped label wastes the whole front session)"
+   ],
+   "retry": "-"
+  },
+  {
+   "id": "dancers_sam",
+   "name": "SAM 2.1 dancer masks, identity repair, body/hair split",
+   "phase": "1-2d",
+   "exists": "yes",
+   "variants": [
+    "multi",
+    "two",
+    "single"
+   ],
+   "deps": [
+    "labels_review"
+   ],
+   "runs_on": "pod",
+   "session": "S1_front",
+   "cli": [
+    "python -m dancecap.front_pod write-job {take}   (task sam:{cam})",
+    "local fallback: python -m dancecap dancers {take} [--cams]"
+   ],
+   "outputs": [
+    "dancers/{cam}/masks|body|hair/",
+    "dancers/roles.json",
+    "dancers/report.json",
+    "dancers/qa/",
+    "review/dancers_body_hair.jpg"
+   ],
+   "done_when": [
+    "dancers/roles.json"
+   ],
+   "progress": {
+    "source": "front/front_pod.json tasks sam:{cam} state/seconds + front/logs/sam_{cam}.log"
+   },
+   "est": {
+    "host": "pod",
+    "billed": true,
+    "wall_min": {
+     "per_CM": 9.9
+    },
+    "concurrency": "5 cameras per A100 (host-RAM bound: a 1080p60 camera needs ~35 GB)",
+    "confidence": "measured",
+    "basis": "larissa_kadu_38 front_pod.json: 340-862 s per camera, ~0.33 s/frame with 5 in parallel"
+   },
+   "gates": [
+    "no identity flags",
+    "swap_prob low",
+    "hair mask present on >= 90 % of the follow's frames (texture refuses otherwise)"
+   ],
+   "retry": "per camera; --reuse-sam redoes identity/post only; supervisor re-queues OOM-killed tasks"
+  },
+  {
+   "id": "ma2d",
+   "name": "MAMMA 2D landmarks per camera (our body masks)",
+   "phase": "1-2d",
+   "exists": "yes",
+   "variants": [
+    "multi",
+    "two",
+    "single"
+   ],
+   "deps": [
+    "dancers_sam"
+   ],
+   "runs_on": "pod",
+   "session": "S1_front",
+   "cli": [
+    "front_pod task ma2d:{cam} (starts as soon as that camera's masks exist)"
+   ],
+   "outputs": [
+    "mamma/ma_2d_native/{cam}.npz + _boxes.npy + .manifest.json"
+   ],
+   "done_when": [
+    "mamma/ma_2d_native/*.manifest.json"
+   ],
+   "est": {
+    "host": "pod",
+    "billed": true,
+    "wall_min": {
+     "per_CM": 6.0
+    },
+    "concurrency": "2",
+    "confidence": "measured",
+    "basis": "147-614 s per camera, 0.13-0.27 s/frame"
+   },
+   "gates": [
+    "manifest mask signature matches dancers/ (else recompute)"
+   ],
+   "retry": "per camera; local prepare must use --skip-2d for pod-computed landmarks"
+  },
+  {
+   "id": "cam_map",
+   "name": "Static-room SfM (people masked)",
+   "phase": "2-cameras",
+   "exists": "yes",
+   "variants": [
+    "multi",
+    "two"
+   ],
+   "deps": [
+    "ingest",
+    "detect",
+    "camera_types"
+   ],
+   "runs_on": "local",
+   "pod_alt": "pod (CPU-bound; mapping time grows ~quadratically with images)",
+   "cli": [
+    "python -m dancecap cameras {take} --stages map",
+    "same recordings: python -m dancecap.cameras.reuse map {take} --from <base take>"
+   ],
+   "outputs": [
+    "cameras/sfm/{cameras,images,points3D}.bin",
+    "cameras/sfm_work/map.json",
+    "cameras/sfm_work/sub_*/ (weakly linked groups)"
+   ],
+   "done_when": [
+    "cameras/sfm/images.bin",
+    "cameras/sfm_work/map.json"
+   ],
+   "est": {
+    "host": "local",
+    "wall_min": {
+     "fixed": 3,
+     "per_image": 0.15
+    },
+    "confidence": "measured",
+    "basis": "larissa_kadu: 114 images, matching 11 s + mapping 1032 s locally"
+   },
+   "gates": [
+    "main model holds >= 3 cameras",
+    "mean reprojection < 1 px",
+    "strong-link groups reported"
+   ],
+   "retry": "re-run with more targeted pairs; weak cameras go to sub-models + attach",
+   "camera_types": {
+    "tripod": "2-3 sharp images, ONE COLMAP camera (shared K, k1); post-BA check that their centres coincide (< 2 cm)",
+    "tripod_zoom": "images at each zoom level, shared centre; rotation-only self-calibration of the focal per image",
+    "handheld": "images every ~0.67 s + keyframes; ONE COLMAP camera per video (shared K, k1)",
+    "handheld_zoom": "one COLMAP camera per image (today)",
+    "order": "tripod images are registered first and anchor the gauge; handheld images register to them"
+   }
+  },
+  {
+   "id": "cam_loc",
+   "name": "Per-frame camera localisation (pose + zoom)",
+   "phase": "2-cameras",
+   "exists": "partial",
+   "variants": [
+    "multi",
+    "two"
+   ],
+   "deps": [
+    "cam_map",
+    "camera_types"
+   ],
+   "runs_on": "pod",
+   "session": "S1_front",
+   "cli": [
+    "front_pod task loc:{cam} (= python -m dancecap cameras {take} --stages loc --cams {cam})",
+    "front_pod task sub:{cam} (attached cameras: python -m dancecap.cameras.reuse presolve-sub)"
+   ],
+   "outputs": [
+    "cameras/cache/loc_{cam}.npz",
+    "cameras/{cam}.npz (raw, before attach/world)"
+   ],
+   "done_when": [
+    "cameras/cache/loc_*.npz"
+   ],
+   "progress": {
+    "source": "front/front_pod.json tasks loc:{cam}, loc:{cam}:{a} halves, sub:{cam}"
+   },
+   "est": {
+    "host": "pod",
+    "billed": true,
+    "wall_min": {
+     "per_CM": 22.0
+    },
+    "concurrency": "5 processes (CPU-bound, 3 threads each); the long-pole camera split in halves",
+    "confidence": "measured",
+    "basis": "650-1004 s per 1150-frame camera half, ~0.7-0.8 s/frame; sub-model presolve 760-950 s"
+   },
+   "gates": [
+    "ok fraction > 95 %",
+    "median static reprojection < 4 px",
+    "depth-guard recentred fraction reported"
+   ],
+   "retry": "per camera (or per half); frame-to-frame retry for failures",
+   "camera_types": {
+    "tripod": "localise ~1 frame per 2 s + the sharpest frames, robust mean pose; change-point test on the static background splits a bumped tripod into constant segments; pans = true -> centre fixed, per-frame rotation only (3 dof; homography chain to the reference frames). Cost factor ~0.05 (locked) / ~0.3 (pan)",
+    "tripod_zoom": "centre fixed, per-frame rotation + focal (4 dof) from homographies to reference frames; depth guard OFF (no axis ambiguity). Cost ~0.3",
+    "handheld": "per-frame 6-dof P3P with the video's fixed K, k1 (no P4Pf race); weak focal freedom only if EIS drift > 1 %. Cost ~0.8",
+    "handheld_zoom": "today: P4Pf vs P3P race, log-focal smoothing, zoom-depth guard. Cost 1.0"
+   }
+  },
+  {
+   "id": "cam_world",
+   "name": "Attach, gravity, floor, metric scale, origin, camera QA",
+   "phase": "2-cameras",
+   "exists": "yes",
+   "variants": [
+    "multi",
+    "two"
+   ],
+   "deps": [
+    "cam_loc",
+    "dancers_sam",
+    "detect"
+   ],
+   "soft_deps": [
+    "camera_types"
+   ],
+   "runs_on": "pod",
+   "session": "S1_front",
+   "pod_alt": "local (CPU, ~20 min for 8 cameras x 38 s)",
+   "cli": [
+    "python -m dancecap cameras {take} --stages attach,world,qa"
+   ],
+   "outputs": [
+    "cameras/{cam}.npz",
+    "cameras/world_from_sfm.json",
+    "cameras/report.json (gates_G2a)",
+    "cameras/qa/",
+    "review/cameras_vertical_check.jpg",
+    "review/cameras_attach_check.jpg",
+    "probe/camera_types_probe_b.json (new)"
+   ],
+   "done_when": [
+    "cameras/world_from_sfm.json",
+    "cameras/report.json"
+   ],
+   "est": {
+    "host": "pod",
+    "billed": true,
+    "wall_min": {
+     "fixed": 2,
+     "per_CM": 3.4
+    },
+    "confidence": "measured",
+    "basis": "front task 'cameras' 1171 s (CPU, 0.64 GB)"
+   },
+   "gates": [
+    "G2a: gravity vs building < 1 deg",
+    "dancer LOO check",
+    "world_scale: dancers agree <= 1.5 %, per-dancer SE <= 0.75 %, halves <= 2 %",
+    "probe_b vs user camera types (conflict -> camera_types gate)"
+   ],
+   "retry": "re-run attach/world (cached loc); a new world frame makes smplx/ stale (texture refuses stale fits)",
+   "camera_types": {
+    "tripod": "attach = one constant (R, C) per segment from the dancers over the whole video (6 dof, very well posed); tripod verticals weighted x2 for gravity; constant camera height checks the floor",
+    "handheld": "today's sub-model + Sim3 / rotation-only+vertical variants with temporal hold-out"
+   }
+  },
+  {
+   "id": "sync",
+   "name": "Residual video offsets from multi-view geometry",
+   "phase": "2-cameras",
+   "exists": "yes",
+   "variants": [
+    "multi"
+   ],
+   "deps": [
+    "cam_world",
+    "ma2d"
+   ],
+   "runs_on": "pod",
+   "session": "S1_front",
+   "pod_alt": "local serial (26 min for 38 s x 8 cams)",
+   "cli": [
+    "python -m dancecap sync {take} --workers 16"
+   ],
+   "outputs": [
+    "sync/offsets.json (with clocks)",
+    "sync/curves.json",
+    "review/sync_curves.png"
+   ],
+   "done_when": [
+    "sync/offsets.json"
+   ],
+   "est": {
+    "host": "pod",
+    "billed": true,
+    "wall_min": {
+     "fixed": 1,
+     "per_CM": 0.75
+    },
+    "confidence": "measured",
+    "basis": "larissa_kadu_38: 252 s with 16 workers on a pod (1567 s serial)"
+   },
+   "gates": [
+    "every used camera stable (2 s sub-windows within 10 ms)",
+    "not at the search edge",
+    "residual improves"
+   ],
+   "retry": "re-run; never copy offsets.json between takes (clocks recorded)",
+   "camera_types": {
+    "tripod": "time offset is the only time-varying unknown -> cleaner curves; tripods are preferred triangulation sources",
+    "two_view": "replaced by pair_calib (epipolar sync)"
+   }
+  },
+  {
+   "id": "scale_chain",
+   "name": "Post-sync chain-rule scale cross-check",
+   "phase": "2-cameras",
+   "exists": "yes",
+   "variants": [
+    "multi",
+    "two"
+   ],
+   "deps": [
+    "sync"
+   ],
+   "runs_on": "pod",
+   "session": "S1_front",
+   "cli": [
+    "python -m dancecap.cameras.world_scale chain {take}"
+   ],
+   "outputs": [
+    "scale/chain_after_sync.json"
+   ],
+   "done_when": [
+    "scale/chain_after_sync.json"
+   ],
+   "est": {
+    "host": "pod",
+    "wall_min": {
+     "fixed": 0.3
+    },
+    "confidence": "measured"
+   },
+   "gates": [
+    "|chain_vs_world| <= 2 % (coarse; never a reason to rescale alone)"
+   ],
+   "retry": "re-run"
+  },
+  {
+   "id": "geoveto",
+   "name": "Wrong-person mask veto from the other cameras",
+   "phase": "2-cameras",
+   "exists": "yes",
+   "variants": [
+    "multi"
+   ],
+   "deps": [
+    "sync"
+   ],
+   "runs_on": "local",
+   "pod_alt": "pod (--check, 82 s)",
+   "cli": [
+    "python -m dancecap.dancers_geoveto {take}",
+    "python -m dancecap.dancers_geoveto {take} --apply  (human-confirmed)"
+   ],
+   "outputs": [
+    "dancers/geo_veto.json",
+    "review/reid_veto.png",
+    "review/reid_veto_cases.jpg"
+   ],
+   "done_when": [
+    "dancers/geo_veto.json"
+   ],
+   "est": {
+    "host": "local",
+    "wall_min": {
+     "fixed": 2,
+     "per_CM": 0.3
+    },
+    "confidence": "derived"
+   },
+   "gates": [
+    "human looks at review/reid_veto.png before --apply"
+   ],
+   "retry": "--apply keeps backups; then mamma prepare --skip-2d"
+  },
+  {
+   "id": "mamma_prepare",
+   "name": "MAMMA grid inputs per camera set",
+   "phase": "2-cameras",
+   "exists": "yes",
+   "variants": [
+    "multi",
+    "two"
+   ],
+   "deps": [
+    "ma2d",
+    "cam_world",
+    "sync",
+    "geoveto"
+   ],
+   "runs_on": "local",
+   "pod_alt": "pod (front task 'prepare', 6 s)",
+   "cli": [
+    "python -m dancecap mamma prepare {take} --skip-2d --set {tag}=all",
+    "python -m dancecap.mamma_chunks plan {take} --tag {tag} --chunks <n> [--holdout-cam C --holdout-chunk k]"
+   ],
+   "outputs": [
+    "mamma/prepare.json",
+    "mamma/ma_2d/",
+    "mamma/ma_cap/",
+    "mamma/chunks.json",
+    "mamma_chunks/pod_job.json"
+   ],
+   "done_when": [
+    "mamma/prepare.json",
+    "mamma_chunks/pod_job.json"
+   ],
+   "est": {
+    "host": "local",
+    "wall_min": {
+     "fixed": 1
+    },
+    "confidence": "measured"
+   },
+   "gates": [
+    "[sync] required -> refuses without this take's sync/offsets.json",
+    "grid inside every camera's sync-corrected coverage"
+   ],
+   "retry": "re-run (cheap)",
+   "camera_types": {
+    "tripod": "constant cam_ext per frame (no resampling noise)",
+    "zoom": "per-frame K (log-focal interpolation)"
+   }
+  },
+  {
+   "id": "scale_probe",
+   "name": "Coarse fit -> betas -> stature scale check -> rescale before the full fit",
+   "phase": "3-body",
+   "exists": "new",
+   "variants": [
+    "multi",
+    "two"
+   ],
+   "deps": [
+    "mamma_prepare"
+   ],
+   "runs_on": "pod",
+   "session": "S2_fit",
+   "optional": "skip when the take inherits a verified scale_reference",
+   "cli": [
+    "(pod) 3 x 60-frame mamma fit --fit-frames at 20/50/80 % of the grid in parallel (MPS) -> python -m dancecap.cameras.world_scale check {take} -> rescale --factor f if verdict == rescale -> mamma prepare --skip-2d"
+   ],
+   "outputs": [
+    "scale/probe.json (betas per chunk, rest heights vs stature + sole, verdict, factor)"
+   ],
+   "done_when": [
+    "scale/probe.json"
+   ],
+   "est": {
+    "host": "pod",
+    "billed": true,
+    "wall_min": {
+     "fixed": 12
+    },
+    "confidence": "derived",
+    "basis": "675 x (0.4 s + 4.8 ms x 60) = 7.7 min solo, x ~1.6 for 3 under MPS"
+   },
+   "gates": [
+    "both dancers' rest heights agree with stature + shoe sole within 1.5 % after the factor",
+    "factor applied only when both dancers point the same way (disagreement <= 1.5 %)"
+   ],
+   "retry": "if the check is inconsistent: keep the chain scale, flag world_scale for the user"
+  },
+  {
+   "id": "mamma_fit",
+   "name": "Chunked MAMMA fit + merge + seam gate + select",
+   "phase": "3-body",
+   "exists": "yes",
+   "variants": [
+    "multi",
+    "two"
+   ],
+   "deps": [
+    "mamma_prepare"
+   ],
+   "soft_deps": [
+    "scale_probe"
+   ],
+   "runs_on": "pod",
+   "session": "S2_fit",
+   "cli": [
+    "python -m dancecap remote run --take {take} --jobs work/{take}/mamma_chunks/pod_job.json --max-cost 5",
+    "(pod) mamma_chunks fit --par 6 -> merge -> gate --fallback full -> mamma select --tags {tag} --no-qa"
+   ],
+   "outputs": [
+    "mamma/fits/{tag}/",
+    "mamma/chunks_merge.json",
+    "mamma/chunks_gate.json",
+    "mamma/select.json",
+    "smplx/{lead,follow}.npz"
+   ],
+   "done_when": [
+    "smplx/lead.npz",
+    "smplx/follow.npz",
+    "mamma/select.json"
+   ],
+   "progress": {
+    "source": "work/runpod/sessions/{sid}/runner.log '[pod-runner HH:MM:SS] mamma/<cmd>' lines + pod_logs/mamma/<cmd>.log"
+   },
+   "est": {
+    "host": "pod",
+    "billed": true,
+    "wall_min": {
+     "fixed": 5,
+     "per_V": 75
+    },
+    "risk_min": {
+     "per_V": 80,
+     "when": "seam gate fails -> full-fit fallback"
+    },
+    "concurrency": "6 chunks of ~232 frames under CUDA MPS per A100 (measured 2.1x solo)",
+    "confidence": "measured",
+    "basis": "larissa_kadu_38 (T 1148, 8 cams): chunks 2833 s, merge 222 s, gate fallback full fit 3180 s (follow seam p95 83 mm > 60); model: 675 its x (0.4 s + 4.8 ms/frame) solo"
+   },
+   "gates": [
+    "chunks_gate: seam p95_body <= 60 mm, pelvis median <= 40 mm, betas swap p95 <= 40 mm, merged reprojection <= 1.25 x chunks + 0.5 px",
+    "smplx never written without world_from_sfm.json"
+   ],
+   "retry": "in-session full-fit fallback when the kill switch leaves time; else exit 3 and the bake does not run",
+   "camera_types": {
+    "note": "cost scales roughly with cameras x people in the data term; two-view fits are cheaper but weaker (stronger temporal prior, mono_init)"
+   }
+  },
+  {
+   "id": "fit_qa",
+   "name": "Fit review: seams, stature check, pose sheets",
+   "phase": "3-body",
+   "exists": "yes",
+   "variants": [
+    "multi",
+    "two",
+    "single"
+   ],
+   "deps": [
+    "mamma_fit"
+   ],
+   "runs_on": "local",
+   "cli": [
+    "python -m dancecap mamma select {take} --tags {tag}   (local QA images)",
+    "python -m dancecap.mamma_seams {take}",
+    "python -m dancecap.cameras.world_scale check {take}",
+    "python -m dancecap review {take}"
+   ],
+   "outputs": [
+    "review/pose_mamma_{tag}.jpg",
+    "mamma/chunks_seams.json",
+    "review/pose_seams.jpg",
+    "review/{reid,pose,people,smplx}.jpg"
+   ],
+   "done_when": [
+    "mamma/chunks_seams.json"
+   ],
+   "est": {
+    "host": "local",
+    "wall_min": {
+     "fixed": 5,
+     "per_V": 3
+    },
+    "confidence": "estimate"
+   },
+   "gates": [
+    "G3: median reprojection per camera (larissa_kadu c8: 5.43 / 6.11 px)",
+    "world_scale check verdict ok (else loop to scale)",
+    "seams smooth (ratios <= 1.25)",
+    "decides whether cam_refine_body runs"
+   ],
+   "retry": "-"
+  },
+  {
+   "id": "cam_refine_body",
+   "name": "Human-keypoint bundle adjustment + body-based residual sync",
+   "phase": "3-body",
+   "exists": "new",
+   "variants": [
+    "multi",
+    "two"
+   ],
+   "deps": [
+    "fit_qa"
+   ],
+   "runs_on": "local",
+   "pod_alt": "pod (batched before the refit)",
+   "conditional": "runs when: attached cameras exist, zoom cameras with > 5 % depth-guard recentred frames, a camera's LOO held-out/in-fit ratio > 1.5x the median, dancer_px > 2x the camera median, or two-view",
+   "cli": [
+    "python -m dancecap.pipeline refine-cameras {take}  (to build: bodies fixed, per-type camera parameterisation, robust reprojection of the fitted SMPL-X 512 landmarks / joints vs ma_2d + static points)"
+   ],
+   "outputs": [
+    "cameras_refined/{cam}.npz (same contract as cameras/{cam}.npz)",
+    "cameras_refined/report.json",
+    "sync/offsets_body.json"
+   ],
+   "done_when": [
+    "cameras_refined/report.json"
+   ],
+   "est": {
+    "host": "local",
+    "wall_min": {
+     "fixed": 5,
+     "per_CM": 2
+    },
+    "confidence": "estimate"
+   },
+   "gates": [
+    "held-out residual improves >= 5 %",
+    "camera change > 2 cm / 0.2 deg / 1 % focal on > 10 % of frames, else no refit",
+    "any |delta sync| > 5 ms -> refit"
+   ],
+   "retry": "max 1 refit for multi-view, 2 for two-view (budget)",
+   "camera_types": {
+    "tripod": "6 dof (+ focal) per constant segment over the whole take",
+    "tripod_zoom": "constant centre + per-frame rotation/focal spline",
+    "handheld": "low-frequency pose spline correction (knots every 0.5 s)",
+    "handheld_zoom": "pose + log-focal spline (knots every 0.25 s)"
+   }
+  },
+  {
+   "id": "mamma_loo",
+   "name": "Leave-one-camera-out fits (optional QA)",
+   "phase": "3-body",
+   "exists": "yes",
+   "variants": [
+    "multi"
+   ],
+   "deps": [
+    "mamma_fit"
+   ],
+   "runs_on": "pod",
+   "session": "S2_fit",
+   "optional": true,
+   "cli": [
+    "remote run --jobs mamma_loo (pod_loo.py)"
+   ],
+   "outputs": [
+    "mamma/fits_loo/",
+    "mamma/loo.json"
+   ],
+   "done_when": [
+    "mamma/loo.json"
+   ],
+   "est": {
+    "host": "pod",
+    "billed": true,
+    "wall_min": {
+     "per_V": 300
+    },
+    "confidence": "measured",
+    "basis": "larissa_kadu (6 s): 7 LOO fits in parallel 30 min"
+   },
+   "gates": [
+    "camera rejected only if its held-out/in-fit ratio > 2x the others' median"
+   ],
+   "retry": "-"
+  },
+  {
+   "id": "face_pod",
+   "name": "Face survey + MediaPipe + expression fit",
+   "phase": "4-detail",
+   "exists": "yes",
+   "variants": [
+    "multi",
+    "two",
+    "single"
+   ],
+   "deps": [
+    "fit_qa"
+   ],
+   "runs_on": "pod",
+   "session": "S2_fit",
+   "cli": [
+    "python -m dancecap.face_pod run {take} --max-cost 2",
+    "python -m dancecap.face_expr {take} --review-only  (local: gated FLAME eyelids)"
+   ],
+   "outputs": [
+    "face/survey.npz",
+    "face/detections.npz",
+    "smplx_face/{lead,follow}.npz",
+    "review/face_expr.jpg"
+   ],
+   "done_when": [
+    "smplx_face/lead.npz",
+    "smplx_face/follow.npz"
+   ],
+   "est": {
+    "host": "pod",
+    "billed": true,
+    "wall_min": {
+     "fixed": 5,
+     "per_CM": 2
+    },
+    "confidence": "estimate",
+    "basis": "face_pod docstring estimate for larissa_kadu_38: survey ~5 min, MediaPipe ~1 min on 24 CPUs, expr ~5 min; upload dominates unless batched"
+   },
+   "gates": [
+    "hold-out model selection (shipped candidate never worse than neutral)"
+   ],
+   "retry": "sharded MediaPipe; frame times must be sync-corrected (face_common.frame_times)"
+  },
+  {
+   "id": "texture",
+   "name": "Photoreal albedo bake (hair-aware)",
+   "phase": "5-avatar",
+   "exists": "yes",
+   "variants": [
+    "multi",
+    "two",
+    "single"
+   ],
+   "deps": [
+    "fit_qa",
+    "dancers_sam"
+   ],
+   "runs_on": "pod",
+   "session": "S2_fit",
+   "cli": [
+    "python -m dancecap texture {take} --write-pod-job [--step-ms 133.3]",
+    "python -m dancecap remote run --take {take} --jobs avatar"
+   ],
+   "outputs": [
+    "avatar/{lead,follow}_albedo.png",
+    "avatar/uv_mesh.npz",
+    "avatar/head_fix.npz",
+    "avatar/follow_hair*.png|json",
+    "avatar/report.json",
+    "review/avatar_*.jpg"
+   ],
+   "done_when": [
+    "avatar/lead_albedo.png",
+    "avatar/follow_albedo.png",
+    "avatar/report.json"
+   ],
+   "progress": {
+    "source": "runner.log / avatar/pod_texture.log",
+    "pattern": "^\\[texture\\] (\\d+)/(\\d+) views"
+   },
+   "est": {
+    "host": "pod",
+    "billed": true,
+    "wall_min": {
+     "fixed": 3,
+     "per_view": 0.00482,
+     "per_V": 24.7
+    },
+    "confidence": "measured",
+    "basis": "avatar_pod rates (A100-SXM4 2026-10-07): 0.061 s/view pass 0 + 0.114 s/view x 2 registration passes; + 15.8 min head fix / hair / fill per 1152 grid frames"
+   },
+   "gates": [
+    "refuses smplx older than world_from_sfm.json",
+    "hair masks on >= 90 % of follow views",
+    "leave-one-camera-out MAE (avatar_hair compare)"
+   ],
+   "retry": "standalone pod session; max_minutes below the recommendation is refused"
+  },
+  {
+   "id": "avatar_face",
+   "name": "Portrait face textures",
+   "phase": "5-avatar",
+   "exists": "yes",
+   "variants": [
+    "multi",
+    "two",
+    "single"
+   ],
+   "deps": [
+    "texture"
+   ],
+   "runs_on": "local",
+   "optional": "only with portraits",
+   "cli": [
+    "python -m dancecap.avatar_face {take}"
+   ],
+   "outputs": [
+    "avatar/{role}_albedo_face.png",
+    "avatar/{role}_albedo_face_videolook.png",
+    "avatar/face/report.json"
+   ],
+   "done_when": [
+    "avatar/face/report.json"
+   ],
+   "est": {
+    "host": "local",
+    "wall_min": {
+     "fixed": 5
+    },
+    "confidence": "estimate"
+   },
+   "gates": [
+    "likeness check vs held-out video crops"
+   ],
+   "retry": "--composite after a re-bake"
+  },
+  {
+   "id": "hair_reference",
+   "name": "Follow hair reference (hull, length, motion, colour)",
+   "phase": "5-avatar",
+   "exists": "yes",
+   "variants": [
+    "multi",
+    "two"
+   ],
+   "deps": [
+    "fit_qa",
+    "dancers_sam"
+   ],
+   "runs_on": "pod",
+   "session": "S2_fit",
+   "pod_alt": "local_gpu (~12 min hull for 6 s)",
+   "cli": [
+    "python -m dancecap.hair_reference {take} --write-pod-job",
+    "python -m dancecap remote run --take {take} --jobs hair_ref",
+    "python -m dancecap.hair_reference {take} --reuse-hull --reuse-colour --device cpu"
+   ],
+   "outputs": [
+    "avatar/hair_reference.json",
+    "hair_ref/hull.npz",
+    "review/hair_reference.jpg"
+   ],
+   "done_when": [
+    "avatar/hair_reference.json"
+   ],
+   "est": {
+    "host": "pod",
+    "billed": true,
+    "wall_min": {
+     "fixed": 5,
+     "per_CM": 2
+    },
+    "confidence": "estimate"
+   },
+   "gates": [
+    "hull consistency (re-projected recall/precision)"
+   ],
+   "retry": "--reuse-hull / --reuse-colour"
+  },
+  {
+   "id": "hair_groom",
+   "name": "Hair groom for Unity (roots, lengths, colliders, colour)",
+   "phase": "5-avatar",
+   "exists": "yes",
+   "variants": [
+    "multi",
+    "two",
+    "single"
+   ],
+   "deps": [
+    "hair_reference",
+    "texture"
+   ],
+   "runs_on": "local",
+   "cli": [
+    "python -m dancecap.hair_groom {take}"
+   ],
+   "outputs": [
+    "avatar/hair_groom.json",
+    "review/hair_groom.jpg"
+   ],
+   "done_when": [
+    "avatar/hair_groom.json"
+   ],
+   "est": {
+    "host": "local",
+    "wall_min": {
+     "fixed": 3
+    },
+    "confidence": "measured"
+   },
+   "gates": [
+    "scalp roots inside the skin"
+   ],
+   "retry": "--restyle / --export-only"
+  },
+  {
+   "id": "shoe_size",
+   "name": "Sneaker size from the video",
+   "phase": "5-avatar",
+   "exists": "yes",
+   "variants": [
+    "multi",
+    "two"
+   ],
+   "deps": [
+    "fit_qa",
+    "dancers_sam"
+   ],
+   "runs_on": "local",
+   "cli": [
+    "python -m dancecap.shoe_size {take} [--detect]"
+   ],
+   "outputs": [
+    "avatar/shoe_size.json",
+    "review/demo/shoe_size_{take}.jpg"
+   ],
+   "done_when": [
+    "avatar/shoe_size.json"
+   ],
+   "est": {
+    "host": "local",
+    "wall_min": {
+     "fixed": 1,
+     "per_CM": 0.5
+    },
+    "confidence": "derived"
+   },
+   "gates": [
+    "planted-foot views per dancer"
+   ],
+   "retry": "--detect runs RTMW-x foot points (avatar/shoe_rtmw.npz); without it the MAMMA ma_2d landmarks are used"
+  },
+  {
+   "id": "avatar_edits",
+   "name": "User avatar edits (shape_edits, shoe_geometry)",
+   "phase": "5-avatar",
+   "exists": "yes",
+   "variants": [
+    "multi",
+    "two",
+    "single"
+   ],
+   "deps": [
+    "shoe_size"
+   ],
+   "runs_on": "human",
+   "optional": true,
+   "cli": [
+    "edit takes/{take}.toml [dancers.<role>.shape_edits] and shoe_geometry"
+   ],
+   "outputs": [
+    "takes/{take}.toml"
+   ],
+   "done_when": [
+    "takes/{take}.toml"
+   ],
+   "est": {
+    "host": "human",
+    "wall_min": {
+     "fixed": 2
+    },
+    "confidence": "estimate"
+   },
+   "gates": [
+    "-"
+   ],
+   "retry": "-"
+  },
+  {
+   "id": "timing",
+   "name": "Touchdowns, accents, asynchrony vs the beat grid",
+   "phase": "6-analysis",
+   "exists": "yes",
+   "variants": [
+    "multi",
+    "two",
+    "single"
+   ],
+   "deps": [
+    "fit_qa",
+    "beats"
+   ],
+   "soft_deps": [
+    "song_beats"
+   ],
+   "runs_on": "local",
+   "cli": [
+    "python -m dancecap timing {take} [--beats work/{take}/song/beats_studio.json --no-refine]"
+   ],
+   "outputs": [
+    "timing/timing.json",
+    "timing/kinematics.npz",
+    "timing/qa_timing.png"
+   ],
+   "done_when": [
+    "timing/timing.json"
+   ],
+   "est": {
+    "host": "local",
+    "wall_min": {
+     "fixed": 2,
+     "per_V": 6
+    },
+    "confidence": "estimate"
+   },
+   "gates": [
+    "suspect feet listed",
+    "beat density warnings"
+   ],
+   "retry": "re-run"
+  },
+  {
+   "id": "physics",
+   "name": "Centroidal dynamics (COM, F_net, XCoM, partner bounds)",
+   "phase": "6-analysis",
+   "exists": "yes",
+   "variants": [
+    "multi",
+    "two",
+    "single"
+   ],
+   "deps": [
+    "fit_qa",
+    "beats"
+   ],
+   "soft_deps": [
+    "timing"
+   ],
+   "runs_on": "local",
+   "cli": [
+    "python -m dancecap physics {take}",
+    "python -m dancecap.analysis_review {take}"
+   ],
+   "outputs": [
+    "physics/physics.npz",
+    "physics/physics.json",
+    "review/physics_overview.png",
+    "review/analysis_summary.json"
+   ],
+   "done_when": [
+    "physics/physics.json"
+   ],
+   "est": {
+    "host": "local",
+    "wall_min": {
+     "fixed": 2,
+     "per_V": 5
+    },
+    "confidence": "estimate"
+   },
+   "gates": [
+    "stature check within 1.5 %"
+   ],
+   "retry": "re-run"
+  },
+  {
+   "id": "counterbalance",
+   "name": "Counterbalance / pivot detection",
+   "phase": "6-analysis",
+   "exists": "yes",
+   "variants": [
+    "multi",
+    "two",
+    "single"
+   ],
+   "deps": [
+    "fit_qa",
+    "beats"
+   ],
+   "runs_on": "local",
+   "cli": [
+    "python -m dancecap.counterbalance detect --take {take}"
+   ],
+   "outputs": [
+    "counterbalance/counterbalance.json",
+    "review/counterbalance.jpg"
+   ],
+   "done_when": [
+    "counterbalance/counterbalance.json"
+   ],
+   "est": {
+    "host": "local",
+    "wall_min": {
+     "fixed": 1,
+     "per_V": 2
+    },
+    "confidence": "estimate"
+   },
+   "gates": [
+    "synthetic validation (synthetic_cb)",
+    "user truth when given (larissa_kadu_38: 32.0-36.15 s)"
+   ],
+   "retry": "re-run"
+  },
+  {
+   "id": "floorcraft",
+   "name": "Floor craft (plants, pivots, leader axis, coverage)",
+   "phase": "6-analysis",
+   "exists": "in_progress",
+   "variants": [
+    "multi",
+    "two",
+    "single"
+   ],
+   "deps": [
+    "fit_qa",
+    "beats"
+   ],
+   "soft_deps": [
+    "counterbalance",
+    "timing"
+   ],
+   "runs_on": "local",
+   "cli": [
+    "python -m dancecap.floorcraft {take} [--smplx-dir <dir>] [--no-review]",
+    "export hook: python -m dancecap.floorcraft {take} --export-only --export-capture {capture}"
+   ],
+   "outputs": [
+    "floorcraft/floorcraft.json (reference seconds, world frame: leader floor axis, plants / moves / rotations, counterbalance pivots)",
+    "review/floorcraft_map.png",
+    "review/floorcraft_timeline.png"
+   ],
+   "done_when": [
+    "floorcraft/floorcraft.json"
+   ],
+   "est": {
+    "host": "local",
+    "wall_min": {
+     "fixed": 1,
+     "per_V": 2
+    },
+    "confidence": "estimate"
+   },
+   "gates": [
+    "-"
+   ],
+   "retry": "re-run",
+   "notes": "module appeared in the working tree during this research (demo workflow, uncommitted); re-detects counterbalance.json when missing or computed on other fits"
+  },
+  {
+   "id": "moves_features",
+   "name": "Per-frame couple motion features",
+   "phase": "6-analysis",
+   "exists": "yes",
+   "variants": [
+    "multi",
+    "two",
+    "single"
+   ],
+   "deps": [
+    "fit_qa",
+    "beats"
+   ],
+   "soft_deps": [
+    "counterbalance",
+    "timing",
+    "physics"
+   ],
+   "runs_on": "local",
+   "cli": [
+    "python -m dancecap.moves features {take}"
+   ],
+   "outputs": [
+    "moves/features.npz",
+    "moves/features_schema.json"
+   ],
+   "done_when": [
+    "moves/features.npz"
+   ],
+   "est": {
+    "host": "local",
+    "wall_min": {
+     "fixed": 1,
+     "per_V": 3
+    },
+    "confidence": "estimate"
+   },
+   "gates": [
+    "-"
+   ],
+   "retry": "re-run"
+  },
+  {
+   "id": "moves_proposals",
+   "name": "Unlabelled move-boundary proposals",
+   "phase": "6-analysis",
+   "exists": "yes",
+   "variants": [
+    "multi",
+    "two",
+    "single"
+   ],
+   "deps": [
+    "moves_features"
+   ],
+   "runs_on": "local",
+   "cli": [
+    "python -m dancecap.moves proposals {take}"
+   ],
+   "outputs": [
+    "moves/proposals.json"
+   ],
+   "done_when": [
+    "moves/proposals.json"
+   ],
+   "est": {
+    "host": "local",
+    "wall_min": {
+     "fixed": 0.5
+    },
+    "confidence": "estimate"
+   },
+   "gates": [
+    "proposals are never written to labels.json"
+   ],
+   "retry": "re-run"
+  },
+  {
+   "id": "narrate",
+   "name": "Narration review: label the moves by voice (+ confirm camera types)",
+   "phase": "6-analysis",
+   "exists": "partial",
+   "variants": [
+    "multi",
+    "two",
+    "single"
+   ],
+   "deps": [
+    "window",
+    "beats"
+   ],
+   "soft_deps": [
+    "moves_proposals",
+    "counterbalance",
+    "song_beats"
+   ],
+   "runs_on": "human",
+   "cli": [
+    "python -m dancecap.moves annotate --take {take}   (127.0.0.1:8765; camera-type panel to add)"
+   ],
+   "outputs": [
+    "moves/labels.json (provenance narration -> human)",
+    "moves/narration/<id>/",
+    "takes/{take}.toml [cameras.\"{cam}\"] (camera panel)"
+   ],
+   "done_when": [
+    "moves/labels.json"
+   ],
+   "est": {
+    "host": "human",
+    "wall_min": {
+     "per_V": 6
+    },
+    "confidence": "estimate",
+    "basis": "0.5x playback + corrections"
+   },
+   "gates": [
+    "labels validate against taxonomy/zouk_graph.json"
+   ],
+   "parallel": "can start right after clocks + beats, long before any 3D exists",
+   "retry": "backups in moves/narration/backups/"
+  },
+  {
+   "id": "moves_run",
+   "name": "Graph path, fingerprint, review, Unity copies",
+   "phase": "6-analysis",
+   "exists": "yes",
+   "variants": [
+    "multi",
+    "two",
+    "single"
+   ],
+   "deps": [
+    "narrate"
+   ],
+   "soft_deps": [
+    "classifier",
+    "counterbalance"
+   ],
+   "runs_on": "local",
+   "cli": [
+    "python -m dancecap.moves run {take}"
+   ],
+   "outputs": [
+    "moves/path.json",
+    "moves/fingerprint.json",
+    "review/fingerprint.png"
+   ],
+   "done_when": [
+    "moves/fingerprint.json"
+   ],
+   "est": {
+    "host": "local",
+    "wall_min": {
+     "fixed": 1
+    },
+    "confidence": "estimate"
+   },
+   "gates": [
+    "new links flagged for the user"
+   ],
+   "retry": "re-run"
+  },
+  {
+   "id": "classifier",
+   "name": "TMR-SOMA embeddings + per-silo move classifier -> auto labels",
+   "phase": "6-analysis",
+   "exists": "future",
+   "variants": [
+    "multi",
+    "two",
+    "single"
+   ],
+   "deps": [
+    "fit_qa",
+    "moves_features"
+   ],
+   "runs_on": "local",
+   "pod_alt": "pod (tmr feature) if Turing/Windows fails",
+   "cli": [
+    "python -m dancecap.moves model predict ... (refused until G5/G9; docs/TMR_SOMA_PLAN.md)"
+   ],
+   "outputs": [
+    "moves/labels.json segments provenance 'auto' with calibrated confidence"
+   ],
+   "done_when": [
+    "moves/labels.json"
+   ],
+   "est": {
+    "host": "local",
+    "wall_min": {
+     "fixed": 2,
+     "per_V": 1
+    },
+    "confidence": "estimate"
+   },
+   "gates": [
+    "G0 consent, G5 embedding, G9 training/inference approvals",
+    "same level silo only"
+   ],
+   "retry": "-"
+  },
+  {
+   "id": "triggers",
+   "name": "Classifier/analysis outputs -> viewer triggers",
+   "phase": "6-analysis",
+   "exists": "new",
+   "variants": [
+    "multi",
+    "two",
+    "single"
+   ],
+   "deps": [
+    "counterbalance"
+   ],
+   "soft_deps": [
+    "floorcraft",
+    "moves_run",
+    "timing",
+    "physics",
+    "classifier"
+   ],
+   "runs_on": "local",
+   "cli": [
+    "python -m dancecap.pipeline triggers {take}   (to build; rules in taxonomy/triggers.toml)"
+   ],
+   "outputs": [
+    "triggers/triggers.json (reference time; exported in capture time)"
+   ],
+   "done_when": [
+    "triggers/triggers.json"
+   ],
+   "est": {
+    "host": "local",
+    "wall_min": {
+     "fixed": 0.5
+    },
+    "confidence": "estimate"
+   },
+   "gates": [
+    "every trigger has provenance + confidence; low confidence drawn dashed"
+   ],
+   "retry": "re-run (pure function of its inputs)"
+  },
+  {
+   "id": "demo_export",
+   "name": "Unity capture + add-on hooks + validation",
+   "phase": "7-output",
+   "exists": "yes",
+   "variants": [
+    "multi",
+    "two",
+    "single"
+   ],
+   "deps": [
+    "fit_qa",
+    "texture",
+    "timing",
+    "physics"
+   ],
+   "soft_deps": [
+    "face_pod",
+    "avatar_face",
+    "hair_groom",
+    "avatar_edits",
+    "counterbalance",
+    "moves_run",
+    "triggers",
+    "song_align"
+   ],
+   "runs_on": "local",
+   "cli": [
+    "python -m dancecap.demo_export {take} --capture {capture}  (motion: takes/{take}.toml [export] smplx_dir, else smplx/)"
+   ],
+   "outputs": [
+    "export/{capture}/",
+    "head-movement/Assets/StreamingAssets/{capture}/ (git-ignored)",
+    "export/{capture}_demo_export.json"
+   ],
+   "done_when": [
+    "export/{capture}_demo_export.json"
+   ],
+   "est": {
+    "host": "local",
+    "wall_min": {
+     "fixed": 2,
+     "per_V": 2
+    },
+    "confidence": "estimate"
+   },
+   "gates": [
+    "validation passes (frame counts, skins, textures, groom, shoes, audio covers the capture, FK)",
+    "never commit SMPL-X-derived files or likeness data to head-movement"
+   ],
+   "hooks": [
+    "hair_groom --export-only (+ colliders for shape edits)",
+    "shoes (needs the exported skins)",
+    "face_export",
+    "counterbalance export",
+    "moves export",
+    "floorcraft --export-only --export-capture {capture} (in progress)",
+    "triggers export (new)"
+   ],
+   "retry": "--hooks-only re-runs the add-ons"
+  },
+  {
+   "id": "unity_check",
+   "name": "Unity playtest checks",
+   "phase": "7-output",
+   "exists": "partial",
+   "variants": [
+    "multi",
+    "two",
+    "single"
+   ],
+   "deps": [
+    "demo_export"
+   ],
+   "runs_on": "unity",
+   "optional": true,
+   "cli": [
+    "head-movement Tools/playtest_*.ps1 / hm_* CLI commands"
+   ],
+   "outputs": [
+    "review/realism/*"
+   ],
+   "done_when": [],
+   "est": {
+    "host": "local",
+    "wall_min": {
+     "fixed": 10
+    },
+    "confidence": "estimate"
+   },
+   "gates": [
+    "take work/unity.lock"
+   ],
+   "retry": "-"
+  },
+  {
+   "id": "room",
+   "name": "Static studio splat + Quest mesh (optional, hidden by default)",
+   "phase": "7-output",
+   "exists": "yes",
+   "variants": [
+    "multi"
+   ],
+   "deps": [
+    "cam_world"
+   ],
+   "runs_on": "pod",
+   "session": "S_room",
+   "optional": true,
+   "cli": [
+    "python -m dancecap room {take} --write-pod-job",
+    "python -m dancecap remote run --take {take} --jobs room"
+   ],
+   "outputs": [
+    "room/splat_full.ply",
+    "room/splat_quest.ply",
+    "room/room_mesh.obj",
+    "room/eval.json"
+   ],
+   "done_when": [
+    "room/eval.json"
+   ],
+   "est": {
+    "host": "pod",
+    "billed": true,
+    "wall_min": {
+     "fixed": 45
+    },
+    "confidence": "measured",
+    "basis": "larissa_kadu: train 2195 s + post 464 s on an A100"
+   },
+   "gates": [
+    "held-out masked PSNR"
+   ],
+   "retry": "--stages mesh,eval reuses the checkpoint",
+   "camera_types": {
+    "tripod": "a locked tripod adds ONE viewpoint; an all-tripod rig gives a weak room"
+   }
+  },
+  {
+   "id": "dancer_splats",
+   "name": "Avatar-guided dancer Gaussian splats (AGS: dancers only, viewer layer off by default)",
+   "phase": "7-output",
+   "exists": "yes",
+   "variants": [
+    "multi"
+   ],
+   "deps": [
+    "fit_qa",
+    "texture",
+    "hair_groom"
+   ],
+   "soft_deps": [
+    "face_pod"
+   ],
+   "runs_on": "pod",
+   "session": "S_splats",
+   "optional": true,
+   "cli": [
+    "python -m dancecap.dancer_splats {take} prepare   (local CPU: dancer_splats/bundle/ - crops, labels, posed fits, init samples, groom strands, avatar reference renders; window = takes/{take}.toml [dancer_splats] window, else the approved prototype window)",
+    "python -m dancecap.dancer_splats {take} write-pod-job",
+    "python -m dancecap remote run --take {take} --jobs dancer_splats --max-cost 1.5 --max-minutes 55",
+    "python -m dancecap.dancer_splats {take} export    (local after the download: canonical + per-frame PLYs, splat_sequence.json)",
+    "python -m dancecap.dancer_splats {take} render --cam 03 --t 59.18   (any bundle camera / 'novel', any time)"
+   ],
+   "outputs": [
+    "dancer_splats/model.pt",
+    "dancer_splats/pose_delta.npz",
+    "dancer_splats/metrics.json",
+    "dancer_splats/report.json",
+    "dancer_splats/progress.json",
+    "dancer_splats/train.log",
+    "dancer_splats/cache/ckpt.pt (only while training / after a failed train: the retry input)",
+    "review/splats/dancer_splats_*.jpg|png",
+    "dancer_splats/canonical_{lead,follow}.ply (export)",
+    "dancer_splats/frames/frame_*.ply (export)",
+    "dancer_splats/splat_sequence.json (export)"
+   ],
+   "done_when": [
+    "dancer_splats/model.pt",
+    "dancer_splats/metrics.json",
+    "dancer_splats/pose_delta.npz"
+   ],
+   "progress": {
+    "source": "runner.log / dancer_splats/train.log / dancer_splats/progress.json; L2 events splats/train (steps, psnr, iou, gaussians) and splats/eval (views)",
+    "pattern": "^\\[dancer_splats\\] step (\\d+)/(\\d+)"
+   },
+   "est": {
+    "host": "pod",
+    "billed": true,
+    "wall_min": {
+     "fixed": 28
+    },
+    "confidence": "derived",
+    "basis": "training stops itself inside its time budget (24 min, and 15 min before the pod's kill switch) + eval / review renders ~4 min; measured locally at pod scale (real bundle, 171k Gaussians, 4 native-resolution views/step): 0.15-0.17 s/step on the shared 2080 Ti (launch-bound, 1.5 GB VRAM) -> ~0.06 s/step A100 estimate; replaced by history once a run exists (progress_eta dancer_splats/train/s_per_step); DANCER_SPLATS_RESEARCH 12"
+   },
+   "gates": [
+    "1 no ghosts: rendered alpha outside the 2 % dilated union mask <= 1 % of the crop on every held-out frame",
+    "2 silhouette (held-out camera 03 vs SAM): follow IoU >= 0.85, lead >= 0.88",
+    "3 colour: held-out masked MAE (colour-corrected) <= 0.6 x the avatar's; PSNR >= 24 dB held out, >= 27 dB in-sample",
+    "held-out PSNR / SSIM / LPIPS vs the textured avatar rendered from the same held-out camera (metrics.json gates.heldout_vs_avatar)",
+    "4 hair-mask IoU >= 0.5 in the turns (59.18 s, 60.88 s); 5 temporal change <= avatar + 10 %; 8 training <= 30 min, session <= $1.50",
+    "refuses smplx older than world_from_sfm.json; review gate (review/splats/*.jpg) before any Unity export"
+   ],
+   "retry": "within a session: the trainer checkpoints every 2000 steps (dancer_splats/cache/ckpt.pt), stops hard at its time budget or on SIGTERM and still writes model.pt + pose_delta.npz, and the runner's .done markers skip finished commands; across pods (the pod is always deleted): cache/ckpt.pt is packed with the outputs even after a failure, and `python -m dancecap.dancer_splats {take} run-pod --retry` uploads it (or model.pt + pose_delta.npz when only eval failed: train is skipped) with --max-cost = $2.00 minus the first session's ledger cost (approved total incl. one retry); stop rule (DANCER_SPLATS_RESEARCH 7.4): criteria 1-3 failing -> no second pod without the user",
+   "camera_types": {
+    "tripod": "the best held-out evaluation camera (stable view)",
+    "zoom": "per-frame intrinsics from cameras/<cam>.npz; antialiased rasterisation is always on"
+   }
+  },
+  {
+   "id": "pair_calib",
+   "name": "Two-view calibration + epipolar sync from the dancers",
+   "phase": "2-cameras",
+   "exists": "new",
+   "variants": [
+    "two"
+   ],
+   "deps": [
+    "ma2d",
+    "cam_loc",
+    "camera_types"
+   ],
+   "runs_on": "local",
+   "pod_alt": "pod",
+   "cli": [
+    "python -m dancecap.pipeline pair-calib {take}  (to build)"
+   ],
+   "outputs": [
+    "cameras/{cam}.npz",
+    "cameras/world_from_sfm.json",
+    "sync/offsets.json (method epipolar)"
+   ],
+   "done_when": [
+    "sync/offsets.json"
+   ],
+   "est": {
+    "host": "local",
+    "wall_min": {
+     "fixed": 5,
+     "per_CM": 3
+    },
+    "confidence": "estimate"
+   },
+   "gates": [
+    "temporal hold-out reprojection",
+    "scale from statures: dancers agree <= 1.5 %",
+    "offset stable across 2 s sub-windows"
+   ],
+   "retry": "-",
+   "camera_types": {
+    "tripod+tripod": "12 unknowns + 2 focals over thousands of body correspondences: classic stereo calibration from people; epipolar sync robust",
+    "tripod+handheld": "tripod defines the world; handheld per frame from the room + one Sim3 from the bodies",
+    "handheld+handheld": "each camera's own SfM/VO + one Sim3 per camera from the bodies; zoom -> per-frame focal from VO"
+   }
+  },
+  {
+   "id": "mono_init",
+   "name": "Monocular world-grounded initialisation per view (two-view)",
+   "phase": "3-body",
+   "exists": "new",
+   "variants": [
+    "two"
+   ],
+   "deps": [
+    "dancers_sam",
+    "pair_calib"
+   ],
+   "runs_on": "pod",
+   "optional": true,
+   "cli": [
+    "PromptHMR-Video (multi-person SMPL-X) per view -> initial poses/betas for MAMMA (to build; Linux pod)"
+   ],
+   "outputs": [
+    "mono/{cam}/smplx_init.npz"
+   ],
+   "done_when": [],
+   "est": {
+    "host": "pod",
+    "billed": true,
+    "wall_min": {
+     "fixed": 10,
+     "per_CM": 10
+    },
+    "confidence": "estimate"
+   },
+   "gates": [
+    "research licence"
+   ],
+   "retry": "-"
+  },
+  {
+   "id": "mono_camera",
+   "name": "Single-view camera track (type-aware)",
+   "phase": "2-cameras",
+   "exists": "new",
+   "variants": [
+    "single"
+   ],
+   "deps": [
+    "dancers_sam",
+    "camera_types"
+   ],
+   "runs_on": "pod",
+   "cli": [
+    "tripod: static camera (K from vanishing points / human); handheld: MegaSaM or VGGT-Omega or MapAnything (fixed K input when zoom = false) with dancer masks (to build)"
+   ],
+   "outputs": [
+    "cameras/{cam}.npz",
+    "cameras/world_from_sfm.json (gravity from verticals; scale fixed later by statures)"
+   ],
+   "done_when": [
+    "cameras/world_from_sfm.json"
+   ],
+   "est": {
+    "host": "pod",
+    "billed": true,
+    "wall_min": {
+     "fixed": 10,
+     "per_CM": 15
+    },
+    "confidence": "estimate"
+   },
+   "gates": [
+    "static reprojection on masked background",
+    "gravity vs verticals"
+   ],
+   "retry": "-",
+   "camera_types": {
+    "tripod": "no VO at all (static flag)",
+    "tripod_zoom": "rotation + focal from background homographies",
+    "handheld": "VO with fixed K",
+    "handheld_zoom": "VO with per-frame intrinsics; lowest confidence"
+   }
+  },
+  {
+   "id": "mono_hmr",
+   "name": "Single-view world-grounded couple pose",
+   "phase": "3-body",
+   "exists": "new",
+   "variants": [
+    "single"
+   ],
+   "deps": [
+    "mono_camera",
+    "ma2d"
+   ],
+   "runs_on": "pod",
+   "cli": [
+    "PromptHMR-Video (couple, SMPL-X) or GVHMR per dancer (static flag for tripods) or GEM-X (SOMA whole body) (to build)"
+   ],
+   "outputs": [
+    "mono/smplx_init/{lead,follow}.npz"
+   ],
+   "done_when": [],
+   "est": {
+    "host": "pod",
+    "billed": true,
+    "wall_min": {
+     "fixed": 10,
+     "per_V": 15
+    },
+    "confidence": "estimate"
+   },
+   "gates": [
+    "licence per method (GVHMR non-commercial; GEM-X NVIDIA Open Model License; PromptHMR research)"
+   ],
+   "retry": "-"
+  },
+  {
+   "id": "couple_refine",
+   "name": "Single-view couple refinement (statures, contact, floor, camera)",
+   "phase": "3-body",
+   "exists": "new",
+   "variants": [
+    "single"
+   ],
+   "deps": [
+    "mono_hmr"
+   ],
+   "runs_on": "pod",
+   "cli": [
+    "(to build) ma_2d reprojection + stature-fixed betas + floor/contact + partner non-penetration + temporal prior + joint camera refinement -> smplx/"
+   ],
+   "outputs": [
+    "smplx/{lead,follow}.npz"
+   ],
+   "done_when": [
+    "smplx/lead.npz"
+   ],
+   "est": {
+    "host": "pod",
+    "billed": true,
+    "wall_min": {
+     "fixed": 10,
+     "per_V": 30
+    },
+    "confidence": "estimate"
+   },
+   "gates": [
+    "temporal hold-out; depth plausibility; foot skating"
+   ],
+   "retry": "-"
+  }
+ ]
+}
