@@ -95,8 +95,7 @@ added minus lines removed, so editing a line that already carries the term or pa
   go in a commit of their own and apply from the next commit.
 - Audit without staging: `python tools/githooks/guard.py --profile workspace --worktree [paths]`; decoy tests: `... --self-test`
   (65 cases, both profiles, throw-away repository). Check what a push would send without pushing, against the real repository:
-  `printf 'refs/heads/main %s refs/heads/main %s
-' $(git rev-parse main) $(git rev-parse origin/main) | python tools/githooks/guard.py --profile workspace --pre-push origin x`
+  `printf 'refs/heads/main %s refs/heads/main %s\n' $(git rev-parse main) $(git rev-parse origin/main) | python tools/githooks/guard.py --profile workspace --pre-push origin x`
   (set `HM_GUARD_VISIBILITY=private` to see the content audit that would apply after the repository is private).
 - Blocked? Unstage the path (`git restore --staged <path>`), fix or remove the content, or git-ignore it. Do not work around the hook.
 - **Emergency bypass, repository owner only:** `HM_GUARD_BYPASS="reason" git commit ...` or `git commit --no-verify`. The
