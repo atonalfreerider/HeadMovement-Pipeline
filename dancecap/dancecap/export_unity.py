@@ -119,6 +119,7 @@ class Skin:
     uv: np.ndarray | None = None  # (V, 2) Unity UV (v up, PNG row 0 = v 1) - seam-split skins only
     normals: np.ndarray | None = None  # (V, 3) rest normals of the UNSPLIT mesh (no shading seams at UV cuts)
     vertex_ids: np.ndarray | None = None  # (V,) SMPL-X vertex of each split vertex
+    edits: dict | None = None  # shape_edits.summary of the rest-shape edits applied (None = the plain fitted shape)
 
 
 def model_for(d: dict, override: Path | None = None) -> Path:
@@ -173,7 +174,7 @@ def textured_skin(skin: Skin, model_path: Path) -> Skin:
     normals = vertex_normals(skin.vertices, skin.faces)
     return Skin(vertices=skin.vertices[vid], faces=faces, weights=skin.weights[vid], joints=skin.joints,
                 parents=skin.parents, model=skin.model, betas=skin.betas, uv=uv, normals=normals[vid],
-                vertex_ids=vid)
+                vertex_ids=vid, edits=skin.edits)
 
 
 def fk_unity(rest_joints_u: np.ndarray, parents: np.ndarray, transl_u: np.ndarray, quats_u: np.ndarray):
@@ -207,7 +208,7 @@ def unity_skin(skin: Skin) -> Skin:
     return Skin(vertices=to_unity_points(skin.vertices), faces=skin.faces[:, [0, 2, 1]], weights=skin.weights,
                 joints=to_unity_points(skin.joints), parents=skin.parents, model=skin.model, betas=skin.betas,
                 uv=skin.uv, normals=None if skin.normals is None else to_unity_points(skin.normals),
-                vertex_ids=skin.vertex_ids)
+                vertex_ids=skin.vertex_ids, edits=skin.edits)
 
 
 def _write_blob(path: Path, magic: bytes, header: dict, blocks: list[np.ndarray]) -> None:
@@ -265,6 +266,8 @@ def write_skin(path: Path, role: str, skin_u: Skin) -> dict:
               "coords": "unity (x, y, -z); winding reversed for the left-handed frame",
               "uv": ("u right, v up; PNG row 0 = v 1 (Unity Texture2D.LoadImage)" if split else None),
               "licence": "SMPL-X derived (non-commercial). Generated locally; never commit."}
+    if skin_u.edits:
+        header["shape_edits"] = skin_u.edits  # rest vertices edited after the betas (dancecap.shape_edits)
     _write_blob(path, SKIN_MAGIC, header, data)
     return header
 
@@ -285,7 +288,8 @@ def read_skin(path: Path) -> tuple[dict, Skin]:
     assert magic == SKIN_MAGIC, magic
     b = _read_blocks(h, body)
     return h, Skin(b["rest_vertices"], b["faces"], b["weights"], b["rest_joints"], b["parents"], h["model"],
-                   np.asarray(h["betas"]), uv=b.get("uv"), normals=b.get("normals"), vertex_ids=b.get("vertex_ids"))
+                   np.asarray(h["betas"]), uv=b.get("uv"), normals=b.get("normals"), vertex_ids=b.get("vertex_ids"),
+                   edits=h.get("shape_edits"))
 
 
 def _beats_audio(work: Path, beats: Path | None, timing: dict | None, time_to_audio: float) -> list | None:
@@ -317,6 +321,13 @@ def _timing_for_unity(timing: dict, kin: Path, times: np.ndarray, warnings: list
         out["asynchrony"][r] = {k: fs.get(k) for k in ("n", "mean_ms", "median_ms", "ci95_ms", "hit_rate", "R")}
     fml = timing.get("asynchrony", {}).get("follow_minus_lead", {})
     out["asynchrony"]["follow_minus_lead_ms"] = fml.get("overall_ms")
+    at = timing.get("absolute_timing")
+    if isinstance(at, dict) and isinstance(at.get("valid"), bool):
+        # the viewer drops its on beat / late / early verdicts and the hit rate when this is false (VIEWER_SPEC 3.8)
+        out["absolute_timing"] = {"valid": at["valid"], "av_sync_event": at.get("av_sync_event"),
+                                  "note": "valid false: no audio-video sync event pins the phones' A/V offset, so "
+                                          "offsets from the beat include it; only relative timing (follow - lead) "
+                                          "is trustworthy"}
     if kin.exists():
         k = np.load(kin)
         half = 0.5 * float(np.median(np.diff(times))) if len(times) > 1 else 0.0
@@ -605,17 +616,37 @@ def export_room(work: Path, out: Path, warnings: list[str], clear_dance_floor: b
 
 # ------------------------------------------------------------------------------------------------ export
 
+def resolve_smplx_dir(take: str, smplx_dir: str | None = None) -> tuple[str, str]:
+    """The motion folder under work/<take>: the argument, else takes/<take>.toml [export] smplx_dir (e.g. a
+    dancecap.pose_refine output adopted for the viewer), else smplx/. -> (folder, where the choice came from).
+    Every exporter (export, demo_export) resolves it here, so a plain re-export never silently falls back to smplx/."""
+    if smplx_dir:
+        return smplx_dir, "argument"
+    toml = PACKAGE_ROOT / "takes" / f"{take}.toml"
+    if toml.exists():
+        import tomllib
+        d = (tomllib.loads(toml.read_text(encoding="utf-8")).get("export") or {}).get("smplx_dir")
+        if d:
+            return str(d), f"takes/{take}.toml [export] smplx_dir"
+    return "smplx", "default"
+
+
 def export(take: str, capture: str | None = None, model: Path | None = None, audio: Path | None = None,
            audio_t0: float | None = None, beats: Path | None = None, install: bool = True,
            streaming_assets: Path = UNITY_STREAMING, allow_no_audio: bool = False, textures: bool = True,
-           room: bool = True, smplx_dir: str | None = None, faces: bool = True, face_albedo: str = "face") -> dict:
+           room: bool = True, smplx_dir: str | None = None, faces: bool = True, face_albedo: str = "face",
+           shape_edits: bool = True) -> dict:
     """Write work/<take>/export/<capture>/ and (install=True) mirror it into head-movement StreamingAssets.
-    smplx_dir: a contract folder under work/<take> other than smplx/ (e.g. smplx_detail: refined hands + face).
+    smplx_dir: a contract folder under work/<take> other than smplx/ (e.g. a dancecap.pose_refine output);
+    None = resolve_smplx_dir (takes/<take>.toml [export] smplx_dir, else smplx/), recorded in provenance.
+    shape_edits: apply takes/<take>.toml [dancers.<role>.shape_edits] to the rest skin (dancecap.shape_edits: e.g. a
+    thinner midsection, smaller feet for the sneakers); the motion / joints are the fit's either way.
     faces: when work/<take>/smplx_face/ exists, add the face block (dancecap.face_export: smplx_<role>_face.bin
     blendshapes + weights, jaw / eye rotations from smplx_face, the face_albedo texture variant: face = portrait look,
     videolook, bake)."""
     work = PACKAGE_ROOT / "work" / take
-    sdir = work / (smplx_dir or "smplx")
+    smplx_dir, smplx_dir_source = resolve_smplx_dir(take, smplx_dir)
+    sdir = work / smplx_dir
     capture = validate_capture_name(capture or take)
     warnings: list[str] = []
     data = {}
@@ -651,10 +682,15 @@ def export(take: str, capture: str | None = None, model: Path | None = None, aud
         "coordinate_system": "unity: left-handed, y-up, metres, floor y=0",
         "world": "right-handed Y-up metres, floor y=0; Unity = (x, y, -z)",
         "smplx": {}, "smplx_skin": {}, "provenance": {"take": take, "source": "dancecap export_unity",
-                                                     "audio": audio_source, "smplx_dir": sdir.name},
+                                                     "audio": audio_source, "smplx_dir": sdir.name,
+                                                     "smplx_dir_source": smplx_dir_source},
     }
     report: dict = {"capture": capture, "frames": T, "fps": fps, "dancers": {}, "audio": audio_source,
                     "warnings": warnings}
+    edit_cfg = {}
+    if shape_edits:
+        from . import shape_edits as se
+        edit_cfg = se.config_for(take)
     albedo = {}
     for r, fig in zip(ROLES, ("figure1.json", "figure2.json")):
         d = data[r]
@@ -668,6 +704,11 @@ def export(take: str, capture: str | None = None, model: Path | None = None, aud
         write_motion(out / f"smplx_{r}.bin", r, t, transl_u, quats_u, joints_u)
         mp = model_for(d, model)
         skin = shaped_skin(mp, d["betas"])
+        edit_rep = None
+        if r in edit_cfg:
+            skin, edit_rep = se.apply(skin, edit_cfg[r], r, work)
+            skin.edits = se.summary(edit_rep)
+            manifest["provenance"].setdefault("shape_edits", {})[r] = skin.edits
         if textures:
             skin = textured_skin(skin, mp)
         skin_u = unity_skin(skin)
@@ -678,6 +719,8 @@ def export(take: str, capture: str | None = None, model: Path | None = None, aud
         manifest["smplx_skin"][r] = f"smplx_{r}_skin.bin"
         report["dancers"][r] = {"model": str(mp), "betas": len(d["betas"]), "fk_max_err_mm": round(fk_err * 1000, 3),
                                 "skin_vertices": int(len(skin_u.vertices)), "uv_split": skin_u.uv is not None}
+        if edit_rep is not None:
+            report["dancers"][r]["shape_edits"] = edit_rep
         tex = work / "avatar" / f"{r}_albedo.png"
         if textures and skin_u.uv is not None and tex.exists():
             shutil.copy2(tex, out / f"{r}_albedo.png")
