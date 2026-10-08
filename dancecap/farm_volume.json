@@ -1,0 +1,12 @@
+{
+  "id": "8ncxy247rb",
+  "name": "hm-farm",
+  "dc": "EU-RO-1",
+  "size_gb": 150,
+  "tier": "STANDARD",
+  "price_usd_per_gb_month": 0.07,
+  "mount": "/workspace",
+  "root": "/workspace/hm",
+  "created": "2026-10-08",
+  "note": "Runpod network volume, Secure Cloud only. Gated body models live on it; this file holds no secrets."
+}
