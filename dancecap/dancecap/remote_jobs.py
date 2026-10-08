@@ -52,12 +52,18 @@ SESSIONS = RUNPOD_DIR / "sessions"
 BUNDLES = RUNPOD_DIR / "bundles"
 WHEEL_KEY = "cp311-torch2.5.1-cu124-sm80_90"  # must match remote/bootstrap.sh
 WHEELHOUSE = RUNPOD_DIR / "wheelhouse" / WHEEL_KEY
-FEATURES = ("base", "mamma", "room", "texture", "dancers", "cameras", "ma2d", "check")  # check last
+# linux cp311 wheels of the bootstrap's PyPI packages, installed offline first (bootstrap.sh pipq); fill with
+#   pip download --only-binary=:all: --platform manylinux2014_x86_64 --python-version 3.11 --implementation cp
+#     --abi cp311 --abi abi3 --abi none -d <dir> <bootstrap base/mamma packages>  (+ --no-deps for torch users:
+#     smplx kornia pyrender hydra-core omegaconf; --no-binary for PyOpenGL==3.1.0 antlr4-python3-runtime==4.9.3)
+PYWHEELS = RUNPOD_DIR / "pywheels" / "cp311-linux"
+FEATURES = ("base", "mamma", "room", "texture", "dancers", "cameras", "ma2d", "gsplat", "check")  # check last
 UPLOAD_MBPS, DOWNLOAD_MBPS = 2.5, 12.0  # measured home link (2026-10-06)
 # bootstrap minutes per feature: cold (CUDA wheels compiled on the pod) / with cached wheels
-BOOTSTRAP_MIN = {"base": 5, "mamma": 8, "room": 15, "texture": 0, "dancers": 3, "cameras": 1, "ma2d": 3, "check": 1}
+BOOTSTRAP_MIN = {"base": 5, "mamma": 8, "room": 15, "texture": 0, "dancers": 3, "cameras": 1, "ma2d": 3, "gsplat": 12,
+                 "check": 1}
 BOOTSTRAP_MIN_CACHED = {"base": 5, "mamma": 2, "room": 3, "texture": 0, "dancers": 3, "cameras": 1, "ma2d": 3,
-                        "check": 1}
+                        "gsplat": 1, "check": 1}
 DEFAULT_EXCLUDE = ("__pycache__", "*.pyc", ".git", ".pytest_cache", "node_modules", ".ipynb_checkpoints")
 ARCHIVE_CODE_EXCLUDE = ("dancecap/dancecap", "mamma-turing")  # code always comes from the bundle (current tree)
 MAMMA_SKIP = ("docs", "gui", "docker", "data", "tests", "output", "outputs", "wandb")  # top-level mamma-turing dirs
@@ -365,6 +371,8 @@ def code_items() -> list[tuple[Path, str]]:
         items.append((p, f"mamma-turing/{p.name}"))
     if WHEELHOUSE.exists():
         items.append((WHEELHOUSE, f"dancecap/work/runpod/wheelhouse/{WHEEL_KEY}"))
+    if PYWHEELS.exists() and any(PYWHEELS.iterdir()):
+        items.append((PYWHEELS, "dancecap/work/runpod/pywheels/cp311-linux"))
     return items
 
 
@@ -519,7 +527,10 @@ def prune_bundles(out_dir: Path = BUNDLES, keep: int = 3) -> list[str]:
 # ---------------------------------------------------------------------------------------------- session
 
 
-def estimate_minutes(jobs: list[JobSpec], upload_bytes: int, cached_wheels: bool | None = None) -> dict:
+def estimate_minutes(jobs: list[JobSpec], upload_bytes: int, cached_wheels: bool | None = None,
+                     rates: dict | None = None) -> dict:
+    """Pod minutes for a batch. rates (optional, progress_eta.load_rates()): adds a history-based estimate
+    {"history": {p50_min, p90_min}, "p90_total"}; without it the result is exactly as before."""
     feats = needed_features(jobs)
     cached = WHEELHOUSE.exists() and any(WHEELHOUSE.glob("*.whl")) if cached_wheels is None else cached_wheels
     table = BOOTSTRAP_MIN_CACHED if cached else BOOTSTRAP_MIN
@@ -527,8 +538,18 @@ def estimate_minutes(jobs: list[JobSpec], upload_bytes: int, cached_wheels: bool
     up = upload_bytes / 1e6 / UPLOAD_MBPS / 60
     run = sum(j.max_minutes for j in jobs)
     margin = 10.0
-    return {"bootstrap": boot, "upload": round(up, 1), "jobs": run, "download": 3.0, "margin": margin,
-            "total": round(boot + up + run + 3.0 + margin, 1), "wheels_cached": bool(cached)}
+    out = {"bootstrap": boot, "upload": round(up, 1), "jobs": run, "download": 3.0, "margin": margin,
+           "total": round(boot + up + run + 3.0 + margin, 1), "wheels_cached": bool(cached)}
+    if rates is not None:
+        try:
+            from . import progress_eta
+            h = progress_eta.estimate_session([asdict(j) for j in jobs], upload_bytes, feats, 0.0, rates=rates,
+                                              wheels_cached=bool(cached))
+            out["history"] = {"p50_min": h["p50_min"], "p90_min": h["p90_min"], "phases": h["phases"]}
+            out["p90_total"] = round(max(h["p90_min"], 0.0) + margin, 1)
+        except Exception as e:  # history is advisory only
+            out["history_error"] = str(e)[:200]
+    return out
 
 
 def needed_features(jobs: list[JobSpec]) -> list[str]:
@@ -551,7 +572,7 @@ def command_script(job: JobSpec, cmd: Command, log_rel: str) -> str:
     """Pod shell for one command: skip when its .done marker exists; log with tee; exit code to <name>.rc."""
     logd = f"{POD_WS}/{log_rel}"
     envs = " ".join(f"{k}={shlex.quote(str(v))}" for k, v in {"DANCECAP_POD": "1", "PYTHONUNBUFFERED": "1",
-                                                                **job.env}.items())
+                                                                **_progress_env(job, cmd, log_rel), **job.env}.items())
     secs = int(cmd.timeout_min * 60)
     return (f"mkdir -p {logd}; if [ -f {logd}/{cmd.name}.done ]; then echo '[pod-runner] {job.name}/{cmd.name} "
             f"already done'; exit 0; fi; cd {POD_WS}/{job.cwd} || exit 97; export {envs}; set -o pipefail; "
@@ -560,6 +581,18 @@ def command_script(job: JobSpec, cmd: Command, log_rel: str) -> str:
             f"rc=${{PIPESTATUS[0]}}; echo $rc > {logd}/{cmd.name}.rc; "
             f"echo \"[pod-runner] $(date -u +%FT%TZ) end {job.name}/{cmd.name} rc=$rc\" | tee -a {logd}/{cmd.name}.log; "
             f"[ $rc -eq 0 ] && date +%s > {logd}/{cmd.name}.done; exit $rc")
+
+
+def _progress_env(job: JobSpec, cmd: Command, log_rel: str) -> dict:
+    """dancecap.progress/1 for pod commands (docs/PIPELINE_PROGRESS.md 10.2): every command of a session appends to
+    <session>/progress.jsonl on the pod (derived from log_rel '<...>/sessions/<sid>/pod_logs/<job>'); jobs that ignore
+    the variables behave exactly as before, and the file is never packed (pack_command tars outputs + log_rel only)."""
+    parts = log_rel.rstrip("/").split("/")
+    if len(parts) < 3 or parts[-2] != "pod_logs":
+        return {}
+    sess = "/".join(parts[:-2])
+    return {"DANCECAP_PROGRESS": f"{POD_WS}/{sess}/progress.jsonl", "DANCECAP_PROGRESS_JOB": job.name,
+            "DANCECAP_PROGRESS_CMD": cmd.name, "DANCECAP_SID": parts[-3], "DANCECAP_TAKE": job.take}
 
 
 def safe_extract(archive: Path, dest_outputs: Path, dest_logs: Path, allowed: list[str], log_prefix: str) -> list[str]:
@@ -618,6 +651,9 @@ class Session:
     def timed(self, step: str, fn, **extra):
         t0 = time.time()
         self.log(f"{step} ...")
+        # progress events only: keys event() takes positionally / sets itself never come from a caller's extra
+        ev_extra = {k: v for k, v in extra.items() if k not in ("seconds", "msg", "kind", "step")}
+        self.event("start", step, **ev_extra)
         ok = False
         try:
             r = fn()
@@ -628,6 +664,36 @@ class Session:
             self.state["timings"].append({"step": step, "seconds": dt, "ok": ok, "start": round(t0, 1), **extra})
             self.save()
             self.log(f"{step} {'done' if ok else 'FAILED'} in {dt:.1f}s")
+            self.event("end" if ok else "fail", step, seconds=dt, **ev_extra)
+
+    # dancecap.progress/1 (L1, docs/PIPELINE_PROGRESS.md 10.2): machine-readable runner phases next to runner.log.
+    # Additive and never fatal: a failing event write is swallowed.
+    def event(self, kind: str, step: str, msg: str | None = None, **extra) -> None:
+        try:
+            from . import progress
+            w = getattr(self, "_pw", None)
+            if w is None:
+                w = self._pw = progress.Writer(self.dir / "progress" / "runner.jsonl", job="_session", sid=self.sid)
+            job, name = (step.split("/", 1) if "/" in step else ("_session", step))
+            extra = {k: v for k, v in extra.items() if k in ("seconds", "mb", "job", "features", "bytes", "done",
+                                                              "total")}
+            done, total = extra.pop("done", None), extra.pop("total", None)
+            w.emit(kind, name, job=job, msg=msg, done=done, total=total,
+                   unit="bytes" if total is not None else None, extra={"runner_step": step, **extra})
+        except Exception:
+            pass
+
+    def write_runner_info(self, label: str, jobs: list[str]) -> None:
+        """runner.json: lets a monitor check the runner process is alive (no argv, no environment)."""
+        try:
+            p = self.dir / "runner.json"
+            prev = json.loads(p.read_text()) if p.exists() else {}
+            info = {"sid": self.sid, "pid": os.getpid(), "started": round(time.time(), 1),
+                    "attempt": int(prev.get("attempt") or 0) + 1, "label": label, "jobs": jobs}
+            from . import progress
+            progress.write_json_atomic(p, info)
+        except Exception:
+            pass
 
     def log_rel(self, job: str) -> str:
         return f"dancecap/work/runpod/sessions/{self.sid}/pod_logs/{job}"
@@ -652,6 +718,7 @@ def run_session(jobs: list[JobSpec], sid: str | None = None, label: str = "batch
     ses = Session(sid, label)
     ses.state.pop("error", None)  # a resumed session starts clean
     ses.state.pop("bootstrap_rc", None)
+    ses.write_runner_info(label, [j.name for j in jobs])
     todo = []
     for j in jobs:
         fp = j.fingerprint()
@@ -688,15 +755,42 @@ def run_session(jobs: list[JobSpec], sid: str | None = None, label: str = "batch
         with remote.pod_session(f"{label}", max_minutes=mm, gpus=gpus, max_cost=max_cost, clouds=clouds) as pod:
             pod_info.update({"id": pod.id, "gpu": pod.gpu, "cost_per_hr": pod.cost_per_hr, "host": pod.host,
                              "killswitch": pod.killswitch, "started": time.time()})
+            # for the monitor (additive): ssh port (optional read-only legacy probe) and the kill-switch estimate
+            # (the puller replaces it with the exact /workspace/.dancecap_kill_at)
+            pod_info.update({"port": getattr(pod, "port", None), "kill_at_est": round(time.time() + mm * 60, 1)})
             ses.state["pod"] = pod_info
             ses.save()
-            _pod_steps(ses, pod, todo, bundle, man, feats)
+            ses.event("note", "pod", msg=f"pod {pod.id} {pod.gpu} ${pod.cost_per_hr:.2f}/h ready")
+            puller = _start_puller(ses, pod, todo, bundle, man)
+            try:
+                _pod_steps(ses, pod, todo, bundle, man, feats)
+            finally:
+                _stop_puller(puller)
     except Exception as e:
         ses.state["error"] = f"{type(e).__name__}: {e}"[:2000]
         ses.log(f"session error: {ses.state['error']}")
     finally:
         ses.save()
     return _finish(ses, pod_info.get("id"))
+
+
+def _start_puller(ses: Session, pod, todo: list[JobSpec], bundle: Path, man: dict):
+    """L1 progress puller (dancecap.progress_pull): read-only probe over this pod's ssh every 15 s into
+    <session>/progress/. Never fails the session: any import/start problem -> None. DANCECAP_PROGRESS_PULL=0 disables."""
+    try:
+        from . import progress_pull
+        return progress_pull.start_for_session(ses, pod, todo, upload_part=f"{POD_UPLOAD}/{bundle.name}.part",
+                                               upload_bytes=man.get("bytes"))
+    except Exception:
+        return None
+
+
+def _stop_puller(puller) -> None:
+    try:
+        if puller is not None:
+            puller.stop(timeout=10)
+    except Exception:
+        pass
 
 
 def _pod_steps(ses: Session, pod, todo: list[JobSpec], bundle: Path, man: dict, feats: list[str]) -> None:
@@ -722,10 +816,13 @@ def _pod_steps(ses: Session, pod, todo: list[JobSpec], bundle: Path, man: dict, 
         f"echo files=$(find {POD_WS} -type f | wc -l); du -sh {POD_WS} | cut -f1", log=rlog, timeout=900))
 
     boot_to = 60 * (sum(BOOTSTRAP_MIN[f] for f in feats) * 2 + 10)
-    rc = ses.timed("bootstrap", lambda: pod.run(
-        f"bash {POD_WS}/dancecap/remote/bootstrap.sh {' '.join(f for f in feats if f != 'base')} "
-        f"2>&1 | tee -a /workspace/bootstrap.log; exit ${{PIPESTATUS[0]}}", check=False, log=rlog,
-        timeout=boot_to), features=feats)
+    boot_cmd = (f"bash {POD_WS}/dancecap/remote/bootstrap.sh {' '.join(f for f in feats if f != 'base')} "
+                f"2>&1 | tee -a /workspace/bootstrap.log; exit ${{PIPESTATUS[0]}}")
+    rc = ses.timed("bootstrap", lambda: pod.run(boot_cmd, check=False, log=rlog, timeout=boot_to), features=feats)
+    if rc != 0:  # transient pip/network failures (2026-10-07: PyPI read timeouts lost a whole session): one more try
+        ses.log(f"bootstrap rc={rc}: retrying once on this pod (finished features are skipped)")
+        rc = ses.timed("bootstrap_retry", lambda: pod.run(boot_cmd, check=False, log=rlog, timeout=boot_to),
+                       features=feats)
     for name in ("check.json", "timings.tsv"):
         try:
             (ses.dir / f"bootstrap_{name}").write_text(pod.output(f"cat /workspace/.dancecap_bootstrap/{name}"),
@@ -818,6 +915,7 @@ def _run_job(ses: Session, pod, job: JobSpec, st: dict) -> None:
             failed = f"setup{i + 1} rc={rc}"
             break
     for c in job.commands if not failed else []:
+        st["current"] = c.name  # for the monitor (additive)
         try:
             rc = ses.timed(f"{job.name}/{c.name}", lambda c=c: pod.run(
                 command_script(job, c, log_rel), check=False, log=ses.runner_log,
@@ -840,6 +938,9 @@ def _run_job(ses: Session, pod, job: JobSpec, st: dict) -> None:
         size = int(next(l.split()[1] for l in info.splitlines() if l.startswith("SIZE ")))
         sha = next(l.split()[1] for l in info.splitlines() if l.startswith("SHA "))
         local = ses.dir / "downloads" / f"{job.name}.tar.gz"
+        st["current"] = None
+        st["pack_bytes"] = size  # the monitor divides downloads/<job>.tar.gz.part by this (additive)
+        ses.save()
 
         def download():
             if local.exists() and local.stat().st_size == size and _sha256(local) == sha:
@@ -884,4 +985,11 @@ def _finish(ses: Session, pod_id: str | None) -> dict:
     res["spent_total"] = round(remote.spent(), 4)
     res["remaining"] = round(remote.remaining(), 4)
     (ses.dir / "result.json").write_text(json.dumps(res, indent=1, default=str))
+    ses.event("fail" if res.get("error") else "end", "session", msg=f"session ended: {res.get('error') or 'ok'}")
+    try:  # refresh the ETA history (work/progress/rates.json; derived, rebuildable, never fatal)
+        if pod_id:
+            from . import progress_eta
+            progress_eta.rates_rebuild()
+    except Exception:
+        pass
     return res

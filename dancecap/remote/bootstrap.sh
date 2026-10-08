@@ -9,6 +9,8 @@
 #   mamma    MAMMA ma_3d requirements (minus Windows-only / unused GUI, SAM, detectron, rerun, wandb pieces) +
 #            pytorch_sdf (cuevhv/pytorch_sdf@torch2.5-cu124, built on Linux for sm_80/sm_90)
 #   room     gsplat 1.5.3 (no pt25 prebuilt wheel exists: built from the sdist for sm_80/sm_90), open3d, xatlas, plyfile
+#   gsplat   gsplat 1.5.3 (the cached wheel, else built as for room) + plyfile only: the dancer splats
+#            (dancecap.dancer_splats) need no open3d / xatlas (a ~450 MB PyPI download avoided)
 #   texture  nothing beyond base (avatar_raster is pure torch; no nvdiffrast)
 #   dancers  SAM 2.1 (facebookresearch/sam2 at the commit installed locally, 2b90b9f) + hydra-core/iopath for the
 #            dancers stage on a pod (dancecap.dancers_pod); its optional CUDA post-processing op is built
@@ -31,6 +33,9 @@ WHEEL_KEY=cp311-torch2.5.1-cu124-sm80_90
 WHEELHOUSE=${DANCECAP_WHEELHOUSE:-$WS/dancecap/work/runpod/wheelhouse/$WHEEL_KEY}
 PY=${PY:-python}
 export PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_ROOT_USER_ACTION=ignore PIP_NO_INPUT=1 DEBIAN_FRONTEND=noninteractive
+# slow PyPI links on some community hosts (2026-10-07, one host: 15 s read timeouts x 5 retries failed 'mamma'):
+# wait longer and retry more before a feature fails
+export PIP_TIMEOUT=${PIP_TIMEOUT:-60} PIP_DEFAULT_TIMEOUT=${PIP_DEFAULT_TIMEOUT:-60} PIP_RETRIES=${PIP_RETRIES:-10}
 export TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST:-"8.0;9.0"}
 # nproc shows the HOST cores (256 on an A100 node): cap nvcc parallelism by the container's CPU quota and memory
 _cpus=$(nproc)
@@ -46,7 +51,15 @@ export MAX_JOBS=${MAX_JOBS:-$_jobs}
 mkdir -p "$STATE" "$WHEELHOUSE"
 
 log() { echo "[bootstrap] $*"; }
-pipq() { "$PY" -m pip install -q "$@"; }
+# bundled pure-python / manylinux wheels (dancecap/work/runpod/pywheels/cp311-linux, see remote_jobs.PYWHEELS) are
+# tried first with --no-index: 2026-10-07 one host stalled on every large PyPI page (20 min bootstrap)
+PYWHEELS=${DANCECAP_PYWHEELS:-$WS/dancecap/work/runpod/pywheels/cp311-linux}
+pipq() {
+  if [ -d "$PYWHEELS" ] && "$PY" -m pip install -q --no-index --find-links "$PYWHEELS" "$@" 2>/dev/null; then
+    return 0
+  fi
+  "$PY" -m pip install -q "$@"
+}
 # pinned first (local versions); unpinned fallback so a missing wheel never blocks the session, but say so
 pip_pinned() {
   if ! pipq "$@"; then
@@ -78,6 +91,10 @@ feature_base() {
   fi
   pip_pinned numpy==1.26.4 scipy==1.17.1 opencv-python-headless==4.11.0.86 PyYAML==6.0.3 tqdm pillow \
       matplotlib==3.11.1 smplx==0.1.28 trimesh==5.1.0 ninja jaxtyping rich || return 1
+  if [ "${DANCECAP_ALLOW_NO_GPU:-0}" = 1 ]; then  # farm env build on a CPU pod (dancecap/farm/bootstrap/hm_env.sh)
+    "$PY" -c "import torch; print('[bootstrap] torch', torch.__version__, 'cuda', torch.version.cuda, '(no GPU check)')"
+    return
+  fi
   "$PY" -c "import torch; assert torch.cuda.is_available(); print('[bootstrap] torch', torch.__version__, torch.cuda.get_device_name(0))"
 }
 
@@ -115,6 +132,12 @@ feature_room() {
 }
 
 feature_texture() { return 0; }
+
+feature_gsplat() {
+  pip_pinned plyfile==1.1 || return 1
+  install_wheel_or_build gsplat "--no-binary gsplat gsplat==1.5.3" || return 1
+  "$PY" -c "import gsplat, plyfile; from gsplat.cuda._backend import _C; assert _C is not None; print('[bootstrap] gsplat', gsplat.__version__, 'CUDA ext ok')"
+}
 
 feature_dancers() {
   pipq "hydra-core>=1.3.2" "iopath>=0.1.10" || return 1
@@ -198,7 +221,9 @@ feats |= {f[:-3] for f in os.listdir(os.path.dirname(sys.argv[1])) if f.endswith
 if "mamma" not in feats:
     OPTIONAL |= {"pytorch_sdf", "pyrender", "pandas"}
 if "room" not in feats:
-    OPTIONAL |= {"gsplat", "open3d", "xatlas", "plyfile"}
+    OPTIONAL |= {"open3d", "xatlas"}
+    if "gsplat" not in feats:
+        OPTIONAL |= {"gsplat", "plyfile"}
 out["features"] = sorted(feats)
 for m in ("numpy", "scipy", "cv2", "trimesh", "xatlas", "plyfile", "pandas", "yaml"):
     chk(m, lambda m=m: getattr(importlib.import_module(m), "__version__", "ok"))
