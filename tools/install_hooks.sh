@@ -27,7 +27,7 @@ done
 state() {
     cur=$(git config --get core.hooksPath || true)
     echo "core.hooksPath = ${cur:-<unset>}"
-    for h in pre-commit commit-msg; do
+    for h in pre-commit commit-msg pre-push; do
         if [ -f "$hooks/$h" ]; then echo "  $hooks/$h present"; else echo "  $hooks/$h MISSING"; fi
     done
     if py=$(hm_guard_python); then
@@ -46,7 +46,7 @@ if [ "$mode" = uninstall ]; then
     exit 0
 fi
 
-chmod +x "$hooks/pre-commit" "$hooks/commit-msg" "$hooks/guard.py" 2>/dev/null || true
+chmod +x "$hooks/pre-commit" "$hooks/commit-msg" "$hooks/pre-push" "$hooks/guard.py" 2>/dev/null || true
 git config core.hooksPath "$hooks"
 
 # Remember a working interpreter for git clients whose PATH has no Python (PowerShell, IDEs, services).

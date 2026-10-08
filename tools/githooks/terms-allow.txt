@@ -1,0 +1,11 @@
+# hm-guard terms allow list (workspace profile only): paths (glob, "*" also matches "/") where dancer-specific
+# names are expected by design.  Files NOT listed here are watched while the remote is public: a commit that
+# adds lines with private terms to them gets a warning (an error with `git config hm.guard.terms block`),
+# and no push is accepted at all until `git config hm.visibility private` records that the repository is private.
+#
+# The head-movement (Unity) repository has no such list: it is public and rejects every private term.
+# Add an entry only with the repository owner's approval, in a commit of its own, with a reason.  The list is
+# read from the last commit (HEAD), so an entry applies from the commit AFTER the one that adds it.
+
+dancecap/takes/*      # per-take configuration: dancer names, appearance edits, footage and track file names (keep these commits separable)
+dancecap/worlds/*     # shared world packages named after their take

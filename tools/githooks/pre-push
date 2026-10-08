@@ -1,0 +1,16 @@
+#!/bin/sh
+# hm-guard pre-push hook (workspace profile): nothing is pushed while the remote is treated as public
+# (see `git config hm.visibility`), deletions and non-fast-forward updates are refused, and every commit
+# that would be sent is audited again (messages and added lines), which also catches commits made with --no-verify.
+# Install: tools/install_hooks.sh   Rules and bypass: dancecap/docs/GIT.md
+HM_GUARD_PROFILE=workspace
+here=$(cd "$(dirname "$0")" && pwd)
+. "$here/hm-guard.sh"
+# git writes the ref lines to stdin; hm_guard runs the interpreter inside a loop that owns stdin, so hand them over in a file
+gd=$(git rev-parse --git-dir 2>/dev/null || echo .)
+refs="$gd/hm-guard-prepush.$$"
+cat > "$refs"
+hm_guard pre-push --pre-push "$1" "$2" --stdin-file "$refs"
+rc=$?
+rm -f "$refs"
+exit $rc
