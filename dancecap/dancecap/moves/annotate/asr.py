@@ -318,7 +318,7 @@ def setup_help(model: str | None = None) -> str:
     repo = MODELS.get(model, {}).get("repo", model)
     return "\n".join([
         "Whisper lives in its own environment <workspace>/.venv-asr (MOVES_RESEARCH A2; never "
-        "in .venv-nopo4d). To (re)create it, from <workspace>:",
+        "in .venv-nopo4d). To (re)create it, from the workspace root (the folder that holds dancecap/):",
         "  <miniconda>/envs/mamma/python.exe -m venv .venv-asr",
         '  .venv-asr/Scripts/python -m pip install "faster-whisper>=1.2,<2" "nvidia-cublas-cu12==12.*" rapidfuzz',
         f'  .venv-asr/Scripts/python -c "from faster_whisper.utils import download_model as d; print(d(\'{model}\'))"'
