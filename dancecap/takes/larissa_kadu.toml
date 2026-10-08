@@ -33,3 +33,63 @@ name = "Larissa"
 pid = 2
 stature_m = 1.651   # 5'5"
 description = "long red hair, white crop top, light ripped jeans, white sneakers"
+# Sneaker sole stack from the video (python -m dancecap.shoe_size, 2026-10-07; review/demo/shoe_size_*.jpg): her
+# white platform sneakers' toe box, in larissa_kadu's world, is 5.6 / 3.6 cm high at 85 / 92 % of the length over
+# larissa_kadu_38 (14 hi-res side views, x 1/0.95446) and 6.5 / 5.2 cm over larissa_kadu's 6 s (12 views); the
+# court_platform style's 4.0 / 3.5 cm stack gave 6.5 / 6.3 cm in 02_LarissaKadu -> stack lowered 1 cm to 3.0 / 2.5 cm
+# in this take's world (x 1/0.95446 of larissa_kadu_38's);
+# head-movement SneakerShape also tapers the toe box (1.2 cm over the sole at the
+# tip, was 1.8). Outer length / width already match the video (27.6-28.1 cm long, 10.7-11.7 cm wide in
+# larissa_kadu's world; 02's sneaker 28.0 x 11.3), so the feet were not shrunk then (superseded below: narrower, lower feet).
+shoe_geometry = { sole_heel_m = 0.03, sole_fore_m = 0.025 }
+
+# Rest-shape edits of the exported Unity skins (dancecap.shape_edits, applied by every `export` / `demo_export`; the
+# fitted betas, motion and joints are untouched). Midsection (lower ribs .. hips, width and depth, cosine falloff into
+# chest and hips): user 2026-10-07 first asked for 25 % thinner, then "larissa's waist was reduced too much" -> 12.5 %
+# thinner relative to HER OWN fitted body in this take (no cross-take reference).
+# Sneakers smaller (user 2026-10-07: "visibly smaller, plausible for each dancer's stature: foot ~ 15 % of height, shoe ~
+# foot + 1-2 cm"): the fitted feet are already at or under 15 % of stature (04_LarissaKaduDemo: follow 23.3 cm = 14.1 %,
+# lead 25.3 cm = 14.6 %), so their LENGTH stays; the bulk goes: the feet are made narrower and lower (foot_scale
+# [length, width, height]: the SMPL-X foot is wide and tall for a sneaker last) and head-movement's SneakerShape margins
+# are cut (toe 11 -> 7 mm, heel 6 -> 4 mm, platform extra 3 -> 1 mm, sides 4 -> 3 mm, sole flare ~1 mm less), so the
+# sneaker is the foot + ~1.2 cm long instead of + 2.0 cm and ~1.5 cm narrower.
+[dancers.follow.shape_edits]
+midsection_scale = 0.875
+foot_scale = [1.0, 0.9, 0.92]
+
+# Face shape (user 2026-10-08: "adjust larissa's avatar so that her face is more petite ... the avatar has an
+# inflated jaw", then "we need to correct her face shape. this is a priority"; dancecap.shape_edits face block; review:
+# work/larissa_kadu_38/review/face_shape_v4/face_final.jpg). Cause: the MAMMA locked-head SMPL-X keeps the template face,
+# only scaled with the head: a long, square lower face (nasion-menton +1.5 SD in the FLAME 2020 female shape space), a
+# long chin and a full under-chin. WHY this block: the template face is replaced by an IDENTITY FIT + a petite taper:
+#   identity = a FLAME identity fitted (SMIRK) to her portrait + video frames (portrait-weighted), transplanted onto the
+#     SMPL-X head (dancecap.face_identity); file work/larissa_kadu_38/face_shape/follow_identity_portrait.npz, the per-take
+#     displacement is cached in work/<take>/face_shape/follow_identity_disp.npz; identity_mouth 0.4 = the lips take 40 % of
+#     its move;
+#   jaw_taper / cheekbone_keep / chin_point = a V from the full cheeks to a small, softly pointed chin;
+#   chin_forward_mm = the chin proper brought 4 mm forward (the identity sets it ~8 mm behind the nasion line);
+#   neck_under_jaw = a slimmer under-jaw (no ledge at the neck).
+# This fit (02): nasion-menton 118.3 -> 106.9 mm, jaw angles 112.3 -> 98.6, chin 63.9 -> 51.7, cheeks 140.2 unchanged (re-targeted to 02's betas; 04: 111.4 -> 101.1).
+# Eyes, brows, nose, forehead, cranium, scalp (hair roots), ears and the neck-shoulder seam are unchanged. Replaces the first
+# 'target' scales (lower_face_height_scale 0.94 ..., far too weak, never visible). If it reads too pointed in Unity: chin_point
+# 0.35 -> 0.25 and jaw_taper 0.92 -> 0.93 (keep cheekbone_keep >= 0.5); if the lips read squeezed: identity_mouth -> 0.3.
+[dancers.follow.shape_edits.face]
+identity = "work/larissa_kadu_38/face_shape/follow_identity_portrait.npz"
+identity_weight = 1.0
+identity_mouth = 0.4
+jaw_taper = 0.92
+cheekbone_keep = 0.75
+chin_point = 0.35
+neck_under_jaw = 0.94
+chin_forward_mm = 4.0
+
+[dancers.lead.shape_edits]
+foot_scale = [1.0, 0.94, 0.95]
+
+[world]
+dance = "larissa_kadu_full"
+id = "612dfea3d607"
+pose_id = "02974c41d6db"
+role = "predecessor"
+member = false
+note = "shares the room model but has its own world frame, clocks and betas (farm world compare): never mix its poses into this dance"

@@ -1,0 +1,194 @@
+# Larissa & Kadu demo, the WHOLE dance (plan 2026-10-07: work/larissa_kadu_full/PLAN.md). Same recordings, studio-derived
+# phone clocks (alignment_studio.json), dancers, metadata, camera types and avatars as larissa_kadu_38.toml; larissa_kadu
+# and larissa_kadu_38 stay untouched. This take is the ASSEMBLED whole dance: its 30.15-68.38 s span is larissa_kadu_38's
+# final motion (reused, never refitted, see [reuse]); the missing spans are processed as four segment takes ([segments])
+# and stitched in at 4 s overlaps ([stitch]). Hands (HaMeR/WiLoR, hands_pod/hands_build) are retired for good (user
+# 2026-10-07); faces are paused.
+name = "larissa_kadu_full"
+source_dir = "../../dances/Larissa-Kadu-demo"
+alignment = "../../prototype/larissa_kadu/alignment_studio.json"   # affine audio clocks, reference = 06-Demo-John.mp4
+exclude = ["08"]   # 08 duplicates 09 (overlays)
+
+# Danced span = first to last danced frame (coverage probe work/larissa_kadu_full/probe/coverage/coverage.json and
+# review/danced_span_start_end.jpg, 2026-10-07):
+#   start -3.1313 s = cam09's FIRST frame: she is already dancing (solo arm styling; the song started at -6.97 s); Kadu
+#     enters cam09's frame ~-0.6 s and they embrace ~1.4 s (the dark-top man at cam09's right edge before that is a
+#     SPECTATOR: veto cam09's lead role until Kadu's entry). Only cam09 records before 0.0 s -> monocular span, flagged
+#     ([stitch]); the lead is unobserved (absent) until ~-0.6 s.
+#   end 185.0 s: the song ends 181.59 s, they finish the phrase (dip ~182 s) and close with an embrace ~184.5-185.0 s;
+#     he walks off ~186 s (cam05). 01/03/05/06 record to the end (02 ends 182.56 s, 07 at 159.11 s, 04 at 68.41 s,
+#     09 at 70.13 s).
+# Fused 3D grid = larissa_kadu_38's 30 Hz lattice extended: t_k = 30.151176844227862 + k/30, k = -998..4645
+# (-3.1155..184.9845 s, T = 5644); larissa_kadu_38 grid frame i = full grid frame i + 998.
+window = [-3.1313, 185.0]
+
+# Room keyframes outside larissa_kadu_38's 30-68 s ones: only used if the localisation feasibility probe (PLAN.md P2)
+# asks for a map extension (C7). Starts at 0.0 so no keyframe gets a negative-ms file name.
+keyframe_span = [0.0, 185.0]
+keyframe_step = 4.0
+
+[sync]
+required = true
+
+[dance]
+level = "professional"          # professional | intermediate | novice
+category = "demo"               # demo | lesson | jack_and_jill
+song = "Ficar Sem Você (feat. Urias)"
+artist = "Davi Sabbag"
+song_file = "../../dances/Larissa-Kadu-demo/Ficar Sem Você.mp3"   # studio track supplied by the user (not for any repo)
+
+[dancers.lead]
+name = "Kadu"
+pid = 1
+stature_m = 1.727   # 5'8"
+description = "black t-shirt, jeans, shaved head"
+shoe_sole_m = 0.025   # sneakers; UNCONFIRMED barefoot statures (see larissa_kadu_38.toml)
+
+[dancers.follow]
+name = "Larissa"
+pid = 2
+stature_m = 1.651   # 5'5"
+description = "long red hair, white crop top, light ripped jeans, white sneakers"
+shoe_sole_m = 0.025   # sneakers; UNCONFIRMED barefoot statures (see larissa_kadu_38.toml)
+shoe_geometry = { sole_heel_m = 0.029, sole_fore_m = 0.024 }
+
+[dancers.follow.shape_edits]
+midsection_scale = 0.875
+foot_scale = [1.0, 0.9, 0.92]
+
+# Face shape (user 2026-10-08: "adjust larissa's avatar so that her face is more petite ... the avatar has an
+# inflated jaw", then "we need to correct her face shape. this is a priority"; dancecap.shape_edits face block; review:
+# work/larissa_kadu_38/review/face_shape_v4/face_final.jpg). Cause: the MAMMA locked-head SMPL-X keeps the template face,
+# only scaled with the head: a long, square lower face (nasion-menton +1.5 SD in the FLAME 2020 female shape space), a
+# long chin and a full under-chin. WHY this block: the template face is replaced by an IDENTITY FIT + a petite taper:
+#   identity = a FLAME identity fitted (SMIRK) to her portrait + video frames (portrait-weighted), transplanted onto the
+#     SMPL-X head (dancecap.face_identity); file work/larissa_kadu_38/face_shape/follow_identity_portrait.npz, the per-take
+#     displacement is cached in work/<take>/face_shape/follow_identity_disp.npz; identity_mouth 0.4 = the lips take 40 % of
+#     its move;
+#   jaw_taper / cheekbone_keep / chin_point = a V from the full cheeks to a small, softly pointed chin;
+#   chin_forward_mm = the chin proper brought 4 mm forward (the identity sets it ~8 mm behind the nasion line);
+#   neck_under_jaw = a slimmer under-jaw (no ledge at the neck).
+# Same block as larissa_kadu_38 (04: nasion-menton 111.4 -> 101.1 mm, jaw angles 106.2 -> 93.1, chin 59.9 -> 48.6); the displacement is re-targeted to this take's rest head on first export.
+# Eyes, brows, nose, forehead, cranium, scalp (hair roots), ears and the neck-shoulder seam are unchanged. Replaces the first
+# 'target' scales (lower_face_height_scale 0.94 ..., far too weak, never visible). If it reads too pointed in Unity: chin_point
+# 0.35 -> 0.25 and jaw_taper 0.92 -> 0.93 (keep cheekbone_keep >= 0.5); if the lips read squeezed: identity_mouth -> 0.3.
+[dancers.follow.shape_edits.face]
+identity = "work/larissa_kadu_38/face_shape/follow_identity_portrait.npz"
+identity_weight = 1.0
+identity_mouth = 0.4
+jaw_taper = 0.92
+cheekbone_keep = 0.75
+chin_point = 0.35
+neck_under_jaw = 0.94
+chin_forward_mm = 4.0
+
+[dancers.lead.shape_edits]
+foot_scale = [1.0, 0.94, 0.95]
+
+# What is REUSED from larissa_kadu_38 (user 2026-10-07: "stitch the 38 seconds that's already been run, plus the room
+# analyses and avatars"). Read by the stitch / export tools of PLAN.md (C4, C8, C9); inert for today's stages.
+[reuse]
+take = "larissa_kadu_38"
+motion_span = [30.151176844227862, 68.3845101775612]   # its whole grid (k 0..1147): raw smplx/ + refined
+#   smplx_rf2_noslip/ are copied VERBATIM except inside the two blend windows of [stitch]
+motion_raw = "smplx"
+motion_refined = "smplx_rf2_noslip"
+world = "cameras/world_from_sfm.json"   # same SfM map (reused from larissa_kadu) -> identical world frame and scale
+map = "cameras/sfm"                     # + cameras/sfm_work/sub_05, sub_06 (attached cameras) + cameras/cache/feats
+attach = ["05", "06"]                   # start from its sub-model -> main placement; re-solve only if the dancers say so
+sync_gauge = "sync/offsets.json"        # segment sync is gauge-PINNED to these offsets (never copied)
+betas = "smplx"                         # each dancer's betas pinned in every segment fit, so the avatars carry over
+avatar = "avatar"                       # textures + portrait faces as installed, hair groom, shoes; shape edits above
+
+# Segment takes (the build stage writes takes/larissa_kadu_full_<id>.toml from these; all keys are reference seconds /
+# grid indices on the lattice above). front = frames processed (ingest .. prepare), fit = MAMMA window. Cameras = every
+# camera recording inside the window: the camera set follows coverage (mamma prepare --coverage union, C6).
+[segments.a]
+front = [-3.1313, 36.1512]   # 6 s into larissa_kadu_38: 4 s fit overlap + 2 s margin for a boundary refit
+fit_k = [-998, 120]          # -3.1155..34.1512 s, T 1119
+cams = ["09", "06", "01", "02", "03", "05", "04", "07"]   # 06 from 0.0, 01 1.60, 02 4.18, 03 5.40, 05 8.42, 04 8.74, 07 30.0
+
+[segments.b]
+front = [62.3845, 107.2179]  # 6 s into larissa_kadu_38
+fit_k = [1027, 2312]         # 64.3845..107.2179 s, T 1286
+cams = ["01", "02", "03", "05", "06", "07", "04", "09"]   # 04 to 68.41, 09 to 70.13 (overlap side only)
+
+[segments.c]
+front = [103.2512, 146.0845]
+fit_k = [2193, 3478]         # 103.2512..146.0845 s, T 1286
+cams = ["01", "02", "03", "05", "06", "07"]
+
+[segments.d]
+front = [142.1179, 185.0]
+fit_k = [3359, 4645]         # 142.1179..184.9845 s, T 1287
+cams = ["01", "02", "03", "05", "06", "07"]   # 07 to 159.11, 02 to 182.56
+
+[stitch]
+overlap_s = 4.0              # every seam (a|38, 38|b, b|c, c|d)
+blend_s = 2.0                # cosine cross-fade (per-joint slerp, linear translation), placed where the per-joint
+#   disagreement is lowest inside the overlap; at the two larissa_kadu_38 seams it stays inside 30.65-34.15 / 64.38-67.88 s
+gate_mm = { body_p95 = 60, elbow_wrist_p95 = 75, fingers_rel_wrist_p95 = 80, pelvis_median = 40, betas_swap_p95 = 40 }
+mono = [[-3.1313, 0.0]]      # only cam09 records: quality flag "mono" (best available single-view fit, PLAN.md 3.6)
+lead_absent = [[-3.1313, -0.6]]   # Kadu not yet in any frame (enters cam09 ~-0.6 s; refine at the review gate)
+low_view = [[0.0, 1.6026]]   # 2 cameras (09, 06): flag "two_view"
+
+# Motion played by the exporters once the stitch exists (post phase; same refinement recipe as larissa_kadu_38's
+# smplx_rf2_noslip, applied to the new segments only).
+[export]
+smplx_dir = "smplx_rf2_noslip"
+
+# Camera type per source video (dancecap.camera_types): set in the narration tool or the Pipeline Monitor
+
+[cameras."01"]              # camera type (Pipeline Monitor / narration tool; block written by dancecap.camera_types)
+mount = "handheld"          # handheld | tripod                 (user)
+zoom = false                # true | false, independent of mount (user)
+source = "user"             # user = confirmed | auto = suggestion, not confirmed yet
+set_at = "2026-10-07T22:31:38Z"
+
+[cameras."02"]              # camera type (Pipeline Monitor / narration tool; block written by dancecap.camera_types)
+mount = "handheld"          # handheld | tripod                 (user)
+zoom = false                # true | false, independent of mount (user)
+source = "user"             # user = confirmed | auto = suggestion, not confirmed yet
+set_at = "2026-10-07T22:31:41Z"
+
+[cameras."03"]              # camera type (Pipeline Monitor / narration tool; block written by dancecap.camera_types)
+mount = "handheld"          # handheld | tripod                 (user)
+zoom = false                # true | false, independent of mount (user)
+source = "user"             # user = confirmed | auto = suggestion, not confirmed yet
+set_at = "2026-10-07T22:31:45Z"
+
+[cameras."04"]              # camera type (Pipeline Monitor / narration tool; block written by dancecap.camera_types)
+mount = "handheld"          # handheld | tripod                 (user)
+zoom = true                 # true | false, independent of mount (user)
+source = "user"             # user = confirmed | auto = suggestion, not confirmed yet
+set_at = "2026-10-07T22:31:53Z"
+
+[cameras."05"]              # camera type (Pipeline Monitor / narration tool; block written by dancecap.camera_types)
+mount = "handheld"          # handheld | tripod                 (user)
+zoom = true                 # true | false, independent of mount (user)
+source = "user"             # user = confirmed | auto = suggestion, not confirmed yet
+set_at = "2026-10-07T22:31:56Z"
+
+[cameras."06"]              # camera type (Pipeline Monitor / narration tool; block written by dancecap.camera_types)
+mount = "handheld"          # handheld | tripod                 (user)
+zoom = false                # true | false, independent of mount (user)
+source = "user"             # user = confirmed | auto = suggestion, not confirmed yet
+set_at = "2026-10-07T22:32:00Z"
+
+[cameras."07"]              # camera type (Pipeline Monitor / narration tool; block written by dancecap.camera_types)
+mount = "handheld"          # handheld | tripod                 (user)
+zoom = true                 # true | false, independent of mount (user)
+source = "user"             # user = confirmed | auto = suggestion, not confirmed yet
+set_at = "2026-10-07T22:32:01Z"
+
+[cameras."09"]              # camera type (Pipeline Monitor / narration tool; block written by dancecap.camera_types)
+mount = "handheld"          # handheld | tripod                 (user)
+zoom = true                 # true | false, independent of mount (user)
+source = "user"             # user = confirmed | auto = suggestion, not confirmed yet
+set_at = "2026-10-07T22:32:39Z"
+
+[world]
+dance = "larissa_kadu_full"
+id = "612dfea3d607"
+pose_id = "02974c41d6db"
+role = "assembled"
