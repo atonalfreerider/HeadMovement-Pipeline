@@ -61,13 +61,21 @@ def _local(j: np.ndarray) -> np.ndarray:
     return j[:, BODY] - j[:, :1]
 
 
-def analyse(take: str) -> dict:
+def analyse(take: str, merged_dir: Path | None = None) -> dict:
     work = PACKAGE_ROOT / "work" / take
     root = work / "mamma"
     doc = json.loads((root / "chunks.json").read_text())
     tag, T, chunks = doc["tag"], int(doc["T"]), doc["chunks"]
-    merged_dir = work / "smplx" if (work / "smplx" / "lead.npz").exists() else root / "fits" / tag / "smplx"
-    out = {"take": take, "tag": tag, "T": T, "merged_from": str(merged_dir.relative_to(work)).replace("\\", "/"),
+    if merged_dir is None:
+        merged_dir = work / "smplx" if (work / "smplx" / "lead.npz").exists() else root / "fits" / tag / "smplx"
+    merged_dir = Path(merged_dir)
+    if not merged_dir.is_absolute() and not merged_dir.exists():
+        merged_dir = work / merged_dir  # relative to the take's work folder
+    try:
+        rel = merged_dir.resolve().relative_to(work.resolve()).as_posix()
+    except ValueError:
+        rel = str(merged_dir)
+    out = {"take": take, "tag": tag, "T": T, "merged_from": rel,
            "seams": [], "roles": {}}
     data = {}
     for role in ROLES:
@@ -177,7 +185,9 @@ def sheet(res: dict, path: Path) -> Path:
     ax.set_xlim(t[0], t[-1])
     ax.set_ylabel("m/s", color=ink2)
     ax.set_xlabel("take time (s)", color=ink2)
-    mode = "merged fit" if res["merged_is_chunked"] else "FULL-FIT FALLBACK (no seams in the final fit)"
+    final = "merged" if res["merged_is_chunked"] else "full fit"
+    mode = (f"merged fit ({res['merged_from']})" if res["merged_is_chunked"]
+            else f"full fit ({res['merged_from']}; no seams of its own: the chunks are compared with it)")
     ax.set_title(f"{res['take']} {res['tag']}: pelvis speed of the {mode}; grey bands = the {nseam} blend windows "
                  f"(cosine cross-fade, central half of each overlap). Seams smooth: "
                  f"{'yes' if res['all_smooth'] else 'NO - see rows'}", loc="left", fontsize=12, color=ink)
@@ -204,7 +214,7 @@ def sheet(res: dict, path: Path) -> Path:
                 q = (jj[sel, 0] - c0) * 100
                 ax.plot(q[:, 0], -q[:, 2], ls, color=CHUNK_GRAY[key], lw=1.6, label=f"chunk {key}")
             q = (J[g0:g1, 0] - c0) * 100
-            ax.plot(q[:, 0], -q[:, 2], color=ROLE_COLOR[role], lw=2.0, label="merged")
+            ax.plot(q[:, 0], -q[:, 2], color=ROLE_COLOR[role], lw=2.0, label=final)
             qb = (J[lo:hi, 0] - c0) * 100
             ax.plot(qb[[0, -1], 0], -qb[[0, -1], 2], "o", ms=6, color=ROLE_COLOR[role], mec="#fcfcfb", mew=1.5)
             ax.set_aspect("equal", adjustable="datalim")
@@ -221,7 +231,7 @@ def sheet(res: dict, path: Path) -> Path:
             for jj, sel, gg, key, ls in ((prev, sel_p, pg, "prev", "--"), (nxt, sel_n, ng, "next", ":")):
                 sp = _speed(jj[:, 0])
                 ax.plot(t[gg[sel]], sp[sel], ls, color=CHUNK_GRAY[key], lw=1.6, label=f"chunk {key}")
-            ax.plot(tt, _speed(J[:, 0])[g0:g1], color=ROLE_COLOR[role], lw=2.0, label="merged")
+            ax.plot(tt, _speed(J[:, 0])[g0:g1], color=ROLE_COLOR[role], lw=2.0, label=final)
             ax.set_xlabel("take time (s)", color=ink2, fontsize=9)
             ax.set_ylabel("pelvis speed (m/s)", color=ink2, fontsize=9)
             pa, ba = s["pelvis_acc"], s["body_acc"]
@@ -258,12 +268,15 @@ def main(argv=None):
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("take")
     ap.add_argument("--out", help="review image (default work/<take>/review/pose_seams.jpg)")
+    ap.add_argument("--merged-dir", help="fit folder to check (default work/<take>/smplx, else mamma/fits/<tag>/smplx), "
+                                         "e.g. mamma/fits/c8_merged_rejected/smplx after a gate fallback")
+    ap.add_argument("--json", help="report (default work/<take>/mamma/chunks_seams.json)")
     a = ap.parse_args(argv)
-    res = analyse(a.take)
+    res = analyse(a.take, Path(a.merged_dir) if a.merged_dir else None)
     work = PACKAGE_ROOT / "work" / a.take
     img = sheet(res, Path(a.out) if a.out else work / "review" / "pose_seams.jpg")
     rep = {k: v for k, v in res.items() if not k.startswith("_")}
-    (work / "mamma" / "chunks_seams.json").write_text(json.dumps(rep, indent=1))
+    (Path(a.json) if a.json else work / "mamma" / "chunks_seams.json").write_text(json.dumps(rep, indent=1))
     for role in ROLES:
         rr = rep["roles"][role]
         print(f"[seams] {role}: " + "; ".join(

@@ -56,8 +56,9 @@ def face_observations(work: Path, role: str, t_grid: np.ndarray, cams: list[str]
         z = np.load(cf)
         Rw, tw = world_cameras(z["R"], z["tvec"], sim3)
         ok_cam = z["ok"] if "ok" in z.files else np.ones(len(Rw), bool)
-        pp = np.load(pf)
-        if "kpts" not in pp.files:
+        with np.load(pf) as zz:  # read once: indexing a lazy NpzFile per frame re-decompresses the whole array
+            pp = {k: zz[k] for k in ("valid", "boxes", "kpts") if k in zz.files}
+        if "kpts" not in pp:
             continue
         frames = roles["cams"][c]["frames"]
         ts = np.array([float(f["t"]) for f in json.loads((work / "frames" / c / "frames.json").read_text())["frames"]])
@@ -70,7 +71,9 @@ def face_observations(work: Path, role: str, t_grid: np.ndarray, cams: list[str]
             fr = frames[i]
             if not fr.get(role) or fr.get("swap_prob", 0.0) > 0.2:
                 continue
-            box = fr[role]["box"]
+            box = fr[role].get("box")
+            if box is None or fr[role].get("geo_veto"):  # wrong-person span removed by dancers_geoveto
+                continue
             valid = pp["valid"][i]
             bx, kp = pp["boxes"][i][valid], pp["kpts"][i][valid]
             if len(bx) == 0:

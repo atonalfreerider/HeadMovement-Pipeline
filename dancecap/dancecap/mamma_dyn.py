@@ -1090,7 +1090,8 @@ def parse_sets(specs: list[str] | None, all_cams: list[str]) -> dict[str, list[s
 
 def prepare(take_name: str, sets: dict[str, list[str]] | None = None, force_2d: bool = False,
             skip_2d: bool = False, allow_sfm_frame: bool = False, use_sync: bool = True,
-            window: tuple[float, float] | None = None) -> dict:
+            window: tuple[float, float] | None = None, coverage: str = "all", grid_anchor: float | None = None,
+            grid_k: tuple[int, int] | None = None) -> dict:
     """Local part: ma_2d (cached per camera), sync offsets, grid resampling -> everything ma_3d needs, per camera set,
     under work/<take>/mamma/ (+ prepare.json and pod_job.json describing the fit)."""
     from .take import Take
@@ -1121,16 +1122,48 @@ def prepare(take_name: str, sets: dict[str, list[str]] | None = None, force_2d: 
     # left the first/last frames to 4-6 cameras (seen in the 3-frame dry fit)
     firsts = {c: float(tr.t[tr.ok][0]) for c, tr in tracks.items()}
     lasts = {c: float(tr.t[tr.ok][-1]) for c, tr in tracks.items()}
-    lo, hi = max(lo0, max(firsts.values())), min(hi0, min(lasts.values()))
-    grid = master_grid(lo, hi)
+    if coverage == "union":
+        # larissa_kadu_full's segment takes (dancecap.front_full): cameras start / stop inside the window; every grid
+        # frame that ANY camera covers is kept and each camera contributes only where it has frames (build_inputs
+        # zeroes a camera's landmarks outside its registered frames: resample_cameras ok = False there)
+        lo, hi = max(lo0, min(firsts.values())), min(hi0, max(lasts.values()))
+    elif coverage == "all":
+        lo, hi = max(lo0, max(firsts.values())), min(hi0, min(lasts.values()))
+    else:
+        raise ValueError(f"coverage must be 'all' or 'union', not {coverage!r}")
+    if grid_anchor is not None:  # grid on a fixed lattice t_k = anchor + k / GRID_HZ (stitching segment fits)
+        k_lo = int(np.ceil((lo - grid_anchor) * GRID_HZ - 1e-6))
+        k_hi = int(np.floor((hi - grid_anchor) * GRID_HZ + 1e-6))
+        if grid_k is not None:
+            k_lo, k_hi = max(k_lo, int(grid_k[0])), min(k_hi, int(grid_k[1]))
+        ks = np.arange(k_lo, k_hi + 1)
+        grid = grid_anchor + ks / GRID_HZ
+    else:
+        ks = None
+        grid = master_grid(lo, hi)
     trim = {"window": [lo0, hi0], "start_limited_by": [c for c, v in firsts.items() if v >= lo - 1e-9 and v > lo0],
-            "end_limited_by": [c for c, v in lasts.items() if v <= hi + 1e-9 and v < hi0]}
+            "end_limited_by": [c for c, v in lasts.items() if v <= hi + 1e-9 and v < hi0], "coverage": coverage}
+    if coverage == "union":
+        trim["start_limited_by"] = [c for c, v in firsts.items() if abs(v - lo) < 1e-9 and v > lo0]
+        trim["end_limited_by"] = [c for c, v in lasts.items() if abs(v - hi) < 1e-9 and v < hi0]
+        trim["cams_per_frame"] = {c: [float(firsts[c]), float(lasts[c])] for c in sorted(firsts)}
+    if ks is not None:
+        trim["grid_anchor"] = float(grid_anchor)
+        trim["grid_k"] = [int(ks[0]), int(ks[-1])]
     if trim["start_limited_by"] or trim["end_limited_by"]:
         print(f"[mamma] grid {grid[0]:.4f}-{grid[-1]:.4f} s is inside the window {lo0:.4f}-{hi0:.4f} s: trimmed to "
               f"every camera's sync-corrected coverage (start: {trim['start_limited_by']}, end: "
               f"{trim['end_limited_by']})")
     cfg = write_ma3d_config(work / "mamma" / "ma3d_config.yaml")
+    # camera-type model of each track (cameras/<cam>.npz, dancecap.camera_types): a 'constant' (tripod) track resamples
+    # to one cam_ext for every grid frame (no resampling noise) and is valid on every frame of the window
+    cam_models = {}
+    for c in sorted(tracks):
+        z = np.load(work / "cameras" / f"{c}.npz")
+        cam_models[c] = {"class": str(z["camera_class"]) if "camera_class" in z.files else "handheld_zoom",
+                         "model": str(z["type_model"]) if "type_model" in z.files else "per_frame"}
     prep = {"take": take.name, "created": time.strftime("%Y-%m-%dT%H:%M:%S"), "world_frame": world,
+            "camera_types": cam_models,
             "grid": {"t0": float(grid[0]), "T": int(len(grid)), "hz": GRID_HZ, "t": grid.tolist(), "trim": trim},
             "sync": {"file": "sync/offsets.json" if offsets else None, "required": sync_req,
                      "offsets_ms": {c: round(1000 * offsets[c]["delta"], 2) for c in sorted(offsets) if c in tracks},

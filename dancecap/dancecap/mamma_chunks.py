@@ -7,6 +7,8 @@
     python -m dancecap.mamma_chunks merge larissa_kadu_38            # pod or local: chunks -> fits/<tag>/ (selectable)
     python -m dancecap.mamma_chunks gate larissa_kadu_38 [--fallback full]   # pod: quality gate on the merge (below)
     python -m dancecap mamma select larissa_kadu_38 --tags c8 --no-qa   # promote to smplx/ (pod; again locally for QA)
+    python -m dancecap.mamma_chunks recheck larissa_kadu_38          # local: seams/held-out/gate again from the chunk
+                                                                     # fits with the current checks -> chunks_recheck.json
 
 Why chunks: ma_3d batches every frame of a sequence in each of its ~675 Adam iterations (first 50 / second 500 / third
 100 / fourth 25). Per iteration it costs ~0.40 s of fixed overhead (python, launches) + ~4.8 ms per frame on an A100
@@ -40,9 +42,13 @@ camera it did not see. One chunk is fitted a second time, side by side with the 
 "holdout". Informational, not part of the gate; its failure never fails the job.
 
 Gate (chunks_merge.json "gate", checked by the `gate` command BEFORE select, so a bad merge is never promoted and the
-avatar bake - a job that runs `after` mamma - is skipped): per role, every seam's joint disagreement p95 <= 60 mm and
-pelvis median <= 40 mm (a chunk that found a different solution, not the ~1-3 cm noise of two fits of the same
-frames), every chunk's betas swap p95 <= 40 mm, the merged median reprojection <= 1.25 x the chunks' frame-weighted
+avatar bake - a job that runs `after` mamma - is skipped): per role and seam, tested PER JOINT over the blend window
+(seam_stats; each joint's own p95, so one limb placed differently by the two chunks fails): every body joint 0-17
+<= 60 mm, every elbow/wrist <= 75 mm, every finger joint measured relative to its wrist <= 80 mm (curl differences
+are weakly observed and stay below that: 12-71 mm on larissa_kadu_38; a flipped hand is ~15 cm), pelvis median
+<= 40 mm (a chunk that found a different solution, not the ~1-3 cm noise of two fits of the same frames). Merge
+reports without per-joint stats fall back to the pooled all-joint p95 <= 60 mm. Also every chunk's betas swap
+p95 <= 40 mm, the merged median reprojection <= 1.25 x the chunks' frame-weighted
 median + 0.5 px, and no chunk's own median reprojection above 2 x the chunks' median (a chunk that failed outright).
 On failure `gate --fallback full` re-fits the whole grid in one ma_3d run (`mamma fit <take> --tag <tag>`, ~65 min on
 an A100 for 1148 frames) when the pod's kill switch leaves time for it (/workspace/.dancecap_kill_at, written by
@@ -66,14 +72,24 @@ from pathlib import Path
 import numpy as np
 
 from . import mamma_dyn as md
+from . import progress as _progress  # dancecap.progress/1 (stdlib; no-op unless DANCECAP_PROGRESS)
 
 POSE_KEYS = ("global_orient", "body_pose", "jaw_pose", "leye_pose", "reye_pose", "left_hand_pose", "right_hand_pose")
 # measured on A100 pods 2026-10-06 (larissa_kadu): per ma_3d iteration a + b x frames, 675 iterations
 ITER_FIXED_S, ITER_PER_FRAME_S, N_ITERS = 0.40, 0.0048, 675
 PARALLEL_SLOWDOWN = 2.1  # 7 x 176-frame fits side by side under MPS took 2.03x their solo time
 # merge quality gate (see the module docstring); gross-failure thresholds, not the noise of two fits of the same frames
-GATE = {"seam_p95_mm": 60.0, "seam_pelvis_median_mm": 40.0, "betas_swap_p95_mm": 40.0, "reproj_ratio": 1.25,
+GATE = {"seam_p95_mm": 60.0, "seam_arm_p95_mm": 75.0, "seam_fingers_rel_p95_mm": 80.0,
+        "seam_pelvis_median_mm": 40.0, "betas_swap_p95_mm": 40.0, "reproj_ratio": 1.25,
         "reproj_slack_px": 0.5, "chunk_reproj_vs_median": 2.0}
+# SMPL-X joints 0-21 (pelvis..wrists); the seam gate tests EACH of them (its own p95 over the seam's blend window), so
+# one limb the two chunks put in different places fails the merge - a p95 pooled over 22 joints cannot see one joint
+# (2026-10-07 larissa_kadu_38 follow seam 2: pooled body p95 44 mm, her left wrist 102 mm through the blend window)
+BODY_JOINTS = ("pelvis", "l_hip", "r_hip", "spine1", "l_knee", "r_knee", "spine2", "l_ankle", "r_ankle", "spine3",
+               "l_foot", "r_foot", "neck", "l_collar", "r_collar", "head", "l_shoulder", "r_shoulder", "l_elbow",
+               "r_elbow", "l_wrist", "r_wrist")
+ARM_JOINTS = (18, 19, 20, 21)  # elbows + wrists: own limit seam_arm_p95_mm (they move fastest and are least observed)
+FINGERS = ((20, range(25, 40)), (21, range(40, 55)))  # (wrist, its 15 finger joints); measured relative to the wrist
 KILL_AT = Path("/workspace/.dancecap_kill_at")  # epoch seconds of the on-pod kill switch (remote.arm_killswitch)
 FALLBACK_MARGIN_MIN = 15.0  # select + pack + download of the mamma job after a fallback fit
 
@@ -164,9 +180,16 @@ def fit_chunks(take: str, par: int = 0, timeout_min: float = 80) -> dict:
     (root / "logs").mkdir(parents=True, exist_ok=True)
     print(f"[chunks] {len(doc['chunks'])} chunks of {doc['tag']}" + (f" + held-out {doc['holdout']['run_tag']}"
           if doc.get("holdout") else "") + f", {par} in parallel, CUDA MPS {'on' if mps else 'off'}", flush=True)
+    _progress.plan([{"step": "fit_chunks", "lane": c["run_tag"], "total": None, "unit": "iters",
+                     "frames": c["b"] - c["a"]} for c in runs], step="fit_chunks", lanes=len(runs), parallel=par,
+                   mps=bool(mps), tag=doc["tag"], est_min=doc.get("estimate_min", {}).get("chunk_parallel"))
 
     def one(c):
         t0 = time.time()
+        # in-lane progress: MAMMA's own 'Iter. N of M' lines (ma_3d log), relayed by a thread (no-op when disabled)
+        _progress.start("fit_chunks", lane=c["run_tag"], unit="iters")
+        stop_watch = _progress.watch_log(root / "logs" / f"ma_3d_{c['run_tag']}.log", "mamma_iter",
+                                         step="fit_chunks", lane=c["run_tag"], from_start=False)
         with open(root / "logs" / f"chunk_{c['run_tag']}.out", "w") as fh:
             pr = subprocess.Popen([sys.executable, "-m", "dancecap", "mamma", "fit", take, "--tag", c.get("tag", doc["tag"]),
                                    "--fit-frames", f"{c['a']}:{c['b']}"], stdout=fh, stderr=subprocess.STDOUT, env=env,
@@ -178,6 +201,9 @@ def fit_chunks(take: str, par: int = 0, timeout_min: float = 80) -> dict:
                 pr.wait()
                 rc = "timeout"
         s = round(time.time() - t0, 1)
+        stop_watch()
+        (_progress.end if rc == 0 else _progress.fail)("fit_chunks", lane=c["run_tag"], **(
+            {"seconds": s, "frames": c["b"] - c["a"]} if rc == 0 else {"rc": rc}))
         print(f"[chunks] {c['run_tag']}: rc={rc} in {s:.0f}s", flush=True)
         return c["run_tag"], {"rc": rc, "seconds": s}
     try:
@@ -236,6 +262,70 @@ def _seam_weights(n_ov: int) -> np.ndarray:
     return 0.5 - 0.5 * np.cos(np.pi * r)
 
 
+def _joint_p95(d: np.ndarray) -> dict:
+    """d (frames, 55) mm -> per-joint p95 of the body joints, their worst (non-arm and arm separately)."""
+    pj = np.percentile(d[:, :22], 95, axis=0)
+    rest = [j for j in range(22) if j not in ARM_JOINTS]
+    jr = max(rest, key=lambda j: pj[j])
+    ja = max(ARM_JOINTS, key=lambda j: pj[j])
+    return {"joint_p95_max": round(float(pj[jr]), 2), "joint": BODY_JOINTS[jr],
+            "arm_p95_max": round(float(pj[ja]), 2), "arm_joint": BODY_JOINTS[ja],
+            "per_joint_p95": {BODY_JOINTS[j]: round(float(pj[j]), 1) for j in range(22)}}
+
+
+def seam_stats(jp: np.ndarray, jn: np.ndarray, w: np.ndarray | None = None) -> dict:
+    """Disagreement of two chunks over their shared frames. jp, jn (n, 55, 3) metres: the earlier / later chunk's joints
+    (both with the common betas); w (n,) the later chunk's merge weight (default the cosine seam). Reports the old pooled
+    numbers (median, p95 over all 55 joints, p95_body over joints 0-21, p95_fingers, pelvis_median) and per-joint p95s
+    over the BLEND window (0 < w < 1, the frames the cross-fade mixes; gated) and over the whole overlap (informational):
+    the worst non-arm body joint, the worst elbow/wrist, and the worst finger joint measured relative to its wrist."""
+    n = len(jp)
+    w = _seam_weights(n) if w is None else np.asarray(w, float)
+    d = np.linalg.norm(jp - jn, axis=-1) * 1000
+    rel = np.concatenate([np.linalg.norm((jp[:, list(f)] - jp[:, [wr]]) - (jn[:, list(f)] - jn[:, [wr]]), axis=-1)
+                          for wr, f in FINGERS], 1) * 1000
+    out = {"median": round(float(np.median(d)), 2), "p95": round(float(np.percentile(d, 95)), 2),
+           "p95_body": round(float(np.percentile(d[:, :22], 95)), 2),
+           "p95_fingers": round(float(np.percentile(d[:, 25:], 95)), 2),
+           "pelvis_median": round(float(np.median(d[:, 0])), 2)}
+    for name, m in (("blend", (w > 0) & (w < 1)), ("overlap", np.ones(n, bool))):
+        if m.sum() < 2:
+            m = np.ones(n, bool)
+        s = _joint_p95(d[m])
+        s["fingers_rel_wrist_p95_max"] = round(float(np.percentile(rel[m], 95, axis=0).max()), 2)
+        s["frames"] = int(m.sum())
+        out[name] = s
+    return out
+
+
+def _common_betas(root: Path, chunks: list[dict], role: str):
+    """Load the chunk fits of one role and re-express each with the frame-weighted common betas (pelvis trajectory
+    kept) -> fits, betas, report stub {betas_*, seam_mm []}, poses, translations, joints (frames, 55, 3) per chunk."""
+    fits = [dict(np.load(root / "fits" / c["run_tag"] / "smplx" / f"{role}.npz", allow_pickle=True)) for c in chunks]
+    for c, f in zip(chunks, fits):
+        if len(f["t"]) != c["b"] - c["a"]:
+            raise ValueError(f"{c['run_tag']} {role}: {len(f['t'])} frames, plan {c['b'] - c['a']}")
+    n = np.array([c["b"] - c["a"] for c in chunks], float)
+    B = np.stack([np.asarray(f["betas"], float) for f in fits])
+    betas = (B * n[:, None]).sum(0) / n.sum()
+    J0c = _rest_joints(betas)[0]
+    rr = {"betas_chunks": B[:, :6].round(4).tolist(), "betas_sd": B.std(0)[:6].round(4).tolist(),
+          "betas": betas[:6].round(4).tolist(), "betas_swap_mm": [], "seam_mm": []}
+    pose_c, transl_c, joints_own = [], [], []
+    for c, f in zip(chunks, fits):
+        pose = np.concatenate([np.asarray(f[k], float) for k in POSE_KEYS], 1)
+        dJ = _rest_joints(np.asarray(f["betas"], float))[0] - J0c
+        tr = np.asarray(f["transl"], float) + dJ
+        _, j_new = md._forward(pose, tr, betas, True)
+        d = np.linalg.norm(j_new - np.asarray(f["joints"], float)[:, :55], axis=-1) * 1000
+        rr["betas_swap_mm"].append({"chunk": c["run_tag"], "median": round(float(np.median(d)), 2),
+                                    "p95": round(float(np.percentile(d, 95)), 2)})
+        pose_c.append(pose)
+        transl_c.append(tr)
+        joints_own.append(j_new)
+    return fits, betas, rr, pose_c, transl_c, joints_own
+
+
 def merge(take: str) -> dict:
     work = md.take_work(take)
     root = work / "mamma"
@@ -257,29 +347,7 @@ def merge(take: str) -> dict:
     summary = {}
     for p, pid in enumerate(md.PIDS):
         role = md.ROLES[pid]
-        fits = [dict(np.load(root / "fits" / c["run_tag"] / "smplx" / f"{role}.npz", allow_pickle=True)) for c in chunks]
-        for c, f in zip(chunks, fits):
-            if len(f["t"]) != c["b"] - c["a"]:
-                raise ValueError(f"{c['run_tag']} {role}: {len(f['t'])} frames, plan {c['b'] - c['a']}")
-        n = np.array([c["b"] - c["a"] for c in chunks], float)
-        B = np.stack([np.asarray(f["betas"], float) for f in fits])
-        betas = (B * n[:, None]).sum(0) / n.sum()
-        J0c = _rest_joints(betas)[0]
-        rr = {"betas_chunks": B[:, :6].round(4).tolist(), "betas_sd": B.std(0)[:6].round(4).tolist(),
-              "betas": betas[:6].round(4).tolist(), "betas_swap_mm": [], "seam_mm": []}
-        # re-express every chunk with the common betas (pelvis trajectory kept)
-        pose_c, transl_c, joints_own = [], [], []
-        for c, f in zip(chunks, fits):
-            pose = np.concatenate([np.asarray(f[k], float) for k in POSE_KEYS], 1)
-            dJ = _rest_joints(np.asarray(f["betas"], float))[0] - J0c
-            tr = np.asarray(f["transl"], float) + dJ
-            _, j_new = md._forward(pose, tr, betas, True)
-            d = np.linalg.norm(j_new - np.asarray(f["joints"], float)[:, :55], axis=-1) * 1000
-            rr["betas_swap_mm"].append({"chunk": c["run_tag"], "median": round(float(np.median(d)), 2),
-                                        "p95": round(float(np.percentile(d, 95)), 2)})
-            pose_c.append(pose)
-            transl_c.append(tr)
-            joints_own.append(j_new)
+        fits, betas, rr, pose_c, transl_c, joints_own = _common_betas(root, chunks, role)
         # stitch
         pose_all = np.zeros((T, 165))
         transl_all = np.zeros((T, 3))
@@ -316,13 +384,10 @@ def merge(take: str) -> dict:
             if k > 0:
                 ov = chunks[k - 1]["b"] - a
                 if ov > 0:
-                    jp = joints_own[k - 1][-ov:]
-                    jn = joints_own[k][:ov]
-                    d = np.linalg.norm(jp - jn, axis=-1) * 1000
                     rr["seam_mm"].append({"between": [chunks[k - 1]["run_tag"], c["run_tag"]],
-                                          "median": round(float(np.median(d)), 2),
-                                          "p95": round(float(np.percentile(d, 95)), 2),
-                                          "pelvis_median": round(float(np.median(d[:, 0])), 2)})
+                                          "frames": [a, a + ov],
+                                          **seam_stats(joints_own[k - 1][-ov:], joints_own[k][:ov],
+                                                       _seam_weights(ov))})
         if (weight == 0).any():
             raise ValueError(f"{role}: grid frames without a chunk: {np.flatnonzero(weight == 0)[:10].tolist()}")
         verts, joints = md._forward(pose_all, transl_all, betas, True)
@@ -406,13 +471,22 @@ def _holdout_report(root: Path, doc: dict, merged_dir: Path, gt_dir: Path, lm_di
         inf = md.camera_residuals(tmp, gt_dir, lm_dir, [h["cam"]], frame0=h["a"]).get(h["cam"], {})
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    out = {"cam": h["cam"], "run_tag": h["run_tag"], "frames": [h["a"], h["b"]], "t": h["t"], "status": "ok"}
+    # baseline: the chunk fitted over the SAME frames with camera C (same length and context, only C differs); the
+    # merged fit over those frames is kept for reference (2026-10-07 review: 1.20/1.13 vs 1.18/1.17 from the merge)
+    same = next((c for c in doc["chunks"] if c["a"] == h["a"] and c["b"] == h["b"]), None)
+    same_res = {}
+    if same is not None and (root / "fits" / same["run_tag"] / "fit.json").exists():
+        same_res = json.loads((root / "fits" / same["run_tag"] / "fit.json").read_text())["residuals"].get(h["cam"], {})
+    out = {"cam": h["cam"], "run_tag": h["run_tag"], "frames": [h["a"], h["b"]], "t": h["t"], "status": "ok",
+           "baseline": same["run_tag"] if same_res else f"merged {merged_dir.name}"}
     for role in ("lead", "follow"):
         a = (held.get(role) or {}).get("median_px")
-        b = (inf.get(role) or {}).get("median_px")
-        out[role] = {"held_out_median_px": a, "in_fit_median_px": b,
-                     "ratio": round(a / b, 3) if a is not None and b else None}
-    print(f"[chunks] held-out cam{h['cam']} ({h['run_tag']}): " + ", ".join(
+        m = (inf.get(role) or {}).get("median_px")
+        s = (same_res.get(role) or {}).get("median_px")
+        b = s if s is not None else m
+        out[role] = {"held_out_median_px": a, "in_fit_median_px": b, "in_fit_same_chunk_median_px": s,
+                     "in_fit_merged_median_px": m, "ratio": round(a / b, 3) if a is not None and b else None}
+    print(f"[chunks] held-out cam{h['cam']} ({h['run_tag']} vs {out['baseline']}): " + ", ".join(
         f"{r} {out[r]['held_out_median_px'] or float('nan'):.1f} px held out vs {out[r]['in_fit_median_px'] or float('nan'):.1f} "
         "px in the fit" for r in ("lead", "follow")))
     return out
@@ -427,8 +501,21 @@ def gate(report: dict, th: dict | None = None) -> dict:
     why, checks = [], {}
     frames = report.get("chunk_frames") or {}
     for role, rr in (report.get("roles") or {}).items():
-        seam_p95 = max([s["p95"] for s in rr.get("seam_mm", [])] or [0.0])
-        seam_pel = max([s.get("pelvis_median", 0.0) for s in rr.get("seam_mm", [])] or [0.0])
+        seams = rr.get("seam_mm", [])
+        # per joint over the blend window (seam_stats): worst non-arm body joint, worst elbow/wrist, worst finger
+        # relative to its wrist. Reports from before per-joint stats keep the pooled all-joint p95 (stricter there).
+        per = [s["blend"] for s in seams if "blend" in s]
+        if per and len(per) == len(seams):
+            seam_p95 = max(s["joint_p95_max"] for s in per)
+            arm_p95 = max(s["arm_p95_max"] for s in per)
+            fing_p95 = max(s["fingers_rel_wrist_p95_max"] for s in per)
+            worst = max(per, key=lambda s: s["arm_p95_max"])
+            arm_at = f"{worst['arm_joint']} at seam {per.index(worst) + 1}"
+        else:
+            seam_p95 = max([s["p95"] for s in seams] or [0.0])
+            arm_p95 = fing_p95 = None
+            arm_at = None
+        seam_pel = max([s.get("pelvis_median", 0.0) for s in seams] or [0.0])
         swap_p95 = max([s["p95"] for s in rr.get("betas_swap_mm", [])] or [0.0])
         chunk_px = {k: v[role] for k, v in (report.get("chunk_median_reproj_px") or {}).items()
                     if v.get(role) is not None}
@@ -441,11 +528,19 @@ def gate(report: dict, th: dict | None = None) -> dict:
         merged = float((report.get("smplx") or {}).get(role, {}).get("median_reproj_px", float("nan")))
         lim_px = th["reproj_ratio"] * ref + th["reproj_slack_px"]
         bad_chunks = sorted(k for k, v in chunk_px.items() if v > th["chunk_reproj_vs_median"] * med)
-        checks[role] = {"seam_p95_mm": seam_p95, "seam_pelvis_median_mm": seam_pel, "betas_swap_p95_mm": swap_p95,
+        checks[role] = {"seam_p95_mm": seam_p95, "seam_arm_p95_mm": arm_p95, "seam_arm_worst": arm_at,
+                        "seam_fingers_rel_p95_mm": fing_p95, "seam_pelvis_median_mm": seam_pel,
+                        "betas_swap_p95_mm": swap_p95,
                         "merged_reproj_px": round(merged, 3), "chunks_reproj_px": round(ref, 3),
                         "merged_reproj_limit_px": round(lim_px, 3), "failed_chunks": bad_chunks}
         if seam_p95 > th["seam_p95_mm"]:
-            why.append(f"{role}: seam p95 {seam_p95:.0f} mm > {th['seam_p95_mm']:.0f}")
+            why.append(f"{role}: seam p95 {seam_p95:.0f} mm > {th['seam_p95_mm']:.0f}"
+                       + (" (worst body joint)" if arm_p95 is not None else " (all joints pooled, old report)"))
+        if arm_p95 is not None and arm_p95 > th["seam_arm_p95_mm"]:
+            why.append(f"{role}: seam {arm_at} p95 {arm_p95:.0f} mm > {th['seam_arm_p95_mm']:.0f}")
+        if fing_p95 is not None and fing_p95 > th["seam_fingers_rel_p95_mm"]:
+            why.append(f"{role}: seam fingers (relative to the wrist) p95 {fing_p95:.0f} mm > "
+                       f"{th['seam_fingers_rel_p95_mm']:.0f}")
         if seam_pel > th["seam_pelvis_median_mm"]:
             why.append(f"{role}: seam pelvis median {seam_pel:.0f} mm > {th['seam_pelvis_median_mm']:.0f}")
         if swap_p95 > th["betas_swap_p95_mm"]:
@@ -459,12 +554,61 @@ def gate(report: dict, th: dict | None = None) -> dict:
     return {"passed": not why, "why": why, "checks": checks, "thresholds": th}
 
 
+def recheck(take: str, merged: str | None = None) -> dict:
+    """Re-run the merge checks from the chunk fits without re-merging (local, CPU, ~1 min): seam stats with the
+    current seam_stats (per joint), the held-out comparison against the same-frames chunk, and the current gate on the
+    merge's stored reprojection numbers. -> mamma/chunks_recheck.json (chunks_merge.json, the pod's record, is kept)."""
+    root = md.take_work(take) / "mamma"
+    doc = json.loads((root / "chunks.json").read_text())
+    rep = json.loads((root / "chunks_merge.json").read_text())
+    chunks = doc["chunks"]
+    roles = {}
+    for role in ("lead", "follow"):
+        _, _, rr, _, _, joints_own = _common_betas(root, chunks, role)
+        for k in range(1, len(chunks)):
+            a, ov = chunks[k]["a"], chunks[k - 1]["b"] - chunks[k]["a"]
+            if ov > 0:
+                rr["seam_mm"].append({"between": [chunks[k - 1]["run_tag"], chunks[k]["run_tag"]], "frames": [a, a + ov],
+                                      **seam_stats(joints_own[k - 1][-ov:], joints_own[k][:ov], _seam_weights(ov))})
+        roles[role] = rr
+    new = {**{k: v for k, v in rep.items() if k not in ("roles", "gate", "holdout")}, "roles": roles}
+    mdir = root / "fits" / (merged or f"{doc['tag']}_merged_rejected")
+    if not (mdir / "smplx").exists():
+        mdir = root / "fits" / doc["tag"]
+    prep = json.loads((root / "prepare.json").read_text())
+    ev = prep["eval"]
+    new["holdout"] = _holdout_report(root, doc, mdir, root / "ma_cap" / ev["seq"] / "gt", root / "ma_2d" / ev["seq"])
+    new["gate"] = gate(new)
+    new["gate_at_merge"] = rep.get("gate")
+    new["rechecked"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    (root / "chunks_recheck.json").write_text(json.dumps(new, indent=1, default=str))
+    print(f"[chunks] recheck gate {'PASSED' if new['gate']['passed'] else 'FAILED: ' + '; '.join(new['gate']['why'])}")
+    for role, rr in roles.items():
+        for i, s in enumerate(rr["seam_mm"], 1):
+            b = s["blend"]
+            print(f"[chunks] {role} seam {i} {s['between']}: blend {b['frames']} fr: worst body {b['joint']} "
+                  f"{b['joint_p95_max']:.0f} mm, worst arm {b['arm_joint']} {b['arm_p95_max']:.0f} mm, fingers rel "
+                  f"{b['fingers_rel_wrist_p95_max']:.0f} mm | overlap arm {s['overlap']['arm_joint']} "
+                  f"{s['overlap']['arm_p95_max']:.0f} mm | pooled body {s['p95_body']:.0f} mm")
+    return new
+
+
 def kill_minutes_left(path: Path | None = None) -> float | None:
     """Minutes until the on-pod kill switch fires (None when unknown, e.g. locally)."""
     try:
         return (float((path or KILL_AT).read_text().split()[0]) - time.time()) / 60.0
     except (OSError, ValueError, IndexError):
         return None
+
+
+def _retag_rejected(rejected: Path) -> None:
+    """The moved merge keeps fit.json tag <tag>; `mamma select` keys fits by that tag, so the rejected merge would
+    shadow the fallback fit's report in select.json/report.json (2026-10-07, larissa_kadu_38). Give it its own tag."""
+    fj = rejected / "fit.json"
+    if fj.exists():
+        r = json.loads(fj.read_text())
+        r.update(tag=rejected.name, run_tag=rejected.name, rejected=True, partial=True)
+        fj.write_text(json.dumps(r, indent=1, default=str))
 
 
 def gate_or_fallback(take: str, fallback: str = "none", fit_timeout_min: float | None = None) -> int:
@@ -479,8 +623,11 @@ def gate_or_fallback(take: str, fallback: str = "none", fit_timeout_min: float |
     rc = 0
     if g["passed"]:
         print("[chunks] gate passed: " + json.dumps(g["checks"]))
+        _progress.note("gate passed", step="gate", branch="pass", gate=True)
     else:
         print("[chunks] gate FAILED: " + "; ".join(g["why"]))
+        _progress.note("gate FAILED: " + "; ".join(g["why"]), step="gate", level="warn", branch="fallback?",
+                       gate=False)
         need = solo_minutes(doc["T"]) * 1.25 + FALLBACK_MARGIN_MIN
         left = kill_minutes_left()
         out["fallback"] = {"mode": fallback, "need_min": round(need, 1),
@@ -496,11 +643,16 @@ def gate_or_fallback(take: str, fallback: str = "none", fit_timeout_min: float |
             if rejected.exists():
                 shutil.rmtree(rejected)
             shutil.move(str(root / "fits" / doc["tag"]), str(rejected))
+            _retag_rejected(rejected)
             print(f"[chunks] fallback: one full fit of {doc['tag']} ({doc['T']} frames, ~{solo_minutes(doc['T']):.0f} "
                   f"min); the rejected merge is kept in {rejected}", flush=True)
             t0 = time.time()
             env = {k: v for k, v in os.environ.items() if k != "DANCECAP_GPU_SHARED"}
             (root / "logs").mkdir(parents=True, exist_ok=True)
+            _progress.plan([{"step": "gate/fallback_fit", "total": None, "unit": "iters", "frames": doc["T"]}],
+                           step="gate", branch="fallback", eta_s=round(solo_minutes(doc["T"]) * 60))
+            stop_watch = _progress.watch_log(root / "logs" / f"ma_3d_{doc['tag']}.log", "mamma_iter",
+                                             step="gate/fallback_fit", lane="full", from_start=False)
             try:
                 with open(root / "logs" / "fallback_full_fit.out", "w") as fh:
                     pr = subprocess.run([sys.executable, "-m", "dancecap", "mamma", "fit", take, "--tag", doc["tag"]],
@@ -509,7 +661,10 @@ def gate_or_fallback(take: str, fallback: str = "none", fit_timeout_min: float |
                 prc = pr.returncode
             except subprocess.TimeoutExpired:
                 prc = "timeout"
+            stop_watch()
             ok = prc == 0 and (root / "fits" / doc["tag"] / "fit.json").exists()
+            (_progress.end if ok else _progress.fail)("gate/fallback_fit", lane="full",
+                                                      **({"seconds": round(time.time() - t0, 1)} if ok else {"rc": prc}))
             out["fallback"].update(result="full fit ok" if ok else f"full fit failed rc={prc}",
                                    seconds=round(time.time() - t0, 1))
             rc = 0 if ok else 3
@@ -582,7 +737,9 @@ def write_job(take: str, par: int = 0, extra_minutes: float = 12, fallback: str 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="python -m dancecap.mamma_chunks", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("action", choices=["plan", "fit", "merge", "gate", "write-job"])
+    ap.add_argument("action", choices=["plan", "fit", "merge", "gate", "write-job", "recheck"])
+    ap.add_argument("--merged", help="recheck: merged fit dir under mamma/fits/ for the held-out reference "
+                                     "(default <tag>_merged_rejected, else <tag>)")
     ap.add_argument("take")
     ap.add_argument("--tag")
     ap.add_argument("--chunks", type=int, default=6)
@@ -607,6 +764,8 @@ def main(argv=None):
         raise SystemExit(gate_or_fallback(a.take, a.fallback, a.fit_timeout_min))
     elif a.action == "fit":
         fit_chunks(a.take, a.par, a.timeout_min)
+    elif a.action == "recheck":
+        recheck(a.take, a.merged)
     else:
         merge(a.take)
 

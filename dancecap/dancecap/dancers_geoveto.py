@@ -55,14 +55,18 @@ def _tracks(work: Path, cams: list[str]) -> dict:
     return tr
 
 
-def role_costs(work: Path, cams: list[str]) -> dict:
+def role_costs(work: Path, cams: list[str], union: bool = False) -> dict:
     """{cam: {"t": (G,), "native": (G,) frame index or -1, "lead": (G,), "follow": (G,), "lead_other": (G,),
     "follow_other": (G,)}}: median px residual of each role's keypoints vs its own 3D dancer and vs the other one."""
     tr = _tracks(work, cams)
     kp = {c: dancer_keypoints(work, c, len(tr[c]["t"])) for c in cams}
     main = [c for c in cams if not tr[c]["attached"]]
-    t0 = max(tr[c]["t"][0] for c in cams)
-    t1 = min(tr[c]["t"][-1] for c in cams)
+    # default: instants every camera records (a take whose cameras all cover its window, e.g. larissa_kadu_38);
+    # union: every instant SOME camera records (segment takes of larissa_kadu_full, where cameras start / stop inside
+    # the window: the intersection left most of segments a, b and d unchecked). A role is still only judged where
+    # >= 2 OTHER main cameras see it (tri), so the union adds no evidence-free instants.
+    t0 = (min if union else max)(tr[c]["t"][0] for c in cams)
+    t1 = (max if union else min)(tr[c]["t"][-1] for c in cams)
     grid = np.arange(t0, t1, 1 / 30)
     near = {}
     for c in cams:
@@ -281,14 +285,16 @@ def review(work: Path, costs: dict, dec: dict, out: Path) -> Path:
     return out
 
 
-def run(take: str, do_apply: bool = False, only: list[str] | None = None, check: bool = False) -> dict:
+def run(take: str, do_apply: bool = False, only: list[str] | None = None, check: bool = False,
+        union: bool = False) -> dict:
     work = md.take_work(take)
     cams = sorted(p.stem for p in (work / "cameras").glob("[0-9][0-9].npz"))
     t0 = time.time()
-    costs = role_costs(work, cams)
+    costs = role_costs(work, cams, union=union)
     dec = decide(costs)
     plan = {c: {r: native_veto(work, c, costs[c]["t"], dec[c][r]["veto_grid"]).tolist() for r in ROLES} for c in cams}
     rep = {"take": take, "created": time.strftime("%Y-%m-%dT%H:%M:%S"), "seconds": round(time.time() - t0, 1),
+           "coverage": "union" if union else "intersection",
            "rule": {"min_px": VETO_MIN_PX, "factor_x_median": VETO_FACTOR, "min_run_instants": MIN_RUN,
                     "gap_bridged": GAP, "dilate": DILATE},
            "cams": {c: {r: {k: v for k, v in dec[c][r].items() if k != "veto_grid"} | {"native_frames": len(plan[c][r])}
@@ -318,6 +324,8 @@ def main(argv=None):
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--only", help="--apply: comma-separated cameras")
     ap.add_argument("--check", action="store_true", help="re-measure only: dancers/geo_veto_check.json + review image")
+    ap.add_argument("--union", action="store_true", help="measure every instant some camera records (cameras that "
+                                                          "start / stop inside the window), not only their overlap")
     ap.add_argument("--manual", action="append", help="cam:role:i0-i1 native frames to veto after a visual check "
                                                        "(e.g. a camera whose pose is not ok there, so geometry is blind)")
     a = ap.parse_args(argv)
@@ -330,7 +338,7 @@ def main(argv=None):
             plan.setdefault(c, {}).setdefault(r, []).extend(range(i0, i1 + 1))
         print(json.dumps(apply(work, plan, source="manual " + " ".join(a.manual))))
         return
-    rep = run(a.take, a.apply, a.only.split(",") if a.only else None, check=a.check)
+    rep = run(a.take, a.apply, a.only.split(",") if a.only else None, check=a.check, union=a.union)
     print(json.dumps({c: {r: v[r]["native_frames"] for r in ROLES} for c, v in rep["cams"].items()}))
 
 

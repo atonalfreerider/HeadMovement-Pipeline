@@ -42,6 +42,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import progress as _progress  # dancecap.progress/1 (stdlib; no-op unless DANCECAP_PROGRESS)
 from .take import PACKAGE_ROOT, WORKSPACE, Take
 
 SAM2_URL = "https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt"
@@ -202,11 +203,15 @@ def loc_part(take_name: str, cam: str, a: int, b: int) -> None:
     """Per-frame localisation of window frames a..b-1 of one camera (exactly stage_loc's Localizer +
     localize_camera; the part's first frame starts without the previous frame's correspondences) ->
     cameras/cache/locpart_<cam>_<a>_<b>.npz (stage_loc's raw format). The long-pole camera (cam02, 2302 frames) is
-    localised in two halves side by side."""
+    localised in two halves side by side.
+    A part always localises EVERY frame: the keyframes-only decision of a locked tripod belongs to the whole camera
+    (parts deciding on their own keyframes could disagree and join into a cache valid for no model), so build_tasks
+    never splits a locked tripod - its keyframe localisation is ~10 % of the work."""
     from .cameras.features import Features, FeatureSettings, list_images
     from .cameras.localize import Localizer, localize_camera
     from .cameras.mapping import MapSettings
-    from .cameras.pipeline import _save_raw, load_model, loc_settings, map_images
+    from .cameras.pipeline import _policy_name, _save_raw, load_model, loc_settings, map_images
+    from .cameras.typed import loc_marker
     take = Take.load(take_name)
     work = take.work.resolve()
     recs = list_images(work, [cam])
@@ -219,10 +224,12 @@ def loc_part(take_name: str, cam: str, a: int, b: int) -> None:
     frames = [r for r in recs[cam] if r.kind == "win"][a:b]
     meta = json.loads((work / "frames" / cam / "frames.json").read_text())
     t0 = time.time()
+    st = take.camera_types([cam]).get(cam)
     poses = localize_camera(L, frames, int(meta["width"]), int(meta["height"]))
     out = work / "cameras" / "cache" / f"locpart_{cam}_{a:05d}_{b:05d}.npz"
     tmp = out.with_name(out.stem + ".part.npz")
-    _save_raw(tmp, frames, poses)
+    _save_raw(tmp, frames, poses, loc_marker("all", st.cls if st is not None else "handheld_zoom", _policy_name(None),
+                                             len(frames)))
     os.replace(tmp, out)
     print(f"[cameras] {cam} frames {a}-{b - 1}: localised {sum(p.ok for p in poses)}/{len(frames)} "
           f"({time.time() - t0:.0f}s) -> {out.name}", flush=True)
@@ -254,6 +261,14 @@ def loc_join(take_name: str, cam: str, parts: list[tuple[int, int]]) -> None:
     if sum(len(d["t"]) for d in ds) != n or [a for a, _ in parts][0] != 0:
         raise SystemExit(f"[cameras] {cam}: parts {parts} do not cover the {n} window frames")
     out = join_raw(ds)
+    from .cameras.typed import LOC_MARKER_KEYS, loc_mode
+    modes = {loc_mode(d) for d in ds}
+    if "keyframes" in modes:  # parts written before loc_part always localised every frame: never join a mixed cache
+        raise SystemExit(f"[cameras] {cam}: parts {parts} were localised on keyframes only (an older loc-part): "
+                         f"re-localise them (delete cameras/cache/locpart_{cam}_*.npz and re-run the loc jobs)")
+    for k in LOC_MARKER_KEYS:  # the marker of the parts (they agree: every frame, the same class / policy)
+        if k in ds[0]:
+            out[k] = ds[0][k] if k != "loc_localised" else np.int64(sum(int(d.get(k, len(d["t"]))) for d in ds))
     np.savez(cache / f"loc_{cam}.npz", **out)
     stage_smooth(work, [cam], 0.04, 4.0)  # cli defaults (--sigma 0.04, --max-reproj 4.0), as `cameras --stages loc`
     print(f"[cameras] {cam}: joined {len(parts)} parts, {int(out['ok'].sum())}/{n} frames ok", flush=True)
@@ -531,6 +546,7 @@ class Runner:
         t.adopted = False
         t.log = self.log_dir / f"{t.name.replace(':', '_')}.log"
         print(f"[front] {time.strftime('%H:%M:%S')} start {t.name}", flush=True)
+        _progress.start("front", lane=t.name, unit="tasks")
         if t.cmd is None:
             try:
                 t.fn()
@@ -559,7 +575,8 @@ class Runner:
         else:  # Windows (tests): no wrapper, the driver writes the rc file
             out = open(t.log, "a", encoding="utf-8")
         t.proc = subprocess.Popen([str(c) for c in argv], stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                                  env=dict(self.env, FRONT_LOG=str(t.log), FRONT_RC=str(rcf)), cwd=str(PACKAGE_ROOT),
+                                  env=dict(self.env, FRONT_LOG=str(t.log), FRONT_RC=str(rcf),
+                                           DANCECAP_PROGRESS_LANE=t.name), cwd=str(PACKAGE_ROOT),
                                   start_new_session=True)
         t.proc._out = out  # type: ignore[attr-defined]
         t.pid = t.proc.pid
@@ -574,6 +591,10 @@ class Runner:
             except Exception as e:  # noqa: BLE001
                 rc = t.rc = f"on_ok error: {type(e).__name__}: {e}"[:300]
         t.state = "ok" if rc == 0 else "failed"
+        if t.state == "ok":
+            _progress.end("front", lane=t.name, seconds=round(t.t1 - t.t0, 1), kind=t.kind)
+        else:
+            _progress.fail("front", rc=str(rc)[:80], lane=t.name)
         print(f"[front] {time.strftime('%H:%M:%S')} {t.name}: {t.state} rc={rc} in {t.t1 - t.t0:.0f}s "
               f"(rss peak {t.peak_gb:.1f} GB){' [adopted]' if t.adopted else ''}", flush=True)
         if t.state == "failed" and t.log and t.log.exists() and not quiet:
@@ -749,6 +770,18 @@ def _dancers_done(work: Path, cam: str) -> bool:
     return all(len(list((work / "dancers" / cam / sub).glob("mask_*.png"))) >= 2 * n for sub in ("masks", "body"))
 
 
+def _locked_tripods(take_name: str, cams: list[str]) -> set[str]:
+    """Cameras whose type (DANCECAP_CAMERA_TYPES policy, default: confirmed answers) is a locked tripod: stage_loc
+    localises them on keyframes (+ one constant pose) when it fits, every frame otherwise."""
+    from .cameras.typed import locked_tripod
+    try:
+        types = Take.load(take_name).camera_types(list(cams))
+    except Exception as e:  # noqa: BLE001 - the types only change the split, never the result
+        print(f"[cameras] camera types not read ({type(e).__name__}: {e}): every camera as handheld + zoom", flush=True)
+        return set()
+    return {c for c, st in types.items() if locked_tripod(st)}
+
+
 def build_tasks(R: Runner, take_name: str, work: Path, cams: list[str], main: list[str], subs: list[str],
                 skip: tuple[str, ...], loc_split: int = 2) -> str:
     py = sys.executable
@@ -763,11 +796,13 @@ def build_tasks(R: Runner, take_name: str, work: Path, cams: list[str], main: li
         R.add(Task(f"sam:{c}", [py, "-m", "dancecap.front_pod", "dancer", take_name, c], kind="sam",
                    mem_gb=sizes[c], gpu=True, timeout_min=120, nice=nice(c), critical=c == long_pole,
                    on_ok=lambda c=c: merge_label(work, c), done_if=lambda c=c: _dancers_done(work, c)))
+    tripods = _locked_tripods(take_name, main)
     for c in by_size:
         if c not in main or "loc" in skip:
             continue
         n = _n_frames(work, c)
-        parts = loc_split if c == long_pole and loc_split > 1 else 1
+        # a locked tripod is never split: its keyframe localisation is one decision for the whole camera (loc_part)
+        parts = loc_split if c == long_pole and loc_split > 1 and c not in tripods else 1
         done = lambda c=c: (cache / f"loc_{c}.npz").exists() and (work / "cameras" / f"{c}.npz").exists()  # noqa: E731
         if parts == 1:
             R.add(Task(f"loc:{c}", [py, "-m", "dancecap", "cameras", take_name, "--stages", "loc", "--cams", c],
