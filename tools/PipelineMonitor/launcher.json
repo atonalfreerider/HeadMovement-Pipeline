@@ -1,0 +1,7 @@
+{
+  "python": "../../.venv-nopo4d/Scripts/python.exe",
+  "cwd": "../../dancecap",
+  "args": ["-m", "dancecap.pipeline", "monitor", "--launch"],
+  "start_timeout_s": 30,
+  "log": "../../dancecap/work/monitor/logs/launcher.log"
+}
