@@ -24,21 +24,67 @@ from .take import Source, Take
 SHOWINFO = re.compile(r"\bn:\s*(\d+)\s+pts:\s*(-?\d+)\s+pts_time:\s*(-?[\d.]+)")
 
 
+_PASSTHROUGH: list[str] = []
+
+
+def passthrough_args() -> list[str]:
+    """ffmpeg's 'keep every frame, never duplicate/drop' flag: -fps_mode (ffmpeg >= 5.1) or -vsync (older, e.g. the
+    apt ffmpeg 4.4 of the Ubuntu 22.04 Runpod image used by dancecap.front_full). Same frames, same PTS."""
+    if not _PASSTHROUGH:
+        try:
+            v = subprocess.run(["ffmpeg", "-hide_banner", "-version"], capture_output=True, text=True).stdout
+            m = re.search(r"ffmpeg version n?(\d+)\.(\d+)", v)
+            new = m is None or (int(m.group(1)), int(m.group(2))) >= (5, 1)
+        except OSError:
+            new = True
+        _PASSTHROUGH.extend(["-fps_mode", "passthrough"] if new else ["-vsync", "passthrough"])
+    return list(_PASSTHROUGH)
+
+
 def probe(path: Path) -> dict:
-    out = subprocess.run(
+    r = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
          "stream=width,height,time_base,avg_frame_rate,r_frame_rate:stream_side_data=rotation",
-         "-of", "json", str(path)], capture_output=True, text=True, check=True).stdout
-    s = json.loads(out)["streams"][0]
+         "-of", "json", str(path)], capture_output=True, text=True)
+    if r.returncode != 0:
+        # older ffprobe (the apt 4.4 of the Ubuntu 22.04 Runpod image, dancecap.front_full) rejects the
+        # stream_side_data section: -show_streams carries the same side_data_list (+ the legacy rotate tag)
+        r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_streams", "-of", "json",
+                            str(path)], capture_output=True, text=True, check=True)
+    s = json.loads(r.stdout)["streams"][0]
     rotation = 0
     for sd in s.get("side_data_list", []) or []:
         if "rotation" in sd:
-            rotation = int(sd["rotation"])
+            rotation = int(round(float(sd["rotation"])))
+    if not rotation and (s.get("tags") or {}).get("rotate"):
+        rotation = -int(round(float(s["tags"]["rotate"])))  # tag 90 == display-matrix rotation -90
     w, h = int(s["width"]), int(s["height"])
     if abs(rotation) % 180 == 90:
         w, h = h, w
     num, den = (int(x) for x in s["avg_frame_rate"].split("/"))
-    return {"width": w, "height": h, "rotation": rotation, "avg_fps": num / den if den else 0.0}
+    tb = s.get("time_base") or ""
+    return {"width": w, "height": h, "rotation": rotation, "avg_fps": num / den if den else 0.0,
+            **({"time_base": tb} if "/" in tb else {})}
+
+
+def _old_ffmpeg() -> bool:
+    """ffmpeg < 5.1 (passthrough_args decides it): its showinfo prints pts_time to 6 SIGNIFICANT digits only."""
+    return "-vsync" in passthrough_args()
+
+
+def showinfo_pts(m: re.Match, time_base: str | None) -> float:
+    """Source PTS (s) of one showinfo line. ffmpeg >= 5.1 prints pts_time to 6 decimals and that value is kept as
+    it always was; an older ffmpeg (the apt 4.4 of the Ubuntu 22.04 Runpod image) prints 6 significant digits
+    (123.457 for 123.456522: up to 0.5 ms off), so there the exact integer pts x stream time base is used, rounded to
+    6 decimals like the newer printout (checked against pts_time: within 1 ms, else pts_time)."""
+    t = float(m.group(3))
+    if time_base and _old_ffmpeg():
+        num, den = (int(x) for x in time_base.split("/"))
+        if den:
+            exact = round(int(m.group(2)) * num / den, 6)
+            if abs(exact - t) < 1e-3:
+                return exact
+    return t
 
 
 def decode_range(src: Path, start: float, end: float, out_dir: Path, quality: int = 95,
@@ -58,7 +104,7 @@ def decode_range(src: Path, start: float, end: float, out_dir: Path, quality: in
         # -t bounds the read; frames stream to temporary JPEGs so memory stays flat at 1080p/60
         proc = subprocess.Popen(
             ["ffmpeg", "-v", "info", "-nostats", "-ss", f"{seek:.6f}", "-t", f"{end - seek + 0.5:.6f}",
-             "-copyts", "-i", str(src), "-map", "0:v:0", "-vf", "showinfo", "-fps_mode", "passthrough",
+             "-copyts", "-i", str(src), "-map", "0:v:0", "-vf", "showinfo", *passthrough_args(),
              "-f", "rawvideo", "-pix_fmt", "bgr24", "-"],
             stdout=subprocess.PIPE, stderr=log)
         try:
@@ -73,7 +119,8 @@ def decode_range(src: Path, start: float, end: float, out_dir: Path, quality: in
             proc.stdout.close()
             proc.wait()
         log.seek(0)
-        pts = [float(m.group(3)) for m in SHOWINFO.finditer(log.read().decode("utf-8", "replace"))]
+        pts = [showinfo_pts(m, info.get("time_base"))
+               for m in SHOWINFO.finditer(log.read().decode("utf-8", "replace"))]
 
     if len(pts) < decoded:
         raise RuntimeError(f"{src.name}: {decoded} frames but only {len(pts)} showinfo timestamps")
@@ -97,16 +144,21 @@ def ingest_window(take: Take, cams: list[str] | None = None, workers: int = 3) -
     t0, t1 = take.window
     out_root = take.work / "frames"
 
+    max_fps = float((take.cfg.get("ingest") or {}).get("max_fps") or 0)
+
     def one(s: Source) -> tuple[str, dict]:
         info = probe(s.path)
-        recs = decode_range(s.path, s.to_source(t0), s.to_source(t1), out_root / s.id)
+        # [ingest] max_fps (optional, e.g. 30 for larissa_kadu_full's segment takes): a 60 fps phone keeps every
+        # 2nd frame (by decode order inside the window; PTS unchanged) - the fused grid is 30 Hz
+        every = max(1, int(round(info["avg_fps"] / max_fps))) if max_fps and info["avg_fps"] > 1.5 * max_fps else 1
+        recs = decode_range(s.path, s.to_source(t0), s.to_source(t1), out_root / s.id, every=every)
         for r in recs:
             r["t"] = s.to_reference(r["pts"])
         dts = np.diff([r["pts"] for r in recs])
         meta = {
             "camera": s.id, "source": s.path.name, "width": info["width"], "height": info["height"],
             "rotation": info["rotation"], "slope": s.slope, "offset": s.offset,
-            "frame_count": len(recs),
+            "frame_count": len(recs), **({"decimate_every": every} if every > 1 else {}),
             "fps_median": float(1 / np.median(dts)) if len(dts) else 0.0,
             "frame_interval_ms": {"min": float(dts.min() * 1000), "max": float(dts.max() * 1000)} if len(dts) else {},
             "frames": recs,
