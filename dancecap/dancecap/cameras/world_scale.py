@@ -159,10 +159,13 @@ def floor_stats(npz: dict, chunk: int = 32) -> dict:
     low = np.concatenate([pb.lbs_points(body, R[s:s + chunk], p[s:s + chunk], V)[..., 1].min(1)
                           for s in range(0, len(R), chunk)])
     n_in = int((low < -FLOOR_BELOW_M).sum())
+    n_up = int((low > FLOOR_BELOW_M).sum())  # floating: no part of the body within 15 mm of the floor
     return {"n_frames": int(len(low)), "median_mm": float(1000 * np.median(low)),
             "p5_mm": float(1000 * np.percentile(low, 5)), "p95_mm": float(1000 * np.percentile(low, 95)),
-            "min_mm": float(1000 * low.min()), f"n_below_{1000 * FLOOR_BELOW_M:.0f}mm": n_in,
+            "min_mm": float(1000 * low.min()), "max_mm": float(1000 * low.max()),
+            f"n_below_{1000 * FLOOR_BELOW_M:.0f}mm": n_in,
             "frac_below": float(n_in / max(1, len(low))), "warning": bool(n_in > FLOOR_WARN_FRAC * len(low)),
+            f"n_above_{1000 * FLOOR_BELOW_M:.0f}mm": n_up, "frac_above": float(n_up / max(1, len(low))),
             "lowest_vertex_m": low}
 
 

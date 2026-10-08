@@ -38,7 +38,10 @@ def list_images(work: Path, cams: list[str]) -> dict[str, list[ImageRec]]:
     out: dict[str, list[ImageRec]] = {}
     for cam in cams:
         recs = []
-        meta = json.loads((work / "frames" / cam / "frames.json").read_text())
+        fj = work / "frames" / cam / "frames.json"
+        # a camera with map keyframes but no window frames in this take (a segment take of larissa_kadu_full whose
+        # window that camera does not record: its reused map images are only references, dancecap.front_full)
+        meta = json.loads(fj.read_text()) if fj.exists() or not (work / "keyframes" / cam).exists() else {"frames": []}
         for i, f in enumerate(meta["frames"]):
             m = f"people_masks/{cam}/{Path(f['file']).stem}.png"
             recs.append(ImageRec(cam, "win", i, float(f["t"]), f"frames/{cam}/{f['file']}",

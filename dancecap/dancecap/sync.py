@@ -167,9 +167,13 @@ def _normalise(uv: np.ndarray, K: np.ndarray) -> np.ndarray:
 class CamData:
     """One camera's native landmarks (subset), sigmas and per-frame cameras, on its uncorrected reference clock."""
 
-    def __init__(self, tr: md.CameraTrack, obs: dict, idx: np.ndarray, attached: bool = False):
+    def __init__(self, tr: md.CameraTrack, obs: dict, idx: np.ndarray, attached: bool = False,
+                 type_model: str | None = None):
         self.name = tr.name
         self.attached = attached  # pose partly fitted to the dancers (cameras stage): never used to triangulate
+        # camera-type model the cameras stage applied (cameras/<cam>.npz type_model; None = today's per-frame model).
+        # 'constant' (a tripod: ONE pose for the whole video) does not depend on the frame times at all
+        self.type_model = type_model
         self.tr = tr
         self.t0 = tr.t.copy()
         self.lm = obs["lm"][:, :, idx]  # (F, P, n, 3)
@@ -224,7 +228,8 @@ def load(work: Path, cams: list[str] | None = None) -> dict[str, CamData]:
     for c, tr in tracks.items():
         z = np.load(work / "cameras" / f"{c}.npz")
         attached = bool(z["attached"]) if "attached" in z.files else False
-        out[c] = CamData(tr, md.native_observations(native, tr), idx, attached)
+        model = str(z["type_model"]) if "type_model" in z.files else None
+        out[c] = CamData(tr, md.native_observations(native, tr), idx, attached, model)
     return out
 
 
@@ -233,6 +238,13 @@ def _others(data: dict[str, CamData], c: str) -> list[CamData]:
     fitted to the dancers' keypoints at the UNcorrected times, so they would pull every estimate towards 0)."""
     main = [data[o] for o in sorted(data) if o != c and not data[o].attached]
     return main if len(main) >= 2 else [data[o] for o in sorted(data) if o != c]
+
+
+def camera_models(data: dict[str, CamData]) -> dict[str, str]:
+    """{cam: camera-type model the cameras stage applied} ('per_frame' = today's model). A 'constant' camera (tripod:
+    one pose for the whole video) resamples to the same pose at any candidate offset, so its residual curve measures
+    the landmarks' timing only (cleaner minima); offsets.json records the models next to the deltas."""
+    return {c: (v.type_model or "per_frame") for c, v in sorted(data.items())}
 
 
 # ----------------------------------------------------------------------------------------------- residual
@@ -356,7 +368,9 @@ def estimate(work: Path, cams: list[str] | None = None, range_ms: float = 300.0,
     data = load(work, cams)
     w = default_workers(len(data) * len(data)) if workers is None else max(1, int(workers))
     log(f"[sync] {len(data)} cameras, {w} worker process(es)")
-    return estimate_data(data, range_ms, passes, log, workers=w)
+    res = estimate_data(data, range_ms, passes, log, workers=w)
+    res["camera_models"] = camera_models(data)
+    return res
 
 
 def _step(c: CamData, others: list[CamData], offs: dict[str, float], frames: np.ndarray | None = None) -> float:
@@ -640,17 +654,61 @@ def plot(res: dict, out_png: Path, audio: dict | None = None) -> Path:
     return out_png
 
 
-def run(take_name: str, cams: list[str] | None = None, range_ms: float = 300.0, workers: int | None = None) -> dict:
+def regauge(res: dict, ref_doc: dict, ref_name: str) -> dict:
+    """Pin the gauge to another take of the SAME recordings on the SAME audio clocks (larissa_kadu_full's segment takes
+    vs larissa_kadu_38): shift every offset by g so that the median over the shared, used cameras of
+    (delta - delta_ref) is 0. Geometry fixes only relative offsets, so this changes no camera's offset relative to
+    another; it makes the segments' corrected times agree with the reference take's (stitching). Returns the record."""
+    ref = ref_doc.get("offsets", ref_doc)
+    diffs = {c: res["offsets"][c]["delta_ms"] - float(ref[c]["delta_ms"]) for c in res["offsets"]
+             if c in ref and isinstance(ref[c], dict) and ref[c].get("delta_ms") is not None
+             and res["offsets"][c].get("use", True) and ref[c].get("use", True)}
+    if not diffs:
+        return {"ref": ref_name, "applied": False, "why": "no shared camera"}
+    g = float(np.median(list(diffs.values())))
+    for c, o in res["offsets"].items():
+        o["delta_ms"] = round(o["delta_ms"] - g, 2)
+        o["delta"] = round(o["delta_ms"] / 1000.0, 5)
+        if o.get("joint_ms") is not None:
+            o["joint_ms"] = round(o["joint_ms"] - g, 2)
+        for sw in o.get("sub_windows") or []:
+            if sw.get("delta_ms") is not None:
+                sw["delta_ms"] = round(sw["delta_ms"] - g, 2)
+        if c in ref and isinstance(ref[c], dict) and ref[c].get("delta_ms") is not None:
+            o["delta_vs_ref_ms"] = round(o["delta_ms"] - float(ref[c]["delta_ms"]), 2)
+    shift = lambda rows: [(x[0] - g, *x[1:]) for x in rows]  # noqa: E731
+    for c in res.get("curves", {}):
+        res["curves"][c] = {k: shift(v) for k, v in res["curves"][c].items()}
+    for c in res.get("sub_curves", {}):
+        res["sub_curves"][c] = [{**x, "fine": shift(x["fine"])} for x in res["sub_curves"][c]]
+    return {"ref": ref_name, "applied": True, "shift_ms": round(-g, 2), "shared_cams": sorted(diffs),
+            "diff_before_ms": {c: round(v, 2) for c, v in sorted(diffs.items())},
+            "diff_after_ms": {c: round(v - g, 2) for c, v in sorted(diffs.items())}}
+
+
+def run(take_name: str, cams: list[str] | None = None, range_ms: float = 300.0, workers: int | None = None,
+        gauge_ref: str | None = None) -> dict:
     work = md.take_work(take_name)
     if not (work / "mamma" / "ma_2d_native").exists():
         raise SystemExit("[sync] needs mamma/ma_2d_native/<cam>.npz (python -m dancecap mamma prepare first)")
     t0 = time.time()
     res = estimate(work, cams, range_ms, workers=workers)
+    gauge = None
+    if gauge_ref:  # same recordings, same clocks: the reference take's offsets must have been measured on them too
+        ref_p = md.take_work(gauge_ref) / "sync" / "offsets.json"
+        ref_doc = json.loads(ref_p.read_text())
+        mine = take_clocks(work) or {}
+        if (ref_doc.get("clocks") or {}).get("alignment") != mine.get("alignment"):
+            raise SystemExit(f"[sync] --gauge-ref {gauge_ref}: its offsets were measured on other audio clocks")
+        gauge = regauge(res, ref_doc, gauge_ref)
+        print(f"[sync] gauge pinned to {gauge_ref}: shift {gauge.get('shift_ms')} ms over {gauge.get('shared_cams')}")
     audio = _audio_offsets(work)
     doc = {"version": 1, "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
            "what": "per-camera residual video offset: corrected reference time = t + delta (+ rate * (t - t_ref) "
                    "only where use_rate is true)",
-           "gauge": "median over cameras = 0 (geometry fixes relative offsets only)",
+           "gauge": ("median over cameras = 0 (geometry fixes relative offsets only)" if not (gauge or {}).get("applied")
+                     else f"pinned to {gauge_ref}: median over shared cameras of (delta - delta_{gauge_ref}) = 0"),
+           **({"gauge_ref": gauge} if gauge else {}),
            "method": {"landmarks": f"ma_2d native, every {LMK_STEP}th of 512, sigma < {SIGMA_REL_MAX} x crop, "
                                     f"vis > {VIS_MIN}",
                       "triangulation": "uncertainty-weighted DLT from the other cameras resampled to t + delta "
@@ -661,6 +719,7 @@ def run(take_name: str, cams: list[str] | None = None, range_ms: float = 300.0, 
            "offsets": res["offsets"], "audio_beat_offsets_ms": audio,
            # the audio clocks these deltas sit on top of (offsets_check refuses the file on any other clocks)
            "clocks": {"alignment": (take_clocks(work) or {}).get("alignment"), "sources": frame_clocks(work)},
+           "camera_models": res.get("camera_models"),  # camera-type model per camera (cameras/<cam>.npz)
            "seconds": round(time.time() - t0, 1), "workers": res["solve"].get("workers", 1),
            "host": "pod" if os.environ.get("DANCECAP_POD") == "1" else "local"}
     out = work / "sync" / "offsets.json"

@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from .. import progress as _progress  # dancecap.progress/1 (stdlib; no-op unless DANCECAP_PROGRESS)
 from .features import Features, ImageRec
 
 
@@ -249,13 +250,21 @@ def localize_camera(L: Localizer, frames: list[ImageRec], w: int, h: int, log: b
             if fp2.n_inliers > fp.n_inliers:
                 fp = fp2
         poses[i] = fp
+        _progress.tick("loc", i + 1, len(frames), "frames", lane=_progress.default_lane() or q.cam)
         if log and (i + 1) % 60 == 0:
             n_ok = sum(p.ok for p in poses[:i + 1])
             print(f"[cameras] {q.cam}: {i + 1}/{len(frames)} frames, {n_ok} ok ({time.time() - t0:.0f}s)", flush=True)
-    # frame-to-frame tracking for the failures, using localised neighbours as references
-    for _ in range(s.track_passes):
+    # frame-to-frame tracking for the failures, using localised neighbours as references. Passes alternate direction
+    # (forward, backward, ...): a forward pass carries a pose only FORWARD through a failed stretch (each newly
+    # localised frame feeds the next index), so a stretch that fails at the START of a camera (larissa_kadu_full: cam09
+    # zoomed out wide at -3..0 s, its single frames do not match the zoomed-in map images) is recovered by the
+    # backward pass, frame by frame from the first localised one.
+    stale = 0
+    for k_pass in range(max(s.track_passes, 2)):
         changed = False
-        for i, q in enumerate(frames):
+        order = range(len(frames)) if k_pass % 2 == 0 else range(len(frames) - 1, -1, -1)
+        for i in order:
+            q = frames[i]
             if poses[i].ok:
                 continue
             nb = [poses[j] for j in (i - 1, i + 1, i - 2, i + 2) if 0 <= j < len(frames) and poses[j].ok
@@ -268,6 +277,7 @@ def localize_camera(L: Localizer, frames: list[ImageRec], w: int, h: int, log: b
                 fp.source = "track"
                 poses[i] = fp
                 changed = True
-        if not changed:
+        stale = 0 if changed else stale + 1
+        if stale >= 2:  # nothing moved in either direction
             break
     return poses

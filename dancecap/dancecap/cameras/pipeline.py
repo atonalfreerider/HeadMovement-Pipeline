@@ -15,8 +15,9 @@ from .features import Features, FeatureSettings, ImageRec, list_images
 from .localize import FramePose, Localizer, LocSettings, localize_camera
 from .mapping import (MapSettings, build_database, link_components, map_pairs, match_pairs, model_cams,
                       refine_model, run_mapper, run_sub_mapper, select_map_images, targeted_pairs)
-from .depth_guard import apply as depth_guard
+from .depth_guard import DepthGuardSettings, apply as depth_guard
 from .smooth import smooth_track
+from .typed import TypedSettings, loc_marker, loc_mode, localize_typed, locked_tripod, refit as type_refit
 from .world import (apply, bootstrap, roles_coverage, scale_checks, scale_rule_from_take, sole_from_take,
                     statures_from_take, triangulate_dancers)
 from .world_scale import adopt_reference, reference_from_take
@@ -130,11 +131,28 @@ def load_model(work: Path):
     return pycolmap.Reconstruction(str(work / "cameras" / "sfm"))
 
 
-def stage_loc(work: Path, recs: dict, F: Features, ls: LocSettings, ms: MapSettings, cams: list[str]) -> dict:
+def camera_types_for(work: Path, types: dict | None = None, policy: str | None = None) -> dict:
+    """{cam: camera_types.StageType} to apply: `types` as given (an explicit {} = none), else from the take TOML of
+    work/<take> under the policy (DANCECAP_CAMERA_TYPES / --camera-types, default 'user' = confirmed answers only).
+    Takes without camera types (and every unconfirmed camera) get today's general model."""
+    if types is not None:
+        return types
+    from .. import camera_types as ct
+    try:
+        return {c: t for c, t in ct.types_for_work(work, policy=policy).items() if not t.general}
+    except ct.CameraTypeError as e:
+        print(f"[cameras] WARNING camera types not read ({e}): today's general model for every camera")
+        return {}
+
+
+def stage_loc(work: Path, recs: dict, F: Features, ls: LocSettings, ms: MapSettings, cams: list[str],
+              types: dict | None = None, policy: str | None = None) -> dict:
     model = load_model(work)
     images, _ = map_images(work, recs, ms)
     L = Localizer(F, model, images, ls)
     out = {}
+    types = camera_types_for(work, types, policy)
+    pol = _policy_name(policy)
     with gpu.exclusive("cameras-loc"):
         for cam in cams:
             if cam not in L.cams_reg:
@@ -145,8 +163,14 @@ def stage_loc(work: Path, recs: dict, F: Features, ls: LocSettings, ms: MapSetti
             meta = json.loads((work / "frames" / cam / "frames.json").read_text())
             w, h = int(meta["width"]), int(meta["height"])
             t0 = time.time()
-            poses = localize_camera(L, frames, w, h)
-            _save_raw(work / "cameras" / "cache" / f"loc_{cam}.npz", frames, poses)
+            st = types.get(cam)
+            if locked_tripod(st):  # keyframes + one pose; every frame when the constant pose is refused there
+                poses, how = localize_typed(L, frames, w, h, st)
+                out[f"{cam}_typed"] = how
+            else:
+                poses, how = localize_camera(L, frames, w, h), {"mode": "all", "localised": len(frames)}
+            _save_raw(work / "cameras" / "cache" / f"loc_{cam}.npz", frames, poses,
+                      loc_marker(how["mode"], st.cls if st is not None else "handheld_zoom", pol, how.get("localised")))
             n_ok = sum(p.ok for p in poses)
             print(f"[cameras] {cam}: localised {n_ok}/{len(frames)} ({time.time() - t0:.0f}s)", flush=True)
             out[cam] = n_ok
@@ -162,13 +186,49 @@ def _file_key(*paths: Path) -> list:
             for p in paths]
 
 
+def _norm_key(o):
+    """A cache key with its file mtimes in whole seconds: _file_key records nanoseconds, a work dir that was downloaded
+    from a pod (tar) or copied keeps only seconds, which invalidated every cache of larissa_kadu_full_* locally."""
+    if isinstance(o, bool) or o is None:
+        return o
+    if isinstance(o, int) and o >= 10 ** 18:
+        return o // 10 ** 9
+    if isinstance(o, dict):
+        return {k: _norm_key(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_norm_key(v) for v in o]
+    return o
+
+
+LOOSE_FILE_KEYS = False  # True (attach_zoom.reattach): cache keys compare files by name + size only
+
+
+def _loose_key(o):
+    """[name, mtime, size] file records -> [name, size]. A work dir whose files were copied between takes (reused maps)
+    or extracted from a pod tar keeps other mtimes than the ones the cache was keyed with, although the file is the
+    same: the sub-model localisations of larissa_kadu_full_{b,c,d} would otherwise need the frame images again."""
+    if isinstance(o, (list, tuple)):
+        if len(o) == 3 and isinstance(o[0], str) and o[0].endswith((".bin", ".npz", ".pkl", ".db")) \
+                and isinstance(o[2], int):
+            return [o[0], o[2]]
+        return [_loose_key(v) for v in o]
+    if isinstance(o, dict):
+        return {k: _loose_key(v) for k, v in o.items()}
+    return o
+
+
+def _key_form(o):
+    o = _norm_key(o)
+    return _loose_key(o) if LOOSE_FILE_KEYS else o
+
+
 def _cached(path: Path, key, compute):
     """pickle cache with an explicit key (inputs' mtimes + settings + code version)."""
     import pickle
     if path.exists():
         try:
             d = pickle.loads(path.read_bytes())
-            if d.get("key") == key:
+            if _key_form(d.get("key")) == _key_form(key):
                 return d["value"]
         except Exception:  # noqa: BLE001 - stale/corrupt cache: recompute
             pass
@@ -205,11 +265,17 @@ def main_vertical(work: Path, tracks: dict, main_cams: list[str]) -> dict:
 
 
 def stage_attach(work: Path, recs: dict, F: Features, ls: LocSettings, ms: MapSettings, cams: list[str],
-                 sigma_s: float, max_reproj_px: float, statures: tuple[dict, str], scale_rule: str = "chain") -> dict:
+                 sigma_s: float, max_reproj_px: float, statures: tuple[dict, str], scale_rule: str = "chain",
+                 types: dict | None = None, zoom_cams: set | None = None) -> dict:
     """Cameras missing from the main model: localise against their own sub-model, then place that sub-model in
     the main frame (attach.py). Tilt/roll come from the building's vertical (vertical vanishing points of the
     camera's own frames vs the main cameras'), yaw + centre from the dancers' keypoints triangulated by the MAIN
-    cameras. Writes loc_<cam>.npz in the MAIN SfM frame + attach_<cam>.npz (per-frame dancer residual)."""
+    cameras. Writes loc_<cam>.npz in the MAIN SfM frame + attach_<cam>.npz (per-frame dancer residual).
+
+    zoom_cams: attached cameras the user declared as ZOOMING (attach_zoom.zoom_cams_of; None = none: today's one focal
+    per sub-model). Their per-frame rotation AND focal are re-solved with the camera centre held at the sub-model's
+    reference centre (attach_zoom.py), and only the rotation-only attach is used (a zooming phone slid along its
+    axis in the fixed-focal localisation, which the Sim3 variant would take for real motion)."""
     import pycolmap
 
     from .attach import (compose, floor_in_model, holdout, observations, rotonly_errors, sim3_errors,
@@ -230,7 +296,7 @@ def stage_attach(work: Path, recs: dict, F: Features, ls: LocSettings, ms: MapSe
             m = pycolmap.Reconstruction(str(d))
             subs.append((d.parent.name, m, model_cams(m)))
     main_cams = [c for c in cams if c in reg]
-    main_tracks = stage_smooth(work, main_cams, sigma_s, max_reproj_px, write=False)
+    main_tracks = stage_smooth(work, main_cams, sigma_s, max_reproj_px, write=False, types=types)
     vert = main_vertical(work, main_tracks, main_cams)
     u_main = np.asarray(vert["fused"]["u"])
     dancers3d = grid = floor_main = None
@@ -258,6 +324,12 @@ def stage_attach(work: Path, recs: dict, F: Features, ls: LocSettings, ms: MapSe
         poses = _cached(work / "cameras" / "cache" / f"locsub_{cam}.pkl", loc_key, localise)
         ok = np.array([p.ok for p in poses])
         print(f"[cameras] {cam}: {ok.sum()}/{len(frames)} frames localised in sub-model {name} {mc}", flush=True)
+        zoom_rep = None
+        if cam in (zoom_cams or ()) and ok.sum() >= 10:
+            from .attach_zoom import reference_centre, resolve_zoom
+            poses, zoom_rep = resolve_zoom(poses, reference_centre(sub), w, h, t=np.array([r.t for r in frames]))
+            ok = np.array([p.ok for p in poses])
+            print(f"[cameras] {cam}: per-frame focal (zooming phone): {zoom_rep}", flush=True)
         if ok.sum() < 10:
             info[cam] = {"attached": False, "reason": f"only {int(ok.sum())} frames localised in sub-model {name}"}
             (work / "cameras" / "cache" / f"loc_{cam}.npz").unlink(missing_ok=True)
@@ -312,7 +384,7 @@ def stage_attach(work: Path, recs: dict, F: Features, ls: LocSettings, ms: MapSe
         ho["rotation-only"] = holdout(
             lambda sel: solve_rotonly(R_sub, K, k1, fidx[sel], X[sel], uv[sel], wt[sel], up_main=floor_main[0]),
             rot_err, fidx, t)
-        floor_ok = bool(fl is not None and np.degrees(np.arccos(min(1.0, abs(float(fl[0] @ up_s))))) < 10)
+        floor_ok = bool(fl is not None and np.degrees(np.arccos(min(1.0, abs(float(fl[0] @ up_s))))) < 10)             and zoom_rep is None
         rejected = {}
         if floor_ok:
             sol = solve_sim3(R_sub, t_sub, K, k1, fidx, X, uv, wt, floor_sub=floor_sub, floor_main=floor_main)
@@ -371,6 +443,8 @@ def stage_attach(work: Path, recs: dict, F: Features, ls: LocSettings, ms: MapSe
                      "dancer_holdout": sol["holdout"],
                      "dancer_obs": sol["n_obs"], "frames_used": sol["frames_used"],
                      "camera_centre_sfm": (sol["C"].tolist() if kind != "sim3+floor" else None)}
+        if zoom_rep is not None:
+            info[cam]["zoom"] = zoom_rep
         print(f"[cameras] {cam}: attached ({kind}); " + "; ".join(
             f"{k}: fit {v['median_px']:.1f}px, hold-out {v['holdout'].get('median_px', float('nan')):.1f}px, "
             f"vertical err {v['vertical_err_deg'] if v['vertical_err_deg'] is None else round(v['vertical_err_deg'], 2)}"
@@ -378,7 +452,8 @@ def stage_attach(work: Path, recs: dict, F: Features, ls: LocSettings, ms: MapSe
     return info
 
 
-def _save_raw(p: Path, frames: list[ImageRec], poses: list[FramePose]) -> None:
+def _save_raw(p: Path, frames: list[ImageRec], poses: list[FramePose], meta: dict | None = None) -> None:
+    """Raw localisation -> cameras/cache/loc_<cam>.npz; meta: typed.loc_marker (how the camera was localised)."""
     n = len(poses)
     corr_off = np.zeros(n + 1, np.int64)
     xy, xyz = [], []
@@ -394,7 +469,63 @@ def _save_raw(p: Path, frames: list[ImageRec], poses: list[FramePose]) -> None:
              n_inliers=np.array([fp.n_inliers for fp in poses]), reproj_px=np.array([fp.reproj_px for fp in poses]),
              source=np.array([fp.source for fp in poses]), corr_off=corr_off,
              corr_xy=np.concatenate(xy) if xy else np.zeros((0, 2)),
-             corr_xyz=np.concatenate(xyz) if xyz else np.zeros((0, 3)))
+             corr_xyz=np.concatenate(xyz) if xyz else np.zeros((0, 3)), **(meta or {}))
+
+
+def _policy_name(policy: str | None) -> str:
+    from .. import camera_types as ct
+    try:
+        return ct.resolve_policy(policy)
+    except ct.CameraTypeError:
+        return "user"
+
+
+class KeyframeCacheError(RuntimeError):
+    """A locked tripod's keyframes-only localisation cannot carry the model the camera now needs."""
+
+    def __init__(self, cams: dict[str, str], take: str | None = None):
+        self.cams = cams
+        super().__init__("; ".join(f"{c}: {why}" for c, why in cams.items()) + " - re-localise every frame: "
+                         f"python -m dancecap cameras {take or '<take>'} --stages loc --cams {','.join(sorted(cams))} "
+                         f"(Runpod: the front session's loc:<cam> jobs)")
+
+
+def keyframe_mismatch(work: Path, cams: list[str], types: dict) -> dict[str, str]:
+    """{cam: why} of the cameras whose loc_<cam>.npz holds a locked tripod's keyframes only although the camera's
+    type (under the current policy) is no longer a locked tripod: that cache must be re-localised on every frame."""
+    out = {}
+    for cam in cams:
+        p = work / "cameras" / "cache" / f"loc_{cam}.npz"
+        if not p.exists():
+            continue
+        with np.load(p) as z:
+            if loc_mode(z) != "keyframes":
+                continue
+            was = str(z["loc_class"]) if "loc_class" in z.files else "tripod"
+            n = int(z["loc_localised"]) if "loc_localised" in z.files else -1
+        st = types.get(cam)
+        if not locked_tripod(st):
+            out[cam] = (f"cameras/cache/loc_{cam}.npz holds keyframes only ({n} frames, localised as {was}) but the "
+                        f"camera is now {st.cls if st is not None else 'handheld_zoom'}")
+    return out
+
+
+def localisation_record(work: Path, cams: list[str]) -> dict:
+    """{cam: {mode, class, policy, localised, frames}} from the loc_<cam>.npz markers (report.json camera_types)."""
+    out = {}
+    for cam in cams:
+        p = work / "cameras" / "cache" / f"loc_{cam}.npz"
+        if not p.exists():
+            continue
+        try:
+            with np.load(p) as z:
+                out[cam] = {"mode": loc_mode(z), "frames": int(len(z["t"])),
+                            "class": str(z["loc_class"]) if "loc_class" in z.files else None,
+                            "policy": str(z["loc_policy"]) if "loc_policy" in z.files else None,
+                            "localised": int(z["loc_localised"]) if "loc_localised" in z.files else None}
+        except (OSError, ValueError, KeyError):
+            continue
+    return out
 
 
 def reproj_cv(R, t, K, k1, xyz, xy) -> np.ndarray:
@@ -403,9 +534,19 @@ def reproj_cv(R, t, K, k1, xyz, xy) -> np.ndarray:
 
 
 def stage_smooth(work: Path, cams: list[str], sigma_s: float, max_reproj_px: float,
-                 write: bool = True, attach_bad_px: float = 60.0) -> dict[str, dict]:
-    """Raw localisation -> smoothed tracks -> cameras/<cam>.npz (SfM frame). Returns track dicts."""
+                 write: bool = True, attach_bad_px: float = 60.0, types: dict | None = None,
+                 typed_settings: TypedSettings | None = None) -> dict[str, dict]:
+    """Raw localisation -> smoothed tracks -> cameras/<cam>.npz (SfM frame). Returns track dicts.
+
+    types: {cam: camera_types.StageType}; None = read the take TOML (camera_types_for), {} = none (today's model).
+    A camera with a non-general type gets its model applied first (typed.py: one focal per video, one constant pose
+    for a tripod, ...) and skips the zoom-depth guard; the general class runs exactly today's code.
+    A locked tripod's keyframes-only localisation (loc_mode 'keyframes') is valid only for the constant pose: with any
+    other model the camera is not exported (write=True raises KeyframeCacheError after the other cameras; write=False
+    returns the track marked keyframes_only)."""
     tracks = {}
+    types = camera_types_for(work, types)
+    sparse_bad: dict[str, str] = {}
     for cam in cams:
         p = work / "cameras" / "cache" / f"loc_{cam}.npz"
         if not p.exists():
@@ -415,9 +556,28 @@ def stage_smooth(work: Path, cams: list[str], sigma_s: float, max_reproj_px: flo
         d = dict(np.load(p))
         meta = json.loads((work / "frames" / cam / "frames.json").read_text())
         w, h = int(meta["width"]), int(meta["height"])
-        # zoom-depth guard: frames whose centre is ill-determined along the optical axis are re-centred on an
-        # inverse-variance smooth of the centres, rotation + focal re-solved (depth_guard.py); attached cams skipped
-        d, dg = depth_guard(d, w, h)
+        st = types.get(cam)
+        ctype = None
+        if st is not None and not st.general:  # camera type (dancecap.camera_types): constrained model first
+            d, ctype = type_refit(d, w, h, st, typed_settings, log=print if write else None)
+        sparse = loc_mode(d) == "keyframes"
+        if sparse and (ctype is None or ctype["model"] != "constant"):
+            why = (f"cameras/cache/loc_{cam}.npz holds a locked tripod's keyframes only but the camera's model is "
+                   + (f"{ctype['model']} ({ctype['class']}: {(ctype.get('check') or {}).get('why') or 'refused'})"
+                      if ctype is not None else f"the general per-frame model ({st.cls if st else 'handheld_zoom'})"))
+            if write:
+                print(f"[cameras] {cam}: NOT exported - {why}", flush=True)
+                sparse_bad[cam] = why
+                continue
+        if ctype is not None and ctype["model"] != "per_frame":
+            # a fixed focal or a fixed centre leaves no focal / depth-along-the-axis ambiguity to guard against
+            d, dg = depth_guard(d, w, h, DepthGuardSettings(enabled=False))
+            dg["skipped"] = f"camera type {ctype['class']}: model {ctype['model']}"
+        else:
+            # zoom-depth guard: frames whose centre is ill-determined along the optical axis are re-centred on an
+            # inverse-variance smooth of the centres, rotation + focal re-solved (depth_guard.py); attached cams skipped
+            d, dg = depth_guard(d, w, h)
+        held = np.asarray(d.get("type_held", np.zeros(len(d["t"]), bool)), bool)
         ok_raw = d["ok"].astype(bool)
         wts = np.where(ok_raw, np.clip(d["n_inliers"] / 100.0, 0.2, 1.0), 0.0)
         sm = smooth_track(d["t"], d["R"], d["tvec"], np.where(ok_raw, d["f"], np.nan), ok_raw, wts, sigma_s=sigma_s)
@@ -441,6 +601,8 @@ def stage_smooth(work: Path, cams: list[str], sigma_s: float, max_reproj_px: flo
                 e_s = e_r
             rp[i] = e_s
         ok = ok_raw & (np.nan_to_num(rp, nan=1e9) <= max_reproj_px)
+        if held.any():  # a constant (tripod) pose is valid on frames without static points of their own
+            ok |= ok_raw & held & ~np.isfinite(rp)
         attached = bool(np.any(d["source"] == "attach"))
         if attached:  # reproj_px of an attached camera is its SUB-MODEL consistency; the main-frame check is the
             # dancers' residual (attach_<cam>.npz): frames far off the dancers are not trusted
@@ -450,16 +612,24 @@ def stage_smooth(work: Path, cams: list[str], sigma_s: float, max_reproj_px: flo
                 lim = max(attach_bad_px, 3.0 * float(np.nanmedian(dpx)))
                 ok &= ~(np.nan_to_num(dpx, nan=0.0) > lim)
         n_in = np.where(ok, d["n_inliers"], 0).astype(np.int32)
+        typed_keys = {} if ctype is None else {  # additive contract keys (CONTRACTS.md cameras/<cam>.npz)
+            "camera_class": np.str_(ctype["class"]), "type_model": np.str_(ctype["model"]), "type_held": held}
         if write:
             np.savez(work / "cameras" / f"{cam}.npz", t=d["t"], K=K, R=R_out, tvec=t_out, dist=k1, ok=ok,
                      reproj_px=rp, n_inliers=n_in, attached=np.bool_(attached),
-                     axis_sd=d["axis_sd"].astype(np.float32), recentred=d["recentred"])
+                     axis_sd=d["axis_sd"].astype(np.float32), recentred=d["recentred"], **typed_keys)
         C_out = -np.einsum("fji,fj->fi", R_out, t_out)
         tracks[cam] = {"t": d["t"], "K": K, "k1": k1, "R": R_out, "tvec": t_out, "ok": ok, "C": C_out,
                        "f": f_out, "f_raw": d["f"], "raw_used": int(raw_used.sum()), "ok_raw": ok_raw, "reproj_px": rp, "reproj_raw": d["reproj_px"],
                        "n_inliers": d["n_inliers"], "source": d["source"], "w": w, "h": h, "maxdim": max(w, h),
                        "attached": attached,
                        "outliers": int(sm["outlier"].sum()), "depth_guard": dg}
+        if ctype is not None:
+            tracks[cam]["camera_type"] = ctype
+        if sparse:
+            tracks[cam]["keyframes_only"] = ctype is None or ctype["model"] != "constant"
+    if sparse_bad:
+        raise KeyframeCacheError(sparse_bad, Path(work).name)
     return tracks
 
 
@@ -502,7 +672,9 @@ def focal_stats(tr: dict, spike_pct: float = 2.0) -> dict:
 
 
 def run(take: Take, cams: list[str] | None = None, stages: tuple[str, ...] = STAGES, sigma_s: float = 0.04,
-        max_reproj_px: float = 4.0) -> dict:
+        max_reproj_px: float = 4.0, camera_types: str | None = None) -> dict:
+    """camera_types: policy for the per-video camera types (user | auto | off; None = DANCECAP_CAMERA_TYPES or
+    'user': confirmed answers only). See dancecap.camera_types and cameras/typed.py."""
     work = take.work.resolve()
     cams = cams or [s.id for s in take.sources]
     out = work / "cameras"
@@ -512,14 +684,26 @@ def run(take: Take, cams: list[str] | None = None, stages: tuple[str, ...] = STA
     F = Features(work, out / "cache", fs)
     rep_p = out / "report.json"
     rep = json.loads(rep_p.read_text()) if rep_p.exists() else {}
+    types = camera_types_for(work, None, camera_types)
+    policy = _policy_name(camera_types)
+    rep["camera_types"] = {"policy": policy, "applied": {c: t.as_dict() for c, t in sorted(types.items())}}
+    if types:
+        print("[cameras] camera types: " + ", ".join(f"{c} {t.cls} ({t.source})" for c, t in sorted(types.items()))
+              + f"; every other camera: handheld + zoom (general); policy {policy}")
+    if "loc" not in stages:  # a locked tripod's keyframes-only cache cannot carry another model: refuse early
+        bad = keyframe_mismatch(work, cams, types)
+        if bad:
+            raise KeyframeCacheError(bad, take.name)
     if "map" in stages:
         rep["map"] = stage_map(work, recs, F, ms)
     if "loc" in stages:
-        stage_loc(work, recs, F, ls, ms, cams)
+        stage_loc(work, recs, F, ls, ms, cams, types=types, policy=policy)
     if "attach" in stages:
+        from .attach_zoom import zoom_cams_of
         rep["attach"] = stage_attach(work, recs, F, ls, ms, cams, sigma_s, max_reproj_px,
-                                     statures_from_take(take.cfg), scale_rule_from_take(take.cfg))
-    tracks = stage_smooth(work, cams, sigma_s, max_reproj_px)
+                                     statures_from_take(take.cfg), scale_rule_from_take(take.cfg), types=types,
+                                     zoom_cams=zoom_cams_of(work, camera_types))
+    tracks = stage_smooth(work, cams, sigma_s, max_reproj_px, types=types)
     model = load_model(work)
     pts = np.array([p.xyz for p in model.points3D.values()]).reshape(-1, 3)
     rgb = np.array([p.color for p in model.points3D.values()]).reshape(-1, 3)
@@ -565,8 +749,55 @@ def run(take: Take, cams: list[str] | None = None, stages: tuple[str, ...] = STA
     if "qa" in stages:
         rep.update(build_report(work, cams, recs, model, tracks, pts, rgb, sim3, rep.get("map", {}), sigma_s,
                                 max_reproj_px, rep.get("attach")))
+        camera_type_probe(work, tracks, sim3, sigma_s, max_reproj_px, rep)
+        rep["camera_types"]["localised"] = localisation_record(work, cams)
         rep_p.write_text(json.dumps(rep, indent=1, default=_np))
     return rep
+
+
+def camera_type_probe(work: Path, tracks: dict, sim3: dict | None, sigma_s: float, max_reproj_px: float,
+                      rep: dict) -> None:
+    """Probe B of the camera types (dancecap.camera_types) on today's GENERAL per-frame tracks -> probe/
+    camera_types_probe_b.json (the suggestion after calibration, and the evidence of a conflict with the user's type);
+    cams.<cam>.camera_type = the model applied + its residual check. Never fails the stage."""
+    try:
+        from .. import camera_types as ct
+        typed = [c for c, tr in tracks.items() if tr.get("camera_type")]
+        general = {c: tr for c, tr in tracks.items() if c not in typed}
+        if typed:  # the typed export would be circular evidence: re-derive today's model for these cameras
+            general.update(stage_smooth(work, typed, sigma_s, max_reproj_px, write=False, types={}))
+        res = ct.probe_b(work.name, sorted(general), write=work.parent.resolve() == (ct.root() / "work").resolve(),
+                         tracks=general, sim3=sim3, log=print)
+        for c, tr in tracks.items():
+            e = rep.setdefault("cams", {}).setdefault(c, {})
+            if tr.get("camera_type"):
+                e["camera_type"] = tr["camera_type"]
+            if c in res:
+                e["camera_type_probe_b"] = res[c]
+        _progress_camera_motion(res, sim3)
+    except Exception as e:  # noqa: BLE001 - a probe never fails the cameras stage
+        print(f"[cameras] camera-type probe B skipped: {type(e).__name__}: {e}")
+
+
+def _progress_camera_motion(res: dict, sim3: dict | None) -> None:
+    """dancecap.progress/1 QA metric `camera_motion` per camera (no-op unless DANCECAP_PROGRESS): probe B's measurement
+    of today's UNCONSTRAINED per-frame track + its suggestion, so the monitor can compare it with the declared type
+    while the job runs (the type-constrained export would read 0 cm / x1.00 by construction). Never raises."""
+    try:
+        from .. import progress as _progress
+        if not _progress.enabled():
+            return
+        for cam, s in sorted(res.items()):
+            ev = s.get("evidence") or {}
+            _progress.metric("camera_motion", step="cameras", lane=cam, source="probe_b", constrained=False,
+                             metric_scale=sim3 is not None, at=s.get("at"),
+                             **{k: ev.get(k) for k in ("centre_p95_m", "axis_p95_deg", "angvel_p50_dps", "hf_rot_deg",
+                                                       "hf_centre_mm", "focal_ratio", "focal_step_pct", "frames",
+                                                       "mount_judgeable", "zoom_judgeable", "attached")},
+                             **{k: s.get(k) for k in ("mount", "zoom", "pans", "confidence", "mount_confidence",
+                                                      "zoom_confidence")})
+    except Exception:  # noqa: BLE001 - progress never fails a stage
+        pass
 
 
 def _np(o):
