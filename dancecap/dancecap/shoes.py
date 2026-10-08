@@ -14,8 +14,14 @@ style (sole stack, toe spring) and the colours. The foot measurements below are 
 Inputs (nothing take-specific in the code): the capture's smplx_<role>_skin.bin + smplx_<role>.bin + times.json
 (StreamingAssets/<capture>, Unity coordinates), work/<take>/avatar/<role>_albedo.png + <role>_coverage.png (the
 texture bake), frames/<cam>/*.jpg + dancers/<cam>/masks (video), cameras/<cam>.npz + world_from_sfm.json; optional
-takes/<take>.toml [dancers.<role>] shoe_style (style only - never colours in a tracked file) and
+takes/<take>.toml [dancers.<role>] shoe_style (style only - never colours in a tracked file) and shoe_geometry
+(measured sole stack: {sole_heel_m, sole_fore_m, toe_spring_m, heel_bevel_m}, overrides the style's numbers; applied
+by every export too, so `--export-only` picks a toml change up without re-sampling the colours), and
 work/<take>/avatar/shoes_override.json ({"<role>": {"<field>": "#rrggbb" | number | style}}).
+
+Size: the sneaker is built around the fitted rest foot, so its length / width follow the foot. To match the shoes
+measured in the video (python -m dancecap.shoe_size), the exporter shrinks the rest feet (dancecap.shape_edits:
+[dancers.<role>.shape_edits] shoe_length_m / foot_height_scale) - shoes.json carries no size.
 
 Method (CPU, < 1 min)
   1. Foot sets: split vertices with w(ankle) + w(foot) >= 0.5 (SMPL-X joints 7/10 left, 8/11 right); sole plane =
@@ -48,7 +54,6 @@ from __future__ import annotations
 import argparse
 import colorsys
 import json
-import shutil
 import time
 from pathlib import Path
 
@@ -76,6 +81,9 @@ STYLES = {
 # generic palette when nothing is measured (also the Unity default): off-white leather, white sole, grey outsole
 DEFAULT = {"upper": "#d9d6cf", "sole": "#ecebe6", "sole_heel": "#ecebe6", "outsole": "#5a5a5a", "accent": "#9a9a9a", "lace": "#d9d6cf",
            "lining": "#b8b4ac", "heel_tab": "#8a8a8a"}
+
+GEOMETRY = ("sole_heel_m", "sole_fore_m", "toe_spring_m", "heel_bevel_m")  # toml shoe_geometry keys (metres)
+GEOMETRY_RANGE = (0.0, 0.07)
 
 SOLE_H = (0.0, 0.022)
 UPPER_H = (0.025, 0.060)
@@ -544,6 +552,35 @@ def video_gain(bake: dict, video: dict) -> tuple[np.ndarray | None, str]:
 
 # ------------------------------------------------------------------------------------------------ build
 
+def toml_geometry(take_cfg: dict, role: str) -> dict:
+    """takes toml [dancers.<role>] shoe_geometry -> {field: metres} (validated)."""
+    g = (((take_cfg or {}).get("dancers") or {}).get(role) or {}).get("shoe_geometry") or {}
+    out = {}
+    for k, v in g.items():
+        if k not in GEOMETRY:
+            raise ValueError(f"{role}: shoe_geometry key {k!r} not one of {GEOMETRY}")
+        v = float(v)
+        if not GEOMETRY_RANGE[0] <= v <= GEOMETRY_RANGE[1]:
+            raise ValueError(f"{role}: shoe_geometry {k} = {v} outside {GEOMETRY_RANGE} m")
+        out[k] = v
+    return out
+
+
+def apply_geometry(shoes: dict, take_cfg: dict) -> list[str]:
+    """Set the toml's shoe_geometry on a shoes.json dict in place (source noted). -> changed 'role.field' names."""
+    changed = []
+    for r, d in (shoes.get("dancers") or {}).items():
+        g = toml_geometry(take_cfg, r)
+        for k, v in g.items():
+            if d.get(k) != v:
+                changed.append(f"{r}.{k}")
+            d[k] = v
+        if g:
+            d.setdefault("source", {})["geometry"] = "takes toml shoe_geometry: " + ", ".join(
+                f"{k} {v:.3f}" for k, v in g.items())
+    return changed
+
+
 def captures_for(take: str, streaming: Path = UNITY_STREAMING) -> list[Path]:
     out = []
     for d in sorted(Path(streaming).iterdir()) if Path(streaming).exists() else []:
@@ -597,7 +634,7 @@ def build(take: Take, capture: Path | None = None, video: bool = True, step_s: f
             style, style_src = ov["style"], "override"
         if style not in STYLES:
             raise ValueError(f"{r}: unknown shoe style {style!r} ({'|'.join(STYLES)})")
-        d = {"style": style, **{f: to_hex(col[f]) for f in FIELDS}, **STYLES[style]}
+        d = {"style": style, **{f: to_hex(col[f]) for f in FIELDS}, **STYLES[style], **toml_geometry(take.cfg, r)}
         for f in FIELDS:
             if f in ov:
                 d[f], src[f], conf[f] = ov[f], "override", 1.0
@@ -605,6 +642,9 @@ def build(take: Take, capture: Path | None = None, video: bool = True, step_s: f
             if f in ov:
                 d[f] = float(ov[f])
         d["source"] = {"style": style_src, **src}
+        if toml_geometry(take.cfg, r):
+            d["source"]["geometry"] = "takes toml shoe_geometry: " + ", ".join(
+                f"{k} {v:.3f}" for k, v in toml_geometry(take.cfg, r).items())
         d["confidence"] = {f: round(float(conf[f]), 2) for f in FIELDS}
         d["samples"] = {"bake": {b: int(len(x)) for b, x in bake.get(r, {}).items()},
                         "video": {b: int(len(x)) for b, x in vid.get(r, {}).items()},
@@ -730,11 +770,15 @@ def vs_video_sheet(take: Take, out: Path | None = None, tile: int = 300) -> Path
 # ------------------------------------------------------------------------------------------------ export
 
 def export(take: Take, capture: str | None = None, streaming: Path = UNITY_STREAMING) -> list[Path]:
-    """Copy avatar/shoes.json into StreamingAssets/<capture>/ (and work/<take>/export/<capture>/ when it exists).
-    Re-run after every `python -m dancecap export` (that rewrites the capture folder)."""
+    """Write avatar/shoes.json (+ the toml's shoe_geometry) into StreamingAssets/<capture>/ (and
+    work/<take>/export/<capture>/ when it exists). Re-run after every `python -m dancecap export` (that rewrites the
+    capture folder)."""
     src = take.work / "avatar" / "shoes.json"
     if not src.exists():
         raise FileNotFoundError(f"{src} missing (run python -m dancecap.shoes {take.name})")
+    shoes = json.loads(src.read_text(encoding="utf-8"))
+    apply_geometry(shoes, getattr(take, "cfg", None) or {})
+    text = json.dumps(shoes, indent=1)
     dirs = [Path(streaming) / capture] if capture else captures_for(take.name, streaming)
     out = []
     for d in dirs:
@@ -742,7 +786,7 @@ def export(take: Take, capture: str | None = None, streaming: Path = UNITY_STREA
             raise FileNotFoundError(f"{d}/capture.json missing (export the capture first)")
         for dst in (d, take.work / "export" / d.name):
             if dst.exists():
-                shutil.copy2(src, dst / "shoes.json")
+                (dst / "shoes.json").write_text(text, encoding="utf-8")
                 out.append(dst / "shoes.json")
     return out
 
