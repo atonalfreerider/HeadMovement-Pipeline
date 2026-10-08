@@ -28,11 +28,15 @@ reaches only ~0.68 m radius with straight arms. generate() refuses a take whose 
 Ground truth (truth.json, "counterbalance": [one interval]):
   pivot_t0 / pivot_t1   = [T1, T2], the generator's schedule (the leader circles exactly there) - with P, the pivot
                           foot, the leader's swept angle / direction / radius;
-  t0 / t1               = the counterbalance (yellow axis) interval: where BOTH dancers lean away >= 8 cm and a hand
-                          pair is joined with straight arms, i.e. the counterbalance-tier criteria of
-                          dancecap.counterbalance at their 0.5 points, evaluated on the EXACT geometry (exact joints,
-                          posed-mesh COM, no smoothing, no noise) - the lean starts during the set-up when the follower's
-                          free foot leaves the floor, so it precedes the pivot by a few frames;
+  t0 / t1               = the counterbalance (yellow axis) interval: the counterbalance-tier criteria of
+                          dancecap.counterbalance (one dancer hangs beyond the edge of their support while the partner
+                          does not lean in, AND a connection) at their 0.5 points, evaluated on the EXACT geometry
+                          (exact joints, posed-mesh COM, no smoothing, no noise) - the lean starts during the set-up
+                          when the follower's free foot leaves the floor, so it precedes the pivot by a few frames.
+                          DEFINITIONAL: these edges come from the detector's own lean / connection functions, so the
+                          synthetic test checks the detector's smoothing, edges and pivot logic, not whether its
+                          definition of a counterbalance is right - only a human label can (the regression test on
+                          work/larissa_kadu_38/counterbalance/truth_user.json);
   plus the masses and the per-frame combined centre of mass of the couple (each body's COM from the LBS-posed closed
   SMPL-X mesh with uniform density, physics_body.posed_mesh_com; mass = closed rest-mesh volume x 1010 kg/m^3).
 Known limits (truth.json notes): the leader's feet glide along the circle while in contact (no planted stance feet),
@@ -361,8 +365,10 @@ def generate(spec: Spec | None = None) -> dict:
 
 def counterbalance_truth(g: dict, coms: dict) -> dict | None:
     """The counterbalance (yellow axis) interval on the exact geometry: dancecap.counterbalance's counterbalance-tier
-    criteria (both dancers lean away, a hand pair joined with straight arms) at their 0.5 points, from the exact
-    joints and the posed-mesh COMs, no smoothing - the run around the middle of the pivot; None when there is none."""
+    criteria (lean_score: one dancer hangs beyond their support, the partner not leaning in; connection_scores: a hand
+    pair joined with straight arms or a hand on the partner's body) at their 0.5 points, from the exact joints and the
+    posed-mesh COMs, no smoothing - the run around the middle of the pivot; None when there is none. Definitional (the
+    detector's own criteria): it cannot catch a wrong definition, only the human label can."""
     from . import counterbalance as cb
     cfg = cb.CBConfig()
     spec: Spec = g["spec"]
@@ -370,8 +376,9 @@ def counterbalance_truth(g: dict, coms: dict) -> dict | None:
     J = {r: g[r]["joints"] for r in ROLES}
     contact, mid = cb.foot_contacts(J, cfg)
     disp = cb.lean_displacement(coms, contact, mid)
+    over, sup = cb.support_overhang(coms, contact, J, cfg)
     _, ps, _ = cb.connection_scores(J, cfg)
-    s = np.minimum(cb.lean_score(disp, cfg), ps.max(1))
+    s = np.minimum(cb.lean_score(disp, cfg, over, sup), ps.max(1))
     i = int(np.argmin(np.abs(t - 0.5 * (spec.t1 + spec.t2))))
     if s[i] < cfg.on:
         return None
@@ -383,7 +390,8 @@ def counterbalance_truth(g: dict, coms: dict) -> dict | None:
     t0, t1 = cb.level_edges(t, s, cfg.on, i0, i1)
     k = (t >= spec.t1) & (t <= spec.t2)
     return {"t0": t0, "t1": t1, "min_score_in_pivot": float(s[k].min()),
-            "lean_m_median_in_pivot": {r: round(float(np.median(disp[r][k])), 4) for r in ROLES}}
+            "lean_m_median_in_pivot": {r: round(float(np.median(disp[r][k])), 4) for r in ROLES},
+            "overhang_m_median_in_pivot": {r: round(float(np.median(over[r][k])), 4) for r in ROLES}}
 
 
 def truth_for(g: dict) -> dict:

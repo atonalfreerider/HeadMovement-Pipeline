@@ -9,7 +9,9 @@ circle around her, pivoting her in place. Two tiers are detected:
   pivot           counterbalance AND anchor AND circling                 -> the pivot ring + leader arc (3.5)
 
     python -m dancecap.counterbalance detect --take larissa_kadu     -> work/<take>/counterbalance/counterbalance.json
-                                                                        + work/<take>/review/counterbalance.jpg
+                                                                        + work/<take>/review/counterbalance.jpg (scored
+                                                                        against truth.json / counterbalance/truth_user.json
+                                                                        when present)
     python -m dancecap.counterbalance synthetic                       -> work/synthetic_cb/ (ground truth) + capture
                                                                         03_SyntheticCounterbalance, detected + scored
     python -m dancecap.counterbalance export --take synthetic_cb      -> StreamingAssets/<capture>/counterbalance.json
@@ -31,17 +33,35 @@ the tempo); anchor / circling use windows one beat long, centred; lean / connect
               least squares - so a ball-of-foot pivot is found with the heel swinging.
   circling    the leader's pelvis sweeps an angle about that pivot point: 10..25 deg/beat, one sign (60..90 % of the
               frame steps), mean radius within 0.35..1.6 m (soft edges 0.25 / 1.8) and nearly constant (CV 8..25 %).
-  lean        each dancer's COM is displaced AWAY from the partner relative to the centre of their own feet in contact
-              (contact-weighted mid-foot points), 4..12 cm - i.e. each would fall without the other; the couple score is
-              the LOWER of the two dancers' scores (both must lean away).
+  lean        (lean_mode 'counterweight', the default since 2026-10-07) one dancer HANGS and the partner is the
+              counterweight. Hang = standing (a foot in contact) with the COM BEYOND THE EDGE of their own support away
+              from the partner - COM minus the furthest ankle / ball joint of the feet in contact along the line between
+              the two COMs, 3..9 cm (0.5 at 6 cm ~ the sole edge: heel / toe tip lie 5-7 cm beyond those joints) - AND
+              away from their own contact-weighted mid-foot by 4..12 cm (smooth while a foot lands; the support edge
+              jumps). Counterweight = the partner's COM not ahead of their own mid-foot towards the hanger (-2..+2 cm).
+              Moment balance: a heavier or bracing partner (centre of pressure towards the heels) holds the tension
+              inside their own support, so the partner need not hang too; the better role assignment counts.
+              Why not 'both' (both COMs >= 4..12 cm from their own mid-foot, the rule before 2026-10-07): on
+              larissa_kadu_38 the user-labelled counterbalance (follower on one foot hanging ~30 cm out, leader braced,
+              his lean 0-4 cm at the edges) scored 0 at its edges, while a wide lunge (COM 13 cm from the mid-foot but
+              between the feet) passed it.
   connection  a hand-hand pair at 20..8 cm (hand centre = wrist + finger joints, as physics) with straight arms (elbow
               extension ratio |shoulder-wrist| / (|shoulder-elbow| + |elbow-wrist|) 0.85..0.97); the pair score is the
-              lowest of distance and both arms' extension scores; or a hand on the partner's body (25..12 cm, that arm
-              straight, weight 0.85).
+              lowest of distance and both arms' extension scores; or a hand on the partner's body (25..12 cm, weight
+              0.85) with ANY elbow angle: an embrace frame (his arm around her back, her hand on his shoulder) carries
+              the tension with a bent elbow (hand_body_extension=False since 2026-10-07; True = the old straight-arm
+              requirement, which rejected the labelled close-embrace counterbalance). Tension vs a mere touch is decided
+              by the lean criterion: in an ordinary embrace nobody hangs.
 Tier scores are strict ANDs: counterbalance = min(lean, connection); pivot = min(counterbalance, anchor, circling), so a
 weak criterion cannot be outvoted by strong ones. Intervals by hysteresis (on >= 0.5, held while >= 0.35), gaps up to
-0.5 beat merged, runs < 0.5 beat dropped; pivot runs are also merged across gaps up to 1 beat when the pivot point
-stays within 5 cm (fit jitter must not blink the pivot off). Every pivot lies inside a counterbalance interval.
+0.5 beat merged, runs < 0.5 beat dropped - and runs with fewer than 0.5 beat of frames AT the on level (a row of
+blips bridged by the merge is not a held figure); pivot runs are also merged across gaps up to 1 beat when the pivot
+point stays within 5 cm (fit jitter must not blink the pivot off). Every pivot lies inside a counterbalance interval.
+
+Real-data check (2026-10-07): larissa_kadu_38, the user's label HUD 32.0-36.15 s = reference 62.151-66.301 s
+(counterbalance/truth_user.json): before (both-lean, straight-arm frame) nothing was detected (max score 0.52); after,
+one pivot interval 62.142-66.186 s (IoU 0.97, edges -0.3 / -3.4 frames, 700 deg cw about her left foot, leader radius
+0.39 m) and nothing else in the 38 s; larissa_kadu (56.1-61.9 s) none before and after.
 
 Edges (VIEWER_SPEC 14: the axis within +-1 frame of the truth): the window-based scores blur the edges by half a beat,
 so they are refined after the hysteresis -
@@ -62,7 +82,7 @@ default), from the SMPL-X parameters (never from noisy joints); joint-based segm
 stature-based masses) only when the parameters / body model are unavailable - then a RuntimeWarning is raised and the
 reason is recorded in params.warnings / params.com_source.
 
-Thresholds are documented engineering choices (no labelled counterbalance data exists yet): drift 3..8 cm covers fit
+Thresholds are documented engineering choices (one human label so far, above): drift 3..8 cm covers fit
 jitter of a planted foot (~1-3 cm) while rejecting a stepping foot; 8..20 deg/beat separates a pivot from the ordinary
 slow rotation of a couple in closed position only together with the lean and connection criteria (the synthetic
 ordinary dancing rotates ~22 deg/beat with planted feet and is rejected by lean + connection); 4..12 cm lean is about
@@ -91,7 +111,7 @@ ARMS = {"l": (16, 18, 20), "r": (17, 19, 21)}      # shoulder, elbow, wrist
 BODY_POINTS = {"spine3": 9, "neck": 12, "l_shoulder": 16, "r_shoulder": 17, "pelvis": 0}
 UNITY_STREAMING = WORKSPACE / "head-movement" / "Assets" / "StreamingAssets"
 DEFAULT_CAPTURES = {"synthetic_cb": "03_SyntheticCounterbalance", "larissa_kadu": "02_LarissaKadu",
-                    "synthetic": "01_SyntheticSMPLX"}
+                    "larissa_kadu_38": "04_LarissaKaduDemo", "synthetic": "01_SyntheticSMPLX"}
 CRITERIA = ("anchor", "circling", "lean", "connection")
 KINDS = ("counterbalance", "pivot")
 # de Leva (1996)-style segment weights onto SMPL-X joints for the joints-only COM fallback (segment = mean of joints)
@@ -116,11 +136,24 @@ class CBConfig:
     sign_consistency: tuple = (0.6, 0.9)
     radius_cv: tuple = (0.08, 0.25)         # good .. bad
     radius_m: tuple = (0.25, 0.35, 1.6, 1.8)
-    lean_m: tuple = (0.04, 0.12)
+    lean_m: tuple = (0.04, 0.12)            # lean_mode 'both': COM away from the own mid-foot, none .. full
+    lean_mode: str = "counterweight"        # 'counterweight' (default): one dancer HANGS (COM beyond the edge of their
+                                            # own support, overhang_m) and the partner is the counterweight (not
+                                            # leaning towards them, counter_lean_m); 'both': both dancers' COM >= lean_m
+                                            # from their own mid-foot (the rule before 2026-10-07)
+    overhang_m: tuple = (0.03, 0.09)        # COM beyond the furthest ankle / ball joint of the feet in contact: 0.5 at
+                                            # 6 cm ~ the sole edge (heel / toe tip 5-7 cm beyond those joints)
+    counter_lean_m: tuple = (-0.02, 0.02)   # the partner's COM vs own mid-foot: towards the hanger (bad) .. upright /
+                                            # away (good)
+    support_soft_m: float = 2.0             # a foot with contact weight w counts (1 - w) x this short of its position
+                                            # (> any leg reach: a lifted, extended leg never widens the support)
+    supported_w: tuple = (0.3, 0.7)         # the hanger must stand: max foot contact weight, none .. full
     hand_dist_m: tuple = (0.08, 0.20)       # good .. bad
     hand_body_dist_m: tuple = (0.12, 0.25)
     extension: tuple = (0.85, 0.97)
     hand_body_weight: float = 0.85
+    hand_body_extension: bool = False       # True: a hand on the partner's body also needs a straight arm (pre-10-07);
+                                            # False: an embrace frame carries the tension with a bent elbow
     on: float = 0.5
     off: float = 0.35
     min_beats: float = 0.5
@@ -380,9 +413,52 @@ def lean_displacement(com: dict, contact: dict, mid: dict) -> dict:
     return disp
 
 
-def lean_score(disp: dict, cfg: CBConfig) -> np.ndarray:
-    """Both dancers must lean away: the lower of the two ramp scores."""
-    return np.minimum(_up(disp["follow"], *cfg.lean_m), _up(disp["lead"], *cfg.lean_m))
+def support_overhang(com: dict, contact: dict, J: dict, cfg: CBConfig) -> tuple[dict, dict]:
+    """({role: (T,) overhang m}, {role: (T,) support weight}). Overhang = how far the COM's floor projection lies
+    BEYOND the far edge of the dancer's own support, away from the partner (along the horizontal line between the two
+    COMs; < 0 = inside): COM minus the furthest ankle / ball joint of the feet in contact. A foot with contact weight
+    w counts (1 - w) x support_soft_m short of its position, so the edge moves continuously while a foot lifts or
+    lands. Support weight = the larger foot contact weight (0 = airborne: nothing to hang from)."""
+    u = (com["follow"] - com["lead"])[:, [0, 2]]
+    u = u / np.maximum(np.linalg.norm(u, axis=1, keepdims=True), 1e-6)
+    over, sup = {}, {}
+    for role, sgn in (("follow", 1.0), ("lead", -1.0)):
+        ua = sgn * u
+        c = (com[role][:, [0, 2]] * ua).sum(1)
+        edge = np.full(len(c), -np.inf)
+        for f, (ia, ib) in FEET.items():
+            w = contact[(role, f)]
+            for j in (ia, ib):
+                edge = np.maximum(edge, (J[role][:, j][:, [0, 2]] * ua).sum(1) - (1.0 - w) * cfg.support_soft_m)
+        over[role] = c - edge
+        sup[role] = np.maximum(contact[(role, "left")], contact[(role, "right")])
+    return over, sup
+
+
+def lean_score(disp: dict, cfg: CBConfig, over: dict | None = None, sup: dict | None = None) -> np.ndarray:
+    """Couple lean score (T,).
+    'counterweight' (default): a dancer HANGS - standing (support weight, supported_w) with the COM beyond the edge of
+    their own support away from the partner (overhang_m), i.e. they would fall without the partner, and away from
+    their own mid-foot by lean_m (the contact-weighted centre lean moves smoothly while a foot lands; the support edge
+    jumps, so the centre lean keeps a flickering landing contact from re-opening the hang) - AND the partner
+    is the counterweight: not leaning towards the hanger (centre lean disp >= counter_lean_m). By moment balance a
+    heavier or bracing partner (centre of pressure towards the heels) holds the tension inside their own support, so
+    the partner need not hang too. The better of the two role assignments counts.
+    'both': both dancers' COM >= lean_m from their own mid-foot (the lower of the two ramp scores; a wide stance
+    passes it without hanging - why it is no longer the default)."""
+    f, l = np.asarray(disp["follow"], float), np.asarray(disp["lead"], float)
+    if cfg.lean_mode == "both":
+        return np.minimum(_up(f, *cfg.lean_m), _up(l, *cfg.lean_m))
+    if cfg.lean_mode != "counterweight":
+        raise ValueError(f"lean_mode {cfg.lean_mode!r}: 'counterweight' or 'both'")
+    if over is None or sup is None:
+        raise ValueError("lean_mode 'counterweight' needs the support overhang (support_overhang)")
+    out = np.zeros(len(f))
+    for hanger, partner in (("follow", "lead"), ("lead", "follow")):
+        hang = np.minimum(np.minimum(_up(over[hanger], *cfg.overhang_m), _up(disp[hanger], *cfg.lean_m)),
+                          _up(sup[hanger], *cfg.supported_w))
+        out = np.maximum(out, np.minimum(hang, _up(disp[partner], *cfg.counter_lean_m)))
+    return out
 
 
 def connection_scores(J: dict, cfg: CBConfig) -> tuple[list, np.ndarray, np.ndarray]:
@@ -402,7 +478,8 @@ def connection_scores(J: dict, cfg: CBConfig) -> tuple[list, np.ndarray, np.ndar
             for name, j in BODY_POINTS.items():
                 d = np.linalg.norm(hands[r][s] - J[other][:, j], axis=1)
                 pairs.append((f"{r}_{s}_hand-{other}_{name}", "hand-body"))
-                pscore.append(cfg.hand_body_weight * np.minimum(_down(d, *cfg.hand_body_dist_m), ext[r][s]))
+                sd = _down(d, *cfg.hand_body_dist_m)
+                pscore.append(cfg.hand_body_weight * (np.minimum(sd, ext[r][s]) if cfg.hand_body_extension else sd))
                 pdist.append(d)
     return pairs, np.stack(pscore, 1), np.stack(pdist, 1)
 
@@ -562,7 +639,8 @@ def _detect_segment(npzs: dict, cfg: CBConfig, beat_s: float | None, masses: dic
 
     # (c) lean and (d) connection: per frame
     disp = lean_displacement(com, contact, mid)
-    lean = lean_score(disp, cfg)
+    over, sup = support_overhang(com, contact, J, cfg)
+    lean = lean_score(disp, cfg, over, sup)
     pairs, pscore, pdist = connection_scores(J, cfg)
     best = best_pairs(pscore, pdist)
     connection = pscore[np.arange(T), best]
@@ -584,13 +662,16 @@ def _detect_segment(npzs: dict, cfg: CBConfig, beat_s: float | None, masses: dic
         hit = [r for r in cb_runs if r[1] >= a and r[0] <= b]
         cb_runs = [r for r in cb_runs if r not in hit] + [[min([a] + [r[0] for r in hit]),
                                                           max([b] + [r[1] for r in hit])]]
-    cb_runs = [r for r in _merge_runs(cb_runs, -1) if r[1] - r[0] + 1 >= min_len]
-    pv_runs = [r for r in pv_runs if r[1] - r[0] + 1 >= min_len and any(c[0] <= r[0] and r[1] <= c[1]
-                                                                          for c in cb_runs)]
+    # held: at least min_beats of frames AT the on level (a run of brief blips bridged by the merge is not a figure)
+    held = lambda y, r: int((y[r[0]:r[1] + 1] >= cfg.on).sum()) >= min_len   # noqa: E731
+    cb_runs = [r for r in _merge_runs(cb_runs, -1) if r[1] - r[0] + 1 >= min_len and held(cbs, r)]
+    pv_runs = [r for r in pv_runs if r[1] - r[0] + 1 >= min_len and held(pvs, r)
+               and any(c[0] <= r[0] and r[1] <= c[1] for c in cb_runs)]
 
     res = {"t": t, "beat_s": beat, "window_frames": 2 * h + 1, "scores": scores, "counterbalance": cbs,
            "pivot_score": pvs, "combined": pvs, "com": com, "com_combined": com_c, "joints": J, "feet": feet,
            "foot_index": fi, "pivot": pivot, "sweep_rate": sweep_rate, "radius": radius, "lean_disp": disp,
+           "overhang": over,
            "pairs": pairs, "pair_score": pscore, "pair_dist": pdist, "best_pair": best, "contact": contact,
            "info": info, "cfg": cfg, "runs": [tuple(r) for r in cb_runs], "pivot_runs": [tuple(r) for r in pv_runs],
            "coverage": [[float(t[0]), float(t[-1])]],
@@ -707,6 +788,8 @@ def interval_details(res: dict, i0: int, i1: int, t0: float, t1: float, pivots: 
         "connection": conn,
         "scores": {c: round(float(res["scores"][c][kk].mean()), 4) for c in CRITERIA},
         "lean_m": {r: round(float(np.median(res["lean_disp"][r][kk])), 4) for r in ROLES},
+        "overhang_m": {r: round(float(np.median(res["overhang"][r][kk])), 4) for r in ROLES},
+        "hanger": max(ROLES, key=lambda r: float(np.median(res["overhang"][r][kk]))),
         "couple_rotation_deg": round(rot, 2),
         "com_track": {"t": _r(t[m], 4), "com": _r(cc, 4), "margin_s": cfg.com_margin_s},
         "leader_path": g("leader_path"), "beat_ticks": main["beat_ticks"] if main else [],
@@ -722,6 +805,11 @@ def work_dir(take: str) -> Path:
 
 def _sha1(p: Path) -> str:
     return hashlib.sha1(Path(p).read_bytes()).hexdigest()
+
+
+def code_sha1() -> str:
+    """sha1 of this module's source: a changed criterion / threshold makes every counterbalance.json stale."""
+    return _sha1(Path(__file__))
 
 
 def find_smplx_dir(take: str, smplx_dir: str | Path | None = None) -> Path:
@@ -752,6 +840,26 @@ def world_frame_note(d: Path) -> str:
 def take_cfg(take: str) -> dict:
     p = PACKAGE_ROOT / "takes" / f"{take}.toml"
     return tomllib.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+
+
+def grid_file(work: Path) -> Path | None:
+    """The file load_grid reads the beat grid from (timing/timing.json with a beats.grid, else the beats.json files)."""
+    tj = work / "timing" / "timing.json"
+    if tj.exists():
+        try:
+            if json.loads(tj.read_text()).get("beats", {}).get("grid"):
+                return tj
+        except ValueError:
+            pass
+    for p in (work / "timing" / "beats.json", work / "beats.json", work / "beats" / "beats.json"):
+        if p.exists():
+            return p
+    return None
+
+
+def grid_sha1(work: Path) -> str | None:
+    g = grid_file(work)
+    return _sha1(g) if g is not None else None
 
 
 def load_grid(work: Path) -> tuple[np.ndarray, np.ndarray] | None:
@@ -817,6 +925,8 @@ def to_json(res: dict, take: str, source: dict) -> dict:
                   "pivot": _r(res["pivot_score"], 3), "combined": _r(res["pivot_score"], 3),
                   **{c: _r(sc[c], 3) for c in CRITERIA},
                   "lean_follow_m": _r(res["lean_disp"]["follow"], 3), "lean_lead_m": _r(res["lean_disp"]["lead"], 3),
+                  "overhang_follow_m": _r(res["overhang"]["follow"], 3),
+                  "overhang_lead_m": _r(res["overhang"]["lead"], 3),
                   "pivot_foot": ["left" if f == 0 else "right" for f in res["foot_index"]]},
         "notes": [
             "World: right-handed Y-up metres, floor y=0; Unity = (x, y, -z). Times = reference seconds (npz t).",
@@ -840,7 +950,11 @@ def to_json(res: dict, take: str, source: dict) -> dict:
             "confidence = mean counterbalance-tier score over [t0, t1] (pivot_confidence: pivot tier over the pivot); "
             "< 0.6 = draw dashed (VIEWER_SPEC 3.9). Tier scores are strict ANDs (minimum) of their criteria; "
             "track.combined = track.pivot (all four criteria).",
-            "Thresholds are documented engineering choices (module docstring), not trained on labelled counterbalances.",
+            "lean_m = median COM displacement away from the partner relative to the own mid-foot; overhang_m = median "
+            "COM beyond the own support edge (> 0: would fall without the partner); hanger = the role that hangs "
+            "(params.lean_mode 'counterweight': one dancer hangs, the partner does not lean in).",
+            "Thresholds are documented engineering choices (module docstring), checked against one human label "
+            "(larissa_kadu_38 counterbalance/truth_user.json), not trained.",
         ],
     })
 
@@ -867,19 +981,46 @@ def run(take: str, smplx_dir: str | Path | None = None, cfg: CBConfig | None = N
               "lead_transl0": _r(np.asarray(npzs["lead"]["transl"], float)[0], 5),
               "lead_probe": lead_probe(npzs["lead"]),
               "beats": "take grid" if beat else f"none (default {cfg.default_bpm} BPM)",
-              "frames": len(res["t"]), "t_range": _r([res["t"][0], res["t"][-1]], 4)}
+              "beats_file": None if grid_file(work) is None else str(grid_file(work).relative_to(PACKAGE_ROOT)),
+              "beats_sha1": grid_sha1(work),
+              "frames": len(res["t"]), "t_range": _r([res["t"][0], res["t"][-1]], 4),
+              "code_sha1": code_sha1()}
     doc = to_json(res, take, source)
     out_path = out_path or work / "counterbalance" / "counterbalance.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(doc, indent=1))
     res["_json"], res["_path"] = doc, out_path
+    truth = load_truth(take)
+    if truth is not None:
+        res["_eval"] = evaluate(doc, truth)
     if review:
-        truth = None
-        if (work / "truth.json").exists():
-            tr = json.loads((work / "truth.json").read_text())
-            truth = tr if "counterbalance" in tr else None
         res["_review"] = plot_review(res, doc, work / "review" / "counterbalance.jpg", take, grid, truth)
     return res
+
+
+def is_current(take: str, smplx_dir: str | Path | None = None) -> bool:
+    """True when work/<take>/counterbalance/counterbalance.json was detected on the current fits (lead sha1), beat
+    grid (beats_sha1: e.g. timing.json's studio beats replacing beats.json) and detector (code_sha1: this module's
+    source, so a changed criterion or threshold re-detects)."""
+    p = work_dir(take) / "counterbalance" / "counterbalance.json"
+    if not p.exists():
+        return False
+    d = find_smplx_dir(take, smplx_dir)
+    src = json.loads(p.read_text()).get("source", {})
+    return (src.get("lead_sha1") == _sha1(d / "lead.npz") and src.get("beats_sha1") == grid_sha1(work_dir(take))
+            and src.get("code_sha1") == code_sha1())
+
+
+def load_truth(take: str) -> dict | None:
+    """Ground truth of a take: work/<take>/truth.json (synthetic generators) or the human label
+    work/<take>/counterbalance/truth_user.json (reference seconds), when it holds a counterbalance list."""
+    work = work_dir(take)
+    for p in (work / "truth.json", work / "counterbalance" / "truth_user.json"):
+        if p.exists():
+            tr = json.loads(p.read_text())
+            if "counterbalance" in tr:
+                return tr
+    return None
 
 
 # ----------------------------------------------------------------------------------------------- truth scoring
@@ -1408,6 +1549,8 @@ def main(argv: list[str] | None = None) -> None:
             masses["follow"] = a.mass_follow
     res = run(a.take, a.smplx_dir, masses=masses, review=not getattr(a, "no_review", False))
     print(_summary(res["_json"]))
+    if res.get("_eval"):
+        print("[counterbalance] vs truth:", json.dumps(res["_eval"], default=float))
     print(f"[counterbalance] -> {res['_path']}")
     if res.get("_review"):
         print(f"[counterbalance] review -> {res['_review']}")

@@ -468,3 +468,124 @@ def test_export_uses_capture_clock_and_checks_motion(cb_truth, tmp_path):
     _fake_capture(streaming, "OTHER", t + 100.0, tr, 0.0)
     with pytest.raises(ValueError, match="overlap"):
         cb.export("synthetic_cb", "OTHER", streaming=streaming, src=src, mirror=False)
+
+
+# ----------------------------------------------------------------------------------------------- lean / frame (10-07)
+
+def _stance(T: int, feet: dict, com_x: float, partner_x: float, com_z: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
+    """(joints (T, 55, 3), COM (T, 3)) of a dancer on the x axis: feet = {'left'|'right': (ankle_x, ball_x, lifted)};
+    joints at the COM unless set; the partner at partner_x (only its side matters)."""
+    J = np.zeros((T, 55, 3))
+    J[:] = [com_x, 1.0, com_z]
+    for f, (ia, ib) in cb.FEET.items():
+        ax_, bx, up = feet[f]
+        h = 0.25 if up else 0.0
+        J[:, ia] = [ax_, 0.08 + h, com_z + (0.1 if f == "left" else -0.1)]
+        J[:, ib] = [bx, 0.03 + h, com_z + (0.1 if f == "left" else -0.1)]
+    return J, np.tile([com_x, 0.95, com_z], (T, 1))
+
+
+def _lean(J: dict, com: dict, cfg=None) -> tuple[np.ndarray, dict, dict]:
+    cfg = cfg or cb.CBConfig()
+    contact, mid = cb.foot_contacts(J, cfg)
+    disp = cb.lean_displacement(com, contact, mid)
+    over, sup = cb.support_overhang(com, contact, J, cfg)
+    return cb.lean_score(disp, cfg, over, sup), over, disp
+
+
+def test_hanging_follower_with_upright_leader_is_a_counterbalance_lean():
+    """The follower hangs (one foot down, COM 15 cm beyond its ball) and the leader stands upright / braced, 2 cm
+    back from his mid-foot: counterweight lean 1. The old 'both lean >= 4-12 cm' rule scored it 0."""
+    T = 6
+    Jf, cf = _stance(T, {"left": (1.0, 1.12, False), "right": (1.0, 1.12, True)}, 1.27, 0.0)
+    Jl, cl = _stance(T, {"left": (0.0, 0.12, False), "right": (-0.05, 0.07, False)}, 0.015, 1.0)
+    score, over, disp = _lean({"follow": Jf, "lead": Jl}, {"follow": cf, "lead": cl})
+    assert over["follow"].min() > 0.14 and over["lead"].max() < 0
+    assert score.min() == pytest.approx(1.0)
+    old = cb.lean_score(disp, replace(cb.CBConfig(), lean_mode="both"))
+    assert old.max() == 0.0
+
+
+def test_wide_stance_is_not_hanging():
+    """A lunge away from the partner (feet 0.5 m apart, COM 15 cm from their middle but between them) is not a hang:
+    the old centre-lean rule took it for a counterbalance lean."""
+    T = 6
+    Jl, cl = _stance(T, {"left": (-0.45, -0.33, False), "right": (0.05, 0.17, False)}, -0.29, 1.0)
+    Jf, cf = _stance(T, {"left": (1.0, 1.12, False), "right": (1.0, 1.12, False)}, 1.15, 0.0)
+    score, over, disp = _lean({"follow": Jf, "lead": Jl}, {"follow": cf, "lead": cl})
+    assert disp["lead"].min() > 0.12                              # far from his mid-foot ...
+    assert over["lead"].max() < 0                                  # ... but inside his support
+    assert score.max() == 0.0
+    assert cb.lean_score(disp, replace(cb.CBConfig(), lean_mode="both")).max() > 0.0
+
+
+def test_partner_leaning_in_is_not_a_counterweight():
+    T = 6
+    Jf, cf = _stance(T, {"left": (1.0, 1.12, False), "right": (1.0, 1.12, True)}, 1.27, 0.0)
+    Jl, cl = _stance(T, {"left": (0.0, 0.12, False), "right": (-0.05, 0.07, False)}, 0.12, 1.0)   # 8 cm towards her
+    score, _, _ = _lean({"follow": Jf, "lead": Jl}, {"follow": cf, "lead": cl})
+    assert score.max() == 0.0
+
+
+def test_airborne_dancer_does_not_hang():
+    T = 6
+    Jf, cf = _stance(T, {"left": (1.0, 1.12, True), "right": (1.0, 1.12, True)}, 1.27, 0.0)
+    Jl, cl = _stance(T, {"left": (0.0, 0.12, False), "right": (-0.05, 0.07, False)}, -0.03, 1.0)
+    # both of her feet 25 cm up for the whole clip would move the per-dancer floor estimate with them: lift her
+    # relative to a floor seen earlier by prepending grounded frames
+    Jf2 = np.concatenate([_stance(T, {"left": (1.0, 1.12, False), "right": (1.0, 1.12, False)}, 1.0, 0.0)[0], Jf])
+    cf2 = np.concatenate([np.tile([1.0, 0.95, 0.0], (T, 1)), cf])
+    Jl2, cl2 = np.concatenate([Jl, Jl]), np.concatenate([cl, cl])
+    score, _, _ = _lean({"follow": Jf2, "lead": Jl2}, {"follow": cf2, "lead": cl2})
+    assert score[T:].max() == 0.0
+
+
+def test_embrace_frame_connection_needs_no_straight_arm():
+    """A hand on the partner's shoulder blade with a bent elbow is a load-bearing connection (an embrace frame);
+    hand_body_extension=True restores the straight-arm requirement."""
+    T = 4
+    Jl = np.zeros((T, 55, 3))
+    Jf = np.zeros((T, 55, 3))
+    Jf[:] = [1.0, 1.0, 0.0]
+    Jf[:, 16] = [0.9, 1.4, 0.15]                                   # her left shoulder
+    Jl[:, 17] = [0.0, 1.4, -0.18]                                  # his right shoulder, elbow, wrist: bent arm
+    Jl[:, 19] = [0.3, 1.0, -0.35]
+    Jl[:, 21] = [0.8, 1.35, 0.1]
+    Jl[:, 40:55] = Jl[:, 21:22] + [0.05, 0.0, 0.02]               # right hand fingers near the wrist
+    Jl[:, 25:40] = [0.0, 1.0, 0.5]
+    pairs, ps, pd = cb.connection_scores({"lead": Jl, "follow": Jf}, cb.CBConfig())
+    k = [n for n, (name, _) in enumerate(pairs) if name == "lead_r_hand-follow_l_shoulder"][0]
+    assert cb.arm_extension(Jl, "r").max() < 0.85
+    assert pd[:, k].max() < 0.12 and ps[:, k].min() == pytest.approx(0.85)
+    _, ps_old, _ = cb.connection_scores({"lead": Jl, "follow": Jf}, replace(cb.CBConfig(), hand_body_extension=True))
+    assert ps_old[:, k].max() == 0.0
+
+
+def test_held_rule_drops_bridged_blips():
+    """Blips above `on` merged across short gaps but held for less than min_beats in total make no interval."""
+    t = np.arange(0, 6, 1 / FPS)
+    s = np.zeros(len(t))
+    for c in (2.0, 2.3, 2.6):                                      # three 3-frame blips, bridged by the merge
+        s[int(c * FPS):int(c * FPS) + 3] = 0.8
+    cfg = cb.CBConfig()
+    min_len = int(math.ceil(cfg.min_beats * (60 / 76.4) * FPS))
+    runs = cb._merge_runs(cb._runs(s, cfg.on, cfg.off), int(round(cfg.merge_beats * (60 / 76.4) * FPS)))
+    assert len(runs) == 1 and runs[0][1] - runs[0][0] + 1 >= min_len    # the span alone would pass ...
+    assert int((s[runs[0][0]:runs[0][1] + 1] >= cfg.on).sum()) < min_len   # ... the held frames do not
+
+
+LK38 = ROOT / "work" / "larissa_kadu_38"
+
+
+@pytest.mark.skipif(not (LK38 / "smplx" / "lead.npz").exists() or not (LK38 / "counterbalance" / "truth_user.json").exists(),
+                    reason="larissa_kadu_38 fits / user label not present (local data)")
+def test_user_labelled_counterbalance_larissa_kadu_38(tmp_path):
+    """The user's label (HUD 32.0-36.15 s = reference 62.151-66.301 s): one interval, IoU >= 0.9, edges within 6
+    frames, nothing else in the 38 s."""
+    res = cb.run("larissa_kadu_38", review=False, out_path=tmp_path / "cb.json")
+    truth = json.loads((LK38 / "counterbalance" / "truth_user.json").read_text())
+    ev = cb.evaluate(res["_json"], truth)
+    assert ev["n_detected"] == 1 and ev["iou"] >= 0.9, ev
+    assert max(abs(v) for v in ev["edge_err_frames"].values()) <= 6.0, ev
+    iv = res["_json"]["intervals"][0]
+    assert iv["kind"] == "pivot" and iv["pivot_foot"] == "left" and iv["hanger"] == "follow"

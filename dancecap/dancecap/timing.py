@@ -1471,6 +1471,8 @@ def plot_qa(res: dict, js: dict, ts: dict, path: Path, truth: dict | None = None
     ax.set_xlabel("reference time (s)")
     ax.legend(fontsize=8)
     ax.set_title("footstep asynchrony per event (+-sigma) and per-measure mean with 95% CI band")
+    t_lo, t_hi = min(float(ts[r][0]) for r in roles), max(float(ts[r][-1]) for r in roles)
+    ax.set_xlim(t_lo - 0.25, t_hi + 0.25)  # the take's span, not the whole song's beat grid (shared x)
     fig.tight_layout()
     fig.savefig(path, dpi=70)
     plt.close(fig)
