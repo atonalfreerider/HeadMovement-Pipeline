@@ -6,6 +6,7 @@ from pkgutil import ModuleInfo
 
 import pytest
 
+from _needs import needs_footage, needs_take
 from dancecap.farm import cli
 
 
@@ -70,6 +71,7 @@ def test_a_plugin_that_clashes_with_a_core_command_is_reported(monkeypatch):
     assert cli.PLUGINS["clash"]["error"] and not cli.PLUGINS["clash"]["registered"]
 
 
+@needs_take("larissa_kadu_full")
 def test_status_is_one_json_line_with_the_documented_parts(capsys):
     assert cli.main(["status", "--json"]) == 0
     line = capsys.readouterr().out.strip().splitlines()[-1]
@@ -78,6 +80,7 @@ def test_status_is_one_json_line_with_the_documented_parts(capsys):
     assert s["grid"]["T"] == 5644 and s["grid"]["cells"] == 189
 
 
+@needs_footage("larissa_kadu_full")          # the planner probes the source videos with ffprobe
 def test_plan_dry_run_prints_the_plan_and_changes_nothing(capsys, tmp_path):
     before = cli.State("larissa_kadu_full").load()
     assert cli.main(["plan", "--dry-run", "--ignore-s1", "--json"]) in (0, None)

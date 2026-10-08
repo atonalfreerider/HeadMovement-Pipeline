@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from _farm_core_fixtures import ANCHOR, K0, K1, make_spec, patch_root, write_cameras, write_motion, write_prepare
+from _needs import needs_take
 from dancecap.farm import timeline as tl
 
 
@@ -30,6 +31,7 @@ def test_grid_and_cell_math_of_the_full_dance():
     assert g.cell_of_k(0) == 33 and g.cell_k_range(33) == (-8, 21) and g.cell_of_k(1147) == 71
 
 
+@needs_take("larissa_kadu_full")
 def test_dance_spec_of_the_real_take():
     spec = tl.DanceSpec.load("larissa_kadu_full")
     g = spec.grid

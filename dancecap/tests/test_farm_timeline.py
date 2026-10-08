@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from _farm_fixtures import ANCHOR, make_spec, patch_root, write_motion, write_prepare
+from _needs import needs_take
 from dancecap.farm import timeline as tl
 
 
@@ -31,6 +32,7 @@ def test_runs_inclusive_k_indices():
     assert tl.runs(np.ones(4, bool), -2) == [(-2, 1)]
 
 
+@needs_take("larissa_kadu_full")
 def test_dancespec_of_the_real_take_toml():
     s = tl.DanceSpec.load("larissa_kadu_full")
     assert s.grid.anchor == pytest.approx(30.151176844227862) and (s.grid.k0, s.grid.k1) == (-998, 4645)

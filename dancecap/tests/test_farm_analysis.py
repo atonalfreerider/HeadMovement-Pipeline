@@ -6,6 +6,7 @@ import json
 import pytest
 
 from _farm_fixtures import ANCHOR, make_spec, patch_root, write_motion, write_prepare
+from _needs import take_file
 from dancecap.farm import analysis as A
 from dancecap.farm import chunks as C
 from dancecap.farm import cli
@@ -294,5 +295,7 @@ def test_cli_analyse_lists_and_plans_without_running_anything(capsys):
     assert cli.main(["analyse", "--list"]) == 0
     out = capsys.readouterr().out
     assert "timing" in out and "counterbalance" in out and "CPU" in out
+    if not take_file("larissa_kadu_full").is_file():
+        pytest.skip("take config not in this checkout: larissa_kadu_full (the planning half needs it)")
     assert cli.main(["--dance", "larissa_kadu_full", "analyse", "--analyses", "timing", "--dry-run"]) == 0
     assert "CPU pod" in capsys.readouterr().out

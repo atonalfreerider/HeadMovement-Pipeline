@@ -3,6 +3,7 @@ import tomllib
 
 import numpy as np
 
+from _needs import needs_paths, needs_take
 from dancecap import front_full as ff
 from dancecap.sync import regauge
 
@@ -77,6 +78,7 @@ def test_loc_gate_stats_gap_and_blocks():
     assert g["pass"] and g["max_gap_s"] < 0.1 and g["strong_frac"] == g["ok_frac"]
 
 
+@needs_paths(ff.ref_work() / "smplx" / "lead.npz", ff.ref_work() / "smplx" / "follow.npz", why="reference fit output (work/)")
 def test_pin_betas_file_matches_reference_fit(tmp_path):
     import json
     from dancecap.mamma_dyn import ROLES
@@ -88,6 +90,7 @@ def test_pin_betas_file_matches_reference_fit(tmp_path):
         assert np.array_equal(np.asarray(d[str(pid)]), ref)
 
 
+@needs_take("larissa_kadu_full")
 def test_ingest_probe_falls_back_for_old_ffprobe(monkeypatch):
     """The Runpod image's apt ffprobe 4.4 rejects -show_entries stream_side_data=...: probe must use -show_streams."""
     import shutil

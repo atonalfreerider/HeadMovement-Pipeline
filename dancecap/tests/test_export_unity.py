@@ -14,8 +14,12 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dancecap import export_unity as eu  # noqa: E402
 from dancecap.take import PACKAGE_ROOT  # noqa: E402
+from _needs import needs_paths  # noqa: E402
 
 WORK = PACKAGE_ROOT / "work" / "synthetic"
+# the synthetic take (git-ignored run output) and the gated SMPL-X model (never in git) are absent from a clean checkout: skip, do not fail
+needs_export_inputs = needs_paths(WORK / "smplx" / "lead.npz", WORK / "smplx" / "follow.npz", eu.DEFAULT_MODEL,
+                                  why="synthetic take (python -m dancecap synthetic) / gated SMPL-X model")
 CAPTURE = "_pytest_export_unity"
 S = np.diag([1.0, 1.0, -1.0])
 
@@ -36,6 +40,7 @@ def test_quaternion_mirror_matches_matrix_conjugation():
     assert np.allclose(eu.rotvec_to_quat(np.zeros((1, 3))), [[0, 0, 0, 1]])
 
 
+@needs_export_inputs
 def test_export_files_manifest_and_times():
     rep, out = _export()
     try:
@@ -68,6 +73,7 @@ def test_export_files_manifest_and_times():
         shutil.rmtree(out, ignore_errors=True)
 
 
+@needs_export_inputs
 def test_motion_fk_and_skin_lbs_match_smplx():
     """Unity-side FK of the exported rotations reproduces the npz joints, and LBS of the exported skin reproduces
     the smplx library's posed vertices (pose blendshapes off), after undoing the Unity mirror."""
@@ -115,6 +121,7 @@ def test_motion_fk_and_skin_lbs_match_smplx():
         shutil.rmtree(out, ignore_errors=True)
 
 
+@needs_export_inputs
 def test_uv_split_matches_texture_stage_and_model_uvs():
     """Split mesh == avatar_uv.write_uv_mesh's (vertex_ids[ft] == f) and every split face keeps the model's vt."""
     m = np.load(eu.DEFAULT_MODEL, allow_pickle=True)
@@ -168,6 +175,7 @@ def test_stale_physics_and_kinematics_are_skipped():
         assert fj.shape == (30, 24) and (fj[:, 0] == 0).all() and (fj[:, 1] > 0).all()
 
 
+@needs_export_inputs
 def test_synthetic_time_to_audio_is_never_negative_zero():
     rep, out = None, None
     try:

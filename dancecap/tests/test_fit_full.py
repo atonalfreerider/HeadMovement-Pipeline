@@ -12,10 +12,13 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from _needs import needs_paths
 from dancecap import fit_full as ff
 
 WS = Path(__file__).resolve().parents[2]
 OPT = WS / "mamma-turing" / "optimization" / "utils" / "optimization.py"
+# mamma-turing/ (third-party MAMMA checkout) and work/ (run outputs) are git-ignored: these tests skip in a clean checkout
+needs_mamma = needs_paths(OPT, why="mamma-turing checkout")
 
 
 # ------------------------------------------------------------------------------------------------ pinned betas
@@ -40,6 +43,7 @@ class _Obj:
         self.smplx_betas = {0: torch.zeros(1, n, requires_grad=True), 1: torch.zeros(1, n, requires_grad=True)}
 
 
+@needs_mamma
 def test_pin_betas_env_gated_noop(monkeypatch):
     monkeypatch.delenv("MAMMA_INIT_BETAS", raising=False)
     o = _Obj()
@@ -47,6 +51,7 @@ def test_pin_betas_env_gated_noop(monkeypatch):
     assert o._frozen_betas == set() and float(o.smplx_betas[0].abs().sum()) == 0.0
 
 
+@needs_mamma
 def test_pin_betas_by_body_id_and_freeze(monkeypatch, tmp_path, capsys):
     f = tmp_path / "pins.json"
     f.write_text(json.dumps({"0": [1.0, 2.0, 3.0], "1": [-1.0] * 20}))   # shorter and longer than n_betas=16
@@ -64,11 +69,13 @@ def test_pin_betas_by_body_id_and_freeze(monkeypatch, tmp_path, capsys):
     assert o2._frozen_betas == set() and o2.smplx_betas[0][0, 0] == 1.0
 
 
+@needs_mamma
 def test_optimizer_skips_frozen_betas_source():
     src = OPT.read_text(encoding="utf-8")
     assert "self._pin_betas(device)" in src and "_frozen_betas" in src and "MAMMA_FREEZE_BETAS" in src
 
 
+@needs_paths(ff.PIN_FILE, ff.PIN_FILE.with_name(ff.PIN_FILE.stem + ".source.json"), why="pinned-betas run output (work/)")
 def test_pin_file_is_keyed_by_body_id_not_pid():
     """Body 0 = lead (pid 1), body 1 = follow (pid 2): the first pin file keyed by pid would have pinned the follow
     to the lead's betas."""
