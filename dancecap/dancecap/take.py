@@ -3,6 +3,8 @@
 takes/<name>.toml describes the sources, the audio clock fit that puts every source on the
 reference timeline (reference_time = slope * source_time + offset, from prototype/sync_larissa_kadu.py),
 and the analysis window. All outputs go to work/<name>/ (git-ignored).
+Optional per-source camera types ([cameras."NN"] mount / zoom / source, dancecap.camera_types) are read through
+Take.camera_type(cam) / Take.camera_types(); takes without them load and behave exactly as before.
 """
 from __future__ import annotations
 
@@ -44,6 +46,19 @@ class Take:
 
     def source(self, cam_id: str) -> Source:
         return next(s for s in self.sources if s.id == cam_id)
+
+    def camera_type(self, cam_id: str, policy: str | None = None):
+        """camera_types.StageType of a source video: the mount (handheld | tripod) and zoom the camera stages apply.
+        Policy: 'user' (default: confirmed answers in [cameras."NN"] only), 'auto' (+ confident suggestions), 'off';
+        anything missing or unconfirmed is handheld + zoom (today's general model). See dancecap.camera_types."""
+        return self.camera_types([cam_id], policy)[cam_id]
+
+    def camera_types(self, cams: list[str] | None = None, policy: str | None = None) -> dict:
+        """{cam: camera_types.StageType} for the given (default: all) sources; reads takes/<name>.toml."""
+        from . import camera_types as ct
+        cams = [s.id for s in self.sources] if cams is None else list(cams)
+        got = ct.stage_types(self.name, cams, policy) if ct.toml_path(self.name).exists() else {}
+        return {c: got.get(c) or ct.StageType(c) for c in cams}
 
     @classmethod
     def load(cls, path: str | Path) -> "Take":
