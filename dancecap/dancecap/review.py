@@ -184,6 +184,7 @@ def render(take: Take, instants: int = 6, out_dir: Path | None = None, cams: lis
             i, dt = _nearest(metas[c], float(t))
             img = cv2.imread(str(work / "frames" / c / metas[c]["frames"][i]["file"]))
             masks = _role_masks(work, c, i)
+            notes = {}  # why a panel shows nothing (drawn after the resize, readable at tile size)
             # reid
             reid = img.copy()
             if any(m is not None for m in masks.values()):
@@ -196,7 +197,11 @@ def render(take: Take, instants: int = 6, out_dir: Path | None = None, cams: lis
             elif c in people:
                 for role, b, _ in _dancer_people(people[c], i, masks, img.shape):
                     cv2.rectangle(reid, tuple(int(v) for v in b[:2]), tuple(int(v) for v in b[2:]), NEUTRAL, 3)
-                _label(reid, "no dancer masks yet", (10, img.shape[0] - 20), NEUTRAL, 0.8)
+                notes["reid"] = "no masks this frame"
+            if any(m is not None for m in masks.values()):  # one role without a mask: say so (not a re-ID failure)
+                miss = [r for r in ("lead", "follow") if masks[r] is None or not masks[r].any()]
+                if miss:
+                    notes["reid"] = f"no {'+'.join(miss)} mask"
             # pose
             pose = img.copy()
             if c in people:
@@ -214,16 +219,27 @@ def render(take: Take, instants: int = 6, out_dir: Path | None = None, cams: lis
             tiles = {"reid": reid, "pose": pose, "people": ppl}
             if have_smplx:
                 sm = img.copy()
-                for role, uv in _project_smplx(work, c, i, float(metas[c]["frames"][i]["t"])).items():
+                proj = _project_smplx(work, c, i, float(metas[c]["frames"][i]["t"]))
+                for role, uv in proj.items():
                     col = LEAD if role == "lead" else FOLLOW
                     for a, b in SMPLX_EDGES:
                         cv2.line(sm, tuple(int(v) for v in uv[a]), tuple(int(v) for v in uv[b]), col, 3, cv2.LINE_AA)
+                if not proj:  # say why the panel is empty (a frame without a camera pose is not a missing fit)
+                    cf = work / "cameras" / f"{c}.npz"
+                    why = "no camera"
+                    if cf.exists():
+                        with np.load(cf) as cz:
+                            why = ("no camera pose" if "ok" in cz.files and not bool(cz["ok"][i])
+                                   else "no fit")
+                    notes["smplx"] = why
                 tiles["smplx"] = sm
             for k, tile in tiles.items():
                 scale = TILE_H / tile.shape[0]
                 tile = cv2.resize(tile, (int(tile.shape[1] * scale), TILE_H), interpolation=cv2.INTER_AREA)
                 _label(tile, f"cam {c}", (8, 30), (255, 255, 255), 0.8)
                 _label(tile, f"{dt * 1000:+.0f} ms", (8, 58), (200, 200, 200), 0.6)
+                if k in notes:
+                    _label(tile, notes[k], (8, TILE_H - 12), NEUTRAL, 0.55)
                 rows[k].append(tile)
         for k in sheets:
             row = np.concatenate(rows[k], axis=1)
