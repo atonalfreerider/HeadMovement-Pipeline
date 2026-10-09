@@ -81,13 +81,14 @@ def test_loc_gate_stats_gap_and_blocks():
 @needs_paths(ff.ref_work() / "smplx" / "lead.npz", ff.ref_work() / "smplx" / "follow.npz", why="reference fit output (work/)")
 def test_pin_betas_file_matches_reference_fit(tmp_path):
     import json
-    from dancecap.mamma_dyn import ROLES
+    from dancecap.mamma_dyn import PIDS, ROLES
     out = ff.pin_betas(tmp_path / "pin.json")
     d = json.loads(out.read_text())
-    assert set(d) == {str(k) for k in ROLES}
-    for pid, role in ROLES.items():
-        ref = np.load(ff.ref_work() / "smplx" / f"{role}.npz")["betas"].reshape(-1)
-        assert np.array_equal(np.asarray(d[str(pid)]), ref)
+    # MAMMA's body ids are the 0-based person index of the fit (body 0 = lead = PIDS[0]), not the dancer pids (pin_betas docstring)
+    assert set(d) == {str(i) for i in range(len(PIDS))}
+    for body_id, pid in enumerate(PIDS):
+        ref = np.load(ff.ref_work() / "smplx" / f"{ROLES[pid]}.npz")["betas"].reshape(-1)
+        assert np.array_equal(np.asarray(d[str(body_id)]), ref)
 
 
 @needs_take("larissa_kadu_full")

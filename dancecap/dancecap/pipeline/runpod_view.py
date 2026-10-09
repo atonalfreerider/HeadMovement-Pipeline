@@ -125,6 +125,22 @@ def parse_runner_log(text: str) -> dict:
             "progress": prog, "jobs_done": jobs_done, "terminal": terminal}
 
 
+def _farm_managed(pod_id: str) -> bool:
+    """A pod recorded (not deleted / lost) in a farm dance's state.json whose watcher is alive belongs to the farm (the Farm view shows it
+    with its job and kill switch): it is not an orphan of a fit_full session. (Found by the farm drill: every farm pod was flagged.)"""
+    try:
+        import json
+        for sp in (paths.REAL_ROOT / "work").glob("*/farm/state.json"):
+            rec = ((json.loads(sp.read_text(encoding="utf-8")).get("pods") or {}).get(pod_id)) or {}
+            if rec and rec.get("state") not in ("deleted", "gone", "lost"):
+                from ..farm import watch
+                if watch.health(sp.parents[1].name).get("running"):
+                    return True
+    except Exception:  # noqa: BLE001  a broken state file never hides a real orphan
+        pass
+    return False
+
+
 def _runner_processes() -> int:
     """Local `python -m dancecap remote run` / *_pod run processes (argv only; never environments). hands_pod is
     retired from the pipeline (2026-10-07) but still creates a pod when run by hand, so it still counts here."""
@@ -452,7 +468,7 @@ class PodPoller:
             kill_at = created + float(row.get("max_minutes") or 0) * 60 if row else None
             sess = act.get(p["id"])
             flags = []
-            if row is not None and sess is None and not row.get("deleted_ts") and _runner_processes() == 0:
+            if row is not None and sess is None and not row.get("deleted_ts") and _runner_processes() == 0 and not _farm_managed(p["id"]):
                 flags.append("orphan")
             if row is None and managed is False:
                 flags.append("untracked")

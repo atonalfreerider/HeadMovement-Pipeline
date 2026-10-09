@@ -1,5 +1,48 @@
 # Pipeline Monitor: user guide
 
+> **2026-10-08: the monitor was redesigned around the farm.** The window now opens on the **Farm** view: a defrag-style map of
+> the final result (section 0 below). The takes / stages / runs / Runpod-sessions screens described from section 1 on are
+> still there under **Older tools** (top bar) but are no longer the front page, and the old runs and plans were archived to
+> `dancecap/work/pipeline/archive/2026-10-08/` (nothing was deleted).
+
+## 0. The Farm view (the front page)
+
+One dance at a time (dropdown, newest first). From the top:
+
+1. **Header**: the dance, its world package (id, sealed), the watcher's state, when the map was computed, and the actions:
+   **Fill gaps**, **Pull now**, **Open watcher log**, **Restart watcher**, **Stop pods**, **Export map PNG**.
+2. **Big numbers**: how much of the final result is complete / partial / not done, in percent and seconds, and a stacked bar.
+3. **The map**: one square per second of the dance, wrapped like a disk-defragmentation display (30 per row = 30 s per row).
+   - green = complete (refined, stitched, gates passed);
+   - amber with a hatch = partial; the denser the hatch the further along: front only (cameras, 2D, sync, no 3D yet) < raw 3D fit
+     < refined and waiting for the stitch; a red corner = mono / two-view / absent;
+   - dark = not done at all;
+   - the digit = cameras that saw that second; the bar under a square = the chunk that owns it; a bar in the gap = where a chunk
+     starts; a dotted outline = a second that only belongs to a chunk's overlap;
+   - a pulsing blue outline with a travelling wave = being worked on right now.
+   Hover (or click, or use the arrow keys) for the stage, cameras and reasons of one second.
+   The map follows `work/<dance>/farm/coverage.json`: it flips live (2 s poll) when the file changes, and when a fit / refine
+   result lands on disk the monitor recomputes the coverage itself (`farm coverage`, about 4 s, at most every 2 min).
+4. **Panels**: **Chunk jobs** (progress bar, ETA, heartbeat, GPU, cost so far per chunk), **Pods** (GPU, price, state, age, spend),
+   **Queue**, **Budget** (spent / cap / account balance / free for new pods), **Persistent volume** (size, used, price), **World
+   package**, **Recent activity**.
+5. The four MAMMA fits started with `python -m dancecap.fit_full` (segments a-d) appear as pods + chunk jobs (tagged *fit_full*)
+   and their chunks are drawn as being worked on. The monitor only reads them: it never stops them (a fit_full pod has no Stop
+   button here).
+
+**Fill gaps** asks the planner (`farm plan --dry-run`) which spans still need 3D poses, shows the chunks, the pods, the GPU
+price, the time, the expected cost and the worst case (every pod runs to its kill switch) and the budget gate, and starts
+nothing until you press the confirm button and then confirm again. Chunks that a fit_full session is fitting are excluded. The
+plan expires after 15 minutes. It then runs `farm up` (plan, queue, launch, watcher) detached; follow it under Recent activity.
+**Stop pods** needs you to type STOP and deletes only this farm's pods (`farm down`: finished chunks are pulled and verified
+first; a pod whose results are not pulled yet is kept).
+
+Command line: `python -m dancecap.pipeline monitor --launch [--dance larissa_kadu_full]`;
+synthetic demo state: `python -m dancecap.pipeline farm-demo [--scenario mostly_partial|midrun|done|empty]` (open it with
+`#/farm/farm_demo`); clear the old jobs again: `python -m dancecap.pipeline archive-legacy`.
+
+---
+
 The Pipeline Monitor is one window for the whole capture pipeline:
 - add a new capture (videos + soundtrack + dancers + camera types);
 - see every stage of every take, in the order it runs, with where it runs (this PC or Runpod);

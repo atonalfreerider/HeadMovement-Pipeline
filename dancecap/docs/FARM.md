@@ -250,3 +250,100 @@ Existing `remote.py` / `remote_jobs.py` / `front_full.py` are reused and only ch
     `mamma/data` (`DANCECAP_MAMMA_DATA`); (2) the watcher should extract each pulled `result.tar` at workspace paths (as it does) and then call
     `cli.release_ready` only when running with `--hold`; (3) a worker `group` hint ("small" first) on outputs would let evidence.npz / coverage_pod.json come home
     before the stitched motion (today all outputs are in one result.tar).
+- 2026-10-08 monitor (Pipeline Monitor redesign, section 7), additions and decisions:
+  - The monitor reads `farm/coverage.json` and `farm/state.json` as written by core / watch (it also accepts `coverage_cells.json`
+    when `coverage.json` is missing) and the live `dancecap.fit_full` sessions through the read-only adapter
+    `pipeline/fit_sessions.py`; a segment whose session has a pod and a running job is drawn as a running chunk (animated cells).
+  - When a fit / refine / quality result lands under `work/<chunk take>/` (newer than coverage.json) the monitor starts
+    `farm coverage` itself (detached, one at a time, at most every 2 min); a watcher that already refreshes coverage makes this a no-op.
+  - Fill gaps = `farm plan --dry-run` (estimate, GPU offers, budget gate) -> confirmation with `plan_hash` + `approve.max_cost_usd` ->
+    `farm up --pods N --minutes M --hard-minutes H --budget B --only <planned ids> --exclude <live fit_full chunks>`; the chunks a fit_full
+    session is fitting are first marked `running` (owner fit_full) in state.json so no planner or queue picks them up. Chunks whose
+    estimate is 0 min (core: nothing left to run) are not planned; the stitch + analysis `final` job is planned (CPU pod) only when no
+    fit_full session is still fitting. Stop pods = `farm down --pod ids --abandon` (verified pull first), only pods in this dance's
+    state.json, never a fit_full pod.
+  - Asks: (1) `farm_volume.json` / state.json["volume"] could carry `used_gb` + `measured` (the monitor shows a stored measurement
+    work/monitor/farm_volume_usage.json = 24.6 GB from the infra report until then); (2) a `final` job that waits for chunks fitted
+    outside the farm (a-d) needs those chunks' motion pulled locally first, otherwise its `after` list never clears.
+  - Old runs / plans archived to work/pipeline/archive/2026-10-08/ (`python -m dancecap.pipeline archive-legacy`).
+- 2026-10-08 watch (watcher + launch + pull + down; `farm/watch.py`, `farm/pull.py`, `farm/launch.py`), what exists and how it behaves:
+  - COMMANDS (registered through the CLI plug-in mechanism; `farm queue` now loads plug-ins too via `cli.HOOK_COMMANDS`, so the volume uploader
+    hook `queue_upload` is installed, and `queue` takes `--only/--exclude`):
+    `farm up [--pods N --gpus 4090,l4 --minutes M --hard-minutes H --budget USD --only ids --exclude ids --hold --interim-stitch --dry-run]`
+    = plan -> sync code + world to the volume -> queue (inputs hash-diffed) -> launch GPU pods -> detached watcher. `--dry-run` prints the plan,
+    the queue, GPU offers and a cost/time estimate (A100 minutes x `--slowdown`, default 1.5: the 4090 route is not measured) and creates nothing.
+    `farm launch` (the pod part alone; `--cpu N` adds CPU analysis pods), `farm watch [start|run|status|stop|wait]`, `farm wait N`,
+    `farm pull [ids] [--redo]`, `farm down [--pod ids] [--abandon]`. Progress goes to stderr, `--json` output to stdout.
+  - POD NAMES AND OWNERSHIP: pods are named `hm-farm-<dance tag>-...`; the watcher manages EXACTLY the pods recorded in state.json["pods"]
+    (plus an orphan of this dance's prefix it finds on start-up and adopts). `farm down` deletes only recorded pods, never by prefix. Chunks
+    with `owner` other than farm (the monitor marks live fit_full chunks `running`, owner fit_full) are ignored; `queue_upload` also skips a
+    chunk with an open `dancecap-fit-<id>` ledger row (`--force-foreign` overrides). GPU pods run `--kinds front,fit,refine,full,asr` and never
+    claim the CPU analysis jobs (kind analyse); the watcher launches one CPU pod when such a job becomes claimable.
+  - THE WATCHER is one DETACHED process per dance (Windows DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, breakaway from the parent job object when
+    allowed; every console child it spawns gets CREATE_NO_WINDOW so ssh / runpodctl never flash windows), single-instance by an OS file lock
+    (`farm/watcher.lock`, freed by the OS when the process dies: no stale pids), `farm/watcher.pid` (pid, heartbeat), `farm/watcher.log`
+    (rotated at 5 MB), `farm/watcher.stop` (graceful stop), `farm/result.json` at the end. Started again after a PC restart it rebuilds
+    everything from the volume snapshot (ONE ssh call per cycle through any pod that answers), Runpod's pod list, `farm/chunks/<id>/pull.json`
+    and state.json. Cycle = 30 s; state.json every cycle, coverage.json at once after a pull and at least every 60 s. Verified live on this
+    PC: start, second start refused, hard kill of the process tree, restart, graceful stop.
+  - PULLS: every `done` job at once, 2 at a time, through any pod (the volume is shared): `result.tar` resumable by byte offset (survives ssh resets),
+    size + sha256 against `out/manifest.json`, then every member extracted at its workspace path and hash-checked while written (temp file +
+    atomic replace, long-path safe), `pull.json` written LAST (the proof), `work/<take>/farm/pulled.json` records world_id / pod / gpu / code.
+    A failed pull backs off 10 s .. 5 min per job and never marks anything pulled; a per-job pull lock (dead owner pid = taken over at once) lets
+    the watcher, `farm pull` and `farm down` coexist. A pod is deleted only when it is idle/exited AND every job it finished is `pulled`
+    (never the pod it reads through while a pull is in flight and no other pod exists).
+  - FAILURES: a pod missing from Runpod's list on two consecutive polls AND without a fresh heartbeat is LOST (an unreadable pod list is never
+    read as "no pods"): its claims are released at once (guarded: only if it still owns them), the ledger row closed without calling Runpod, a
+    replacement is launched when work is claimable. `failed.json` -> re-queued up to `max_requeues` (default 2; evidence kept as failed.<ts>.json,
+    attempts reset, the pod that failed it is recycled), then `failed` (a job downstream of it is marked `blocked`). A claim silent for 10 min on a
+    pod Runpod still lists: claim released, pod deleted, job re-queued (3 strikes = failed). A pod without a worker heartbeat after 13 min is deleted;
+    two such pods in a row halt the watcher's launching (the pod's `events.log` tail is in state.json as `last_event`). Nothing is deleted while the
+    volume cannot be read (no fresh snapshot). A second `launch` / `up` tops up to the target and to the number of waiting jobs, never doubles.
+  - MONEY: GPU pods start with a 100 min kill switch and a 240 min hard ceiling (`--minutes/--hard-minutes`); the watcher extends the on-pod
+    deadline (`pods.extend_killswitch`) by 30 min when < 25 min are left, only for a busy pod with a fresh heartbeat, never past the ceiling
+    (`hard_ceil` of the pod, ledger as fallback) and only if the next step fits `min(cap left, balance - $2)` and the farm budget. Launches go
+    through `pods.launch` / `launch_cpu` gates (`max_cost <= balance - 2` and `<= remaining cap`, counting every open pod's worst case) plus the
+    run's own `--budget`; at most 12 watcher launches per run, cool-down after a failed launch (120 s doubling, max 15 min), one pod per cycle.
+  - STITCH: default = the planned `final` stitch+analyse job on a CPU pod (FARM.md 0.10). `--interim-stitch` also queues `stitch-N` jobs
+    (reference span + the chunks the farm has finished, `--partial`, evidence only) as chunks land, until the final job can run. `--stitch local`
+    runs `dancecap.stitch` here (single thread, normal priority, skipped with a note when the module is absent). The uploader never sends what the volume
+    holds: a stitch/analysis job that lists a farm-produced chunk as a local `motion.tar` input is rewritten to take `chunks/<id>/out/result.tar`
+    from the volume (`launch.prefer_volume_results`), and a finished `chunks/<id>/` of an earlier plan with the same id is moved aside
+    (`chunks/<id>.old.<ts>`, never deleted; a claimed one is refused).
+  - state.json written by the watcher: `pods[id]` {role gpu|cpu|gateway, gpu, price_hr, state starting|running|idle|exited|stuck|lost|deleted, age_min,
+    spend_usd, kill_at, kill_in_min, hard_ceil, jobs, extensions, last_event, runpod_status, worker, hb_age_s, launched_by, cost_usd},
+    `chunks[id]` {status, pod, progress 0..1, eta_min, step, step_i, steps_n, gpu_util, hb_age_s, attempt, requeues, lost_count, last_error,
+    pull {state pulling|ok|error, bytes, total, attempts, next_at, error}, done {seconds, cost_usd, gpu, steps}, world_id}, `policy`, `spend`
+    {farm_usd, farm_committed_usd, rate_hr, balance, cap_remaining, budget_usd}, `watcher` {pid, heartbeat, cycle, state, link_pod, stats}.
+  - Not billable-tested: everything above is verified with fake pods (tests/test_farm_watch.py, test_farm_watch_ops.py: a local bash plays the pod,
+    real `worker.Worker`s write real done.json / result.tar). First real run = the drill. Open for the drill: the GPU speed / VRAM of the RTX 4090
+    route; whether the system `python3` of the pod image runs the snapshot script (stdlib only, 3.5 KB, sent through a heredoc as infra's scripts are).
+- 2026-10-08 drill (end-to-end proof on the real volume; report: work/larissa_kadu_full/farm/DRILL.md, evidence: work/larissa_kadu_full/farm/drill/evidence/).
+  `farm/drill.py` (`python -m dancecap.farm drill setup|make|verify|cleanup`) runs the farm on a SCRATCH dance `farmdrill` (takes/farmdrill.toml, the same 30 Hz
+  lattice and the SAME world package as larissa_kadu_full, its own state / coverage / watcher / pods, so the live dance, its watcher and the fit_full sessions are
+  untouched; `drill cleanup` MOVES the scratch dance (tracked-path files and work dirs) to work/pipeline/archive/<date>/farmdrill_drill/: the Monitor lists every dance with a
+  farm directory, newest first, so a left-over drill would open as the default view). Its chunks are exact slices of larissa_kadu_38's prepared MAMMA inputs: dra / drb / drc 40 frames, drs
+  300 frames, dr9 900 frames (a real 30-s chunk); outputs are compared with the existing 38 s fit / refine on the same frames (`drill verify`).
+  MEASURED (RTX 4090 pods of the hm-farm volume, EU-RO-1, $0.89/h, one pod per job): container up -> first job step 30 s (api create -> first step 36 s); ma_3d fit
+  of 40 frames 105-144 s, 300 frames 350 s (0.52 s/iter, 2.2 GiB), 900 frames 952 s (6.4 GiB, 94 % util); model ma_3d_s = 74 + 0.92 x frames (predicted 903 s for 900, measured
+  952 s); refine 19-32 s; a whole 900-frame fit + refine job 1015 s = $0.25. Versus the A100 model (`chunks.fit_seconds`: 2362 s for 900 frames, 56 min per 1286): the 4090 needs
+  0.41 x the time at $0.89/h against $1.39-1.79/h, i.e. about 2.4 x faster and 4-5 x cheaper per chunk. `launch.GPU_SLOWDOWN = 0.45` / `farm_actions.GPU_SLOWDOWN` replace the
+  guessed 1.5 in every estimate. Correctness on the volume's environment: every window passes (joint error vs the 38 s result: 900 frames median 1.9 / 2.1 mm, p95 5.8 / 8.2 mm;
+  40-300 frames median 6.6-11.7 mm, p95 22-37 mm; reprojection equal or better; betas identical to 0.0). Pulls: done -> verified at home 15-40 s (one 30-s watcher cycle + 8-10 s),
+  1.3-22 MB. A pod is deleted only after its pulls verify (log lines "deleted pod ...: all its jobs are pulled"). Watcher hard-killed mid-run (taskkill /T): restarted 13 s later,
+  first cycle 9 s after, nothing lost. ssh cut for 4 min (watcher's ssh children killed every 0.1 s): 8 snapshot failures logged, nothing deleted or launched, the pull
+  started 20 s after the link came back, verified after 33 s, the pod deleted after 64 s. Kill switch: watcher extension verified on the pod (kill_at file = now + 40 min, capped at the hard ceiling), manual `pods.extend_killswitch`
+  +10 min read back over ssh (1791504163 -> 1791504763; hm_killswitch.sh armed with the ceiling). A tampered world_sha256 is refused by the worker before any step (failed
+  twice, `max_requeues` 1, then `failed`). Drill spend $1.19 for 18 pods (0.54 of it on pods that hit the three bugs below).
+  BUGS FOUND AND FIXED (each only visible on a real pod / the real world): (1) the world package had NEVER been uploaded to the volume (infra never ran `sync_world`), and
+  `Link.state` put 501 paths into one ssh command line (WinError 206 on Windows): batched (`volume.STATE_BATCH`); a failed first sync also left a manifest without its files,
+  which `sync_world` then treats as complete (manifest-last rule): the partial world dir was repaired by hand, full sync 343.7 MB in 711 s; (2) `world.verify` counted the
+  worker's `.installed` marker as a stray file, so EVERY job's `chunk-fit` died at the world check; (3) `worker._safe_extract` resolved targets through the pod's symlink
+  `dancecap/work -> /opt/hm/work` and silently skipped every member there (prepared inputs / archive inputs never arrived); lexical containment now; (4) `worker._stale`
+  treated a claim directory without owner.json (the winner between mkdir and write) as dead: two pods could claim one job (test_claim_is_exclusive_between_workers);
+  (5) `farm --help` / `farm plugins` printed the status help / no plug-ins; (6) tests/test_front_full.py still expected pid-keyed pin betas; (7) the monitor flagged every farm pod
+  as an "orphan" (runpod_view looked for fit_full sessions): farm pods tracked by an alive watcher are exempt.
+  STILL OPEN (watch-owned): `launch.archive_stale` moves a failed chunk dir aside including its uploaded `in/` (a re-queue re-uploads it: 50 MB cost 2 min); a deterministic
+  failure recycles a pod per re-queue (about $0.02 each); a worker never re-claims a job it failed, so idle pods are useless after a fix and wait for the watcher's idle
+  deletion; the watcher counts a pod deleted outside it as committed budget until its next two polls (a launch was refused meanwhile); home uplink 0.5-1 MB/s (the 343 MB world
+  took 12 min: upload it ONCE, it is on the volume now); the ledger rows `podidexample05` / `podidexample06` still over-count.

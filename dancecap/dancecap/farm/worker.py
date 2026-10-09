@@ -46,6 +46,7 @@ heartbeat), plus the spec's `env`. Steps run in dancecap/ (the spec's `cwd`) wit
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -58,10 +59,12 @@ import sys
 import tarfile
 import threading
 import time
+import uuid
 from pathlib import Path
 
 SCHEMA = "dancecap.farm.job/1"
 HEARTBEAT_S = 30
+JOB_LIMIT_FACTOR, JOB_LIMIT_SLACK_MIN = 1.25, 5.0   # a job is killed after max_minutes x 1.25 + 5 min of wall clock
 SHARED_PREFIXES = ("worlds/", "src/", "weights/", "models/", "chunks/")
 GPU_KINDS = {"front", "fit", "refine", "full", "asr"}   # everything else (analyse, stitch...) needs no GPU unless the spec says so
 
@@ -79,6 +82,23 @@ def sha256_file(path: Path, chunk: int = 1 << 22) -> str:
         for blk in iter(lambda: fh.read(chunk), b""):
             h.update(blk)
     return h.hexdigest()
+
+
+def step_fingerprint(spec: dict, step: dict) -> str:
+    """What a finished step's marker (and its checkpoint) is valid FOR: the command and environment, the job's inputs (their sha256),
+    the world and the pinned code. A marker whose fingerprint differs is ignored, so a job re-planned with a different geometry or world
+    never resumes from the OLD step result (found by the survivability review: it did, and the new plan's output was the old one)."""
+    code = spec.get("code") or {}
+    doc = {"name": step.get("name"), "cmd": step.get("cmd"), "env": {**(spec.get("env") or {}), **(step.get("env") or {})},
+           "save": step.get("save") or [], "inputs": sorted([i.get("path"), i.get("sha256"), i.get("bytes")] for i in spec.get("inputs", [])
+                                                         if i.get("sha256") or i.get("bytes") is not None),
+           "world": spec.get("world_sha256"), "bundle": code.get("bundle_sha256"), "outputs": [o.get("path") for o in spec.get("outputs", [])]}
+    return hashlib.sha256(json.dumps(doc, sort_keys=True, default=str).encode()).hexdigest()[:20]
+
+
+def job_fingerprint(spec: dict) -> str:
+    """One hash over every step's fingerprint: equal for a re-queue of the same plan, different for a re-plan."""
+    return hashlib.sha256("|".join(step_fingerprint(spec, s) for s in spec.get("steps", [])).encode()).hexdigest()[:20]
 
 
 def write_json(path: Path, obj) -> None:
@@ -148,6 +168,10 @@ class Worker:
         self.failed_here: set[str] = set()
         self.pod_dir = self.vol / "pods" / self.pod_id
         self.cur: dict = {}
+        self.claims: dict[str, str] = {}      # job id -> the token written into claim.lock/owner.json by THIS worker
+        self.lost_claim = False               # set by the heartbeat when the claim on the running job is no longer ours
+        self.job_deadline: float | None = None
+        self._claim_miss = 0
         self._hb_stop = threading.Event()
         self._hb_thread: threading.Thread | None = None
         self.gpu0 = gpu_info()
@@ -208,42 +232,86 @@ class Worker:
         return rem >= need
 
     def try_claim(self, spec: dict) -> bool:
+        """Atomic `mkdir claim.lock`. A stale claim is taken over by renaming the lock aside; the rename happens first and the
+        takeover is then VERIFIED against what was judged stale (a rename can move a lock that a faster taker has just made fresh: it is
+        put back and this worker walks away)."""
         jid = spec["id"]
         cd = self.chunk_dir(jid)
         cd.mkdir(parents=True, exist_ok=True)
         lock = cd / "claim.lock"
+        token = uuid.uuid4().hex
         try:
             lock.mkdir()
         except FileExistsError:
+            seen = read_json(lock / "owner.json") or {}
             if not self._stale(cd):
                 return False
-            aside = cd / f"claim.stale.{int(now())}.{self.pod_id}"
+            aside = cd / f"claim.stale.{int(now())}.{self.pod_id}.{token[:6]}"
             try:
                 os.rename(lock, aside)  # atomic: of several takers exactly one succeeds
             except OSError:
+                return False
+            moved = read_json(aside / "owner.json") or {}
+            if (moved.get("token"), moved.get("pod_id"), moved.get("t")) != (seen.get("token"), seen.get("pod_id"), seen.get("t")):
+                with contextlib.suppress(OSError):   # we moved somebody's FRESH lock (another worker took over first): give it back
+                    os.rename(aside, lock)
                 return False
             try:
                 lock.mkdir()
             except FileExistsError:
                 return False
             self.log(f"took over the stale claim of {jid}")
-        write_json(lock / "owner.json", {"pod_id": self.pod_id, "t": now(), "host": socket.gethostname(), "pid": os.getpid()})
+        write_json(lock / "owner.json", {"pod_id": self.pod_id, "t": now(), "host": socket.gethostname(), "pid": os.getpid(), "token": token})
+        self.claims[jid] = token
         return True
 
     def _stale(self, cd: Path) -> bool:
         hb = read_json(cd / "heartbeat")
         owner = read_json(cd / "claim.lock" / "owner.json") or {}
-        if owner.get("pod_id") == self.pod_id:
+        if owner.get("pod_id") == self.pod_id and (owner.get("token") not in self.claims.values() or not self.cur):
             return True  # our own claim from a previous worker process on this pod
         last = max(float((hb or {}).get("t", 0)), float(owner.get("t", 0)))
+        if not last:   # the lock dir exists but its owner.json is not written yet (the winner is between mkdir and write_json):
+            try:       # that is a claim being made, not a dead one: age it by the directory itself (found by the drill / a threaded test)
+                last = (cd / "claim.lock").stat().st_mtime
+            except OSError:
+                last = now()
         return now() - last > self.stale_s
 
-    def release(self, jid: str) -> None:
-        cd = self.chunk_dir(jid)
+    def owns_claim(self, jid: str) -> bool | None:
+        """Is claim.lock still the one this worker made? None: cannot tell (unreadable)."""
+        tok = self.claims.get(jid)
+        lock = self.chunk_dir(jid) / "claim.lock"
+        if not lock.is_dir():
+            return False
         try:
-            shutil.rmtree(cd / "claim.lock")
+            o = json.loads((lock / "owner.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return o.get("token") == tok and o.get("pod_id") == self.pod_id
+
+    def release(self, jid: str) -> None:
+        """Give the claim back - only if it is still OURS. A slow worker whose claim was taken over (a volume stall longer than the stale
+        time) used to rmtree the NEW owner's live lock when it finished, and a third pod then claimed the running job. The lock is
+        renamed to a token-named path first (atomic), looked at, and only deleted when it is ours; otherwise it is put back."""
+        cd = self.chunk_dir(jid)
+        tok = self.claims.pop(jid, None)
+        lock = cd / "claim.lock"
+        aside = cd / f"claim.released.{tok[:8] if tok else 'x'}.{int(now())}"
+        try:
+            os.rename(lock, aside)
+        except OSError:
+            return
+        try:
+            o = read_json(aside / "owner.json") or {}
+            if tok and o.get("token") == tok:
+                shutil.rmtree(aside, ignore_errors=True)
+                return
+            self.log(f"{jid}: the claim is no longer ours (owner {o.get('pod_id')}); left alone")
         except OSError:
             pass
+        with contextlib.suppress(OSError):   # not ours: put it back for its owner
+            os.rename(aside, lock)
 
     # -- heartbeat
     def _heartbeat_loop(self) -> None:
@@ -264,6 +332,16 @@ class Worker:
                   "attempt": c.get("attempt"), "progress": prog, "gpu": g, "disk_free_gb": round(du.free / 1e9, 1),
                   "load1": round(os.getloadavg()[0], 2) if hasattr(os, "getloadavg") else None,
                   "kill_in_s": round(rem) if rem is not None else None, **extra}
+            own = self.owns_claim(c["id"]) if c["id"] in self.claims else True
+            if own is False:   # taken over (a volume stall longer than the stale time): stop, do not race the new owner's output
+                self._claim_miss += 1
+                if self._claim_miss >= 2:
+                    if not self.lost_claim:
+                        self.log(f"{c['id']}: the claim is no longer ours - aborting the job")
+                    self.lost_claim = True
+                    return
+            else:
+                self._claim_miss = 0
             write_json(self.chunk_dir(c["id"]) / "heartbeat", hb)
             write_json(self.pod_dir / "heartbeat", {"t": now(), "state": "running", "job": c["id"], "step": c.get("step")})
         except Exception as e:  # noqa: BLE001 - a failing heartbeat must never kill the job
@@ -271,10 +349,10 @@ class Worker:
 
     # -- world
     def verify_world(self, spec: dict) -> dict:
-        """Refuse a job whose world on the volume differs from `world_sha256` (FARM.md section 3). The manifest at
-        worlds/[<dance>/]<world_id>/manifest.json must hash to world_sha256, or its member hashes (every {"path"|"rel",
-        "sha256"} pair found in it) must digest to it (sorted, joined), or world_sha256 must start with the world id; every
-        listed member that exists on the volume is re-hashed. Returns {dir, id, manifest_sha256, members}."""
+        """Refuse a job whose world on the volume is not the one it names (FARM.md section 3). The manifest at
+        worlds/[<dance>/]<world_id>/manifest.json must carry EXACTLY the job's world_sha256 (the full 64 hex digits, not a prefix), be
+        self-consistent (sha256 over the sorted 'member NUL sha' lines of its members = its world_sha256), and EVERY file it lists
+        must exist with its size; once per pod the files are re-hashed too. Returns {dir, id, manifest_sha256, members, files}."""
         wid = spec.get("world_id")
         if not wid:
             return {}
@@ -284,37 +362,38 @@ class Worker:
             raise JobError(f"world {wid} not on the volume (looked in {[str(c) for c in cands]})")
         man_p = wd / "manifest.json"
         man_sha = sha256_file(man_p)
-        man = read_json(man_p, {})
-        members: dict[str, str] = {}
-
-        def walk(x):
-            if isinstance(x, dict):
-                p = x.get("path") or x.get("rel")
-                if isinstance(p, str) and isinstance(x.get("sha256"), str):
-                    members[p] = x["sha256"]
-                for v in x.values():
-                    walk(v)
-            elif isinstance(x, list):
-                for v in x:
-                    walk(v)
-        walk(man)
-        digest = hashlib.sha256("\n".join(sorted(members.values())).encode()).hexdigest() if members else None
+        man = read_json(man_p, {}) or {}
         want = spec.get("world_sha256")
-        if want and want not in (man_sha, digest) and not str(want).startswith(str(wid)) and not str(wid).startswith(str(want)[:12]):
-            raise JobError(f"world {wid}: sha256 on the volume (manifest {man_sha[:12]}, members {str(digest)[:12]}) "
-                           f"differs from the job's world_sha256 {str(want)[:12]}")
+        have = man.get("world_sha256")
+        if man.get("world_id") != wid:
+            raise JobError(f"world {wid}: the manifest on the volume is world {man.get('world_id')}")
+        members = man.get("members") or {}
+        digest = hashlib.sha256("".join(f"{n}\0{members[n].get('sha256')}\n" for n in sorted(members)).encode()).hexdigest() if members else None
+        if not have or digest != have:
+            raise JobError(f"world {wid}: the manifest is not self-consistent (members digest {str(digest)[:12]} != world_sha256 {str(have)[:12]})")
+        if want and have != want:
+            raise JobError(f"world {wid}: sha256 on the volume {have[:12]} differs from the job's world_sha256 {str(want)[:12]}")
+        files = [f for f in (man.get("files") or []) if isinstance(f, dict) and f.get("path")]
+        if not files:
+            raise JobError(f"world {wid}: the manifest lists no files")
         marker = self.state / f"world_{wid}.verified"
         if not (marker.exists() and marker.read_text() == man_sha):
-            bad = []
-            for p, h in members.items():
-                f = wd / p
-                if f.is_file() and sha256_file(f) != h:
-                    bad.append(p)
+            missing, bad = [], []
+            for f in files:
+                p = wd / f["path"]
+                if not p.is_file():
+                    missing.append(f["path"])
+                elif f.get("bytes") is not None and p.stat().st_size != int(f["bytes"]):
+                    bad.append(f["path"])
+                elif f.get("sha256") and sha256_file(p) != f["sha256"]:
+                    bad.append(f["path"])
+            if missing:
+                raise JobError(f"world {wid}: {len(missing)} file(s) listed in the manifest are missing on the volume, first {missing[0]}")
             if bad:
                 raise JobError(f"world {wid}: {len(bad)} member files differ from the manifest, first {bad[0]}")
             marker.parent.mkdir(parents=True, exist_ok=True)
             marker.write_text(man_sha)
-        return {"dir": str(wd), "id": wid, "manifest_sha256": man_sha, "members": len(members)}
+        return {"dir": str(wd), "id": wid, "manifest_sha256": man_sha, "members": len(members), "files": len(files)}
 
     def install_world(self, spec: dict, info: dict) -> Path | None:
         """Copy the world package to the pod's local disk once (tar stream, sequential reads) and return the local dir."""
@@ -419,6 +498,14 @@ class Worker:
                         self.log(f"step {step['name']}: abort requested, killing")
                         _kill(proc)
                         rc = 130
+                    elif self.lost_claim:
+                        self.log(f"step {step['name']}: claim lost, killing")
+                        _kill(proc)
+                        rc = 131
+                    elif self.job_deadline and now() > self.job_deadline:
+                        self.log(f"step {step['name']}: the job's max_minutes ran out, killing")
+                        _kill(proc)
+                        rc = 125
             lf.write(f"[worker {time.strftime('%FT%T')}] end {step['name']} rc={rc} in {now() - t0:.0f}s\n".encode())
         return int(rc)
 
@@ -458,14 +545,18 @@ class Worker:
             name = step["name"]
             marker = cd / "steps" / f"{name}.json"
             lok = loc / f"{name}.ok"
+            fp = step_fingerprint(spec, step)
             m = read_json(marker)
             if not rerun and m and m.get("rc") == 0:
-                if lok.exists() or self.restore(cd, name):
-                    lok.write_text("1")
+                if m.get("fp") != fp:
+                    self.log(f"step {name}: its marker is from a different plan (command / inputs / world / code changed), rerunning from here")
+                elif (lok.exists() and lok.read_text() == fp) or self.restore(cd, name):
+                    lok.write_text(fp)
                     results[name] = {"rc": 0, "seconds": m.get("seconds"), "skipped": True}
                     self.log(f"step {name}: already done (marker), skipped")
                     continue
-                self.log(f"step {name}: marker without local state or checkpoint, rerunning from here")
+                else:
+                    self.log(f"step {name}: marker without local state or checkpoint, rerunning from here")
             rerun = True
             self.cur.update(step=name, step_i=i, step_started=now())
             if step.get("live") and self.restore(cd, name, tag="live_"):
@@ -485,12 +576,12 @@ class Worker:
             if rc == 0:
                 if step.get("save"):
                     self.save_paths(cd, name, step["save"])
-                write_json(marker, {"rc": 0, "seconds": dt, "finished": now(), "pod_id": self.pod_id, "gpu": self.gpu0.get("name")})
-                lok.write_text("1")
+                write_json(marker, {"rc": 0, "seconds": dt, "finished": now(), "pod_id": self.pod_id, "gpu": self.gpu0.get("name"), "fp": fp})
+                lok.write_text(fp)
             elif step.get("optional"):
                 self.log(f"step {name}: rc={rc} (optional, continuing)")
             else:
-                write_json(marker, {"rc": rc, "seconds": dt, "finished": now(), "pod_id": self.pod_id})
+                write_json(marker, {"rc": rc, "seconds": dt, "finished": now(), "pod_id": self.pod_id, "fp": fp})
                 raise StepFailed(name, rc, results)
         return results
 
@@ -525,7 +616,8 @@ class Worker:
         tar_sha = sha256_file(tmp)
         os.replace(tmp, out / "result.tar")
         man = {"schema": "dancecap.farm.out/1", "id": jid, "dance": spec.get("dance"), "kind": spec.get("kind"),
-               "chunk": spec.get("chunk"), "world_id": spec.get("world_id"), "status": status, "missing": missing,
+               "chunk": spec.get("chunk"), "world_id": spec.get("world_id"), "world_sha256": spec.get("world_sha256"),
+               "pose_id": spec.get("pose_id"), "status": status, "missing": missing,
                "files": files, "tar": {"name": "result.tar", "bytes": (out / "result.tar").stat().st_size, "sha256": tar_sha},
                "created": now(), "pod_id": self.pod_id}
         write_json(out / "manifest.json", man)
@@ -539,6 +631,12 @@ class Worker:
         att["n"] = int(att.get("n", 0)) + 1
         write_json(cd / "attempts.json", att)
         t_start = now()
+        self.lost_claim = False
+        self._claim_miss = 0
+        # wall-clock limit of the whole job: a step that hangs with a live heartbeat (a GPU deadlock; the heartbeat is a thread) is
+        # otherwise only stopped by its own timeout_min. 25 % + 5 min over the spec's max_minutes.
+        mm = float(spec.get("max_minutes") or 0)
+        self.job_deadline = t_start + (mm * JOB_LIMIT_FACTOR + JOB_LIMIT_SLACK_MIN) * 60 if mm > 0 else None
         self.cur = {"id": jid, "started": t_start, "attempt": att["n"]}
         self.event(f"job {jid} start attempt {att['n']}")
         self._hb_stop.clear()
@@ -557,11 +655,19 @@ class Worker:
             self.event(f"job {jid} first step")
             steps = self.run_steps(spec, wdir)
         except StepFailed as e:
-            status, err, steps = "failed", f"step {e.step} rc={e.rc}", e.results
+            status, err, steps = "failed", f"step {e.step} rc={e.rc}" + (" (job max_minutes exceeded)" if e.rc == 125 else ""), e.results
         except JobError as e:
             status, err = "failed", str(e)
         except Exception as e:  # noqa: BLE001
             status, err = "failed", f"{type(e).__name__}: {e}"
+        if self.lost_claim:   # somebody else owns the job now: write nothing (done / failed / out would race the new owner), release nothing
+            self._hb_stop.set()
+            self.failed_here.add(jid)
+            self.claims.pop(jid, None)
+            self.cur = {}
+            self.event(f"job {jid} claim lost, abandoned")
+            self.log(f"{jid}: claim lost, abandoned without writing a result")
+            return "lost"
         try:
             man = self.pack_outputs(spec, steps, status if status == "ok" else "partial")
             if status == "ok" and man["missing"]:
@@ -573,7 +679,8 @@ class Worker:
         seconds = round(now() - t_start, 1)
         info = {"id": jid, "status": status, "error": err, "steps": steps, "seconds": seconds, "gpu": self.gpu0,
                 "price_hr": self.price_hr, "cost_usd": round(self.price_hr * seconds / 3600, 4),
-                "world_id": spec.get("world_id"), "code": spec.get("code"), "pod_id": self.pod_id,
+                "world_id": spec.get("world_id"), "pose_id": spec.get("pose_id"), "world_sha256": spec.get("world_sha256"),
+                "code": spec.get("code"), "pod_id": self.pod_id,
                 "started": t_start, "finished": now(), "attempt": att["n"], "out_files": len(man.get("files", [])),
                 "out_bytes": sum(f["bytes"] for f in man.get("files", []))}
         if status == "ok":
@@ -702,12 +809,15 @@ def _kill(proc: subprocess.Popen) -> None:
 
 def _safe_extract(tar: tarfile.TarFile, dest: Path) -> None:
     """Extract regular files and directories only; no absolute paths, no '..', no links or devices."""
-    dest = Path(dest).resolve()
+    # LEXICAL containment check: on a pod `<ws>/dancecap/work` is a symlink to the local scratch disk (pod_prepare.sh / preflight), so
+    # resolve()-ing the target left `dest` and every member under dancecap/work was SKIPPED SILENTLY (prepared inputs never arrived:
+    # the drill's fit died with "prepare.json not found"). Members are already refused when absolute / '..' / a link.
+    dest = Path(os.path.abspath(dest))
     for m in tar.getmembers():
         name = m.name[2:] if m.name.startswith("./") else m.name
         if m.issym() or m.islnk() or m.isdev() or name.startswith("/") or ".." in Path(name).parts:
             continue
-        target = (dest / name).resolve()
+        target = Path(os.path.normpath(dest / name))
         if dest not in target.parents and target != dest:
             continue
         if m.isdir():

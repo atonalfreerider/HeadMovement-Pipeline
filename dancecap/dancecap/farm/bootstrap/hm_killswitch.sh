@@ -18,9 +18,13 @@ if [ -z "${RUNPOD_API_KEY:-}" ] || [ -z "${RUNPOD_POD_ID:-}" ]; then
 fi
 log() { echo "[killswitch $(date -u +%T)] $*"; }
 log "armed: pod=${RUNPOD_POD_ID:-?} file=$DL init=$INIT hard=$HARD"
+# the deadline is read with a timeout (a hung network-volume read must not freeze the guard) and the last good value is kept locally: a
+# read that fails or returns nothing uses it, then the creation-time deadline - never "now"
+MIRROR=/tmp/hm_kill_at.mirror
 while true; do
   now=$(date +%s)
-  dl=$(cat "$DL" 2>/dev/null | tr -dc '0-9')
+  dl=$(timeout 8 cat "$DL" 2>/dev/null | tr -dc '0-9')
+  if [ -n "$dl" ]; then echo "$dl" > "$MIRROR" 2>/dev/null; else dl=$(cat "$MIRROR" 2>/dev/null | tr -dc '0-9'); fi
   [ -z "$dl" ] && dl=$INIT
   [ -z "$dl" ] && dl=0
   if [ "$HARD" -gt 0 ] && [ "$dl" -gt "$HARD" ]; then dl=$HARD; fi

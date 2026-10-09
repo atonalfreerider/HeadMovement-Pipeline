@@ -111,6 +111,19 @@ def _clock_diff(rec: dict, cur: dict, what: str) -> list[str]:
     return bad
 
 
+def same_clocks(ref: dict | None, mine: dict | None) -> bool:
+    """Were two takes measured on the SAME audio clocks? The same alignment file path, or - when the file is referenced by another path
+    (a pod reads the world package's copy, ../../prototype/... on the PC) - every shared camera's [slope, offset] equal within CLOCK_TOL
+    (at least two cameras). The farm's chunk takes on a pod used to die here on the path string alone."""
+    if not ref or not mine:
+        return False
+    if ref.get("alignment") and ref.get("alignment") == mine.get("alignment"):
+        return True
+    rs, ms = ref.get("sources") or {}, mine.get("sources") or {}
+    shared = sorted(set(rs) & set(ms))
+    return len(shared) >= 2 and not _clock_diff({c: rs[c] for c in shared}, {c: ms[c] for c in shared}, "ref")
+
+
 def offsets_check(work: Path, doc: dict | None = None) -> dict:
     """Can work/sync/offsets.json be applied to work's frame times? -> {status, required, detail}.
 
@@ -698,7 +711,7 @@ def run(take_name: str, cams: list[str] | None = None, range_ms: float = 300.0, 
         ref_p = md.take_work(gauge_ref) / "sync" / "offsets.json"
         ref_doc = json.loads(ref_p.read_text())
         mine = take_clocks(work) or {}
-        if (ref_doc.get("clocks") or {}).get("alignment") != mine.get("alignment"):
+        if not same_clocks(ref_doc.get("clocks"), mine):
             raise SystemExit(f"[sync] --gauge-ref {gauge_ref}: its offsets were measured on other audio clocks")
         gauge = regauge(res, ref_doc, gauge_ref)
         print(f"[sync] gauge pinned to {gauge_ref}: shift {gauge.get('shift_ms')} ms over {gauge.get('shared_cams')}")

@@ -108,6 +108,9 @@ def _hash_range(path: Path, start: int, length: int) -> str:
 # ------------------------------------------------------------------------------------------------ link to the volume
 
 
+STATE_BATCH = 80   # paths per `state` ssh call (see Link.state)
+
+
 @dataclass
 class Link:
     """A pod that mounts the volume, plus the shell helpers the transfers need. Safe to share between threads."""
@@ -160,6 +163,11 @@ class Link:
         `hash_equal_size` whose size equals the given local size (everything else is not worth reading)."""
         if not rels:
             return {}
+        if len(rels) > STATE_BATCH:   # the listing travels in the ssh command line, and Windows' CreateProcess takes 32 k characters
+            got_all: dict[str, tuple[int, str | None]] = {}   # (a 501-file world made one 60 k line: WinError 206, found by the drill)
+            for i in range(0, len(rels), STATE_BATCH):
+                got_all.update(self.state(rels[i:i + STATE_BATCH], hash_equal_size))
+            return got_all
         listing = "\n".join(self.abs(r) for r in rels)
         out = self.pod.output("while IFS= read -r f; do [ -f \"$f\" ] && stat -c '%s\t%n' \"$f\"; done <<'HM_LIST'\n" + listing + "\nHM_LIST\ntrue\n", timeout=300)
         got: dict[str, tuple[int, str | None]] = {}
@@ -505,8 +513,16 @@ def sync_code(link: Link, *, make_current: bool = True) -> dict:
         dst = tmp / Path(rel).name
         dst.write_bytes(src.read_bytes().replace(b"\r\n", b"\n"))
         staged.append((dst, rel))
-    link.push_files(staged)
-    link.sh(f"chmod +x {ROOT}/bin/*.sh", 60)
+    # bin/ is what a starting pod executes (pod_entry.sh is its container command): never rewrite a script IN PLACE - a pod that starts
+    # during the upload would read a truncated one (review 2026-10-08). Changed scripts go to bin.new/ and are moved over atomically.
+    have = link.state([rel for _, rel in staged], {rel: d.stat().st_size for d, rel in staged})
+    changed = [(d, rel) for d, rel in staged if not (have.get(rel) and have[rel][0] == d.stat().st_size and have[rel][1] == sha256_file(d))]
+    if changed:
+        link.push_files([(d, f"bin.new/{Path(rel).name}") for d, rel in changed], force=True)
+        link.sh(f"cd {ROOT} && mkdir -p bin && chmod +x bin.new/* && for f in bin.new/*; do mv -f \"$f\" bin/$(basename \"$f\"); done; "
+                "rmdir bin.new 2>/dev/null; chmod +x bin/*.sh", 120)
+    else:
+        link.sh(f"chmod +x {ROOT}/bin/*.sh", 60)
     link.write_text(f"code/{info['key']}.json", json.dumps({k: v for k, v in info.items() if k != "path"}, indent=1))
     if make_current:
         link.write_text("code/CURRENT", info["key"])

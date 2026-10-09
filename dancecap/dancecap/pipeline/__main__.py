@@ -139,6 +139,12 @@ def main(argv: list[str] | None = None) -> int:
     if argv and argv[0] == "export":
         from .export import main as export_main
         return export_main(argv[1:])
+    if argv and argv[0] == "archive-legacy":    # clear the monitor's old jobs: moves them to work/pipeline/archive/<date>/
+        from .legacy_archive import main as archive_main
+        return archive_main(argv[1:])
+    if argv and argv[0] == "farm-demo":         # synthetic farm state for demos / screenshots (work/farm_demo/farm/)
+        from .farm_demo import main as demo_main
+        return demo_main(argv[1:])
     if argv and argv[0] in PLANNED_CMDS:
         print(f"[pipeline] {argv[0]}: planned, not built yet - {PLANNED_CMDS[argv[0]]} (docs/PIPELINE.md)",
               file=sys.stderr)
@@ -152,7 +158,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--port", type=int)
     p.add_argument("--replace", action="store_true")
     p.add_argument("--take")
-    p.add_argument("--view", choices=["videos", "overview", "runpod", "new"])
+    p.add_argument("--view", choices=["videos", "overview", "runpod", "new", "farm"])
+    p.add_argument("--dance", help="open the farm view of this dance (default: the newest)")
     p.add_argument("--capture", help="open the take that exported this Unity capture")
     p.add_argument("--no-window", action="store_true")
     p.add_argument("--foreground", action="store_true", help="--serve: keep stdout (debugging)")
@@ -183,6 +190,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("audio-sync", help="audio clocks of the take's videos (python -m dancecap.pipeline audio-sync <take>)")
     sub.add_parser("export", help="demo_export + the triggers export (python -m dancecap.pipeline export <take> "
                                   "--capture <Name>)")
+    sub.add_parser("archive-legacy", help="move the old runs / plans to work/pipeline/archive/<date>/ (nothing is deleted)")
+    sub.add_parser("farm-demo", help="write a synthetic farm state (work/farm_demo/farm) for demos and screenshots")
     a = ap.parse_args(argv)
     if a.cmd == "monitor":
         from . import monitor
@@ -191,7 +200,7 @@ def main(argv: list[str] | None = None) -> int:
         take = a.take
         if a.capture and not take:
             take = _take_for_capture(a.capture)
-        return monitor.launch(take=take, view=a.view, replace=a.replace, no_window=a.no_window)
+        return monitor.launch(take=take, view=a.view, replace=a.replace, no_window=a.no_window, dance=a.dance)
     return {"stages": cmd_stages, "status": cmd_status, "plan": cmd_plan, "create": cmd_create,
             "gate": cmd_gate}[a.cmd](a)
 

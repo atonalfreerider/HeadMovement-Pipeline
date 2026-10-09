@@ -16,6 +16,17 @@ narrated move between two segments - a labels.json 'unresolved' item (a phrase t
 the gap: the dance went A -> ? -> B, so A -> B is neither scored nor reported as a new link, however short the gap.
 A segment with `node` set is pinned to that node.
 
+Routes through the graph (work/<take>/moves/path_overrides.json, optional, additive): a transition the graph does not
+connect (break_before after an unlabelled move, or a new_link) can be drawn along EXISTING graph links instead of a
+straight line between two unconnected nodes: the shortest forward chain prev -> X1 -> ... -> next of authored links
+(named nodes allowed, not only blank junctions) or an explicit node list. The chain goes into the step's via / links
+fields (the viewer's gliding couple follows them), the step keeps its break (the in-between moves are still
+unlabelled) and gets via_inferred: true, so a reader knows the intermediate nodes are INFERRED from the graph and were
+never narrated. The labelled seconds, the fingerprint's dwell / transitions and the step list (1:1 with the labels'
+couple segments) do not change.
+  {"version": 1, "routes": [{"into": "<move slug>" | "segment": "<label segment id>",
+                              "nodes": [optional explicit intermediate node ids], "max_hops": 8, "reason": "..."}]}
+
 path.json:
   {version:1, take, provenance (of the labels: human|narration|auto|placeholder|mixed:...), time_base:'reference',
    labels:<file>, params:{...},
@@ -74,6 +85,80 @@ def unknown_between(a: float, b: float, unresolved: list[dict], eps: float = 1e-
     return out
 
 
+OVERRIDES_NAME = "path_overrides.json"
+
+
+def overrides_file(take: str) -> Path:
+    return moves_dir(take) / OVERRIDES_NAME
+
+
+def load_overrides(src: Path | str | None) -> dict | None:
+    """The path overrides document ({version:1, routes:[...]}), or None when the file does not exist."""
+    if src is None or not Path(src).exists():
+        return None
+    doc = json.loads(Path(src).read_text(encoding="utf-8"))
+    if doc.get("version") != 1:
+        raise PathError(f"{src}: overrides version {doc.get('version')!r} != 1")
+    return doc
+
+
+def shortest_route(graph: Graph, a: str, b: str, max_hops: int = 8) -> tuple[list[str], list[str]] | None:
+    """Shortest forward chain of authored links a -> ... -> b (breadth first, ties in link order):
+    (intermediate node ids, link ids in travel order), or None when there is none within max_hops."""
+    from collections import deque
+    q = deque([(a, [], [])])
+    seen = {a}
+    while q:
+        node, via, lids = q.popleft()
+        if len(lids) >= max_hops:
+            continue
+        for l in graph.out_links.get(node, []):
+            nxt = l["to"]
+            if nxt == b:
+                return via, lids + [l["id"]]
+            if nxt not in seen:
+                seen.add(nxt)
+                q.append((nxt, via + [nxt], lids + [l["id"]]))
+    return None
+
+
+def route_for(overrides: dict | None, seg_id: str, move: str) -> dict | None:
+    for r in (overrides or {}).get("routes", []):
+        if r.get("segment") == seg_id or (r.get("segment") is None and r.get("into") == move):
+            return r
+    return None
+
+
+def apply_route(graph: Graph, st: dict, prev: dict, rule: dict) -> bool:
+    """Route the transition into step `st` (previous step `prev`) along graph links; False = nothing to do / no chain."""
+    a, b = prev["node"], st["node"]
+    if a == b or graph.connection(a, b)[0] is not None or not (st.get("break_before") or st.get("new_link")):
+        return False
+    if rule.get("nodes"):
+        chain = [a, *rule["nodes"], b]
+        lids = []
+        for x, y in zip(chain, chain[1:]):
+            l = graph.link_index.get((x, y))
+            if l is None:
+                raise PathError(f"path_overrides: no link {x} -> {y} for segment {st['segment']} (explicit nodes)")
+            lids.append(l["id"])
+        via = list(rule["nodes"])
+    else:
+        r = shortest_route(graph, a, b, int(rule.get("max_hops", 8)))
+        if r is None:
+            return False
+        via, lids = r
+    pts = [graph.position(n) for n in [a, *via, b]]
+    cum = np.cumsum([0.0] + [float(np.linalg.norm(q - p)) for p, q in zip(pts, pts[1:])])
+    w0, w1 = float(prev["t1"]), float(st["t0"])
+    frac = cum[1:-1] / cum[-1] if cum[-1] > 0 else np.zeros(len(via))
+    st.update({"via": via, "links": lids, "link": lids[0], "new_link": False, "via_inferred": True,
+               "via_moves": [graph.nodes[n]["move"] for n in via],
+               "via_t": [round(w0 + float(f) * (w1 - w0), 3) for f in frac],
+               "via_reason": rule.get("reason") or "inferred: the shortest chain of existing graph links"})
+    return True
+
+
 def _transition(graph: Graph, a: str, b: str, p: PathParams) -> tuple[float, dict]:
     """Cost and description of moving from node a to node b (adjacent segments, no break)."""
     if a == b:
@@ -89,8 +174,10 @@ def _transition(graph: Graph, a: str, b: str, p: PathParams) -> tuple[float, dic
 
 
 def resolve_path(labels: Labels, graph: Graph, params: PathParams | None = None,
-                 labels_file: str | None = None, labels_sha: str | None = None) -> dict:
-    """Viterbi over node instances of the couple-tier segments -> path.json dict."""
+                 labels_file: str | None = None, labels_sha: str | None = None,
+                 overrides: dict | None = None) -> dict:
+    """Viterbi over node instances of the couple-tier segments -> path.json dict (+ the optional graph routes of
+    `overrides`, see the module docstring)."""
     p = params or PathParams()
     lab = to_reference(labels)
     segs = lab.tier("couple")
@@ -146,6 +233,13 @@ def resolve_path(labels: Labels, graph: Graph, params: PathParams | None = None,
             st.update(info)
             if info["new_link"]:
                 new_links[(prev, node)] += 1
+        rule = route_for(overrides, s.id, s.move) if k else None
+        if rule is not None and apply_route(graph, st, steps[k - 1], rule):
+            key = (steps[k - 1]["node"], node)
+            if new_links.get(key):
+                new_links[key] -= 1
+                if new_links[key] <= 0:
+                    del new_links[key]
         steps.append(st)
     total = float(cost[-1][choice[-1]]) if n else 0.0
     out = {
@@ -157,9 +251,38 @@ def resolve_path(labels: Labels, graph: Graph, params: PathParams | None = None,
         "cost": round(total, 6),
         "labels_sha256_16": labels_sha,
     }
+    if overrides and any(st.get("via_inferred") for st in steps):
+        out["overrides"] = {"file": OVERRIDES_NAME, "routes": overrides.get("routes", []),
+                            "routed_steps": [i for i, st in enumerate(steps) if st.get("via_inferred")]}
     if lab.provenance == "placeholder":
         out["note"] = f"{PLACEHOLDER_BANNER}: path of a placeholder timeline"
     return out
+
+
+def _route_errors(i: int, st: dict, prev: dict | None, graph: Graph) -> list[str]:
+    """A routed step (via_inferred): prev -> via... -> node must be a chain of authored forward links, and the step's
+    link / links / via must be exactly that chain (no new link: the graph connects the route)."""
+    if prev is None or prev["node"] == st["node"]:
+        return [f"step {i}: via_inferred without a transition"]
+    errs = []
+    via = list(st.get("via") or [])
+    chain = [prev["node"], *via, st["node"]]
+    ids = []
+    for x, y in zip(chain, chain[1:]):
+        l = graph.link_index.get((x, y))
+        if l is None:
+            errs.append(f"step {i}: routed via {via}: the graph has no link {x} -> {y}")
+        else:
+            ids.append(l["id"])
+    if not errs and list(st.get("links") or []) != ids:
+        errs.append(f"step {i}: links {st.get('links')} != the route's links {ids}")
+    if not errs and st["link"] != ids[0]:
+        errs.append(f"step {i}: link {st['link']} is not the route's first link {ids[0]}")
+    if st["new_link"]:
+        errs.append(f"step {i}: new_link on a routed step (the route is made of existing links)")
+    if len(st.get("via_t") or []) != len(via):
+        errs.append(f"step {i}: via_t has {len(st.get('via_t') or [])} times for {len(via)} routed nodes")
+    return errs
 
 
 def validate_path(doc: dict, graph: Graph | None = None, labels: Labels | None = None) -> list[str]:
@@ -195,7 +318,9 @@ def validate_path(doc: dict, graph: Graph | None = None, labels: Labels | None =
             if st["link"] is not None and st["link"] not in graph.link_by_id:
                 errs.append(f"step {i}: unknown link {st['link']}")
             joined = prev is not None and not st.get("break_before")
-            if joined and st["node"] != prev["node"]:
+            if st.get("via_inferred"):
+                errs += _route_errors(i, st, prev, graph)
+            elif joined and st["node"] != prev["node"]:
                 if nd is not None and prev["node"] in graph.nodes:
                     kind, info = graph.connection(prev["node"], st["node"], strict)
                     if bool(st["new_link"]) == (kind is not None):
@@ -240,14 +365,19 @@ def cmd_path(args: argparse.Namespace) -> int:
                         distance_weight=args.distance_weight, max_gap_s=args.max_gap,
                         strict_direction=args.strict_direction,
                         break_on_unknown=not getattr(args, "no_unknown_breaks", False))
-    doc = resolve_path(labels, graph, params, labels_file=_rel(src), labels_sha=_sha(src))
+    ov_src = None if getattr(args, "no_overrides", False) else (
+        Path(args.overrides) if getattr(args, "overrides", None) else overrides_file(args.take))
+    doc = resolve_path(labels, graph, params, labels_file=_rel(src), labels_sha=_sha(src),
+                       overrides=load_overrides(ov_src))
     out = Path(args.out) if args.out else path_file(args.take)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(doc, indent=1) + "\n", encoding="utf-8")
     nl = sum(st["new_link"] for st in doc["steps"])
     print(f"[moves] wrote {out}: {len(doc['steps'])} steps, {nl} new-link transitions "
           f"({len(doc['new_links'])} distinct), {sum(st['reverse'] for st in doc['steps'])} reverse, "
-          f"{sum(bool(st['via']) for st in doc['steps'])} through blank junctions, cost {doc['cost']}"
+          f"{sum(bool(st['via']) and not st.get('via_inferred') for st in doc['steps'])} through blank junctions, "
+          f"{sum(bool(st.get('via_inferred')) for st in doc['steps'])} routed along graph links (path_overrides), "
+          f"cost {doc['cost']}"
           f"  [provenance {doc['provenance']}]")
     return 0
 
@@ -267,4 +397,6 @@ def register(sub) -> None:
     p.add_argument("--strict-direction", action="store_true", help="a reverse traversal counts as a new link")
     p.add_argument("--no-unknown-breaks", action="store_true",
                    help="score transitions across unresolved (unknown) narrated moves too (default: they break the path)")
+    p.add_argument("--overrides", help=f"routes through the graph (default work/<take>/moves/{OVERRIDES_NAME} if it exists)")
+    p.add_argument("--no-overrides", action="store_true", help="ignore the overrides file")
     p.set_defaults(func=cmd_path)

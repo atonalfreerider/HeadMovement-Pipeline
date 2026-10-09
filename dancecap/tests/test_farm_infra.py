@@ -173,24 +173,53 @@ def test_step_timeout_kills_the_step(tmp_path):
     assert json.loads((w.vol / "chunks" / "j4" / "failed.json").read_text())["steps"]["slow"]["rc"] == 124
 
 
+def make_world(vol, dance="t", files=None):
+    """A real-layout world package on a fake volume: manifest.json with members + files and the digest the job pins."""
+    from dancecap.farm import world as W
+    files = files or {"room.bin": b"room", "shared/betas.json": b"{}"}
+    members, flist = {}, []
+    for rel, data in files.items():
+        sha = hashlib.sha256(data).hexdigest()
+        members[rel] = {"scope": "pose", "sha256": sha, "bytes": len(data), "n_files": 1}
+        flist.append({"path": rel, "sha256": sha, "bytes": len(data), "member": rel})
+    ws = W.combine(members)
+    wid = ws[:12]
+    wd = Path(vol) / "worlds" / dance / wid
+    for rel, data in files.items():
+        (wd / rel).parent.mkdir(parents=True, exist_ok=True)
+        (wd / rel).write_bytes(data)
+    (wd / "manifest.json").write_text(json.dumps({"world_id": wid, "world_sha256": ws, "members": members, "files": flist}))
+    return wd, wid, ws
+
+
 def test_world_sha_is_verified(tmp_path):
     w = make_worker(tmp_path)
-    wd = w.vol / "worlds" / "t" / "abc123def456"
-    wd.mkdir(parents=True)
-    (wd / "room.bin").write_bytes(b"room")
-    good = hashlib.sha256(b"room").hexdigest()
-    (wd / "manifest.json").write_text(json.dumps({"members": [{"path": "room.bin", "sha256": good}]}))
-    members_digest = hashlib.sha256(good.encode()).hexdigest()
-    info = w.verify_world({"dance": "t", "world_id": "abc123def456", "world_sha256": members_digest})
-    assert info["members"] == 1
+    wd, wid, ws = make_world(w.vol)
+    info = w.verify_world({"dance": "t", "world_id": wid, "world_sha256": ws})
+    assert info["members"] == 2 and info["files"] == 2
+    # the FULL sha256: a bogus digest that merely starts with the world id used to pass
     with pytest.raises(worker.JobError, match="differs"):
-        w.verify_world({"dance": "t", "world_id": "abc123def456", "world_sha256": "f" * 64})
+        w.verify_world({"dance": "t", "world_id": wid, "world_sha256": wid + "0" * 52})
+    with pytest.raises(worker.JobError, match="differs"):
+        w.verify_world({"dance": "t", "world_id": wid, "world_sha256": "f" * 64})
     (wd / "room.bin").write_bytes(b"tampered")
-    (w.state / "world_abc123def456.verified").unlink(missing_ok=True)
+    (w.state / f"world_{wid}.verified").unlink(missing_ok=True)
     with pytest.raises(worker.JobError, match="differ from the manifest"):
-        w.verify_world({"dance": "t", "world_id": "abc123def456", "world_sha256": members_digest})
+        w.verify_world({"dance": "t", "world_id": wid, "world_sha256": ws})
+    (wd / "room.bin").unlink()                                   # a member file that vanished used to be skipped
+    with pytest.raises(worker.JobError, match="missing on the volume"):
+        w.verify_world({"dance": "t", "world_id": wid, "world_sha256": ws})
     with pytest.raises(worker.JobError, match="not on the volume"):
         w.verify_world({"dance": "t", "world_id": "000000000000"})
+
+
+def test_world_manifest_of_another_world_under_the_right_id_is_refused(tmp_path):
+    w = make_worker(tmp_path)
+    wd, wid, ws = make_world(w.vol)
+    other, owid, ows = make_world(w.vol, files={"room.bin": b"other room", "shared/betas.json": b"{}"})
+    (wd / "manifest.json").write_bytes((other / "manifest.json").read_bytes())      # foreign manifest under the id the job names
+    with pytest.raises(worker.JobError, match="is world"):
+        w.verify_world({"dance": "t", "world_id": wid, "world_sha256": ws})
 
 
 def test_safe_extract_refuses_escapes(tmp_path):

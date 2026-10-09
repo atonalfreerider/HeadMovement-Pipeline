@@ -31,6 +31,7 @@ existing front-end code that reads "the reference take" (front_full.prep_segment
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -47,6 +48,7 @@ from ..take import PACKAGE_ROOT, WORKSPACE
 SCHEMA = "dancecap.farm.world/1"
 ID_LEN = 12
 POSE_SCOPE, AVATAR_SCOPE = "pose", "avatar"
+GUARD_SCOPE = "guard"   # in world_sha256 only: neither the pose id nor the avatar id (checks, never inputs)
 HASH_CACHE = PACKAGE_ROOT / "work" / "worlds" / ".hash_cache.json"
 AVATAR_FILES = ("avatar/lead_albedo.png", "avatar/follow_albedo.png", "avatar/lead_albedo_face.png",
                 "avatar/follow_albedo_face.png", "avatar/hair_groom.json", "avatar/follow_hair.json", "avatar/shoes.json",
@@ -200,6 +202,26 @@ def _json_bytes(obj) -> bytes:
     return (json.dumps(obj, indent=1, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
 
 
+def _referenced_files(node, prefix: str = "") -> list[tuple[str, str]]:
+    """(key path, value) of every string in a nested config that names a data file (work/... .npz / .json / .png / .jpg)."""
+    out = []
+    if isinstance(node, dict):
+        for k, v in node.items():
+            out += _referenced_files(v, f"{prefix}{k}.")
+    elif isinstance(node, str) and node.replace("\\", "/").startswith("work/") and node.lower().endswith((".npz", ".json", ".png", ".jpg", ".npy")):
+        out.append((prefix.rstrip("."), node.replace("\\", "/")))
+    return out
+
+
+def model_files() -> dict[str, Path]:
+    """{volume-relative path: local file} of the body-model / weights files every pose depends on (volume.model_items)."""
+    try:
+        from . import volume
+        return {rel: p for p, rel in volume.model_items() if p.exists()}
+    except Exception:  # noqa: BLE001  (a machine without the gated models: the guard member is then simply absent)
+        return {}
+
+
 def member_specs(spec) -> list[Member]:
     """The members of the dance's world, from its reference take's solved outputs and the dance TOML (spec: timeline.DanceSpec)."""
     import numpy as np
@@ -302,6 +324,14 @@ def member_specs(spec) -> list[Member]:
         [Entry("shared/skeleton.json", data=_json_bytes(skel))], "mamma_dyn constants + reference smplx contract")
     add("ma3d_config", POSE_SCOPE, "the MAMMA ma_3d config template the reference fit used (contact config + overrides)",
         _file(ref / "mamma" / "ma3d_config.yaml", "ref/mamma/ma3d_config.yaml"), _rel_ws(ref / "mamma" / "ma3d_config.yaml"))
+    # ---- the body models / weights every pose is computed with (a CHECK: it enters world_sha256, not the pose or avatar id) ----
+    mf = model_files()
+    if mf:
+        docm = {"schema": SCHEMA + "/models", "files": {rel: {"sha256": cache().sha(p)[0], "bytes": p.stat().st_size} for rel, p in sorted(mf.items())},
+                "note": "the locked-head SMPL-X models, vertex tables, MAMMA ma_2d checkpoint and ALIKED / LightGlue weights on the volume; "
+                        "a pod that fits refuses to run when its copy differs (world.assert_models)"}
+        add("model_weights", GUARD_SCOPE, "sha256 of the body models and weights the poses are computed with (checked on the pod)",
+            [Entry("shared/models.json", data=_json_bytes(docm))], "farm.volume.model_items")
     # ---- avatar configuration (references only) ----
     files = {}
     for f in AVATAR_FILES:
@@ -313,6 +343,12 @@ def member_specs(spec) -> list[Member]:
     for role in ("lead", "follow"):
         d = (cfg.get("dancers") or {}).get(role) or {}
         dancers[role] = {k: d[k] for k in ("stature_m", "shoe_sole_m", "shoe_geometry", "shape_edits") if k in d}
+        # files a shape edit points at (the face block's identity fit): a re-fitted identity must change the avatar id too
+        for key, rel in _referenced_files(dancers[role].get("shape_edits")):
+            p = WORKSPACE / rel
+            if p.is_file():
+                sha, n = cache().sha(p)
+                files[f"{role}:{key}"] = {"path": rel, "sha256": sha, "bytes": n}
     av = {"schema": SCHEMA + "/avatar", "reference_take": spec.reference, "dancers": dancers, "files": files,
           "note": "references only: shape edits and file hashes; textures, grooms and shoes are never copied here"}
     add("avatar", AVATAR_SCOPE, "avatar configuration: shape edits and texture / groom / shoe file hashes (references)",
@@ -444,7 +480,7 @@ class World:
         extra = []
         if self.root.is_dir():
             on_disk = {p.relative_to(self.root).as_posix() for p in self.root.rglob("*") if p.is_file()}
-            extra = sorted(on_disk - set(files) - {"manifest.json"})
+            extra = sorted(on_disk - set(files) - {"manifest.json", ".installed"})   # .installed: the worker's marker of a copy on a pod
             if extra:
                 errors.append(f"{len(extra)} file(s) not in the manifest, e.g. {extra[:3]}")
         # the manifest must be self-consistent: files -> member hashes -> world sha -> id
@@ -614,7 +650,7 @@ def build(dance: str = DEFAULT_DANCE, *, link: bool = False, make_current: bool 
     manifest = {"schema": SCHEMA, "dance": dance, **wid, "created": now_iso(), "reference_take": spec.reference,
                 "grid": spec.grid.to_dict(),
                 "members": hm, "n_files": len(files), "bytes": sum(v[1] for v in files.values()),
-                "sealed_pose": wid["pose_id"] in seals(dance), "builder": "dancecap.farm.world.build",
+                "builder": "dancecap.farm.world.build",
                 "files": [{"path": k, "sha256": v[0], "bytes": v[1], "member": v[2]} for k, v in sorted(files.items())]}
     td, dd = tracked_dir(dance, world_id), data_dir(dance, world_id)
     existing = read_json(td / "manifest.json", None)
@@ -675,6 +711,66 @@ def check_current(dance: str = DEFAULT_DANCE) -> dict:
             "advice": "up to date" if not changed else
             ("only the avatar configuration changed: `world publish` makes a new world id with the same pose id"
              if not pose_changed else "a POSE member changed: poses made under the current pose id are not from these sources")}
+
+
+def assert_models(w: "World", volume_root: str | Path | None = None, names=("models/",), state_dir: Path | None = None) -> dict:
+    """Pod side: the body models / weights on the volume are the ones the world was built with. Files under the given prefixes are re-hashed
+    (a size+mtime cache keeps it to seconds after the first job on a pod) against shared/models.json. Raises WorldMismatch on any difference
+    or a missing file; a world without the member (an older one) or a machine without the volume passes with a note."""
+    root = Path(volume_root or os.environ.get("HM_ROOT") or "")
+    doc = None
+    try:
+        doc = w.load_json("shared/models.json")
+    except (OSError, ValueError):
+        pass
+    if not doc:
+        return {"checked": 0, "note": "this world carries no model_weights member"}
+    if not str(root) or not (root / "models").exists():
+        return {"checked": 0, "note": "no volume on this machine"}
+    sd = Path(state_dir or Path(os.environ.get("HM_LOCAL", "/opt/hm")) / "state")
+    cpath = sd / "model_sha.json"
+    memo = read_json(cpath, {}) or {}
+    bad, n = [], 0
+    for rel, rec in sorted(doc["files"].items()):
+        if not rel.startswith(tuple(names)):
+            continue
+        p = root / rel
+        if not p.is_file():
+            bad.append(f"missing {rel}")
+            continue
+        st = p.stat()
+        key = f"{rel}|{st.st_size}|{int(st.st_mtime)}"
+        sha = memo.get(key) or sha256_file(p, use_cache=False)
+        memo[key] = sha
+        n += 1
+        if sha != rec["sha256"] or st.st_size != int(rec["bytes"]):
+            bad.append(f"differs {rel}")
+    with contextlib.suppress(OSError):
+        sd.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(cpath, memo)
+    if bad:
+        raise WorldMismatch(f"world {w.id}: the body models / weights on the volume differ from the ones it was built with: {bad[:4]}")
+    return {"checked": n}
+
+
+def drift(dance: str = DEFAULT_DANCE, ttl: float = 600.0, force: bool = False) -> dict:
+    """check_current() cached in work/<dance>/farm/world_drift.json (hashing the sources takes seconds; the monitor and `farm status` ask often).
+    {"drifted": bool, "changed_members", "advice", "current", "sources_would_give", "checked"}. Never raises."""
+    from . import farm_dir
+    p = farm_dir(dance) / "world_drift.json"
+    old = read_json(p, None)
+    if not force and isinstance(old, dict) and time.time() - float(old.get("checked_ts") or 0) < ttl:
+        return old
+    try:
+        r = check_current(dance)
+        d = {"drifted": bool(r["changed_members"]), "changed_members": r["changed_members"], "pose_same": r["pose_same"],
+             "changed_pose_members": r["changed_pose_members"], "advice": r["advice"], "current": r["current"],
+             "sources_would_give": r["sources_would_give"], "checked": now_iso(), "checked_ts": time.time()}
+    except Exception as e:  # noqa: BLE001
+        d = {"drifted": None, "error": f"{type(e).__name__}: {str(e)[:200]}", "checked": now_iso(), "checked_ts": time.time()}
+    with contextlib.suppress(Exception):
+        atomic_write_json(p, d)
+    return d
 
 
 def seal(dance: str = DEFAULT_DANCE, world_id: str | None = None, note: str = "") -> dict:

@@ -139,6 +139,8 @@ def floor_layer(kind: str, take_name: str, capture: str, stream: Path, mirror: b
                 smplx_dir: str | None = None) -> dict:
     """counterbalance / floorcraft into the capture: (re-)analyse when missing or computed on other fits
     (counterbalance.is_current / floorcraft.is_current), then the capture-time Unity copy (+ the work mirror)."""
+    from unittest import mock
+
     from . import counterbalance as cb
     from . import floorcraft as fc
     mod = cb if kind == "counterbalance" else fc
@@ -146,7 +148,24 @@ def floor_layer(kind: str, take_name: str, capture: str, stream: Path, mirror: b
     if not mod.is_current(take_name, smplx_dir):
         r = mod.run(take_name, smplx_dir, review=False)
         out.update({"analysed": True, "path": str(r["_path"])})
-    out["export"] = mod.export(take_name, capture, streaming=stream, mirror=mirror)
+    # a capture whose dancer is PARKED while absent (export_unity.park_absent: stitched takes) differs from the fits there on
+    # purpose: the motion check skips the probe times inside those windows (the other probes still compare)
+    orig = cb.check_capture_motion
+
+    def check(cap_dir, doc, tol_m=0.01):
+        man = json.loads((Path(cap_dir) / "capture.json").read_text(encoding="utf-8"))
+        wins = [w for v in (man.get("absent") or {}).values() for w in v.get("t", [])]
+        probe = (doc.get("source") or {}).get("lead_probe")
+        if not wins or not probe:
+            return orig(cap_dir, doc, tol_m)
+        keep = [i for i, t in enumerate(probe["t"]) if not any(a - 1e-6 <= t <= b + 1e-6 for a, b in wins)]
+        doc2 = json.loads(json.dumps(doc))
+        doc2["source"]["lead_probe"] = {"t": [probe["t"][i] for i in keep], "transl": [probe["transl"][i] for i in keep]}
+        doc2["source"].pop("lead_transl0", None)
+        res = orig(cap_dir, doc2, tol_m)
+        return f"{res}; {len(probe['t']) - len(keep)} probe(s) inside the parked-absent window skipped"
+    with mock.patch.object(cb, "check_capture_motion", check):
+        out["export"] = mod.export(take_name, capture, streaming=stream, mirror=mirror)
     doc = json.loads((cb.work_dir(take_name) / kind / f"{kind}.json").read_text())
     out["summary"] = ({"intervals": [[iv["kind"], iv["t0"], iv["t1"]] for iv in doc["intervals"]]} if kind ==
                       "counterbalance" else doc["params"]["counts"])
@@ -259,6 +278,10 @@ def validate(cap: Path, take: Take, report: dict | None = None) -> dict:
             check(f"{kind}.json", False, f"{kind}.json missing from the capture (python -m dancecap.{kind})")
     check("no room / splat", "room" not in man and "environment_splat" not in man,
           "room present" if "room" in man else "dancers only")
+    from .export_unity import resolve_role_hidden
+    want_hidden = resolve_role_hidden(take.name)   # takes/<take>.toml [export] role_hidden (muted-role spans + fade-in, capture seconds)
+    check("role_hidden as configured", (man.get("role_hidden") or None) == want_hidden,
+          {"configured": want_hidden, "recorded": man.get("role_hidden")})
     if report:
         for r, d in (report.get("dancers") or {}).items():
             check(f"{r} FK vs npz joints", d["fk_max_err_mm"] < 10.0, f"{d['fk_max_err_mm']} mm")

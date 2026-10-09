@@ -34,7 +34,18 @@ def cmd_remote(a):
             print(f"{r['gpu']:<34} {r['gb']:>4} GB  community ${r['community']}  secure ${r['secure']}  "
                   f"stock {r['stock']}  in {len(r['datacenters'])} DCs")
     elif a.action == "cleanup":
-        print("deleted:", remote.cleanup_orphans())
+        # DRY RUN unless --delete: the live fit_full sessions' pods are named dancecap-fit-<seg>
+        found = remote.cleanup_orphans(delete=bool(getattr(a, "delete", False)),
+                                       only=[x for x in (getattr(a, "pod", None) or "").split(",") if x] or None)
+        print(("deleted:" if getattr(a, "delete", False) else "would delete (add --delete; --pod ids to limit):"), found)
+    elif a.action == "reconcile":
+        # close ledger rows of pods Runpod no longer lists (two looks, 20 s apart); never deletes a pod
+        import time as _t
+        r = remote.reconcile_ledger(confirm_s=15)
+        if r.get("flagged"):
+            _t.sleep(20)
+            r = remote.reconcile_ledger(confirm_s=15)
+        print(json.dumps(r, indent=1))
     elif a.action == "smoke":
         import tempfile
         import time as _t
@@ -499,7 +510,9 @@ def main(argv=None):
                                   .render(Take.load(a.take), a.instants)])
     sp = sub.add_parser("remote", help="Runpod offload: status | gpus | cleanup | smoke | jobs | bundle | run | validate "
                                        "(budget-capped, auto-deleting pods; batched pod_job.json sessions)")
-    sp.add_argument("action", choices=["status", "gpus", "cleanup", "smoke", "jobs", "bundle", "run", "validate"])
+    sp.add_argument("action", choices=["status", "gpus", "cleanup", "reconcile", "smoke", "jobs", "bundle", "run", "validate"])
+    sp.add_argument("--delete", action="store_true", help="cleanup: really delete the dancecap-* pods found (default: list them only)")
+    sp.add_argument("--pod", help="cleanup --delete: only these pod ids (comma list)")
     sp.add_argument("--take", help="jobs/bundle/run: discover work/<take>/*/pod_job.json")
     sp.add_argument("--jobs", help="comma-separated stage names (mamma,room,avatar) or pod_job.json paths")
     sp.add_argument("--session", help="run/validate: resume this session id (work/runpod/sessions/<sid>)")

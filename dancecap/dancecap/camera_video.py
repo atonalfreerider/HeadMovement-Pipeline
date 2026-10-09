@@ -8,6 +8,8 @@ pose + zoom for every frame (the tracks the cameras stage fitted). This module w
     python -m dancecap.camera_video larissa_kadu_38 --capture 04_LarissaKaduDemo --direction auto   # cams from the film
     python -m dancecap.camera_video larissa_kadu_38 --capture 04_LarissaKaduDemo --install-only     # copy the master
     python -m dancecap.camera_video larissa_kadu_38 --capture 04_LarissaKaduDemo --tracks-only --no-install   # tracks + checks only
+    python -m dancecap.camera_video take_a take_b --capture <capture> --clip 06 15 26.5 --clip 05 133 141   # SHORT per-phone clips,
+        # every other phone: track only (no video decoding); the tracks always span the whole capture
 
 A new file in the Unity project's Assets folder is picked up by the editor's next asset refresh: when other jobs use
 the editor, run with --no-install and mirror later (--install-only) while you hold the editor.
@@ -788,13 +790,26 @@ def pov_check(master: Path, capture: str, direction: list[str] | None, log=print
     return rep, log_coverage(rep, log)
 
 
+def track_only_entry(cam: str, track: CamTrack) -> dict:
+    """Manifest entry of a phone that has a pose track but no video strip (the overview glyph and the POV flight work
+    from the track alone)."""
+    return {"id": cam, "native_size": list(track.size), "frames": 0, "video": False,
+            "vfov_deg": [round(float(track.vfov.min()), 2), round(float(np.median(track.vfov)), 2), round(float(track.vfov.max()), 2)],
+            "aspect": round(track.size[0] / track.size[1], 5), "k1_median": round(float(np.median(track.k1)), 5)}
+
+
 def run(takes: list[str], capture: str, cams: list[str] | None, direction: list[str] | None, all_full: bool,
         only: list[str] | None,
         span: tuple[float, float] | None, out: Path | None, do_install: bool, mp4: bool, thumbs: bool,
-        long_side: int, quality: int, thumb_side: int, thumb_quality: int, log=print, tracks_only: bool = False) -> dict:
+        long_side: int, quality: int, thumb_side: int, thumb_quality: int, log=print, tracks_only: bool = False,
+        clips: dict[str, tuple[float, float]] | None = None) -> dict:
+    """clips = {phone: (t0, t1)}: a SHORT video span per phone (reference s); the phone gets a full strip for just that span,
+    every other phone (without thumbs) a track only and no video decoding. The tracks always cover the whole capture span."""
     tracks, overlaps, applied = build_tracks(takes, only, log)
     dir_cams, dir_files = ([], []) if direction == ["none"] else direction_cameras(capture, direction)
     want = set(cams or []) | set(dir_cams) | (set(tracks) if all_full else (set(DEFAULT_FULL_CAMS) if not cams else set()))
+    if clips:
+        want = set(clips)
     want &= set(tracks)
     out = out or (md.take_work(takes[-1]) / "camera_video" / capture)
     old_manifest: dict = {}
@@ -835,8 +850,12 @@ def run(takes: list[str], capture: str, cams: list[str] | None, direction: list[
         if tracks_only:
             e = old[cam]
         else:
-            e = export_camera(cam, takes, tr, (s0, s1), out, full=cam in want, thumbs=thumbs, long_side=long_side,
-                              quality=quality, thumb_side=thumb_side, thumb_quality=thumb_quality, log=log)
+            if clips and cam not in clips and not thumbs:
+                e = track_only_entry(cam, tr)
+            else:
+                e = export_camera(cam, takes, tr, tuple(clips[cam]) if clips and cam in clips else (s0, s1), out,
+                                  full=cam in want, thumbs=thumbs, long_side=long_side,
+                                  quality=quality, thumb_side=thumb_side, thumb_quality=thumb_quality, log=log)
         trk = track_json(tr, s0 - 1.0, s1 + 1.0)
         e["track"] = {"file": f"{cam}.track.json", "n": trk["n"]}
         write_atomic(out / e["track"]["file"], json.dumps(trk, separators=(",", ":")))
@@ -908,6 +927,9 @@ def main(argv=None) -> None:
     ap.add_argument("--only", default=None, help="comma-separated phones to process at all (testing / partial runs)")
     ap.add_argument("--span", nargs=2, type=float, default=None, metavar=("T0", "T1"),
                     help="reference seconds (default: the capture's times.json range)")
+    ap.add_argument("--clip", nargs=3, action="append", default=None, metavar=("CAM", "T0", "T1"),
+                    help="a short video clip of one phone over reference seconds T0..T1 (repeatable); phones without a --clip get "
+                         "their track only (no video decoding); the tracks cover the whole span")
     ap.add_argument("--out", type=Path, default=None, help="master folder (default work/<take>/camera_video/<capture>)")
     ap.add_argument("--install", dest="install", action="store_true", default=True)
     ap.add_argument("--no-install", dest="install", action="store_false", help="do not mirror into StreamingAssets")
@@ -933,7 +955,8 @@ def main(argv=None) -> None:
         return
     run(a.takes, a.capture, [c.strip() for c in a.cams.split(",")] if a.cams else None, a.direction, a.all_full,
         [c.strip() for c in a.only.split(",")] if a.only else None, tuple(a.span) if a.span else None, a.out, a.install, a.mp4, a.thumbs, a.long_side, a.quality, a.thumb_side,
-        a.thumb_quality, tracks_only=a.tracks_only)
+        a.thumb_quality, tracks_only=a.tracks_only,
+        clips={c: (float(x), float(y)) for c, x, y in a.clip} if a.clip else None)
 
 
 if __name__ == "__main__":

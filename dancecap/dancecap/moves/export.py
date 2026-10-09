@@ -110,6 +110,10 @@ def convert_labels(labels_doc: dict, clock: CaptureClock) -> dict:
 def convert_path(path_doc: dict, clock: CaptureClock) -> dict:
     d = json.loads(json.dumps(path_doc))
     d["steps"] = [_times(s, clock) for s in d["steps"]]
+    for s in d["steps"]:  # routed steps (path_overrides): the inferred nodes' crossing times follow the capture clock
+        if s.get("via_t"):
+            s["via_t_reference"] = list(s["via_t"])
+            s["via_t"] = [round(clock.to_capture(x), 6) for x in s["via_t"]]
     if d.get("provenance") == "placeholder":
         d["banner"] = PLACEHOLDER_BANNER
     return _stamp(d, clock)

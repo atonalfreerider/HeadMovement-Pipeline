@@ -1538,4 +1538,8 @@ def create_app(m: Monitor):
                                  _int_arg(request.args, "max_bytes", 65536, 1024, 1 << 20),
                                  tail=request.args.get("tail") == "1"))
 
+    # ------------------------------------------------------------------ farm (defrag map; docs/FARM.md section 7)
+    from . import farm_routes
+    farm_routes.register(app, m, ok, body, ApiError, runpod_summary)
+
     return app

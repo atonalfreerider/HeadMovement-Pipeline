@@ -72,6 +72,18 @@ def _ctl(*args: str, check: bool = True, timeout: float = 900) -> dict | list | 
         return out
 
 
+def _ctl_rc(*args: str, timeout: float = 900) -> tuple[int, dict | list | str]:
+    """Like `_ctl(check=False)` but also returns the exit code: a failed `pod delete` prints a JSON error object and exits 1, and
+    that must not be read as success."""
+    env = dict(os.environ, RUNPOD_API_KEY=_api_key())
+    p = subprocess.run(["runpodctl", *args, "-o", "json"], capture_output=True, text=True, env=env, timeout=timeout)
+    out = p.stdout.strip()
+    try:
+        return p.returncode, (json.loads(out) if out else {})
+    except json.JSONDecodeError:
+        return p.returncode, out or p.stderr.strip()
+
+
 # ---------------------------------------------------------------------------
 # ledger / budget
 # ---------------------------------------------------------------------------
@@ -81,23 +93,102 @@ def cap() -> float:
 
 
 def ledger() -> list[dict]:
-    return json.loads(LEDGER.read_text()) if LEDGER.exists() else []
+    """The ledger rows. Writers replace the file atomically, but an older process (a live fit_full session started before that
+    change) may still write it in place: a read that fails to parse is retried for a few seconds, and then RAISES - a budget gate
+    must never read a half-written ledger as an empty one."""
+    last: Exception | None = None
+    for _ in range(40):
+        try:
+            return json.loads(LEDGER.read_text()) if LEDGER.exists() else []
+        except (json.JSONDecodeError, PermissionError, OSError) as e:   # Windows: sharing violation while a writer replaces it
+            last = e
+            time.sleep(0.1)
+    raise RuntimeError(f"ledger {LEDGER} unreadable: {last}")
 
 
 def _save_ledger(rows: list[dict]) -> None:
+    """Atomic: temp file in the same directory, then os.replace (retried on a Windows sharing violation)."""
     LEDGER.parent.mkdir(parents=True, exist_ok=True)
-    LEDGER.write_text(json.dumps(rows, indent=1))
+    tmp = LEDGER.with_name(f"{LEDGER.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_text(json.dumps(rows, indent=1))
+    for i in range(60):
+        try:
+            os.replace(tmp, LEDGER)
+            return
+        except PermissionError:
+            if i == 59:
+                raise
+            time.sleep(0.05)
+
+
+_LEDGER_MUTEX = threading.RLock()
+_LEDGER_DEPTH = threading.local()
+
+
+@contextlib.contextmanager
+def ledger_lock(timeout: float = 60.0, stale: float = 30.0):
+    """Cross-process (and cross-thread) mutex around every ledger read-modify-write: an O_EXCL lock file next to the ledger, taken over
+    after `stale` seconds. Re-entrant. (A separate file from fit_full's own `ledger.lock` directory so the two never deadlock: a
+    session that wraps remote._record in that lock calls into this one inside it.)"""
+    with _LEDGER_MUTEX:
+        depth = getattr(_LEDGER_DEPTH, "n", 0)
+        lock = LEDGER.parent / "ledger.rw.lock"
+        if depth == 0:
+            LEDGER.parent.mkdir(parents=True, exist_ok=True)
+            t_end = time.time() + timeout
+            while True:
+                try:
+                    fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                    os.write(fd, json.dumps({"pid": os.getpid(), "t": time.time()}).encode())
+                    os.close(fd)
+                    break
+                except FileExistsError:
+                    try:
+                        if time.time() - lock.stat().st_mtime > stale:
+                            lock.unlink()
+                            continue
+                    except OSError:
+                        pass
+                except PermissionError:   # Windows: the holder is unlinking it right now
+                    pass
+                if time.time() > t_end:
+                    raise TimeoutError(f"ledger lock {lock} busy for more than {timeout:.0f} s")
+                time.sleep(0.02)
+        _LEDGER_DEPTH.n = depth + 1
+        try:
+            yield
+        finally:
+            _LEDGER_DEPTH.n = depth
+            if depth == 0:
+                try:
+                    lock.unlink()
+                except OSError:
+                    pass
+
+
+OPEN_ROW_GRACE_MIN = 10.0   # an open row stops accruing this long after its max_minutes unless Runpod still lists the pod
+
+
+def _row_end(r: dict, now: float) -> float:
+    """Where an OPEN row stops accruing. Every pod has a kill switch at `max_minutes` (the farm's hard ceiling), so a row older than
+    that plus a grace is a pod that is gone but whose closing write was lost; it counted forever (a 16 h phantom of $22.92 shrank
+    the budget by $1.5 an hour). `reconcile_ledger` stamps `alive_ts` for a pod Runpod still lists, which keeps it accruing."""
+    limit = float(r["created_ts"]) + (float(r.get("max_minutes") or 0) + OPEN_ROW_GRACE_MIN) * 60
+    if not r.get("max_minutes") or now <= limit:
+        return now
+    return min(now, max(limit, float(r.get("alive_ts") or 0)))
 
 
 def spent() -> float:
-    """Spend so far: a closed row's recorded/reconciled cost if present, else price x lifetime (open rows keep accruing)."""
+    """Spend so far: a closed row's recorded/reconciled cost if present, else price x lifetime (open rows keep accruing, up to the
+    pod's own kill switch unless Runpod still lists it)."""
     now = time.time()
     total = 0.0
     for r in ledger():
         if r.get("deleted_ts") and r.get("cost") is not None:
             total += float(r["cost"])
             continue
-        end = r.get("deleted_ts") or now  # a pod still alive keeps costing
+        end = r.get("deleted_ts") or _row_end(r, now)
         total += r["cost_per_hr"] * max(0.0, end - r["created_ts"]) / 3600
     return total
 
@@ -310,7 +401,10 @@ def pod_session(name: str, max_minutes: float, gpus: list[str] | None = None, im
               f"budget remaining ${remaining():.2f}")
         yield p
     finally:
-        _delete(pod_id, reason="session end")
+        try:
+            _delete(pod_id, reason="session end")
+        except PodDeleteError as e:   # already reported loudly; do not hide the exception that ended the session
+            print(f"[runpod] {e}", flush=True)
 
 
 def arm_killswitch(p: "Pod", max_minutes: float) -> dict:
@@ -337,13 +431,17 @@ def arm_killswitch(p: "Pod", max_minutes: float) -> dict:
     return info
 
 
-def _record(pod_id: str, name: str, gpu: str, cloud: str, cost: float, max_minutes: float) -> None:
-    rows = ledger()
-    if not any(r["pod_id"] == pod_id for r in rows):
-        rows.append({"pod_id": pod_id, "name": name, "gpu": gpu, "cloud": cloud, "cost_per_hr": cost,
-                     "created": datetime.now(timezone.utc).isoformat(), "created_ts": time.time(),
-                     "max_minutes": max_minutes})
-        _save_ledger(rows)
+def _record(pod_id: str, name: str, gpu: str, cloud: str, cost: float, max_minutes: float, owner: str | None = None) -> None:
+    """Open a ledger row the moment a pod exists. `owner` (optional, e.g. "farm:<dance>") says who may adopt / delete it."""
+    with ledger_lock():
+        rows = ledger()
+        if not any(r["pod_id"] == pod_id for r in rows):
+            row = {"pod_id": pod_id, "name": name, "gpu": gpu, "cloud": cloud, "cost_per_hr": cost,
+                   "created": datetime.now(timezone.utc).isoformat(), "created_ts": time.time(), "max_minutes": max_minutes}
+            if owner:
+                row["owner"] = owner
+            rows.append(row)
+            _save_ledger(rows)
 
 
 def _wait_running(pod_id: str, timeout_s: float) -> dict | None:
@@ -391,18 +489,123 @@ def _id_from_error(msg: str) -> str | None:
         return None
 
 
-def _delete(pod_id: str, reason: str) -> None:
+class PodDeleteError(RuntimeError):
+    """A pod delete that could not be confirmed. The ledger row stays OPEN and the pod must be treated as still billing."""
+
+
+DELETE_WAITS = (3.0, 8.0, 20.0)   # pause before attempt 2, 3, 4
+DELETE_CONFIRM_WAIT = 4.0         # between the 3 looks at the pod list that confirm a delete
+DELETE_CALL_TIMEOUT = 90.0        # one `runpodctl pod delete` / `pod list` call (the old default of 900 s could freeze a watcher cycle)
+GONE_STATUSES = ("EXITED", "TERMINATED", "STOPPED", "DELETED")
+_NOT_FOUND = ("not found", "no such", "does not exist", "404", "unknown pod")
+
+
+def listed_pods() -> dict[str, dict] | None:
+    """{pod id: record} of Runpod's pod list, or None when it could not be read (an error object is NOT an empty list)."""
     try:
-        _ctl("pod", "delete", pod_id, check=False)
-    finally:
+        rc, data = _ctl_rc("pod", "list", timeout=DELETE_CALL_TIMEOUT)
+    except Exception:  # noqa: BLE001 - subprocess timeout, no key, runpodctl missing
+        return None
+    rows = data if isinstance(data, list) else (data.get("pods") if isinstance(data, dict) else None)
+    if rc != 0 or not isinstance(rows, list):
+        return None
+    return {p["id"]: p for p in rows if isinstance(p, dict) and p.get("id")}
+
+
+def _pod_present(rec: dict | None) -> bool:
+    return rec is not None and str(rec.get("desiredStatus") or rec.get("status") or "").upper() not in GONE_STATUSES
+
+
+def _delete(pod_id: str, reason: str) -> None:
+    """Delete a pod, CONFIRM it is gone (absent from Runpod's pod list), retry with backoff, and only then close the ledger row.
+    `runpodctl pod delete` prints a JSON error and exits 1 on a rejected call (401, 5xx, timeout): the old code ignored that,
+    closed the row and let a billing pod disappear from the budget. Raises PodDeleteError after the last attempt."""
+    err = "?"
+    confirmed = unconfirmed = False
+    for i in range(len(DELETE_WAITS) + 1):
+        try:
+            rc, out = _ctl_rc("pod", "delete", pod_id, timeout=DELETE_CALL_TIMEOUT)
+        except Exception as e:  # noqa: BLE001
+            rc, out = -1, f"{type(e).__name__}: {e}"
+        text = json.dumps(out) if not isinstance(out, str) else out
+        already_gone = rc != 0 and any(x in text.lower() for x in _NOT_FOUND)
+        call_ok = (rc == 0 and not (isinstance(out, dict) and out.get("error"))) or already_gone
+        if call_ok:
+            for _ in range(3):
+                live = listed_pods()
+                if live is not None and not _pod_present(live.get(pod_id)):
+                    confirmed = True
+                    break
+                err = "pod list unreadable after the delete" if live is None else "pod still listed after the delete"
+                time.sleep(DELETE_CONFIRM_WAIT)
+            if not confirmed and err.startswith("pod list unreadable") and rc == 0:
+                confirmed = unconfirmed = True   # the API accepted the delete but cannot be asked: reconcile_ledger looks again later
+            if confirmed:
+                break
+        else:
+            err = f"rc={rc}: {text[:200]}"
+        print(f"[runpod] delete of {pod_id} not confirmed (attempt {i + 1}/{len(DELETE_WAITS) + 1}): {err}", flush=True)
+        if i < len(DELETE_WAITS):
+            time.sleep(DELETE_WAITS[i])
+    with ledger_lock():
         rows = ledger()
         for r in rows:
-            if r["pod_id"] == pod_id and not r.get("deleted_ts"):
+            if r["pod_id"] != pod_id or r.get("deleted_ts"):
+                continue
+            if confirmed:
                 r["deleted_ts"] = time.time()
-                r["deleted_reason"] = reason
+                r["deleted_reason"] = reason + (" (delete accepted, not re-listed)" if unconfirmed else "")
                 r["cost"] = round(r["cost_per_hr"] * (r["deleted_ts"] - r["created_ts"]) / 3600, 4)
+                r.pop("delete_error", None)
+                if unconfirmed:
+                    r["delete_unconfirmed"] = True
+            else:
+                r["delete_error"] = err[:300]
+                r["delete_failed_ts"] = time.time()
         _save_ledger(rows)
-        print(f"[runpod] pod {pod_id} deleted ({reason}); spent ${spent():.2f} of ${cap():.2f}")
+    if not confirmed:
+        print(f"[runpod] WARNING: pod {pod_id} could NOT be deleted ({err}); its ledger row stays open and it may still bill. "
+              f"Delete it by hand, or let its on-pod kill switch do it.", flush=True)
+        raise PodDeleteError(f"pod {pod_id}: delete not confirmed: {err}")
+    print(f"[runpod] pod {pod_id} deleted ({reason}); spent ${spent():.2f} of ${cap():.2f}")
+
+
+def reconcile_ledger(confirm_s: float = 60.0, min_age_s: float = 300.0) -> dict:
+    """Compare the OPEN ledger rows with Runpod's pod list. A row whose pod is listed is stamped alive (it keeps accruing past its
+    max_minutes); a row whose pod is absent is flagged `missing_ts`, and closed when it is still absent `confirm_s` later (two looks,
+    never one). Rows younger than `min_age_s` are left alone (a pod may not be listed yet). The closed row's cost is capped by the
+    pod's kill switch (max_minutes). Never calls Runpod to delete anything."""
+    live = listed_pods()
+    if live is None:
+        return {"error": "pod list unreadable", "closed": [], "flagged": [], "alive": []}
+    now = time.time()
+    closed, flagged, alive = [], [], []
+    with ledger_lock():
+        rows = ledger()
+        for r in rows:
+            if r.get("deleted_ts"):
+                continue
+            pid = r["pod_id"]
+            if _pod_present(live.get(pid)):
+                r["alive_ts"] = now
+                r.pop("missing_ts", None)
+                alive.append(pid)
+            elif now - float(r["created_ts"]) < min_age_s:
+                continue
+            elif not r.get("missing_ts"):
+                r["missing_ts"] = now
+                flagged.append(pid)
+            elif now - float(r["missing_ts"]) >= confirm_s:
+                kill = float(r["created_ts"]) + float(r.get("max_minutes") or 0) * 60
+                end = min(float(r["missing_ts"]), max(float(r["alive_ts"]), kill) if r.get("alive_ts") else kill)
+                end = max(end, float(r["created_ts"]))
+                r["deleted_ts"] = end
+                r["deleted_reason"] = "reconciled: pod absent from Runpod's list twice"
+                r["cost"] = round(r["cost_per_hr"] * (end - r["created_ts"]) / 3600, 4)
+                r["reconciled_ts"] = now
+                closed.append(pid)
+        _save_ledger(rows)
+    return {"closed": closed, "flagged": flagged, "alive": alive, "spent": round(spent(), 2), "remaining": round(remaining(), 2)}
 
 
 def gpu_price(gpu: str, cloud: str = "COMMUNITY") -> float | None:
@@ -432,16 +635,16 @@ def gpu_list() -> list[dict]:
     return data if isinstance(data, list) else data.get("gpus", data.get("items", []))
 
 
-def cleanup_orphans() -> list[str]:
-    """Delete any dancecap-* pod still running (e.g. after a crash) and close its ledger row."""
+def cleanup_orphans(delete: bool = False, only: list[str] | None = None) -> list[str]:
+    """dancecap-* pods that Runpod lists. A DRY RUN unless delete=True: the live fit_full sessions run in pods named
+    dancecap-fit-<seg>, so a blanket delete of the prefix would kill work in progress. `only` limits it to those pod ids."""
     pods = _ctl("pod", "list")
     pods = pods if isinstance(pods, list) else pods.get("pods", [])
-    gone = []
-    for p in pods:
-        if str(p.get("name", "")).startswith("dancecap-"):
-            _delete(p["id"], reason="orphan cleanup")
-            gone.append(p["id"])
-    return gone
+    found = [p["id"] for p in pods if str(p.get("name", "")).startswith("dancecap-") and (not only or p["id"] in only)]
+    if delete:
+        for pid in found:
+            _delete(pid, reason="orphan cleanup")
+    return found
 
 
 # ---------------------------------------------------------------------------

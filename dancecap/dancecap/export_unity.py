@@ -631,11 +631,119 @@ def resolve_smplx_dir(take: str, smplx_dir: str | None = None) -> tuple[str, str
     return "smplx", "default"
 
 
+def resolve_floor_yaw(take: str, toml: Path | None = None) -> float | None:
+    """takes/<take>.toml [export] floor_yaw_deg: the viewer's floor visuals (the 1 m grid crosses + plane) are turned this many
+    degrees COUNTER-CLOCKWISE as seen from above, about the vertical axis through the dance origin, so they line up with the room
+    in the source videos (written to capture.json floor_yaw_deg -> CaptureManifest.floor_yaw_deg -> FloorGrid; the dancers, the
+    cameras and the floor-craft overlays are never turned). None = the key is absent (the viewer keeps 0)."""
+    toml = Path(toml) if toml else PACKAGE_ROOT / "takes" / f"{take}.toml"
+    if not toml.exists():
+        return None
+    import tomllib
+    v = (tomllib.loads(toml.read_text(encoding="utf-8")).get("export") or {}).get("floor_yaw_deg")
+    if v is None:
+        return None
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not -360.0 <= float(v) <= 360.0:
+        raise ValueError(f"{toml.name} [export] floor_yaw_deg must be a number of degrees in [-360, 360], got {v!r}")
+    return float(v)
+
+
+def resolve_role_hidden(take: str, toml: Path | None = None) -> dict | None:
+    """takes/<take>.toml [export] role_hidden = { lead = [ { from = 0.0, to = 4.0, fade_in = 1.0 } ] }: spans, in CAPTURE seconds
+    (seconds from the capture's first frame = the viewer HUD's clock; NOT the reference clock, which is negative before the music's
+    zero), in which the viewer draws neither the role's avatar nor its skeleton nor any overlay derived from its pose. The role is
+    fully hidden for from <= t < to, FADES IN over `fade_in` seconds starting exactly at `to` (alpha 0 -> 1, smooth), and fades out
+    over `fade_out` seconds ending at `from` (both default 0 = a hard cut). Poses, timing and the other dancer are untouched
+    (written to capture.json role_hidden -> CaptureManifest.role_hidden -> HeadMovement.RoleHidden; hm_hide edits it for a session).
+    A span may also be written [from, to], [from, to, fade_in] or [from, to, fade_in, fade_out]. Roles: lead | follow.
+    -> { role: [ {"from", "to", "fade_in"[, "fade_out"]} ] } or None (the key is absent)."""
+    toml = Path(toml) if toml else PACKAGE_ROOT / "takes" / f"{take}.toml"
+    if not toml.exists():
+        return None
+    import tomllib
+    v = (tomllib.loads(toml.read_text(encoding="utf-8")).get("export") or {}).get("role_hidden")
+    if v is None:
+        return None
+    ex = "{ lead = [ { from = 0.0, to = 4.0, fade_in = 1.0 } ] }"
+    if not isinstance(v, dict):
+        raise ValueError(f"{toml.name} [export] role_hidden must be a table like {ex}, got {v!r}")
+
+    def num(x) -> bool:
+        return isinstance(x, (int, float)) and not isinstance(x, bool) and bool(np.isfinite(x))
+
+    out: dict = {}
+    for role, spans in v.items():
+        if role not in ROLES:
+            raise ValueError(f"{toml.name} [export] role_hidden: unknown role {role!r} (lead | follow)")
+        if not isinstance(spans, list) or not spans:
+            raise ValueError(f"{toml.name} [export] role_hidden.{role} must be a list of spans like {ex}, got {spans!r}")
+        rows = []
+        for s in spans:
+            if isinstance(s, dict):
+                if not set(s) <= {"from", "to", "fade_in", "fade_out"} or "from" not in s or "to" not in s:
+                    raise ValueError(f"{toml.name} [export] role_hidden.{role}: a span table has from, to and optionally "
+                                     f"fade_in, fade_out (capture seconds), got {s!r}")
+                vals = [s["from"], s["to"], s.get("fade_in", 0.0), s.get("fade_out", 0.0)]
+            elif isinstance(s, (list, tuple)) and 2 <= len(s) <= 4:
+                vals = list(s) + [0.0] * (4 - len(s))
+            else:
+                raise ValueError(f"{toml.name} [export] role_hidden.{role}: each span is {{ from, to, fade_in }} or "
+                                 f"[from, to[, fade_in[, fade_out]]] in capture seconds, got {s!r}")
+            if not all(num(x) for x in vals) or not float(vals[0]) < float(vals[1]) or float(vals[2]) < 0 or float(vals[3]) < 0:
+                raise ValueError(f"{toml.name} [export] role_hidden.{role}: capture seconds with from < to and fades >= 0, got {s!r}")
+            row = {"from": float(vals[0]), "to": float(vals[1]), "fade_in": float(vals[2])}
+            if float(vals[3]) > 0:
+                row["fade_out"] = float(vals[3])
+            rows.append(row)
+        out[role] = rows
+    return out or None
+
+
+PARK_DEPTH_M = 30.0
+
+
+def park_absent(data: dict, depth_m: float = PARK_DEPTH_M) -> dict:
+    """Frames a dancer is `absent` (dancecap.stitch: not yet in any camera's view; the npz holds the first tracked pose
+    there) must never read as tracked motion in the viewer. The exported motion + skeleton of those frames is PARKED:
+    straight below the other dancer's pelvis (the viewer's camera follows the pelvis midpoint in XZ only, so it does not
+    move) and `depth_m` under the floor, rotations untouched, so the forward kinematics stays consistent. Edits
+    data[role]["transl"] / ["joints"] in place; -> {role: {"frames": [i0, i1], "count": n, "t": [t0, t1], ...}} for
+    capture.json "absent" (reference seconds, which a viewer can use to hide the dancer instead)."""
+    rep = {}
+    for role, other in (("lead", "follow"), ("follow", "lead")):
+        d = data.get(role, {})
+        ab = np.asarray(d["absent"], bool) if "absent" in d else None
+        if ab is None or not ab.any():
+            continue
+        joints = np.asarray(d["joints"], float)
+        oj = np.asarray(data[other]["joints"], float)
+        o_ab = np.asarray(data[other]["absent"], bool) if "absent" in data[other] else np.zeros(len(ab), bool)
+        target = np.where((~o_ab)[:, None], oj[:, 0, :], joints[:, 0, :])    # the other's pelvis, else its own
+        shift = np.zeros((len(ab), 3))
+        shift[:, 0], shift[:, 2] = target[:, 0] - joints[:, 0, 0], target[:, 2] - joints[:, 0, 2]
+        shift[:, 1] = -float(depth_m)
+        shift[~ab] = 0.0
+        d["transl"] = np.asarray(d["transl"], float) + shift
+        d["joints"] = joints + shift[:, None, :]
+        idx = np.where(ab)[0]
+        t = np.asarray(d["t"], float)
+        runs, s0 = [], idx[0]
+        for a, b in zip(idx[:-1], idx[1:]):
+            if b != a + 1:
+                runs.append([int(s0), int(a)])
+                s0 = b
+        runs.append([int(s0), int(idx[-1])])
+        rep[role] = {"count": int(ab.sum()), "frames": runs, "t": [[round(float(t[a]), 6), round(float(t[b]), 6)] for a, b in runs],
+                     "parked": {"depth_m": float(depth_m), "xz": "the other dancer's pelvis", "note": "the held entry pose is not "
+                                "tracked motion: hide this dancer in these frames (capture.json absent) or leave it parked"}}
+    return rep
+
+
 def export(take: str, capture: str | None = None, model: Path | None = None, audio: Path | None = None,
            audio_t0: float | None = None, beats: Path | None = None, install: bool = True,
            streaming_assets: Path = UNITY_STREAMING, allow_no_audio: bool = False, textures: bool = True,
            room: bool = True, smplx_dir: str | None = None, faces: bool = True, face_albedo: str = "face",
-           shape_edits: bool = True) -> dict:
+           shape_edits: bool = True, park: bool = True) -> dict:
     """Write work/<take>/export/<capture>/ and (install=True) mirror it into head-movement StreamingAssets.
     smplx_dir: a contract folder under work/<take> other than smplx/ (e.g. a dancecap.pose_refine output);
     None = resolve_smplx_dir (takes/<take>.toml [export] smplx_dir, else smplx/), recorded in provenance.
@@ -665,6 +773,7 @@ def export(take: str, capture: str | None = None, model: Path | None = None, aud
     if np.any(np.diff(t) <= 0):
         raise ValueError("smplx t must be strictly increasing")
     audio_path, t0, audio_source = resolve_audio(work, Path(audio) if audio else None, audio_t0, allow_no_audio)
+    absent_rep = park_absent(data) if park else {}   # stitched takes: a dancer not yet in view (npz `absent`) is parked, not shown
     T = len(t)
     fps = float(1.0 / np.median(np.diff(t)))
     time_to_audio = -float(t0) + 0.0  # audio time = reference t - (reference time of audio sample 0); never -0.0
@@ -687,6 +796,15 @@ def export(take: str, capture: str | None = None, model: Path | None = None, aud
     }
     report: dict = {"capture": capture, "frames": T, "fps": fps, "dancers": {}, "audio": audio_source,
                     "warnings": warnings}
+    if absent_rep:
+        manifest["absent"] = absent_rep
+        report["absent"] = absent_rep
+    floor_yaw = resolve_floor_yaw(take)
+    if floor_yaw is not None:
+        manifest["floor_yaw_deg"] = floor_yaw   # the floor visuals' yaw, CCW seen from above (the room in the videos)
+    role_hidden = resolve_role_hidden(take)
+    if role_hidden:
+        manifest["role_hidden"] = role_hidden   # capture-clock spans a role is hidden in, with a fade-in after each (see resolve_role_hidden)
     edit_cfg = {}
     if shape_edits:
         from . import shape_edits as se

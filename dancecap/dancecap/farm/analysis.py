@@ -137,7 +137,7 @@ def stitch_step(spec: DanceSpec, partial: bool, minutes: float) -> dict:
     """worker.ANALYSIS['stitch'] on the dance with the chunk list written by stitch-prep. Exit 2 = a seam gate failed:
     stitch.json carries the verdict and coverage shows the cells as partial; that is not a job failure."""
     from . import worker
-    base = worker.analysis_steps("stitch", spec.name, f"--chunks work/{spec.name}/farm/stitch_list.json"
+    base = worker.analysis_steps("stitch", spec.name, f"--chunks work/{spec.name}/farm/stitch_list.json --require-world"
                                  + (" --partial" if partial else ""), minutes=minutes, name="stitch")[0]
     base["cmd"] += ("; rc=$?; if [ $rc -eq 2 ]; then echo '[farm] seam gate failed (rc 2): see stitch.json'; exit 0; fi; exit $rc")
     base["stage"] = "stitch"
@@ -153,10 +153,13 @@ def stitch_outputs(spec: DanceSpec) -> list[tuple[str, bool]]:
 # ----------------------------------------------------------------------------------------------- the stitch list
 
 
-def stitch_list(spec: DanceSpec, chunks: list, *, work_root: Path | None = None, partial: bool = True) -> dict:
+def stitch_list(spec: DanceSpec, chunks: list, *, work_root: Path | None = None, partial: bool = True, worlds: dict | None = None,
+                ref_world: dict | None = None) -> dict:
     """The `dancecap.stitch --chunks` JSON for the dance: the reference span (larissa_kadu_38, reused bit for bit) and every
-    chunk (dict or Chunk) as {name, src, refined, k, margin_s, prepare, ma_2d}. Paths are relative to dancecap/work. A chunk's
-    ma_2d is added when its prepare.json exists under `work_root` (always the case on the pod after the archives are extracted)."""
+    chunk (dict or Chunk) as {name, src, refined, k, margin_s, prepare, ma_2d, world_id, pose_id}. Paths are relative to dancecap/work. A
+    chunk's ma_2d is added when its prepare.json exists under `work_root` (always the case on the pod after the archives are extracted).
+    `worlds` ({chunk id: {world_id, pose_id}}) and `ref_world` (the reference span's) put the world each chunk was fitted in into the list,
+    which is what makes `dancecap.stitch --require-world` a real check instead of a note that every chunk is 'unknown'."""
     from ..take import PACKAGE_ROOT
     work_root = Path(work_root) if work_root else PACKAGE_ROOT / "work"
     cfg = spec.cfg
@@ -167,12 +170,17 @@ def stitch_list(spec: DanceSpec, chunks: list, *, work_root: Path | None = None,
         items.append({"name": spec.reference.rsplit("_", 1)[-1], "src": f"{spec.reference}/{reuse.get('motion_raw', 'smplx')}",
                       "refined": f"{spec.reference}/{reuse.get('motion_refined', spec.refined_dir)}",
                       "k": [int(spec.ref_k[0]), int(spec.ref_k[1])], "margin_s": float(st.get("reuse_margin_s", 0.5)),
-                      "reference": True, "kind": "reuse", "prepare": f"{spec.reference}/mamma/prepare.json"})
+                      "reference": True, "kind": "reuse", "prepare": f"{spec.reference}/mamma/prepare.json",
+                      **{k: v for k, v in (ref_world or {}).items() if k in ("world_id", "pose_id") and v}})
     for c in chunks:
         c = c if isinstance(c, dict) else c.to_dict()
         take = c["take"]
         e = {"name": c["id"], "src": f"{take}/smplx", "refined": f"{take}/{spec.refined_dir}", "k": [int(c["k0"]), int(c["k1"])],
              "margin_s": float(st.get("edge_margin_s", 0.2)), "kind": "segment" if c.get("origin") == "s1" else "gap"}
+        wm = (worlds or {}).get(c["id"]) or {}
+        for key in ("world_id", "pose_id"):
+            if wm.get(key) or c.get(key):
+                e[key] = wm.get(key) or c.get(key)
         prep = work_root / take / "mamma" / "prepare.json"
         if prep.exists():
             e["prepare"] = f"{take}/mamma/prepare.json"
@@ -238,6 +246,48 @@ def _job(spec: DanceSpec, jid: str, what: str, take: str, *, steps, outputs, inp
             "needs_gpu": bool(gpu), "estimate": {"total_min": round(estimate_min, 1)}, "created": now_iso(), **(extra or {})}
 
 
+def pose_of(dance: str, world_id: str | None, world: "W.World | None" = None) -> str | None:
+    """pose id of a world id: the current world, else the tracked manifest (None when unknown)."""
+    if not world_id:
+        return None
+    if world is not None and world.id == world_id:
+        return world.pose_id
+    try:
+        return W.manifest_of(dance, world_id)["pose_id"]
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def chunk_worlds(spec: DanceSpec, cl: list[dict], world: "W.World | None", local_ids, *, verify: bool = True) -> dict:
+    """{chunk id: {world_id, pose_id, how}}: the world each chunk was really fitted in, for the stitch guard. A chunk the farm produced
+    is held to the world its job named (the pod's out/manifest.json overrides this at stitch time); a chunk fitted OUTSIDE the farm (the S1
+    segments) is checked by CONTENT against the world (`world compare`: world frame, betas, clocks, camera types, avatar) and carries the
+    world ids only when that check passes - a [world] pin in its TOML is a declaration, not evidence."""
+    out = {}
+    for c in cl:
+        cid = c["id"]
+        rec: dict = {"world_id": None, "pose_id": None, "how": None}
+        if cid in local_ids:
+            if world is not None and verify:
+                try:
+                    r = W.compare_take(c["take"], spec.name, world.id, deep=False)
+                    bad = [x["name"] for x in r["checks"] if x["ok"] is False and x["scope"] == W.POSE_SCOPE]
+                    if r["ok"]:
+                        rec.update(world_id=world.id, pose_id=world.pose_id, how="compare_take: content equals the world")
+                    else:
+                        rec["how"] = f"compare_take FAILED: {', '.join(bad)}"
+                except Exception as e:  # noqa: BLE001
+                    rec["how"] = f"compare_take error: {type(e).__name__}: {str(e)[:120]}"
+            elif world is not None:
+                rec.update(world_id=world.id, pose_id=world.pose_id, how="not checked (dry run)")
+        else:
+            wid = c.get("world_id") or (world.id if world else None)
+            if wid:
+                rec.update(world_id=wid, pose_id=pose_of(spec.name, wid, world), how="job spec")
+        out[cid] = rec
+    return out
+
+
 def build_final_job(spec: DanceSpec, chunks: list, world: "W.World | None" = None, *, analyses=DEFAULT_ANALYSES,
                     jid: str = FINAL_ID, partial: bool = True, hash_inputs: bool = True, code: dict | None = None,
                     max_minutes: float | None = None, with_stitch: bool = True) -> dict:
@@ -288,10 +338,11 @@ def build_final_job(spec: DanceSpec, chunks: list, world: "W.World | None" = Non
     est = 25 + 0.2 * spec.grid.seconds / 10 * len(sel)
     chunk = {"id": jid, "k0": spec.grid.k0, "k1": spec.grid.k1, "core_k0": spec.grid.k0, "core_k1": spec.grid.k1, "origin": "final",
              "kind": "stitch_analyse", "take": spec.name, "chunks": [c["id"] for c in cl]}
+    cw = chunk_worlds(spec, cl, world, set(local), verify=hash_inputs) if with_stitch else {}
     return _job(spec, jid, "stitch_analyse" if with_stitch else "analyse", spec.name, steps=steps, outputs=outputs, inputs=inputs,
                 after=after, analyses=sel, world=world, code=code, gpu=any(a.gpu for a in sel),
                 max_minutes=max_minutes or max(60.0, 2.0 * est + 30), estimate_min=est, chunk=chunk,
-                extra={"local_chunks": local, "chunks": [c["id"] for c in cl], "stitch_chunks": cl})
+                extra={"local_chunks": local, "chunks": [c["id"] for c in cl], "stitch_chunks": cl, "chunk_worlds": cw})
 
 
 def build_analysis_job(spec: DanceSpec, take: str, analyses, world: "W.World | None" = None, *, jid: str | None = None,
@@ -367,7 +418,7 @@ def _vol(volume=None) -> Path:
     return Path(volume or os.environ.get("HM_ROOT") or VOLUME_ROOT)
 
 
-def check_upstream(after: list[str], volume: Path, job_world_id: str | None, dance: str) -> dict:
+def check_upstream(after: list[str], volume: Path, job_world_id: str | None, dance: str, job_pose_id: str | None = None) -> dict:
     """Before stitching: every chunk this job runs after must have a clean result on the volume (out/manifest.json status ok,
     nothing missing) and share the job's pose id (world.check_same_world)."""
     heads = []
@@ -378,10 +429,18 @@ def check_upstream(after: list[str], volume: Path, job_world_id: str | None, dan
         if man.get("status") not in ("ok", None) or man.get("missing"):
             raise RuntimeError(f"chunk {cid}: result status {man.get('status')!r}, missing {man.get('missing')}")
         if man.get("world_id"):
-            heads.append({"id": cid, "world_id": man["world_id"]})
+            pid = man.get("pose_id")
+            if not pid:   # a result written before the worker recorded the pose id: the volume holds the world's manifest next to it
+                for cand in (Path(volume) / "worlds" / dance / man["world_id"] / "manifest.json", Path(volume) / "worlds" / man["world_id"] / "manifest.json"):
+                    pid = (read_json(cand, None) or {}).get("pose_id")
+                    if pid:
+                        break
+            heads.append({"id": cid, "world_id": man["world_id"], **({"pose_id": pid} if pid else {})})
     if not job_world_id:
-        return {"ok": True, "chunks": len(heads), "world_ids": sorted({h["world_id"] for h in heads})}
-    return W.check_same_world([{"world_id": job_world_id, "id": "job"}] + heads, dance)
+        return {"ok": True, "chunks": len(heads), "world_ids": sorted({h["world_id"] for h in heads}), "heads": heads}
+    rep = W.check_same_world([{"world_id": job_world_id, "id": "job", **({"pose_id": job_pose_id} if job_pose_id else {})}] + heads, dance)
+    rep["heads"] = heads
+    return rep
 
 
 def stitch_prep(job_id: str, dance: str = DEFAULT_DANCE, job_path=None, volume=None, ws: Path | None = None) -> dict:
@@ -392,14 +451,25 @@ def stitch_prep(job_id: str, dance: str = DEFAULT_DANCE, job_path=None, volume=N
     job = C.load_job(job_id, dance, job_path)
     spec = DanceSpec.load(dance)
     ws = Path(ws) if ws else WORKSPACE
-    rep = check_upstream(deps(job), _vol(volume), job.get("world_id"), dance)
+    rep = check_upstream(deps(job), _vol(volume), job.get("world_id"), dance, job.get("pose_id"))
+    # the world each chunk was fitted in: farm chunks from the pod's own record of it, local ones from the planner's content check
+    worlds = {k: dict(v) for k, v in (job.get("chunk_worlds") or {}).items()}
+    for h in rep.get("heads", []):
+        worlds[h["id"]] = {"world_id": h["world_id"], "pose_id": h.get("pose_id"), "how": "out/manifest.json of the chunk job"}
+    unverified = [c["id"] for c in job.get("stitch_chunks") or [] if c["id"] in (job.get("local_chunks") or [])
+                  and not (worlds.get(c["id"]) or {}).get("world_id")]
+    if unverified:
+        raise W.WorldMismatch(f"chunk(s) {unverified} were fitted outside the farm and `world compare` does not confirm they are in world "
+                              f"{job.get('world_id')}: "
+                              + "; ".join(f"{k}: {(worlds.get(k) or {}).get('how')}" for k in unverified))
     wdir = os.environ.get("HM_WORLD_DIR")
     wf = Path(wdir) / "ref" / "cameras" / "world_from_sfm.json" if wdir else None
     if wf and wf.exists():
         dst = work_dir(spec.name) / "cameras" / "world_from_sfm.json"
         dst.parent.mkdir(parents=True, exist_ok=True)
         dst.write_bytes(wf.read_bytes())
-    doc = stitch_list(spec, job.get("stitch_chunks") or [], work_root=ws / "dancecap" / "work", partial=True)
+    doc = stitch_list(spec, job.get("stitch_chunks") or [], work_root=ws / "dancecap" / "work", partial=True, worlds=worlds,
+                      ref_world={"world_id": job.get("world_id"), "pose_id": job.get("pose_id")})
     atomic_write_json(farm_dir(spec.name) / "stitch_list.json", doc)
     missing = [c["name"] for c in doc["chunks"] if not (ws / "dancecap" / "work" / c["src"] / "lead.npz").exists()]
     if missing:

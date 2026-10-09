@@ -1,7 +1,7 @@
 // Pipeline Monitor launcher (docs/PIPELINE_MONITOR.md 3.2). A tiny trampoline with no logic of its own:
 //   1. one launch at a time (named mutex), so a double double-click starts one monitor;
 //   2. reads launcher.json next to this exe (paths relative to the exe, forward slashes);
-//   3. starts "<python> -m dancecap.pipeline monitor --launch [--take T] [--view V] [--capture C]" with no console
+//   3. starts "<python> -m dancecap.pipeline monitor --launch [--take T] [--view V] [--dance D] [--capture C]" with no console
 //      window; that command reuses a running server (single instance) or starts one, then opens the Edge app window;
 //   4. waits up to start_timeout_s and reports a failure with the tails of launcher.log and monitor.log (the server's
 //      own reason, e.g. "another monitor holds work/monitor/monitor.lock"). Every message box is shown AFTER the
@@ -98,7 +98,8 @@ static class PipelineMonitorLauncher
     static readonly Dictionary<string, Regex> Allowed = new Dictionary<string, Regex>
     {
         { "--take", new Regex("^[a-z0-9][a-z0-9_]{0,47}$") },
-        { "--view", new Regex("^(videos|overview|runpod|new)$") },
+        { "--view", new Regex("^(videos|overview|runpod|new|farm)$") },
+        { "--dance", new Regex("^[a-z0-9][a-z0-9_]{0,47}$") },
         { "--capture", new Regex("^[A-Za-z0-9_-]{1,64}$") },
     };
 

@@ -151,7 +151,7 @@ def create(name: str, *, gpu: str | None = None, cpu: str | None = None, vcpu: i
            hard_minutes: float | None = None, entry: bool = True, autostart: bool = True, kinds: str | None = None,
            max_jobs: int | None = None, idle_min: float = 5, post_grace_min: float = 15, disk_gb: int = 40,
            image: str = IMAGE, volume: bool = True, extra_env: dict | None = None, price: float | None = None,
-           wait: bool = True, start_timeout_min: float = START_TIMEOUT_MIN) -> dict:
+           wait: bool = True, start_timeout_min: float = START_TIMEOUT_MIN, owner: str | None = None) -> dict:
     """Create ONE pod (GPU if `gpu`, else a CPU pod of flavor `cpu` with `vcpu` vCPUs), record it in the ledger the moment
     it exists, and (wait=True) return once its public ssh port answers.
 
@@ -190,7 +190,7 @@ def create(name: str, *, gpu: str | None = None, cpu: str | None = None, vcpu: i
         pod_id = created["id"]
         cost = float(created.get("costPerHr") or price or 0)
         gname = f"cpu:{cpu or 'cpu5c'}x{vcpu}"
-    remote._record(pod_id, name, gname, "SECURE", cost, hard_minutes + start_timeout_min)
+    remote._record(pod_id, name, gname, "SECURE", cost, hard_minutes + start_timeout_min, **({"owner": owner} if owner else {}))
     out = {"pod_id": pod_id, "name": name, "gpu": gname, "cost_per_hr": cost, "t_create": t_create,
            "minutes": minutes, "hard_minutes": hard_minutes, "kill_at": int(env["HM_KILL_AT"]),
            "hard_ceil": int(env["HM_HARD_CEIL"]), "dc": vol["dc"], "volume": vol["id"]}
@@ -320,7 +320,8 @@ def extend_killswitch(pod: remote.Pod, add_minutes: float = 30, hard_epoch: int 
 
 def launch(n: int = 1, *, gpus: list[str] | None = None, minutes: float = 90, hard_minutes: float | None = None,
            max_cost: float | None = None, kinds: str | None = None, max_jobs: int | None = None, idle_min: float = 5,
-           post_grace_min: float = 15, prefix: str = POD_PREFIX, dry_run: bool = False, extra_env: dict | None = None) -> list[dict]:
+           post_grace_min: float = 15, prefix: str = POD_PREFIX, dry_run: bool = False, extra_env: dict | None = None,
+           owner: str | None = None) -> list[dict]:
     """Start `n` GPU pods from the volume. Each pod takes the first GPU of the priority list that has stock in the
     volume's DC and whose worst case (price x hard minutes) fits the budget gate together with the pods already started
     in this call. `max_cost` = ceiling for the SUM of the launched pods' worst cases (default: what the gate allows).
@@ -351,7 +352,7 @@ def launch(n: int = 1, *, gpus: list[str] | None = None, minutes: float = 90, ha
             try:
                 placed = create(f"{prefix}-{stamp}-{i + 1}", gpu=o["gpu"], minutes=minutes, hard_minutes=hard, kinds=kinds,
                                 max_jobs=max_jobs, idle_min=idle_min, post_grace_min=post_grace_min, price=o["price"],
-                                extra_env=extra_env, wait=True)
+                                extra_env=extra_env, wait=True, owner=owner)
                 spent_cost += worst
                 break
             except (PodError, RuntimeError) as e:
@@ -381,7 +382,7 @@ def cpu_price(flavor: str, vcpu: int) -> float:
 def launch_cpu(n: int = 1, *, vcpu: int = 8, flavors: list[str] | None = None, minutes: float = 60,
                hard_minutes: float | None = None, max_cost: float | None = None, kinds: str = "analyse",
                max_jobs: int | None = None, idle_min: float = 3, post_grace_min: float = 10, prefix: str = POD_PREFIX + "-cpu",
-               dry_run: bool = False, extra_env: dict | None = None) -> list[dict]:
+               dry_run: bool = False, extra_env: dict | None = None, owner: str | None = None) -> list[dict]:
     """Start `n` CPU pods from the volume for the analysis jobs (kind analyse: prepare, stitch, pose_quality, timing, physics,
     counterbalance, floorcraft, analysis_review, camera-gate evidence). Same budget gate and kill switches as `launch`; the
     flavors are tried in order. A CPU pod's worker never claims a GPU job (it has no GPU)."""
@@ -410,7 +411,7 @@ def launch_cpu(n: int = 1, *, vcpu: int = 8, flavors: list[str] | None = None, m
             try:
                 placed = create(f"{prefix}-{stamp}-{i + 1}", cpu=fl, vcpu=vcpu, minutes=minutes, hard_minutes=hard, kinds=kinds,
                                 max_jobs=max_jobs, idle_min=idle_min, post_grace_min=post_grace_min, price=price,
-                                extra_env=extra_env, wait=True)
+                                extra_env=extra_env, wait=True, owner=owner)
                 spent_cost += worst
                 break
             except (PodError, RuntimeError) as e:
@@ -426,7 +427,7 @@ def launch_cpu(n: int = 1, *, vcpu: int = 8, flavors: list[str] | None = None, m
 # ------------------------------------------------------------------------------------------------ gateway
 
 
-def gateway(minutes: float = 30, vcpu: int = 2, reuse: bool = True) -> tuple[remote.Pod, bool]:
+def gateway(minutes: float = 30, vcpu: int = 2, reuse: bool = True, owner: str | None = None) -> tuple[remote.Pod, bool]:
     """(ssh handle, created): a pod that mounts the volume, for uploads / pulls / `ls` while no worker pod is the right
     place. Reuses any running farm pod with public ssh (reuse=True), else starts a small CPU pod in gateway mode (kill
     switch armed, no worker, nothing prepared: up in about 40 s, $0.035 per vCPU-hour). The caller deletes it when
@@ -439,7 +440,7 @@ def gateway(minutes: float = 30, vcpu: int = 2, reuse: bool = True) -> tuple[rem
                 except PodError:
                     continue
     info = create(f"{POD_PREFIX}-gateway", cpu="cpu5c", vcpu=vcpu, minutes=minutes, hard_minutes=minutes * 1.5, entry=True,
-                  autostart=False, disk_gb=20, price=cpu_price("cpu5c", vcpu), wait=True)
+                  autostart=False, disk_gb=20, price=cpu_price("cpu5c", vcpu), wait=True, owner=owner)
     return pod_handle(info), True
 
 
@@ -480,7 +481,9 @@ def main(argv=None) -> int:
     e.add_argument("--minutes", type=float, default=30)
     d = sub.add_parser("delete", help="delete a pod (ledger closed)")
     d.add_argument("pod_id")
-    sub.add_parser("down", help="delete EVERY hm-farm pod")
+    dn = sub.add_parser("down", help="delete the hm-farm pods listed (dry run unless --yes; --pod limits it; another agent's pods match the prefix too)")
+    dn.add_argument("--yes", action="store_true", help="really delete")
+    dn.add_argument("--pod", help="comma list of pod ids (default: every hm-farm* pod)")
     sub.add_parser("gateway", help="print an ssh handle of a pod that mounts the volume (starts a CPU gateway if none runs)")
     a = ap.parse_args(argv)
     if a.cmd == "offers":
@@ -505,8 +508,14 @@ def main(argv=None) -> int:
         pod, created = gateway()
         print(json.dumps({"pod_id": pod.id, "host": pod.host, "port": pod.port, "created": created}))
     elif a.cmd == "down":
-        for q in list_farm_pods():
-            delete(q["id"], reason="down")
+        only = {x for x in (a.pod or "").split(",") if x}
+        found = [q for q in list_farm_pods() if not only or q["id"] in only]
+        for q in found:
+            print(f"{'deleting' if a.yes else 'would delete'} {q['id']} {q['name']} ({q['status']})")
+            if a.yes:
+                delete(q["id"], reason="down")
+        if found and not a.yes:
+            print("dry run: nothing deleted. These may include pods of another agent or session; repeat with --yes (and --pod ids).")
     return 0
 
 

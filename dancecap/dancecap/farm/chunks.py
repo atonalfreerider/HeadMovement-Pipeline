@@ -33,14 +33,18 @@ front plan, the map reuse from the WORLD package, the MAMMA fit with the world's
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
+import shutil
 import subprocess
 import tarfile
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+
+import numpy as np
 
 from . import DEFAULT_DANCE, VOLUME_ROOT, farm_dir, jobs_dir, work_dir
 from . import world as W
@@ -135,6 +139,194 @@ def split_gap(n_frames: int, hz: float = HZ, target_s: float = CORE_TARGET_S, lo
     n = min(cands, key=lambda c: (abs(L / c - target_s), -c))
     edges = [int(round(j * n_frames / n)) for j in range(n + 1)]
     return [edges[j + 1] - edges[j] for j in range(n)]
+
+
+# --------------------------------------------------------------------------------------------------- reslice (refits)
+#
+# A seam refit (the stitcher's `refit` recommendation) or any gap inside / next to spans whose front end is done does NOT need the front end
+# again: every array of a prepared MAMMA set (ma_2d/<seq>/cam*.npz, ma_cap/<seq>/gt/*.npz) has the frame axis first, so a window is an exact
+# slice, and a window that straddles two takes (a segment's tail + the next take's head, the stitcher's "contains_window: false") is the
+# concatenation of two slices on the same 30 Hz lattice, each taken where its own take is furthest from its edge. The front end (video
+# upload, detection, SAM, localisation, ma_2d: about 800 MB of source video over the home uplink) is only for frames NO take has prepared.
+RESLICE_MIN_CAMS = 3
+RESLICE_MARK = "reslice.json"
+
+
+class ResliceError(RuntimeError):
+    pass
+
+
+def prepared_sources(spec: DanceSpec, exclude=()) -> list[dict]:
+    """Prepared MAMMA sets on this machine as [{take, k0, k1, tag, seq, cams, dir, prep}]: the reference take, the S1 segments and the
+    farm's chunk takes whose mamma/prepare.json grid lies on the dance lattice and whose ma_2d / ma_cap inputs are still on disk."""
+    g = spec.grid
+    takes = [spec.reference] if spec.reference else []
+    takes += [spec.segment_take(s) for s in spec.segments]
+    base = work_dir(spec.name).parent
+    for d in sorted(base.glob(f"{spec.name}_*")):
+        if d.is_dir() and d.name not in takes:
+            takes.append(d.name)
+    out = []
+    for t in takes:
+        if t in exclude:
+            continue
+        w = work_dir(t)
+        prep = read_json(w / "mamma" / "prepare.json", None)
+        if not isinstance(prep, dict) or not prep.get("grid") or not prep.get("sets"):
+            continue
+        t0 = float(prep["grid"]["t0"])
+        if abs((t0 - g.anchor) * g.hz - round((t0 - g.anchor) * g.hz)) > 1e-3:
+            continue   # not on this dance's lattice
+        k0 = g.k_of(t0)
+        k1 = k0 + int(prep["grid"]["T"]) - 1
+        tag = max(prep["sets"], key=lambda x: len(prep["sets"][x]["cams"]))
+        seq = prep["sets"][tag]["seq"]
+        if not (w / "mamma" / "ma_2d" / seq).is_dir() or not (w / "mamma" / "ma_cap" / seq / "gt").is_dir():
+            continue
+        out.append({"take": t, "k0": k0, "k1": k1, "tag": tag, "seq": seq, "cams": sorted(prep["sets"][tag]["cams"]), "dir": w, "prep": prep})
+    return out
+
+
+def plan_reslice(spec: DanceSpec, k0: int, k1: int, exclude=(), sources: list[dict] | None = None) -> dict | None:
+    """Can the window k0..k1 be cut out of prepared sets that exist? -> {"parts": [{take, a, b}], "cams": [...]} (contiguous runs, a..b
+    inclusive grid indices, each frame taken from the source furthest from its own grid edges: edge frames have the fewest cameras),
+    or None when some frame has no prepared source or fewer than RESLICE_MIN_CAMS cameras are common to the sources involved."""
+    srcs = [s for s in (sources if sources is not None else prepared_sources(spec, exclude)) if s["k0"] <= k1 and s["k1"] >= k0]
+    if not srcs:
+        return None
+    owner = []
+    for k in range(k0, k1 + 1):
+        cands = [s for s in srcs if s["k0"] <= k <= s["k1"]]
+        if not cands:
+            return None
+        owner.append(max(cands, key=lambda s: (min(k - s["k0"], s["k1"] - k), len(s["cams"]), s["take"]))["take"])
+    parts, a = [], k0
+    for i in range(1, len(owner) + 1):
+        if i == len(owner) or owner[i] != owner[i - 1]:
+            parts.append({"take": owner[i - 1], "a": a, "b": k0 + i - 1})
+            a = k0 + i
+    involved = {p["take"] for p in parts}
+    cams = sorted(set.intersection(*(set(s["cams"]) for s in srcs if s["take"] in involved)))
+    if len(cams) < RESLICE_MIN_CAMS:
+        return None
+    return {"parts": parts, "cams": cams, "window": [k0, k1]}
+
+
+def _cut(path: Path, a: int, b: int, T: int) -> tuple[dict, set]:
+    """(arrays with the frame axis cut to a..b, names of the frame-axis arrays) of one npz of a source take with T frames."""
+    z = np.load(path, allow_pickle=False)
+    arrs = {k: z[k] for k in z.files}
+    frame = {k for k, v in arrs.items() if v.ndim >= 1 and v.shape[0] == T}
+    return {k: (v[a:b] if k in frame else v) for k, v in arrs.items()}, frame
+
+
+def _merge_npz(files: list[tuple[Path, int, int, int]], dst: Path, n: int, scalars: dict | None = None) -> None:
+    """Concatenate the frame-axis arrays of several npz (path, a, b, T of the source) and keep the other arrays, which must agree."""
+    cuts = [_cut(p, a, b, T) for p, a, b, T in files]
+    keys = cuts[0][0].keys()
+    out = {}
+    for k in keys:
+        vals = [c[0][k] for c in cuts]
+        if all(k in c[1] for c in cuts):
+            out[k] = np.concatenate(vals, axis=0) if len(vals) > 1 else vals[0]
+            if out[k].shape[0] != n:
+                raise ResliceError(f"{dst.name}:{k}: {out[k].shape[0]} frames, expected {n}")
+        else:
+            if k not in (scalars or {}) and any(not np.array_equal(vals[0], v) for v in vals[1:]):
+                raise ResliceError(f"{dst.name}:{k} differs between the takes the window is cut from")
+            out[k] = vals[0]
+    for k, v in (scalars or {}).items():
+        if k in out:
+            out[k] = np.asarray(v) if isinstance(v, str) else np.asarray(v, dtype=out[k].dtype)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(dst, **out)
+
+
+def _reslice_complete(dst: Path, plan: dict) -> bool:
+    """Every file a reslice writes is there (a half-deleted or half-written directory is rebuilt, not reused)."""
+    prep = read_json(dst / "prepare.json", None)
+    if not isinstance(prep, dict) or not prep.get("sets"):
+        return False
+    tag = next(iter(prep["sets"]))
+    seq = prep["sets"][tag]["seq"]
+    want = [dst / prep["config"], dst / "ma_cap" / seq / "gt" / "global.npz"]
+    for cam in plan["cams"]:
+        want += [dst / "ma_2d" / seq / f"cam{cam}.npz", dst / "ma_cap" / seq / "gt" / f"cam{cam}.npz"]
+    return all(p.is_file() for p in want)
+
+
+def reslice_take(spec: DanceSpec, chunk: "Chunk", plan: dict, *, force: bool = False) -> dict:
+    """Write work/<chunk.take>/mamma/{prepare.json, ma3d_config.yaml, ma_2d/<seq>, ma_cap/<seq>} = the chunk's window cut out of the prepared
+    sets of existing takes (plan_reslice). The result is what `fit` reads, exactly as a front end would have prepared it. Refuses to
+    overwrite a take dir that holds real outputs (a fit) or that this function did not write."""
+    g = spec.grid
+    k0, k1 = chunk.k0, chunk.k1
+    n = k1 - k0 + 1
+    srcs = {s["take"]: s for s in prepared_sources(spec, exclude=(chunk.take,))}
+    parts = plan["parts"]
+    if any(p["take"] not in srcs for p in parts):
+        raise ResliceError(f"{chunk.id}: a source take of the window is no longer prepared on disk")
+    dst = work_dir(chunk.take) / "mamma"
+    if dst.exists():
+        mark = read_json(dst / RESLICE_MARK, None)
+        if not mark and not force:
+            raise ResliceError(f"{dst} exists and was not written by reslice_take: not touched")
+        if mark and mark.get("plan") == plan and not force and _reslice_complete(dst, plan):
+            return {"take": chunk.take, "reused": True, "frames": n, "parts": parts}
+        if (dst / "fits").exists() or (dst / "select.json").exists():
+            raise ResliceError(f"{dst} already holds a fit: not overwritten")
+        shutil.rmtree(dst)
+    cams = list(plan["cams"])
+    tag = f"c{len(cams)}"
+    seq = f"{chunk.take}_{tag}"
+    first = srcs[parts[0]["take"]]
+    cfgs = {hashlib.sha256((srcs[p["take"]]["dir"] / "mamma" / srcs[p["take"]]["prep"]["config"]).read_bytes()).hexdigest() for p in parts}
+    if len(cfgs) != 1:
+        raise ResliceError(f"{chunk.id}: the takes the window is cut from used different ma_3d configs")
+    ts, firsts, lasts = [], {c: [] for c in cams}, {c: [] for c in cams}
+    for p in parts:
+        s = srcs[p["take"]]
+        a, b = p["a"] - s["k0"], p["b"] - s["k0"] + 1
+        ts += list(s["prep"]["grid"]["t"][a:b])
+        cpf = (s["prep"]["grid"].get("trim") or {}).get("cams_per_frame") or {}
+        for c in cams:
+            lo, hi = cpf.get(c, [s["prep"]["grid"]["t"][0], s["prep"]["grid"]["t"][-1]])
+            firsts[c].append(float(lo))
+            lasts[c].append(float(hi))
+    if len(ts) != n:
+        raise ResliceError(f"{chunk.id}: window of {n} frames but {len(ts)} grid times")
+    tmp = dst.with_name("mamma.reslice.part")
+    if tmp.exists():
+        shutil.rmtree(tmp)
+    for c in cams:
+        _merge_npz([(srcs[p["take"]]["dir"] / "mamma" / "ma_2d" / srcs[p["take"]]["seq"] / f"cam{c}.npz", p["a"] - srcs[p["take"]]["k0"],
+                     p["b"] - srcs[p["take"]]["k0"] + 1, srcs[p["take"]]["k1"] - srcs[p["take"]]["k0"] + 1) for p in parts],
+                   tmp / "ma_2d" / seq / f"cam{c}.npz", n)
+        _merge_npz([(srcs[p["take"]]["dir"] / "mamma" / "ma_cap" / srcs[p["take"]]["seq"] / "gt" / f"cam{c}.npz",
+                     p["a"] - srcs[p["take"]]["k0"], p["b"] - srcs[p["take"]]["k0"] + 1,
+                     srcs[p["take"]]["k1"] - srcs[p["take"]]["k0"] + 1) for p in parts],
+                   tmp / "ma_cap" / seq / "gt" / f"cam{c}.npz", n, scalars={"frame_start": 0, "frame_end": n})
+    _merge_npz([(srcs[p["take"]]["dir"] / "mamma" / "ma_cap" / srcs[p["take"]]["seq"] / "gt" / "global.npz", p["a"] - srcs[p["take"]]["k0"],
+                 p["b"] - srcs[p["take"]]["k0"] + 1, srcs[p["take"]]["k1"] - srcs[p["take"]]["k0"] + 1) for p in parts],
+               tmp / "ma_cap" / seq / "gt" / "global.npz", n, scalars={"frames_len": n, "frame_start": 0, "frame_end": n, "seq_name": seq})
+    base = first["prep"]
+    trim = {"coverage": "union", "grid_anchor": float(g.anchor), "grid_k": [int(k0), int(k1)],
+            "cams_per_frame": {c: [min(firsts[c]), max(lasts[c])] for c in cams}, "window": [float(ts[0]), float(ts[-1])]}
+    prep = {"take": chunk.take, "created": now_iso(), "world_frame": base.get("world_frame"), "camera_types": base.get("camera_types"),
+            "grid": {"t0": float(ts[0]), "T": n, "hz": base["grid"].get("hz", g.hz), "t": ts, "trim": trim},
+            "sync": {**(base.get("sync") or {}), "note": "per-take offsets differ by part; see reslice.parts"},
+            "ma_2d": {}, "config": base["config"], "config_overrides": base.get("config_overrides"), "base_config": base.get("base_config"),
+            "sets": {tag: {"seq": seq, "cams": cams, "inputs": base["sets"][first["tag"]].get("inputs")}},
+            "eval": {"seq": seq, "cams": cams},
+            "reslice": {"parts": [{"take": p["take"], "k": [p["a"], p["b"]]} for p in parts], "window": [k0, k1],
+                        "note": "cut out of prepared sets that exist (farm.chunks.reslice_take): no front end"}}
+    (tmp).mkdir(parents=True, exist_ok=True)
+    (tmp / "prepare.json").write_text(json.dumps(prep, indent=1), encoding="utf-8")
+    shutil.copy2(first["dir"] / "mamma" / base["config"], tmp / base["config"])
+    (tmp / RESLICE_MARK).write_text(json.dumps({"plan": plan, "written": now_iso(), "chunk": chunk.id}, indent=1), encoding="utf-8")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(tmp, dst)
+    return {"take": chunk.take, "reused": False, "frames": n, "parts": parts, "cams": cams, "seq": seq}
 
 
 def window_for(spec: DanceSpec, core_k0: int, core_k1: int, overlap_k: int, min_window_k: int) -> tuple[int, int]:
@@ -622,7 +814,24 @@ def chunk_prep(chunk_id: str, dance: str = DEFAULT_DANCE, world_root: str | Path
     job = load_job(chunk_id, dance, job_path)
     w = W.require(dance, job["world_id"], job.get("world_sha256"), root=_world_root(world_root), level="quick")
     info = front_full.prep_segment(chunk_id, base=w.ref())
-    return {"take": job["take"], "world": w.id, "images": len(info.get("images", []))}
+    gauge = stage_gauge_reference(DanceSpec.load(dance), w)
+    return {"take": job["take"], "world": w.id, "images": len(info.get("images", [])), "gauge_ref": gauge}
+
+
+def stage_gauge_reference(spec: DanceSpec, w: "W.World") -> str:
+    """front_full's sync task pins its gauge to the reference take (`sync --gauge-ref larissa_kadu_38`), which reads
+    work/<reference>/sync/offsets.json - a file that exists on the PC but not on a pod. The world package carries it as ref/sync/offsets.json
+    (member clock_gauge): put it where the sync step looks. Never overwrites a DIFFERENT file (on the PC that is the real one)."""
+    from .. import front_full
+    src = w.ref("sync/offsets.json")
+    if not src.exists():
+        return "world has no ref/sync/offsets.json"
+    dst = work_dir(spec.reference or front_full.REF) / "sync" / "offsets.json"
+    if dst.exists():
+        return "present" if dst.read_bytes() == src.read_bytes() else "kept (a different file is there)"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(src, dst)
+    return "staged from the world package"
 
 
 def chunk_fit(chunk_id: str, dance: str = DEFAULT_DANCE, world_root: str | Path | None = None,

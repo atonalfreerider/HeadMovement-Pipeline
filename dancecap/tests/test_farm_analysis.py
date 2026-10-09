@@ -70,7 +70,7 @@ def test_final_job_is_one_cpu_pod_job_over_the_chunk_list(tmp_path, monkeypatch)
     assert [n for n in names if n in A.DEFAULT_ANALYSES] == list(A.DEFAULT_ANALYSES)
     assert "pose_quality" not in names                                        # chunk-scope analyses run per chunk
     stitch = job["steps"][1]["cmd"]
-    assert stitch.startswith("python -m dancecap.stitch dance --chunks work/dance/farm/stitch_list.json --partial")
+    assert stitch.startswith("python -m dancecap.stitch dance --chunks work/dance/farm/stitch_list.json --require-world --partial")
     assert "[ $rc -eq 2 ]" in stitch and "exit 0" in stitch                  # a failed seam gate is a coverage fact, not a job failure
     assert "--beats work/dance/song/beats_studio.json" in next(s["cmd"] for s in job["steps"] if s["name"] == "timing")
     assert "--smplx-dir rf" in next(s["cmd"] for s in job["steps"] if s["name"] == "counterbalance")

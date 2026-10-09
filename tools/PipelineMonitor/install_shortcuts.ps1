@@ -17,7 +17,7 @@ foreach ($dir in $dirs) {
   $lnk.TargetPath = $exe
   $lnk.WorkingDirectory = $here
   $lnk.IconLocation = ($exe + ',0')
-  $lnk.Description = 'dancecap Pipeline Monitor: pipeline stages, Runpod progress, ETA and budget (local)'
+  $lnk.Description = 'dancecap Pipeline Monitor: the defrag map of the final result, pods, chunk jobs, budget (local)'
   $lnk.Save()
   Write-Host ('shortcut: ' + $path)
 }

@@ -217,6 +217,7 @@ def prep_segment(sid: str, force: bool = False, base: Path | None = None) -> dic
     # 2. the 38 s window images of the map are foreign to every segment window: copy them in as keyframes
     rename: dict[str, str] = {}
     added: dict[str, list] = {}
+    in_window: list[str] = []
     for c in map_cams:
         kj = json.loads((base / "keyframes" / c / "keyframes.json").read_text())
         names = {r["file"] for r in kj}
@@ -224,8 +225,10 @@ def prep_segment(sid: str, force: bool = False, base: Path | None = None) -> dic
         by_file = {r["file"]: r for r in meta["frames"]}
         for name in sorted(n for n in info_38["images"] if n.startswith(f"frames/{c}/")):
             r = by_file[Path(name).name]
+            # a map image that lies INSIDE this take's window (a farm chunk next to / over the reference span, e.g. the 38|b seam refit)
+            # is copied in as a keyframe all the same: it is the model's own image, the take's frames are extracted separately
             if take.window[0] <= r["t"] <= take.window[1]:
-                raise SystemExit(f"{name} (t {r['t']:.3f}) lies inside {take.name}'s window: not a foreign image")
+                in_window.append(name)
             ms = int(round(r["t"] * 1000))
             src = base / name
             while f"{ms:07d}.jpg" in names:  # never two model images with one name (even of the same frame)
@@ -244,7 +247,8 @@ def prep_segment(sid: str, force: bool = False, base: Path | None = None) -> dic
         (work / "keyframes" / c / "keyframes.json").write_text(json.dumps(kj, indent=1))
     # 3. the models, renamed (features copied under the new keys; rename_model checks they index the 2D points)
     info = {"reused_from": REF, "base_sfm": str(base / "cameras" / "sfm"), "subs": {},
-            "foreign_as_keyframes": added, "note": "dancecap.front_full prep-local (map reuse with foreign images)"}
+            "foreign_as_keyframes": added, "map_images_inside_window": in_window,
+            "note": "dancecap.front_full prep-local (map reuse with foreign images)"}
     main = pycolmap.Reconstruction(str(base / "cameras" / "sfm"))
     info["main"] = rename_model(main, rename, base, work)
     if info["main"]["missing"] or info["main"]["different_bytes"]:

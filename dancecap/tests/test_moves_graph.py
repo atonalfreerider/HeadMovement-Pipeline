@@ -22,7 +22,7 @@ from dancecap.moves.fingerprint import (compute_fingerprint, source_record, stal
                                         validate_fingerprint)
 from dancecap.moves.labels import (Labels, LabelsError, Segment, load_labels, normalise_moves, save_labels,  # noqa: E402
                                    to_reference, validate_labels)
-from dancecap.moves.path import PathParams, resolve_path, validate_path  # noqa: E402
+from dancecap.moves.path import PathParams, resolve_path, shortest_route, validate_path  # noqa: E402
 from dancecap.moves.placeholder import make_placeholder, measure_bounds, measure_phase, unit_bounds  # noqa: E402
 from dancecap.take import PACKAGE_ROOT  # noqa: E402
 
@@ -744,3 +744,76 @@ def test_written_graph_is_current():
 def teardown_module(module):
     shutil.rmtree(PACKAGE_ROOT / "work" / "synthetic" / "export" / "_pytest_moves_capture", ignore_errors=True)
     shutil.rmtree(PACKAGE_ROOT / "work" / "synthetic" / "export" / "_pytest_stale_capture", ignore_errors=True)
+
+
+def _chain_graph():
+    """A -> M1 -> M2 -> B (every hop linked), no link A -> B; C is isolated."""
+    nodes = []
+    for nid, move, pos in (("A", "a", [0, 0, 0]), ("M1", "m1", [1, 0, 0]), ("M2", "m2", [1, 0, 1]),
+                           ("B", "b", [3, 0, 1]), ("C", "c", [9, 0, 0])):
+        nodes.append({"id": nid, "name": move, "slug": nid.lower(), "move": move, "shape": "Diamond",
+                      "tone": [0, 0, 0], "tone_name": "green", "family": "step", "position": pos, "energy": 0.5,
+                      "band": 2, "status": "scaffold"})
+    links = [{"id": "l1", "from": "A", "to": "M1", "status": "scaffold"},
+             {"id": "l2", "from": "M1", "to": "M2", "status": "scaffold"},
+             {"id": "l3", "from": "M2", "to": "B", "status": "scaffold"}]
+    moves = [{"slug": n["move"], "name": n["move"], "aliases": [], "nodes": [n["id"]], "status": "scaffold"}
+             for n in nodes]
+    bands = [{"band": b, "lo": lo, "hi": hi, "label": lbl} for b, lo, hi, lbl in G.ENERGY_BANDS]
+    return G.Graph({"version": 1, "nodes": nodes, "links": links, "moves": moves, "energy_bands": bands})
+
+
+def test_shortest_route_walks_existing_links_only():
+    g = _chain_graph()
+    assert shortest_route(g, "A", "B") == (["M1", "M2"], ["l1", "l2", "l3"])
+    assert shortest_route(g, "B", "A") is None  # forward links only
+    assert shortest_route(g, "A", "C") is None
+    assert shortest_route(g, "A", "B", max_hops=2) is None
+
+
+def test_path_overrides_route_a_break_through_the_graph():
+    g = _chain_graph()
+    labels = lab([(0, 1, "a"), (3, 4, "b")])  # a 2 s gap: the path breaks, the plain path has no via
+    plain = resolve_path(labels, g)
+    assert plain["steps"][1]["break_before"] and plain["steps"][1]["via"] == [] and plain["steps"][1]["link"] is None
+    doc = resolve_path(labels, g, overrides={"version": 1, "routes": [{"into": "b", "reason": "test"}]})
+    st = doc["steps"][1]
+    assert st["via"] == ["M1", "M2"] and st["links"] == ["l1", "l2", "l3"] and st["link"] == "l1"
+    assert st["via_inferred"] and st["break_before"] and not st["new_link"] and st["via_moves"] == ["m1", "m2"]
+    assert len(st["via_t"]) == 2 and 1.0 < st["via_t"][0] < st["via_t"][1] < 3.0   # split inside the gap
+    assert doc["steps"][0] == plain["steps"][0] and doc["cost"] == plain["cost"]
+    assert validate_path(doc, g, labels) == []
+    bad = json.loads(json.dumps(doc))
+    bad["steps"][1]["via"] = ["M2"]
+    assert any("no link" in e for e in validate_path(bad, g))
+    bad = json.loads(json.dumps(doc))
+    bad["steps"][1]["links"] = ["l1", "l2", "l1"]
+    assert any("route's links" in e for e in validate_path(bad, g))
+
+
+def test_path_overrides_turn_a_new_link_into_a_route_and_leave_the_rest_alone():
+    g = _chain_graph()
+    labels = lab([(0, 1, "a"), (1, 2, "b"), (2, 3, "c")])
+    plain = resolve_path(labels, g)
+    assert plain["steps"][1]["new_link"] and len(plain["new_links"]) == 2
+    doc = resolve_path(labels, g, overrides={"version": 1, "routes": [{"segment": "s1"}]})
+    assert not doc["steps"][1]["new_link"] and doc["steps"][1]["via"] == ["M1", "M2"]
+    assert doc["steps"][2] == plain["steps"][2] and [n["to"] for n in doc["new_links"]] == ["C"]
+    assert validate_path(doc, g, labels) == []
+    # the explicit node list wins over the search, and an impossible one is refused
+    ok = resolve_path(labels, g, overrides={"version": 1, "routes": [{"segment": "s1", "nodes": ["M1", "M2"]}]})
+    assert ok["steps"][1]["via"] == ["M1", "M2"]
+    with pytest.raises(Exception, match="no link"):
+        resolve_path(labels, g, overrides={"version": 1, "routes": [{"segment": "s1", "nodes": ["M2"]}]})
+    # nothing to route: a linked transition stays as it is
+    linked = resolve_path(lab([(0, 1, "a"), (1, 2, "m1")]), g, overrides={"version": 1, "routes": [{"into": "m1"}]})
+    assert linked["steps"][1]["link"] == "l1" and not linked["steps"][1].get("via_inferred")
+
+
+def test_export_converts_the_route_times_to_capture_time():
+    clock = CaptureClock("c", 3.1313, np.linspace(0.0, 10.0, 301))
+    doc = {"steps": [{"t0": 0.0, "t1": 1.0, "node": "A", "via_t": []},
+                     {"t0": 3.0, "t1": 4.0, "node": "B", "via_t": [1.5, 2.5]}], "provenance": "human"}
+    out = convert_path(doc, clock)
+    assert out["steps"][1]["via_t_reference"] == [1.5, 2.5]
+    assert out["steps"][1]["via_t"] == [pytest.approx(1.5 + 3.1313), pytest.approx(2.5 + 3.1313)]

@@ -18,6 +18,16 @@ HM=${HM_ROOT:-/workspace/hm}
 ID=${RUNPOD_POD_ID:-local}
 PD=$HM/pods/$ID
 T_ENTRY=$(date +%s)
+
+# 0. FIRST, before anything touches the volume: a self-contained hard stop from HM_HARD_CEIL (set by pods.create). The volume-based switch
+#    below can be extended but never past this ceiling; this one needs nothing but the container's own RUNPOD_* variables and runpodctl, so
+#    a missing / truncated bin/hm_killswitch.sh or a hung volume read cannot leave a pod billing for ever (review 2026-10-08).
+_hard=${HM_HARD_CEIL:-0}
+case "$_hard" in ''|*[!0-9]*) _hard=0;; esac
+if [ "$_hard" -le "$T_ENTRY" ]; then _hard=$(( T_ENTRY + 14400 )); fi   # unset or already past: 4 h from entry, never "no limit"
+( sleep $(( _hard - T_ENTRY + 30 )); runpodctl pod delete "$RUNPOD_POD_ID" || runpodctl remove pod "$RUNPOD_POD_ID"; sleep 120
+  runpodctl pod delete "$RUNPOD_POD_ID" ) > /tmp/hardstop.log 2>&1 < /dev/null &
+
 mkdir -p "$PD" 2>/dev/null
 ev() { echo "$(date +%s) $*" >> "$PD/events.log"; echo "[entry $(date -u +%T)] $*"; }
 
@@ -28,9 +38,12 @@ ev "entry container up pod=$ID name=${HM_POD_NAME:-} gpu=$(nvidia-smi --query-gp
 export HM_KILL_AT
 [ -s "$PD/kill_at" ] || echo "$HM_KILL_AT" > "$PD/kill_at"
 if [ -x "$HM/bin/hm_killswitch.sh" ]; then
-  nohup "$HM/bin/hm_killswitch.sh" "$PD/kill_at" "${HM_HARD_CEIL:-0}" >> "$PD/killswitch.log" 2>&1 < /dev/null &
+  # supervised: if the switch dies (OOM kill, a crash) it is started again; the hard stop above is the floor under it
+  ( while true; do "$HM/bin/hm_killswitch.sh" "$PD/kill_at" "${HM_HARD_CEIL:-0}" >> "$PD/killswitch.log" 2>&1 < /dev/null; sleep 5; done ) &
 else
-  ev "WARNING: $HM/bin/hm_killswitch.sh missing; no on-pod kill switch"
+  # no volume script: the creation-time deadline (HM_KILL_AT, +100 min) as an inline timer, on top of the hard stop
+  ev "WARNING: $HM/bin/hm_killswitch.sh missing; inline deadline $HM_KILL_AT only"
+  ( sleep $(( HM_KILL_AT - T_ENTRY + 30 )); runpodctl pod delete "$RUNPOD_POD_ID" || runpodctl remove pod "$RUNPOD_POD_ID" ) > /tmp/killswitch_inline.log 2>&1 < /dev/null &
 fi
 
 if [ "${HM_AUTOSTART:-1}" != "1" ]; then

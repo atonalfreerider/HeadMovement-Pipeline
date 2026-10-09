@@ -29,7 +29,7 @@ from pathlib import Path
 CREATE_NO_WINDOW = 0x08000000
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 PORTS = range(8790, 8800)
-VIEWS = {"videos": "#/take/{take}/videos", "overview": "#/take/{take}", "runpod": "#/runpod", "new": "#/new"}
+VIEWS = {"videos": "#/take/{take}/videos", "overview": "#/take/{take}", "runpod": "#/runpod", "new": "#/new", "farm": "#/"}
 
 
 def _paths():
@@ -109,8 +109,10 @@ def _running_server() -> dict | None:
     return None
 
 
-def route_for(take: str | None = None, view: str | None = None) -> str:
+def route_for(take: str | None = None, view: str | None = None, dance: str | None = None) -> str:
     from ..util import TAKE_RE
+    if dance and (view in (None, "farm")) and TAKE_RE.match(dance):
+        return f"#/farm/{dance}"
     if view in VIEWS and (take or "{take}" not in VIEWS[view]):
         if take and not TAKE_RE.match(take):
             return "#/"
@@ -120,8 +122,9 @@ def route_for(take: str | None = None, view: str | None = None) -> str:
     return "#/"
 
 
-def launch(take: str | None = None, view: str | None = None, replace: bool = False, no_window: bool = False) -> int:
-    route = route_for(take, view)
+def launch(take: str | None = None, view: str | None = None, replace: bool = False, no_window: bool = False,
+           dance: str | None = None) -> int:
+    route = route_for(take, view, dance)
     if not replace:
         sj = _running_server()
         if sj:

@@ -7,6 +7,7 @@ import { budgetGauge, budgetFromState, progressBar } from "./components/progress
 import { toast, errorText, openDialog, dialogOpen, closeAllDialogs } from "./components/dialog.js";
 
 const VIEWS = {
+  farm: "./views/farm.js",
   dashboard: "./views/dashboard.js",
   wizard: "./views/wizard.js",
   take: "./views/take.js",
@@ -23,8 +24,10 @@ export function parseRoute(hash) {
   const parts = (hash || "").replace(/^#\/?/, "").split("/").filter(Boolean).map((p) => {
     try { return decodeURIComponent(p); } catch { return p; }
   });
-  if (!parts.length) return { name: "dashboard" };
+  if (!parts.length) return { name: "farm" };
   const [a, b, c, d] = parts;
+  if (a === "farm") return { name: "farm", dance: b || null };
+  if (a === "legacy") return { name: "dashboard" };
   if (a === "new") return { name: "wizard" };
   if (a === "take" && b) {
     if (!c) return { name: "take", take: b, tab: "dag" };
@@ -64,7 +67,20 @@ const app = {
   async refreshNow() { await tick(true); },
   takeSummary(take) { return (this.state && this.state.takes || []).find((t) => t.take === take) || null; },
   async actions() { return import("./views/actions.js"); },
+  // the farm view polls /api/farm itself: it hands the shell its top-bar and status-bar content and the monitor's identity
+  setTop(...nodes) { replace(el.top, nodes); },
+  setFarmStatus(items) { farmStatus = items; renderStatus(); },
+  noteMonitor(mon) {
+    if (!mon) return;
+    lastPoll = Date.now();
+    app.stateError = null;
+    checkInstance({ monitor: mon });
+    if (loadedStaticRev === null) loadedStaticRev = mon.static_rev;
+    app._mon = mon;
+    renderStatus();
+  },
 };
+let farmStatus = null;
 window.__dcm = app; // debugging from devtools only
 
 // ------------------------------------------------------------------------------------------------ chrome
@@ -97,12 +113,13 @@ function renderTop() {
 
 function renderNav() {
   const r = app.route || {};
-  const active = { dashboard: "takes", take: "takes", videos: "takes", wizard: "new", runpod: "runpod", session: "runpod",
-    runs: "runs", logs: "logs", settings: "settings" }[r.name];
+  const active = { farm: "farm", dashboard: "legacy", take: "legacy", videos: "legacy", wizard: "legacy", runpod: "legacy",
+    session: "legacy", runs: "legacy", logs: "legacy", settings: "settings" }[r.name];
   for (const a of el.nav.querySelectorAll("a")) a.classList.toggle("active", a.dataset.nav === active);
 }
 
 function renderAlerts() {
+  if (app.route && app.route.name === "farm") { el.alerts.hidden = true; return; }   // the farm view shows its own alerts
   const al = (app.state && app.state.alerts || []).filter((a) => !dismissed.has(a.id));
   if (!al.length) { el.alerts.hidden = true; replace(el.alerts); return; }
   el.alerts.hidden = false;
@@ -171,6 +188,16 @@ function reloadButton() {
 function renderStatus() {
   const st = app.state;
   const expired = !!staleReason;
+  if (app.route && app.route.name === "farm") {
+    const m = app._mon || {};
+    const updated = m.static_rev && loadedStaticRev && m.static_rev !== loadedStaticRev;
+    replace(el.status, ...(farmStatus || []), h("span", { class: "sb-spacer" }),
+      expired ? h("span", { class: "sb-item crit-text" }, `${staleReason}: reload this window`) : null,
+      expired ? reloadButton() : updated ? h("button", { class: "btn small primary", onclick: () => location.reload() }, "UI updated — reload") : null,
+      h("span", { class: "sb-item muted" }, `updated ${fmtTime(lastPoll / 1000)} · monitor :${location.port} v${m.version || "?"}`));
+    el.ribbon.hidden = true;
+    return;
+  }
   if (!st) {
     replace(el.status, h("span", { class: app.stateError ? "crit-text" : "muted" },
       expired ? `This window must reload: ${staleReason}. `
@@ -247,6 +274,7 @@ let inflight = false;
 let timer = null;
 let lastViewError = null;
 async function tick(force) {
+  if (app.route && app.route.name === "farm") { renderStatus(); return; }   // the farm view polls /api/farm itself
   if (inflight && !force) return;
   inflight = true;
   try {
@@ -312,8 +340,10 @@ app.render = async function render() {
   const route = parseRoute(location.hash);
   const key = routeKey(route);
   app.route = route;
+  document.body.classList.toggle("farm-mode", route.name === "farm");
   renderNav();
   renderSidebar();
+  if (route.name !== "farm" && !app.state && !inflight) tick(true);   // older tools need the aggregated /api/state
   if (app._view && app._viewKey === key && app._view.route) {
     app._view.route(route);
     return;
@@ -352,7 +382,7 @@ window.addEventListener("hashchange", () => { closeAllDialogs(); app.render(); }
 
 // ------------------------------------------------------------------------------------------------ keyboard
 
-const CHORDS = { t: "#/", n: "#/new", r: "#/runpod", l: "#/logs", u: "#/runs", s: "#/settings" };
+const CHORDS = { f: "#/", t: "#/legacy", n: "#/new", l: "#/logs", s: "#/settings" };
 const MODIFIER_KEYS = new Set(["Shift", "CapsLock", "Control", "Alt", "AltGraph", "Meta", "OS"]);
 // focusable controls whose Enter / Space keep their native meaning (press THAT control)
 const CONTROL_SEL = "button, a[href], video, audio, summary, [contenteditable], [role=button], [role=radio], " +
@@ -385,8 +415,8 @@ document.addEventListener("keydown", (e) => {
 
 function showHelp() {
   const rows = [
-    ["g t", "takes (dashboard)"], ["g n", "new capture"], ["g r", "Runpod panel"], ["g u", "runs"], ["g l", "logs"],
-    ["g s", "settings"], ["?", "this help"], ["Esc", "close a drawer or the top dialog"],
+    ["g f", "farm (the defrag map)"], ["g t", "older tools: takes"], ["g n", "new capture"], ["g l", "logs"],
+    ["g s", "settings"], ["Arrows", "farm map: move between seconds"], ["?", "this help"], ["Esc", "close a drawer or the top dialog"],
     ["J / K", "Video Review: next / previous video"], ["H / T", "Video Review: handheld / tripod (saves)"],
     ["Z", "Video Review: toggle zoom (saves)"], ["A / Enter", "Video Review: accept / confirm the selected video"],
     ["Space", "Video Review: play / pause"], ["N", "Video Review: narrate with this camera"],
@@ -410,6 +440,7 @@ function showHelp() {
     if (t && t !== "system") { document.documentElement.dataset.theme = t; prefs.set("theme", t); }
     else if (t === "system") { delete document.documentElement.dataset.theme; prefs.set("theme", null); }
   } catch (e) { /* the poller reports connection problems */ }
+  app.route = parseRoute(location.hash);   // so the first tick knows whether the farm view (no /api/state) is the home
   renderTop(); renderStatus(); renderSidebar(true);
   const first = tick(true); // the top bar and the takes list do not wait for the view (cold server: several seconds)
   await app.render();

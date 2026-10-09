@@ -42,6 +42,7 @@ HOOKS: dict[str, list] = {}
 PLUGINS: dict[str, dict] = {}
 CORE_COMMANDS = ("status", "coverage", "plan", "queue", "chunks", "world", "events", "plugins", "analyse", "chunk-take",
                  "chunk-prep", "chunk-fit", "chunk-prepare", "stitch-prep", "chunk-evidence")
+HOOK_COMMANDS = ("queue",)   # core commands that call a plug-in hook (queue_upload): the plug-ins must be loaded for them
 
 
 def register_hook(name: str, fn) -> None:
@@ -240,11 +241,26 @@ def cmd_plan(a) -> int:
         st.put_chunks([c.to_dict() for c in s1 if c.id not in cur], replace_planned=False)
     cov = refresh_coverage(a.dance, external=not a.no_external, write=not a.dry_run)
     stc = st.load()["chunks"]
+    # A claim keeps the planner off frames somebody is still going to produce. An S1 segment whose stages are all done owns nothing any
+    # more: its seam may have FAILED and need a repair (the c|d refit used to vanish behind the claims of the finished segments c and d).
+    finished_s1 = {c.id for c in s1 if not C.stages_for(c, "full")}
     claimed = [(int(c["core_k0"]), int(c["core_k1"]), cid) for cid, c in stc.items()
-               if c.get("status") in ("queued", "running", "done", "pulled", "stitched") and "core_k0" in c]
-    claimed += [(c.core_k0, c.core_k1, c.id) for c in s1 if stc.get(c.id, {}).get("status", "planned") not in ("failed", "cancelled")]
+               if c.get("status") in ("queued", "running", "done", "pulled", "stitched") and "core_k0" in c
+               and not (c.get("origin") == "s1" and cid in finished_s1)]
+    claimed += [(c.core_k0, c.core_k1, c.id) for c in s1
+                if c.id not in finished_s1 and stc.get(c.id, {}).get("status", "planned") not in ("failed", "cancelled")]
     planned, rep = C.plan_gaps(cov, spec, claimed=claimed, mode=a.mode, overlap_s=a.overlap_s, world_id=w.id if w else None,
                                kind=a.kind)
+    # Gaps inside or next to spans whose front end is done (every seam refit) are cut out of the prepared sets that exist: no front end.
+    reslices: dict = {}
+    for ch in planned:
+        pr = C.plan_reslice(spec, ch.k0, ch.k1, exclude=(ch.take,))
+        if pr:
+            reslices[ch.id] = pr
+            ch.stages_done, ch.origin = ["front"], "refit"
+            ch.estimate = C.estimate(ch, spec)
+            ch.priority = ch.estimate["total_min"]
+    rep["refits_from_prepared"] = {k: [f"{p['take']}:{p['a']}..{p['b']}" for p in v["parts"]] for k, v in reslices.items()}
     jobs = []
     plan_doc = {"created": now_iso(), "dance": a.dance, "world": _world_header(a.dance), "mode": a.mode, "ignore_s1": a.ignore_s1,
                 "report": rep, "coverage": {"counts": cov.counts(), "percent": cov.percent(), "seconds": cov.seconds()},
@@ -255,6 +271,10 @@ def cmd_plan(a) -> int:
     todo = planned + [c for c in s1 if stc.get(c.id, {}).get("status", "planned") == "planned"]
     if not a.dry_run:
         for c in todo:
+            if c.id in reslices:
+                info = C.reslice_take(spec, c, reslices[c.id])
+                print(f"[farm] {c.id}: window k {c.k0}..{c.k1} cut out of prepared sets "
+                      f"{', '.join(p['take'] + ' ' + str(p['a']) + '..' + str(p['b']) for p in info['parts'])} (no front end)", file=sys.stderr)
             job = C.build_job(c, spec, w, code=code)
             if not job["steps"]:   # nothing left to run: its results are already here
                 st.set_chunk(c.id, status="pulled")
@@ -291,6 +311,8 @@ def cmd_plan(a) -> int:
     print(f"gaps ({a.mode}): " + (", ".join(f"k {g[0]}..{g[1]} ({s} s)" for g, s in zip(rep["gaps"], rep["gap_s"])) or "none"))
     if rep["claimed_skipped"]:
         print("already claimed: " + ", ".join(f"{c[2]} (k {c[0]}..{c[1]})" for c in rep["claimed_skipped"]))
+    for cid, parts in (rep.get("refits_from_prepared") or {}).items():
+        print(f"{cid}: no front end needed, cut out of prepared sets: {', '.join(parts)}")
     if planned:
         print(_table(planned, spec.grid))
     else:
@@ -558,6 +580,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("queue", help="hand the planned POD jobs to the volume uploader (the worker runs a job only after its `after` chunks)")
     p.add_argument("--local-only", action="store_true", help="only report what is ready")
     p.add_argument("--hold", action="store_true", help="keep jobs whose `after` chunks are not done here until they are (release_ready)")
+    p.add_argument("--only", help="comma list: upload only these job ids (the uploader hook honors args.only / args.exclude)")
+    p.add_argument("--exclude", help="comma list: leave these job ids alone (e.g. chunks another session is fitting)")
     p.set_defaults(func=cmd_queue)
     p = sub.add_parser("chunks", help="list / register-s1 / retry ID / cancel ID")
     p.add_argument("action", nargs="?", default="list", choices=("list", "register-s1", "retry", "cancel"))
@@ -607,9 +631,9 @@ def main(argv: list[str] | None = None) -> int:
     first = next((x for x in rest if not x.startswith("-")), None)
     sub = next(a for a in ap._actions if isinstance(a, argparse._SubParsersAction))
     # plug-ins are imported unless the command is a core one (keeps `status` fast and independent of their imports)
-    if first not in CORE_COMMANDS or "-h" in rest or "--help" in rest:
+    if first not in CORE_COMMANDS or first in HOOK_COMMANDS or first == "plugins" or "-h" in rest or "--help" in rest:
         load_plugins(sub)
-    a = ap.parse_args(rest if first else ["status", *rest])
+    a = ap.parse_args(rest if first or "-h" in rest or "--help" in rest else ["status", *rest])   # a bare --help lists every command
     a.dance = ns.dance or DEFAULT_DANCE
     a.json = bool(ns.json)
     try:

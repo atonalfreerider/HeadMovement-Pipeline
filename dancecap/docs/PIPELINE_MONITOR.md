@@ -1383,3 +1383,36 @@ User guide: `docs/PIPELINE_MONITOR_GUIDE.md`. API and UI changes made while inte
 | Failing pod jobs: the session snapshot carries `task_failures` {failed, skipped, first, tasks} parsed from the runner log (front_pod's `<task>: failed` / `skipped (dependency failed ...)` lines) and a warning; the Runpod summary lists `sessions_failing` and `/api/state` raises an amber alert for a RUNNING session with failed tasks (its pod bills until the job ends). A job status `failed: <reason>` (what remote_jobs writes) now makes the session `failed` (was shown `ok`), and an ended session no longer shows its last log line as 'Now'. Found on a live larissa_kadu_full front session whose ingest failed on the pod (89 failed, 151 skipped, $0.46). | runpod_view.py, server.py |
 | Plan budget: `budget.cap` follows `remote.cap()` on the real tree ($80 since 2026-10-07; the plan dialog showed $30 while the gate used $80). | estimate.py |
 | Trigger rules: the viewer's new `balance` layer (DanceLayers.Handles) with the element `couple.balance_axis` on counterbalance and pivot triggers. | taxonomy/triggers.toml, pipeline/triggers.py |
+
+---
+
+## 11. Redesign around the farm (2026-10-08)
+
+User directive: "I want all the old jobs cleared out of the monitor. It's confusing the way it's designed right now. I want to
+see the equivalent of a hard drive defragmentation graphic ... how much of the timeline is fully completed, partially completed,
+or not completed at all." The contract is `docs/FARM.md` section 7; this section is the implementation.
+
+- **Front page = the farm view** (`#/` and `#/farm/<dance>`), nothing else in the main navigation but Older tools and Settings.
+  The takes dashboard, take pages, new-capture wizard, camera-type review, runs, Runpod sessions and logs are unchanged but only
+  reachable through `#/legacy` ("Older tools"); the shell polls `/api/state` only while one of them is open.
+- **Old jobs cleared, evidence kept**: `python -m dancecap.pipeline archive-legacy` moves `work/pipeline/runs/*`,
+  `plans/*`, `runs_archive/*` and each take's `pipeline/events.jsonl` to `work/pipeline/archive/<date>/` (with a MANIFEST.json); a run
+  that is still alive is skipped. `work/runpod/sessions/*` and the ledger are never touched; the farm view reads only the newest
+  session of each fit segment.
+- **Backend** (all additive; `monitor/server.py` got one registration call): `pipeline/farm_view.py` (the bundle),
+  `pipeline/fit_sessions.py` (read-only adapter of the live `dancecap.fit_full` sessions: segment, pod, GPU, price, age, step, job
+  states fit / refine / quality, ETA from `progress_eta`, heartbeat from `progress/puller.json`, cost), `pipeline/farm_actions.py`
+  (plan -> approve -> detached run; every command line is built here, the client never sends an argv),
+  `pipeline/monitor/farm_routes.py` (the REST routes), `pipeline/legacy_archive.py`, `pipeline/farm_demo.py`.
+- **API** (same security model as the rest: Host allowlist, cookie on GET, token + JSON + Origin on writes):
+  `GET /api/farm?dance=` (bundle, ETag), `GET /api/farm/log`, `POST /api/farm/fill/plan`, `/fill/run`, `/pull`,
+  `/watcher/restart`, `/pods/stop`, `/coverage/refresh`, `/map-png`, `/reveal`.
+- **Bundle** `dancecap.monitor.farm/1`: `coverage` (cells `{i, t0, t1, k0, k1, s, g, n, m, f, r[], c, o[], live}`, counts, seconds,
+  percent), `chunks`, `jobs`, `queue`, `pods`, `budget`, `volume`, `world`, `watcher`, `events`, `alerts`, `outputs`, `actions`.
+  It reads `work/<dance>/farm/{coverage,state}.json` (core's schemas), `farm_volume.json`, `farm/watcher.pid`, and for the live
+  fits `work/<dance>/fit/{runner_<seg>,commitments}.json` and `work/runpod/sessions/*-fit-<seg>/`.
+- **Frontend**: `static/views/farm.js`, `static/components/defrag.js` (canvas painter shared by the display and the PNG export),
+  `static/farm.css`; `app.js` routes `#/` to the farm view and lazy-polls `/api/state` for the older tools.
+- **Launcher**: `tools/PipelineMonitor/PipelineMonitor.exe [--view farm] [--dance D]` (rebuilt with `build.ps1`; the exe is only a
+  trampoline), `head-movement/Tools/PipelineMonitor.cmd` and the Unity menu item are unchanged.
+- Tests: `tests/test_farm_monitor.py` (data layer, adapter, routes, actions' safety rules, archive, demo).
