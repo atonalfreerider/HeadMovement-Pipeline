@@ -155,6 +155,11 @@ foot_scale = [1.0, 0.94, 0.95]
 # ankles 27-35 mm sideways, feet-only reprojection 9.0 / 9.6 px. Remove this section to export the raw fit.
 [export]
 smplx_dir = "smplx_rf2_noslip"
+# Viewer floor (user 2026-10-08: "rotate the floor only, by 30 deg CCW so that it lines up with the room in the videos"): the 1 m
+# grid crosses + plane are turned 30 degrees counter-clockwise as seen from above, about the vertical axis through the dance origin
+# (capture.json floor_yaw_deg; the dancers, cameras and floor-craft overlays stay). larissa_kadu_38 and larissa_kadu_full share one SfM
+# world frame ([reuse] world), so one value serves 04_LarissaKaduDemo and 05_LarissaKaduFull.
+floor_yaw_deg = 30.0
 
 [world]
 dance = "larissa_kadu_full"

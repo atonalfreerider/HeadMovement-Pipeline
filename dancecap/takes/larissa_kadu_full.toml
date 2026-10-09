@@ -136,6 +136,20 @@ low_view = [[0.0, 1.6026]]   # 2 cameras (09, 06): flag "two_view"
 # smplx_rf2_noslip, applied to the new segments only).
 [export]
 smplx_dir = "smplx_rf2_noslip"
+# Viewer floor (user 2026-10-08: "rotate the floor only, by 30 deg CCW so that it lines up with the room in the videos"): the 1 m
+# grid crosses + plane are turned 30 degrees counter-clockwise as seen from above, about the vertical axis through the dance origin
+# (capture.json floor_yaw_deg; the dancers, cameras and floor-craft overlays stay). larissa_kadu_38 and larissa_kadu_full share one SfM
+# world frame ([reuse] world), so one value serves 04_LarissaKaduDemo and 05_LarissaKaduFull.
+floor_yaw_deg = 30.0
+# Muted lead, then faded in (user 2026-10-08: "mute Kadu's avatar and skeleton in the first 4 seconds ... they are posed incorrectly";
+# "time should start at T zero. We should fade in on Kadu's avatar and skeleton starting at four seconds"; "I did not say to change the
+# timing"): spans in CAPTURE seconds = seconds from the capture's first frame, the viewer HUD's clock (HUD 0.00 s = the first frame; NOT the
+# reference clock, which is -3.115 there). The lead is fully hidden for 0 <= t < 4.0 s - his avatar (hair, shoes), his skeleton and every
+# overlay derived from his pose (his T axis and floor-craft record, the couple's counterbalance dot, his balance axis, the hand-contact
+# lights, his footprints / touchdown rings, his miniature in the graph) - then FADES IN over fade_in = 1.0 s starting exactly at 4.0 s
+# (alpha 0 -> 1, smooth). A pure visibility switch: poses, timing, the film clock (it starts at the first frame), camera follow, her avatar /
+# skeleton / overlays and the move captions are untouched. capture.json role_hidden; hm_hide edits it for a session.
+role_hidden = { lead = [ { from = 0.0, to = 4.0, fade_in = 1.0 } ] }
 
 # Camera type per source video (dancecap.camera_types): set in the narration tool or the Pipeline Monitor
 
