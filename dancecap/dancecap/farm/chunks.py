@@ -141,6 +141,51 @@ def split_gap(n_frames: int, hz: float = HZ, target_s: float = CORE_TARGET_S, lo
     return [edges[j + 1] - edges[j] for j in range(n)]
 
 
+# --------------------------------------------------------------------- equal windows (class recap, 2026-10-09: 60 s chunks)
+#
+# The demo's planner above cuts a gap into cores of 24-36 s and grows every core by OVERLAP_S into each neighbour, so a "30 s chunk" is a
+# 38 s fit window and two neighbours share 8 s. A take can ask for the other convention in its TOML (`[chunks] chunk_s, overlap_s`):
+# chunks are FIT WINDOWS of at most chunk_s seconds that overlap their neighbour by overlap_s seconds (the S1 segments a-d are of this
+# kind: 4 s overlap regions, cores cut at the middle of each overlap). equal_windows() does the arithmetic, plan_windows() makes the chunks.
+
+
+def chunk_params(spec: "DanceSpec") -> dict:
+    """The take's `[chunks]` table with defaults: {chunk_s: max fit window (s), overlap_s: overlap region of two neighbours (s),
+    mode: "windows" (this convention) | "cores" (the demo's), profile: step-template profile of the take ("" = the demo's)}."""
+    c = dict((spec.cfg or {}).get("chunks") or {})
+    return {"chunk_s": float(c.get("chunk_s", CORE_TARGET_S)), "overlap_s": float(c.get("overlap_s", OVERLAP_S)),
+            "mode": str(c.get("mode", "windows" if "chunk_s" in c else "cores")), "profile": str(c.get("profile", ""))}
+
+
+def equal_windows(n_frames: int, hz: float = HZ, max_window_s: float = 60.0, overlap_s: float = 4.0) -> dict:
+    """Cover n_frames with the fewest EQUAL fit windows of at most max_window_s whose neighbours overlap by overlap_s.
+
+    n windows of length L overlapping by o cover n L - (n - 1) o frames, so L = (N + (n - 1) o) / n; the smallest n with L <= max_window_s
+    wins (a fixed 60 s window stepping by 56 s would leave a tiny last chunk). Returns {n, window_k (int frames per window, +-1),
+    overlap_k, windows: [[k0, k1]] (0-based frame indices), cores: [[a, b]] (cut at the middle of each overlap), window_s, core_s,
+    step_s, tried: [{n, window_s}]}."""
+    o = int(round(overlap_s * hz))
+    cap = max_window_s * hz
+    if n_frames <= cap:
+        return {"n": 1, "window_k": n_frames, "overlap_k": o, "windows": [[0, n_frames - 1]], "cores": [[0, n_frames - 1]],
+                "window_s": [round(n_frames / hz, 3)], "core_s": [round(n_frames / hz, 3)], "step_s": None, "tried": []}
+    tried, n = [], 1
+    while True:
+        n += 1
+        L = (n_frames + (n - 1) * o) / n
+        tried.append({"n": n, "window_s": round(L / hz, 3)})
+        if L <= cap + 1e-9 or n > 200:
+            break
+    step = (n_frames - L) / (n - 1)
+    wins = [[int(round(j * step)), int(round(j * step + L)) - 1] for j in range(n)]
+    wins[-1][1] = n_frames - 1
+    cuts = [(wins[j + 1][0] + wins[j][1] + 1) // 2 for j in range(n - 1)]
+    cores = [[0 if j == 0 else cuts[j - 1], n_frames - 1 if j == n - 1 else cuts[j] - 1] for j in range(n)]
+    return {"n": n, "window_k": int(round(L)), "overlap_k": o, "windows": wins, "cores": cores,
+            "window_s": [round((b - a + 1) / hz, 3) for a, b in wins], "core_s": [round((b - a + 1) / hz, 3) for a, b in cores],
+            "step_s": round(step / hz, 3), "tried": tried}
+
+
 # --------------------------------------------------------------------------------------------------- reslice (refits)
 #
 # A seam refit (the stitcher's `refit` recommendation) or any gap inside / next to spans whose front end is done does NOT need the front end
@@ -372,10 +417,12 @@ def estimate(chunk: Chunk, spec: DanceSpec, spans: dict | None = None) -> dict:
 
 def plan_gaps(cov: Coverage, spec: DanceSpec, *, claimed: list[tuple[int, int, str]] | None = None, mode: str = "missing",
               overlap_s: float = OVERLAP_S, world_id: str | None = None, kind: str = "full", spans: dict | None = None,
-              min_gap_s: float = 0.0) -> tuple[list[Chunk], dict]:
+              min_gap_s: float = 0.0, core_target_s: float | None = None) -> tuple[list[Chunk], dict]:
     """Coverage -> chunks. Frames in `claimed` ((core_k0, core_k1, id) of chunks that already have a job) are left alone.
+    core_target_s: the core length the gaps are cut towards (default CORE_TARGET_S = 30 s, cores of 0.8-1.2 x that: 24-36 s).
     Returns (chunks, report) where the report lists the gaps found, what claimed frames were skipped and the numbers."""
     g = spec.grid
+    ct = float(core_target_s) if core_target_s else CORE_TARGET_S
     mask = cov.gap_mask(mode).copy()
     raw = runs(mask, g.k0)
     for a, b, _cid in claimed or []:
@@ -388,7 +435,7 @@ def plan_gaps(cov: Coverage, spec: DanceSpec, *, claimed: list[tuple[int, int, s
     out: list[Chunk] = []
     for a, b in gaps:
         pos = a
-        for n in split_gap(b - a + 1, g.hz):
+        for n in split_gap(b - a + 1, g.hz, ct, ct * CORE_MIN_S / CORE_TARGET_S, ct * CORE_MAX_S / CORE_TARGET_S):
             c0, c1 = pos, pos + n - 1
             pos = c1 + 1
             k0, k1 = window_for(spec, c0, c1, ov, int(MIN_WINDOW_S * g.hz))
@@ -402,6 +449,37 @@ def plan_gaps(cov: Coverage, spec: DanceSpec, *, claimed: list[tuple[int, int, s
            "gap_s": [round((b - a + 1) / g.hz, 2) for a, b in gaps],
            "claimed_skipped": [c for c in (claimed or []) if any(max(c[0], a) <= min(c[1], b) for a, b in raw)],
            "chunks": len(out), "core_s": [round(c.core_T / g.hz, 2) for c in out], "overlap_s": overlap_s}
+    return out, rep
+
+
+def plan_windows(spec: DanceSpec, *, max_window_s: float | None = None, overlap_s: float | None = None, world_id: str | None = None,
+                 kind: str = "full", spans: dict | None = None, claimed_ids: set | None = None, cams_fn=None) -> tuple[list[Chunk], dict]:
+    """The WHOLE timeline of a dance as equal fit windows (equal_windows; parameters from the take's `[chunks]`): chunks of at most
+    max_window_s overlapping by overlap_s, cores cut at the middle of each overlap. A chunk whose id is in `claimed_ids` is not planned
+    again (ids are g<frames from the timeline start to the core's first frame>, stable for the same parameters). cams_fn(k0, k1) -> the
+    phones of a window (default: every phone that records >= MIN_CAM_S inside it; the recap planner passes its coverage-map rule).
+    Returns (chunks, report); the report has the keys cmd_plan prints (gaps, gap_s, claimed_skipped, ...) plus the arithmetic."""
+    g = spec.grid
+    p = chunk_params(spec)
+    eq = equal_windows(g.T, g.hz, max_window_s or p["chunk_s"], overlap_s if overlap_s is not None else p["overlap_s"])
+    spans = spans if spans is not None else camera_spans(spec)
+    out: list[Chunk] = []
+    skipped = []
+    for (a, b), (ca, cb) in zip(eq["windows"], eq["cores"]):
+        k0, k1, c0, c1 = g.k0 + a, g.k0 + b, g.k0 + ca, g.k0 + cb
+        cid = chunk_id(spec, c0)
+        if claimed_ids and cid in claimed_ids:
+            skipped.append((c0, c1, cid))
+            continue
+        ch = Chunk(id=cid, k0=k0, k1=k1, core_k0=c0, core_k1=c1, overlap_k=eq["overlap_k"], kind=kind,
+                   cams=cams_fn(k0, k1) if cams_fn else chunk_cams(spec, k0, k1, spans), world_id=world_id, origin="planned",
+                   take=f"{spec.name}_{cid}")
+        ch.estimate = estimate(ch, spec, spans)
+        ch.priority = ch.estimate["total_min"]
+        out.append(ch)
+    rep = {"mode": "windows", "gaps_before_claims": [[g.k0, g.k1]], "gaps": [[g.k0, g.k1]], "gap_s": [round(g.T / g.hz, 2)],
+           "claimed_skipped": skipped, "chunks": len(out), "core_s": [round(c.core_T / g.hz, 2) for c in out],
+           "overlap_s": eq["overlap_k"] / g.hz, "window_s": [round(c.T / g.hz, 2) for c in out], "arithmetic": eq}
     return out, rep
 
 
@@ -554,7 +632,10 @@ def code_info(cwd: Path = WORKSPACE) -> dict:
 
 
 def _ws(p: Path) -> str:
-    return Path(p).resolve().relative_to(WORKSPACE.resolve()).as_posix()
+    try:
+        return Path(p).resolve().relative_to(WORKSPACE.resolve()).as_posix()
+    except ValueError:   # F1 2026-10-09: a source folder outside the workspace (the recap's junction to the owner's videos): absolute, launch.prepare_spec accepts it
+        return Path(p).resolve().as_posix()
 
 
 def pack_tar(dest: Path, items: list[tuple[Path, str]]) -> None:
@@ -646,6 +727,9 @@ def build_job(chunk: Chunk, spec: DanceSpec, world: "W.World | None" = None, kin
             names = [n for n, a in A.ANALYSES.items() if a.scope == "chunk"]
             return A.build_analysis_job(spec, chunk.take, names, world, hash_inputs=hash_inputs, code=code, after=[chunk.id])
         raise ValueError(f"a {kind!r} job covers a list of chunks: analysis.build_final_job(spec, chunks, world)")
+    if chunk_params(spec)["profile"] == "recap":   # take-specific step templates (farm/recap_profile.py)
+        from . import recap_profile as RPf
+        return RPf.build_job(chunk, spec, world, kind, hash_inputs=hash_inputs, code=code, max_minutes=max_minutes, shape=chunk.id == RPf.SHAPE_ID)
     stages = stages_for(chunk, kind)
     est = chunk.estimate or estimate(chunk, spec)
     recipe = world.load_json("shared/refine_recipe.json") if world else None
