@@ -9,7 +9,11 @@ pose + zoom for every frame (the tracks the cameras stage fitted). This module w
     python -m dancecap.camera_video larissa_kadu_38 --capture 04_LarissaKaduDemo --install-only     # copy the master
     python -m dancecap.camera_video larissa_kadu_38 --capture 04_LarissaKaduDemo --tracks-only --no-install   # tracks + checks only
     python -m dancecap.camera_video take_a take_b --capture <capture> --clip 06 15 26.5 --clip 05 133 141   # SHORT per-phone clips,
-        # every other phone: track only (no video decoding); the tracks always span the whole capture
+        # every other phone: track only (no video decoding); the tracks always span the whole capture. --clip may repeat for ONE
+        # phone (several ranges: the class recap's POV shots); ranges closer than 2 s are decoded as one
+    python -m dancecap.camera_video larissa_kadu_recap --capture 06_LarissaKaduRecap --offsets <video_offsets.json> --clip ...
+        # the video offsets of a take that was fitted in chunks: {cam: {"piecewise": [[t, delta_s], ...]}} (linear between the
+        # points, flat outside) instead of sync/offsets.json (dancecap.recap_pov writes it from the chunks' own offsets)
 
 A new file in the Unity project's Assets folder is picked up by the editor's next asset refresh: when other jobs use
 the editor, run with --no-install and mirror later (--install-only) while you hold the editor.
@@ -96,7 +100,42 @@ MAX_FRAME_GAP_S = 0.25          # Unity hides the video when the nearest strip f
 VFOV_SPIKE_DEG = 3.0            # a vertical FOV sample further than this from the running median is an estimation spike
 VFOV_MEDIAN_S = 0.6             # ... median window (a real zoom is monotonic and passes a median filter; a spike up to ~0.3 s does not)
 REPORT_GAP_S = 0.3              # unlocalised runs longer than this are reported when they touch a direction's POV window
-OPTIONS = {"allow_unsynced": False}
+OPTIONS = {"allow_unsynced": False, "offsets_file": None}
+
+
+def apply_offset(t: np.ndarray, off: dict | float | None) -> np.ndarray:
+    """md.apply_offset plus {"piecewise": [[t, delta], ...]}: a delta that varies along the take (linear between the points, flat outside)."""
+    if isinstance(off, dict) and off.get("piecewise"):
+        pw = np.asarray(off["piecewise"], float)
+        t = np.asarray(t, float)
+        return t + np.interp(t, pw[:, 0], pw[:, 1])
+    return md.apply_offset(t, off)
+
+
+def read_offsets_file(path: Path) -> dict[str, dict]:
+    """--offsets FILE -> {cam: {"delta"|"piecewise": ...}} ({"offsets": {...}} or the plain mapping)"""
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    raw = raw.get("offsets", raw)
+    out = {}
+    for cam, v in raw.items():
+        if isinstance(v, dict) and v.get("piecewise"):
+            out[str(cam)] = {"piecewise": [[float(a), float(b)] for a, b in v["piecewise"]]}
+        elif isinstance(v, dict):
+            out[str(cam)] = {"delta": float(v.get("delta", 0.0)), "rate": float(v.get("rate", 0.0) or 0.0), "t_ref": float(v.get("t_ref", 0.0) or 0.0)}
+        else:
+            out[str(cam)] = {"delta": float(v)}
+    return out
+
+
+def merge_ranges(ranges: list[tuple[float, float]], gap: float = 2.0) -> list[tuple[float, float]]:
+    """sorted, overlapping or closer-than-gap ranges joined"""
+    out: list[list[float]] = []
+    for a, b in sorted((float(a), float(b)) for a, b in ranges):
+        if out and a - out[-1][1] <= gap:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return [(a, b) for a, b in out]
 
 
 # ---------------------------------------------------------------------------------------------------- tracks
@@ -143,6 +182,8 @@ def cam_pose_unity(R_w: np.ndarray, t_w: np.ndarray) -> tuple[np.ndarray, np.nda
 def require_sync(take_name: str) -> dict[str, dict]:
     """The take's per-phone video offsets (sync/offsets.json), or a hard error: exporting without them silently mis-times
     the phones by tens of ms (phone 04: 3 frames). --allow-unsynced exports on the raw clocks, loudly."""
+    if OPTIONS.get("offsets_file"):
+        return read_offsets_file(OPTIONS["offsets_file"])
     work = md.take_work(take_name)
     offs = md.read_sync_offsets(work)          # refuses offsets measured on other audio clocks
     if not offs:
@@ -172,7 +213,7 @@ def load_track(take_name: str, cam: str, offs: dict | None = None) -> CamTrack |
     off = offs.get(cam)
     if off is None and offs:
         print(f"[camera_video] WARNING {take_name}/{cam}: no entry in sync/offsets.json: delta 0 (raw clock)")
-    t = md.apply_offset(raw_t, off)
+    t = apply_offset(raw_t, off)
     R_w, t_w = md.world_cameras(np.asarray(z["R"], float), np.asarray(z["tvec"], float), sim3)
     pos, fwd, up = cam_pose_unity(R_w, t_w)
     K = np.asarray(z["K"], float)
@@ -461,8 +502,11 @@ def hmj_frame(path: Path, rec: tuple[int, int, float]) -> np.ndarray:
 
 
 def export_camera(cam: str, takes: list[str], track: CamTrack, span: tuple[float, float], out: Path, *, full: bool,
-                  thumbs: bool, long_side: int, quality: int, thumb_side: int, thumb_quality: int, log=print) -> dict:
-    """Decode one phone's source video over the span and write its strips; returns the manifest entry."""
+                  thumbs: bool, long_side: int, quality: int, thumb_side: int, thumb_quality: int, log=print,
+                  ranges: list[tuple[float, float]] | None = None) -> dict:
+    """Decode one phone's source video over the span and write its strips; returns the manifest entry.
+    ranges = several short spans (the recap's POV clips) instead of one: each is decoded on its own (seek), the frames go into
+    the same strips in time order."""
     srcs = [Take.load(t).source(cam) for t in takes if any(s.id == cam for s in Take.load(t).sources)]
     if not srcs:
         raise SystemExit(f"[camera_video] camera {cam}: no source video in {takes}")
@@ -471,29 +515,10 @@ def export_camera(cam: str, takes: list[str], track: CamTrack, span: tuple[float
     w, h = info["width"], info["height"]
     if (w, h) != tuple(track.size):
         log(f"[camera_video] {cam}: WARNING decoded frame {w}x{h} differs from the intrinsics' {track.size[0]}x{track.size[1]}")
-    s0, s1 = span
-    # the video offset is tens of ms: decode a little wider, filter on the corrected time after
-    ref0, ref1 = s0 - 0.5, s1 + 0.5
-    start, end = src.to_source(ref0), src.to_source(ref1)
-    pts = probe_pts(src.path, start, end)
-    if not pts:
-        raise SystemExit(f"[camera_video] camera {cam}: no frames in {start:.2f}..{end:.2f} s of the source")
-    pts = np.asarray(pts, float)
-    ref = src.slope * pts + src.offset
-    delta = track.delta[track.nearest(ref, raw=True)]
-    tcorr = ref + delta
-    inside = (tcorr >= s0) & (tcorr <= s1) & (pts >= start - 1e-6) & (pts <= end + 1e-6)
-    every = max(1, int(round(info["avg_fps"] / FPS))) if info["avg_fps"] > 1.5 * FPS else 1
-    idx = np.nonzero(inside)[0]
-    keep = np.zeros(len(pts), bool)
-    keep[idx[::every]] = True
-    if keep.sum() < 2:
-        raise SystemExit(f"[camera_video] camera {cam}: {keep.sum()} frames inside the span {s0:.2f}..{s1:.2f}")
+    spans = merge_ranges(ranges) if ranges else [tuple(span)]
     fw, fh = fit_size(w, h, long_side)
     tw, th = fit_size(w, h, thumb_side)
     undist = Undistorter(w, h)
-    j = track.nearest(tcorr)
-    near = {"f": track.f_px[j], "k1": track.k1[j], "delta": delta}
     writers = {}
     if full:
         writers["full"] = HmjWriter(out / f"{cam}.full.hmj", fw, fh)
@@ -501,45 +526,79 @@ def export_camera(cam: str, takes: list[str], track: CamTrack, span: tuple[float
         writers["thumb"] = HmjWriter(out / f"{cam}.thumb.hmj", tw, th)
     undistorted = 0
     t_start = time.time()
-    read = 0
-    for n, img in iter_frames(src.path, start, end, w, h, len(pts)):
-        read = n + 1
-        if not keep[n]:
-            continue
-        k1, f = float(near["k1"][n]), float(near["f"][n])
-        if abs(k1) >= UNDISTORT_MIN_K:
-            img = undist(img, f, k1)
-            undistorted += 1
-        t = float(tcorr[n])
-        if "full" in writers:
-            small = cv2.resize(img, (fw, fh), interpolation=cv2.INTER_AREA) if (fw, fh) != (w, h) else img
-            writers["full"].add(cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, quality])[1].tobytes(), t)
-        if "thumb" in writers:
-            small = cv2.resize(img, (tw, th), interpolation=cv2.INTER_AREA)
-            writers["thumb"].add(cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, thumb_quality])[1].tobytes(), t)
+    kept_t: list[np.ndarray] = []
+    kept_delta: list[np.ndarray] = []
+    kept_k1: list[np.ndarray] = []
+    every = 1
+    for s0, s1 in spans:
+        # the video offset is tens of ms: decode a little wider, filter on the corrected time after
+        ref0, ref1 = s0 - 0.5, s1 + 0.5
+        start, end = src.to_source(ref0), src.to_source(ref1)
+        pts = probe_pts(src.path, start, end)
+        if not pts:
+            raise SystemExit(f"[camera_video] camera {cam}: no frames in {start:.2f}..{end:.2f} s of the source")
+        pts = np.asarray(pts, float)
+        ref = src.slope * pts + src.offset
+        delta = track.delta[track.nearest(ref, raw=True)]
+        tcorr = ref + delta
+        inside = (tcorr >= s0) & (tcorr <= s1) & (pts >= start - 1e-6) & (pts <= end + 1e-6)
+        every = max(1, int(round(info["avg_fps"] / FPS))) if info["avg_fps"] > 1.5 * FPS else 1
+        idx = np.nonzero(inside)[0]
+        keep = np.zeros(len(pts), bool)
+        keep[idx[::every]] = True
+        if keep.sum() < 2:
+            raise SystemExit(f"[camera_video] camera {cam}: {keep.sum()} frames inside the span {s0:.2f}..{s1:.2f}")
+        j = track.nearest(tcorr)
+        near = {"f": track.f_px[j], "k1": track.k1[j], "delta": delta}
+        read = 0
+        for n, img in iter_frames(src.path, start, end, w, h, len(pts)):
+            read = n + 1
+            if not keep[n]:
+                continue
+            k1, f = float(near["k1"][n]), float(near["f"][n])
+            if abs(k1) >= UNDISTORT_MIN_K:
+                img = undist(img, f, k1)
+                undistorted += 1
+            t = float(tcorr[n])
+            if "full" in writers:
+                small = cv2.resize(img, (fw, fh), interpolation=cv2.INTER_AREA) if (fw, fh) != (w, h) else img
+                writers["full"].add(cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, quality])[1].tobytes(), t)
+            if "thumb" in writers:
+                small = cv2.resize(img, (tw, th), interpolation=cv2.INTER_AREA)
+                writers["thumb"].add(cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, thumb_quality])[1].tobytes(), t)
+        if read != len(pts):
+            for wr in writers.values():
+                wr.close()
+            raise SystemExit(f"[camera_video] camera {cam}: decoded {read} frames but showinfo timed {len(pts)}")
+        kept_t.append(tcorr[keep])
+        kept_delta.append(delta[keep])
+        kept_k1.append(near["k1"][keep])
     for wr in writers.values():
         wr.close()
-    if read != len(pts):
-        raise SystemExit(f"[camera_video] camera {cam}: decoded {read} frames but showinfo timed {len(pts)}")
-    nk = int(keep.sum())
-    dt = np.diff(tcorr[keep])
+    tk = np.concatenate(kept_t)
+    nk = int(len(tk))
+    dt = np.diff(tk)
+    if len(spans) > 1 and (dt < 1.0).any():
+        dt = dt[dt < 1.0]                      # the gaps between clips are not frame intervals
     entry = {
         "id": cam, "native_size": [w, h], "rotation_baked": info["rotation"], "source_fps": round(info["avg_fps"], 3),
-        "decimate_every": every, "frames": nk, "t0": round(float(tcorr[keep][0]), 4), "t1": round(float(tcorr[keep][-1]), 4),
+        "decimate_every": every, "frames": nk, "t0": round(float(tk[0]), 4), "t1": round(float(tk[-1]), 4),
         "frame_interval_ms": {"median": round(float(np.median(dt)) * 1000, 2), "min": round(float(dt.min()) * 1000, 2),
                               "max": round(float(dt.max()) * 1000, 2)},
-        "video_offset_ms": round(float(np.median(near["delta"])) * 1000, 2),
-        "undistorted_frames": undistorted, "k1_median": round(float(np.median(near["k1"])), 5),
+        "video_offset_ms": round(float(np.median(np.concatenate(kept_delta))) * 1000, 2),
+        "undistorted_frames": undistorted, "k1_median": round(float(np.median(np.concatenate(kept_k1))), 5),
         "vfov_deg": [round(float(track.vfov.min()), 2), round(float(np.median(track.vfov)), 2), round(float(track.vfov.max()), 2)],
         "aspect": round(w / h, 5),
     }
+    if ranges:
+        entry["clips"] = [[round(a, 3), round(b, 3)] for a, b in spans]
     if full:
         entry["full"] = {"file": f"{cam}.full.hmj", "size": [fw, fh], "bytes": (out / f"{cam}.full.hmj").stat().st_size}
     if thumbs:
         entry["thumb"] = {"file": f"{cam}.thumb.hmj", "size": [tw, th], "bytes": (out / f"{cam}.thumb.hmj").stat().st_size}
     log(f"[camera_video] {cam}: {nk} frames {w}x{h}{' (rot %d)' % info['rotation'] if info['rotation'] else ''} -> "
         f"{fw}x{fh} / {tw}x{th}, video offset {entry['video_offset_ms']:+.1f} ms, undistorted {undistorted}, "
-        f"{time.time() - t_start:.1f} s")
+        f"{len(spans)} span(s), {time.time() - t_start:.1f} s")
     return entry
 
 
@@ -757,6 +816,8 @@ def build_tracks(takes: list[str], only: list[str] | None, log=print):
         offs = require_sync(tk)
         applied[tk] = {}
         for npz in sorted((md.take_work(tk) / "cameras").glob("*.npz")):
+            if "_" in npz.stem or (only and npz.stem not in only):
+                continue                        # 05_subframe.npz / 00_world.npz are side files of the recap's cameras, not phones
             tr = load_track(tk, npz.stem, offs)
             if tr is not None:
                 per_cam.setdefault(npz.stem, []).append(tr)
@@ -802,8 +863,8 @@ def run(takes: list[str], capture: str, cams: list[str] | None, direction: list[
         only: list[str] | None,
         span: tuple[float, float] | None, out: Path | None, do_install: bool, mp4: bool, thumbs: bool,
         long_side: int, quality: int, thumb_side: int, thumb_quality: int, log=print, tracks_only: bool = False,
-        clips: dict[str, tuple[float, float]] | None = None) -> dict:
-    """clips = {phone: (t0, t1)}: a SHORT video span per phone (reference s); the phone gets a full strip for just that span,
+        clips: dict[str, list[tuple[float, float]]] | None = None) -> dict:
+    """clips = {phone: [(t0, t1), ...]}: SHORT video spans per phone (reference s); the phone gets a full strip for just those spans,
     every other phone (without thumbs) a track only and no video decoding. The tracks always cover the whole capture span."""
     tracks, overlaps, applied = build_tracks(takes, only, log)
     dir_cams, dir_files = ([], []) if direction == ["none"] else direction_cameras(capture, direction)
@@ -853,9 +914,10 @@ def run(takes: list[str], capture: str, cams: list[str] | None, direction: list[
             if clips and cam not in clips and not thumbs:
                 e = track_only_entry(cam, tr)
             else:
-                e = export_camera(cam, takes, tr, tuple(clips[cam]) if clips and cam in clips else (s0, s1), out,
+                e = export_camera(cam, takes, tr, (s0, s1), out,
                                   full=cam in want, thumbs=thumbs, long_side=long_side,
-                                  quality=quality, thumb_side=thumb_side, thumb_quality=thumb_quality, log=log)
+                                  quality=quality, thumb_side=thumb_side, thumb_quality=thumb_quality, log=log,
+                                  ranges=[(float(a), float(b)) for a, b in clips[cam]] if clips and cam in clips else None)
         trk = track_json(tr, s0 - 1.0, s1 + 1.0)
         e["track"] = {"file": f"{cam}.track.json", "n": trk["n"]}
         write_atomic(out / e["track"]["file"], json.dumps(trk, separators=(",", ":")))
@@ -870,7 +932,7 @@ def run(takes: list[str], capture: str, cams: list[str] | None, direction: list[
         if e["pose"]["unlocalised_runs_over_0.3s"]:
             log(f"[camera_video] {cam}: unlocalised runs > 0.3 s (start, end, s): {e['pose']['unlocalised_runs_over_0.3s']} "
                 f"(bridged by the stage's own fill up to {e['pose']['max_unlocalised_s']} s)")
-        if "full" in e and mp4 and not tracks_only:
+        if "full" in e and mp4 and not tracks_only and not e.get("clips"):
             write_mp4(cam, out, e, log)
         entries[cam] = e
     merged = dict(entries)
@@ -915,6 +977,16 @@ def set_priority(name: str) -> None:
             pass
 
 
+def _clip_args(items) -> dict[str, list[tuple[float, float]]] | None:
+    """--clip CAM T0 T1 (repeatable, several per phone) -> {cam: [(t0, t1), ...]}"""
+    if not items:
+        return None
+    out: dict[str, list[tuple[float, float]]] = {}
+    for c, x, y in items:
+        out.setdefault(str(c), []).append((float(x), float(y)))
+    return out
+
+
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(prog="python -m dancecap.camera_video", description=__doc__.split("\n\n")[0])
     ap.add_argument("takes", nargs="+", help="take(s) whose work/<take>/cameras tracks to export (later wins on overlap)")
@@ -930,6 +1002,9 @@ def main(argv=None) -> None:
     ap.add_argument("--clip", nargs=3, action="append", default=None, metavar=("CAM", "T0", "T1"),
                     help="a short video clip of one phone over reference seconds T0..T1 (repeatable); phones without a --clip get "
                          "their track only (no video decoding); the tracks cover the whole span")
+    ap.add_argument("--offsets", type=Path, default=None, metavar="JSON",
+                    help="video offsets file ({cam: {delta | piecewise: [[t, delta_s], ...]}}) used instead of work/<take>/sync/offsets.json "
+                         "(a take fitted in chunks: dancecap.recap_pov writes it)")
     ap.add_argument("--out", type=Path, default=None, help="master folder (default work/<take>/camera_video/<capture>)")
     ap.add_argument("--install", dest="install", action="store_true", default=True)
     ap.add_argument("--no-install", dest="install", action="store_false", help="do not mirror into StreamingAssets")
@@ -949,6 +1024,7 @@ def main(argv=None) -> None:
     a = ap.parse_args(argv)
     set_priority(a.priority)
     OPTIONS["allow_unsynced"] = bool(a.allow_unsynced)
+    OPTIONS["offsets_file"] = a.offsets
     if a.install_only:
         master = a.out or (md.take_work(a.takes[-1]) / "camera_video" / a.capture)
         install(master, a.capture)
@@ -956,7 +1032,7 @@ def main(argv=None) -> None:
     run(a.takes, a.capture, [c.strip() for c in a.cams.split(",")] if a.cams else None, a.direction, a.all_full,
         [c.strip() for c in a.only.split(",")] if a.only else None, tuple(a.span) if a.span else None, a.out, a.install, a.mp4, a.thumbs, a.long_side, a.quality, a.thumb_side,
         a.thumb_quality, tracks_only=a.tracks_only,
-        clips={c: (float(x), float(y)) for c, x, y in a.clip} if a.clip else None)
+        clips=_clip_args(a.clip))
 
 
 if __name__ == "__main__":
