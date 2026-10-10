@@ -365,6 +365,19 @@ work/<take>/
                                           coordinate}. Consumers (Unity jerk overlay) should hide or grey joints
                                           with reliable = False: their jerk is mostly noise
   timing/qa_timing.png                  [timing] foot heights + touchdowns + per-measure asynchrony CIs
+  timing/{timing.json,kinematics.npz,qa_timing.png}  [timing_free] BEAT-FREE variant for a take without a soundtrack (larissa_kadu_recap):
+                                          same file names and the keys that still mean something (footsteps {role}: [{t, foot,
+                                          method, sigma, detect_rate, stance, ...}] with beat_t / count / measure / async_ms
+                                          absent, accents, kinematics, touchdown_method), plus `beatless: true`, `beats` = {grid:
+                                          null, tempo_bpm: null, skipped: true, reason}, `skipped` [what was NOT computed: beat grid,
+                                          asynchrony / hit rate / circular statistics, surrogate and permutation tests, measure
+                                          effects, absolute timing], `absolute_timing.valid` false, asynchrony {} and `step_timing`
+                                          {role: {n_touchdowns, interval_all / per_foot {n, median_s, p10_s, p90_s, ...}, bouts [{t0,
+                                          t1, n, cadence_hz}] (runs of touchdowns <= bout_gap_s apart), share_in_bouts, longest_still_s,
+                                          steps_per_window [{t0, t1, n}]}, couple: {lead_follow_offset {n_pairs, median_ms, mad_ms,
+                                          ...}}}. Analysed in 30-s windows with 3 s of context (touchdown_method.<role>.windowed);
+                                          kinematics.npz is joined at the cores (cutoff_hz / snr = medians over the windows, reliable =
+                                          in >= half of them). export_unity reads it like the beat version (no zouk-time-analysis.json)
   timing/validation.json                [timing] synthetic only: gate G5 PER DANCER (24 s take clean / 1 cm +
                                           noise seeds, and 6 s windows clean / 1 cm x seeds with MC coverage,
                                           jitter-null power and the late-measure contrast)
@@ -1668,3 +1681,37 @@ work/pipeline/slots/, work/pipeline/pod_session.lock   the local CPU / GPU slots
 work/monitor/                           monitor.lock (single instance), server.json {pid, port, instance} (never the
                                         token), settings.json, staging/h-*.json (picked files), logs/{monitor,launcher}.log
 ```
+
+## Recap cameras (2026-10-09, additive; dancecap.cameras.newcam, dancecap.recap_cameras)
+
+Take `larissa_kadu_recap`: seven NEW handheld phones (not in the room model) localised against the world package's room model. Outputs in
+`work/larissa_kadu_recap/cameras/`, same schema as `cameras/<cam>.npz` above, with these additive keys: `pts` (video time of the frame, s), `frame_index` (index of the frame in the
+video = index in the owner's 2D pose JSON), `source` (`map` | `track` | `interp`), `interpolated`, `localised` (the frame itself was solved, not interpolated), `frame` (`sfm` | `sub_05` ...),
+`work_size`, `native_size`. `K` is at the camera's DISPLAY pixel size (the size of the 2D pose JSONs; ffmpeg autorotate), `dist` = k1 of ONE focal per video (`type_model` fixed_focal).
+`t` is the reference clock of `alignment_recap.json` (audio clocks; the video offsets are dancecap.sync's job): the track is per video frame, so a later offset correction only shifts `t`.
+`<cam>_world.npz`: the same pose in the metric world frame (R world -> camera, tvec, C, K, dist, ok). `<cam>_subframe.npz`: a phone localised in a SUB-MODEL frame (05, 06): NOT in the room
+frame, never read as `<cam>.npz`; `cameras/<cam>.npz` of such a phone exists only when `dancecap.cameras.attach_people` wrote it (attached = True, rotation-only, one centre).
+`calib/<cam>.json` (focal, k1, anchors, reference images), `chunks/<cam>_<k>.npz` (the 60 s pod outputs with 4 s overlaps), `report.json` (quality, verdict usable | partial | unusable with the
+reason, coverage, epipolar / people checks), `attach_<cam>.json` (the evidence of an attach), `review/cameras/` (contact sheets, coverage map).
+
+## Recap people and chunk plan (2026-10-09, additive; dancecap.recap_people, recap_attach, recap_front, farm/recap_profile)
+
+Who the two teachers are in every camera of `larissa_kadu_recap`; identity-free inputs are the owner's 2D pose JSONs and R2's camera tracks. Files in `work/larissa_kadu_recap/people/` (git-ignored):
+```
+pose_tables/<cam>.npz        kp (F, P, 17, 3) float32 [X, Y, conf] in DISPLAY pixels, NaN padded; n (F,) persons per frame. Row r = video frame r = `frame_index` of cameras/<cam>.npz
+world_people.npz             3D people of every 30 Hz instant (the four localised phones 00-03, matched by the epipolar cost of their joints, triangulated, metric room frame Y up)
+track3d.npz                  the two anonymous teacher tracks (slot A / B): k (grid index), obs, X (J, 2, 17, 3), nv, res
+assoc_<cam>.npz              per canonical frame of cameras/<cam>.npz and slot: row (-1 none), cost, kind (0 none, 1 member of the 3D candidate, 2 projected observed 3D, 3 projected interpolated 3D, 4 followed in 2D),
+                             nj, gap, inside
+appearance_<cam>.npz         colour descriptors (dancers_appearance) of the associated persons per canonical frame
+roles.npz                    state (B,) 0 = slot A is the lead, per bin of bin_s (one 30 Hz frame), p_a_lead, e, n_obs
+teachers_<cam>.npz           THE OUTPUT, per canonical frame i of cameras/<cam>.npz: t, frame_index, ok, row (F, 2) int16 [lead = Kadu (pid 1), follow = Larissa (pid 2)] = the row of the person in pose_tables
+                             (-1 none), box (F, 2, 4) xyxy (from the joints: the JSON has no boxes), kp (F, 2, 17, 3), conf (F, 2) 0..1 (use >= 0.5; >= 0.3 is a guess), cost, kind, nj, gap, merged (one detection for
+                             two bodies: the role is a guess), role_conf (F,), lead_slot, size, attached
+teachers.json, coverage.json summary and the per-second coverage ({lead, follow, both: [[cams]] per master second, per_camera shares, cameras-per-second histograms})
+verification.json, detcompare*.json   zone / height / colour checks; the owner's JSON versus the pipeline's own detector (all frames and the frames the JSON misses)
+attach/<cam>.json|npz|_world.npz|assoc_<cam>.npz   R3's teacher-refined attach of the rotation-only phones 05 / 06 (R2's schema, only R / tvec differ; `adopted` = held-out gate passed)
+```
+`work/larissa_kadu_recap/chunks.json`: the chunk plan (arithmetic, windows, cores, seams, cameras and the reason per camera, shape window, cost table, offline validation); the farm jobs are in `farm/jobs/`.
+Chunk takes (`work/larissa_kadu_recap_<id>/`) additionally hold `dancers/teacher_tracks/<cam>.npz` (idx (F, 2) = person row of lead / follow in `people/<cam>.npz`, -1 = MISS; boxes (F, 2, 4); conf) which `recap_front`
+feeds to the demo's SAM stage as its candidate tracks (slot A = lead, slot B = follow, the colour rule's keep / swap decision forced to keep).
