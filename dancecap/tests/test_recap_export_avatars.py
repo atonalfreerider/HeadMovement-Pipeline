@@ -37,3 +37,20 @@ def test_class_audio_is_the_film_mix_when_it_exists(tmp_path):
     (tmp_path / "film" / "audio").mkdir(parents=True)
     (tmp_path / "film" / "audio" / "class_mix.wav").write_bytes(b"x")
     assert re_.class_audio(T) == tmp_path / "film" / "audio" / "class_mix.wav"
+
+
+def test_class_audio_follows_the_soundtrack_switch(tmp_path):
+    """V2: `recap_export --audio` without a path reads the same mix the film soundtrack uses (film/audio/soundtrack.json), not always class_mix.wav."""
+    import json
+
+    class T:
+        work = tmp_path
+    d = tmp_path / "film" / "audio"
+    d.mkdir(parents=True)
+    for n in ("class_mix.wav", "class_mix_v2v.wav", "class_mix_v2v_full.wav"):
+        (d / n).write_bytes(b"x")
+    assert re_.class_audio(T) == d / "class_mix_v2v_full.wav"
+    (d / "soundtrack.json").write_text(json.dumps({"class_mix": "v2v"}))
+    assert re_.class_audio(T) == d / "class_mix_v2v.wav"
+    (d / "soundtrack.json").write_text(json.dumps({"class_mix": "original"}))
+    assert re_.class_audio(T) == d / "class_mix.wav"

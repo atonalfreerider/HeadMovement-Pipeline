@@ -257,3 +257,21 @@ def test_soundtrack_class_mix_prefers_v2v_with_a_switch_and_an_original_fallback
     assert fa.soundtrack_class_mix(tmp_path) == tmp_path / "class_mix.wav"                  # "v2v" without the file: fallback
     (tmp_path / "soundtrack.json").write_text("{not json")
     assert fa.soundtrack_class_mix(tmp_path) == tmp_path / "class_mix.wav"
+
+
+def test_soundtrack_class_mix_v2v_full_switch_and_fallbacks(tmp_path):
+    cfg = tmp_path / "soundtrack.json"
+    assert fa.soundtrack_class_mix(tmp_path) == tmp_path / "class_mix.wav"
+    (tmp_path / "class_mix_v2v.wav").write_bytes(b"x")
+    assert fa.soundtrack_class_mix(tmp_path) == tmp_path / "class_mix_v2v.wav"
+    (tmp_path / "class_mix_v2v_full.wav").write_bytes(b"x")
+    assert fa.soundtrack_class_mix(tmp_path) == tmp_path / "class_mix_v2v_full.wav"          # auto: the newest
+    cfg.write_text(json.dumps({"class_mix": "v2v"}))
+    assert fa.soundtrack_class_mix(tmp_path) == tmp_path / "class_mix_v2v.wav"               # V1's mix stays selectable
+    cfg.write_text(json.dumps({"class_mix": "v2v_full"}))
+    assert fa.soundtrack_class_mix(tmp_path) == tmp_path / "class_mix_v2v_full.wav"
+    cfg.write_text(json.dumps({"class_mix": "original"}))
+    assert fa.soundtrack_class_mix(tmp_path) == tmp_path / "class_mix.wav"
+    (tmp_path / "class_mix_v2v_full.wav").unlink()
+    cfg.write_text(json.dumps({"class_mix": "v2v_full"}))
+    assert fa.soundtrack_class_mix(tmp_path) == tmp_path / "class_mix_v2v.wav"               # v2v_full missing: falls back to V1's mix

@@ -13,7 +13,7 @@ What `dancecap.demo_export` does for the demo, minus everything that belongs to 
 --avatars (T2, 2026-10-09): the owner's avatars on top of the same motion: the take TOML's [dancers.<role>.shape_edits] (thinner midsection,
 sneaker feet, the identity-fitted faces), the albedo textures (the portrait-look face composite when avatar/<role>_albedo_face.png is current), the
 hair groom (avatar/hair_groom.json + its collider patch), the shoes (avatar/shoes.json + the TOML shoe_geometry) and the mouth cap: the hooks
-dancecap.demo_export.run applies after the exporter, minus the beat / moves layers. --audio [WAV] (T3): the class mix film/audio/class_mix.wav as audio.wav on the capture clock (t0 = 0: sample 0 = master 0 s). Re-runnable: the capture is rewritten.
+dancecap.demo_export.run applies after the exporter, minus the beat / moves layers. --audio [WAV] (T3): the class mix the film soundtrack switch selects (film/audio/soundtrack.json: class_mix_v2v_full.wav, class_mix_v2v.wav or class_mix.wav) as audio.wav on the capture clock (t0 = 0: sample 0 = master 0 s). Re-runnable: the capture is rewritten.
 Validation = demo_export.validate (capture folder: required files, frame counts, skins, FK vs the fit, timing / physics grids,
 counterbalance / floorcraft on the capture clock); the checks that a plain capture fails BY DESIGN (albedo, shape edits, audio, hair,
 shoes) are reported as expected, not as failures. Report: work/<take>/export/<capture>_recap_export.json. Exit 1 on a real failure.
@@ -40,8 +40,10 @@ EXPECTED_FULL: tuple[str, ...] = ()   # avatars + the class audio: nothing may f
 
 
 def class_audio(take) -> Path | None:
-    """The class mix of the recap film (film_recap: 48 kHz stereo, sample 0 = master 0 s = the capture's time base), when it exists."""
-    p = take.work / "film" / "audio" / "class_mix.wav"
+    """The class mix of the recap film (film_recap: 48 kHz stereo, sample 0 = master 0 s = the capture's time base), when it exists: the one the film
+    soundtrack switch (film/audio/soundtrack.json, `film_recap_audio.soundtrack_class_mix`) selects, so the capture plays the same speech as the film."""
+    from . import film_recap_audio as fa
+    p = fa.soundtrack_class_mix(take.work / "film" / "audio")
     return p if p.exists() else None
 
 
@@ -142,7 +144,7 @@ def main(argv=None) -> int:
     ap.add_argument("--no-install", action="store_true", help="only work/<take>/export/<capture>/")
     ap.add_argument("--validate-only", action="store_true")
     ap.add_argument("--audio", nargs="?", const="auto", default=None, metavar="WAV",
-                    help="the capture's soundtrack on the capture clock (sample 0 = 0 s): 'auto'/no value = film/audio/class_mix.wav; default none")
+                    help="the capture's soundtrack on the capture clock (sample 0 = 0 s): 'auto'/no value = the class mix the film soundtrack switch selects (film/audio/soundtrack.json, class_mix_v2v_full.wav by default); default none")
     ap.add_argument("--avatars", action="store_true", help="the owner's avatars: shape edits, textures, groom, shoes, face texture (see the module doc)")
     a = ap.parse_args(argv)
     install = not a.no_install
@@ -153,7 +155,7 @@ def main(argv=None) -> int:
     if a.audio is not None:
         audio = class_audio(Take.load(a.take)) if a.audio == "auto" else Path(a.audio)
         if audio is None or not audio.exists():
-            ap.error("--audio: the class mix film/audio/class_mix.wav does not exist (python -m dancecap.film_recap mix class)")
+            ap.error("--audio: the class mix (film/audio/, see soundtrack.json) does not exist (python -m dancecap.film_recap mix class)")
     if not a.validate_only:
         res = export_plain(a.take, a.capture, install, a.avatars, audio)
         rep_for_validate = {"dancers": {r: {"fk_max_err_mm": d["fk_max_err_mm"]} for r, d in res["steps"]["export"]["dancers"].items()}}

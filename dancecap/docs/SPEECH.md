@@ -169,5 +169,22 @@ Gate (per piece, vs transcript_final.json): WER of the converted piece clearly b
 and not worse than the cleaned original it would replace, not above 0.6, at most 2 inserted words, own teacher's reference nearer than the other's by 0.10, no clipping.
 A piece that fails keeps the CLEANED ORIGINAL (best phone by SNR + the S1 engines' own WER on that phone, light denoise). The opening (0 to the first pause after 9 s) stays the
 class mix until `speech/owner_opening.json` exists; then re-run `plan` (unchanged pieces keep their ids and conversions), `convert --only`, the gate, `decide`, `assemble`.
-`film_recap_audio.soundtrack_class_mix` picks `class_mix_v2v.wav` when present (switch `film/audio/soundtrack.json` {"class_mix": "auto"|"v2v"|"original"}); `class_mix.wav` is never changed.
+`film_recap_audio.soundtrack_class_mix` picks `class_mix_v2v_full.wav` (V2), else `class_mix_v2v.wav` (V1), else `class_mix.wav` (switch `film/audio/soundtrack.json`
+{"class_mix": "auto"|"v2v_full"|"v2v"|"original"}); `class_mix.wav` and V1's `class_mix_v2v.wav` are never changed. `recap_export --audio` reads the same switch.
 Findings and numbers: work/larissa_kadu_recap/NOTES_V1.md.
+
+## Full cloned-voice re-recording (V2, 2026-10-10: `speech/v2v_full.py`, `v2v_splice.py`, `v2v_warp.py`, `v2v_check.py`, `v2v_pod.py`, `pod/enh_v2v.py`, `pod/asr_v2v.py`)
+
+V1 sent whole turns from one lightly cleaned phone and 36 of 38 came back garbled. V2 (owner: "finish the re-recording", credits sufficient) measured that the input is NOT the lever
+(six enhancers change the ASR WER of the input by 0.02 and the converted WER not at all) but the speech-to-speech model itself: the WER of one sentence over 15 conversions of the same input
+runs from 0.0 to 1.0. So V2 converts at sentence level (81 pieces of 2-8 s), tries each piece up to 16 times (other input / settings / seed), measures every try with the independent ASR
+(faster-whisper large-v3, no prompt, on a pod) against transcript_final.json, splices the correctly recognised words of several tries where both have a pause (`v2v_splice`), and keeps the best.
+
+    python -m dancecap.speech.v2v_full plan | inputs             # sentence pieces, phones ranked, candidate inputs (r1, r2, 3-phone delay-and-sum bf, pre1, mix)
+    python -m dancecap.speech.v2v_pod up | sh | put | get | down  # ONE GPU pod, owner V2, own state file (v2v2/pod.json); `pod/enh_v2v.py` = the enhancers, `pod/asr_v2v.py` = the ASR + ECAPA
+    v2v_full.campaign_round(k, pieces)   # try k: convert (RECIPES[k-1]), align, ASR, tries.json; v2v_full.splice_all; decide_policy; assemble_full -> film/audio/class_mix_v2v_full.wav
+
+Policy (`decide_policy`, the owner's): use the converted piece unless its WER is worse than the enhanced original's by more than 0.10 AND above 0.25 (absolute); then the enhanced original
+(3-phone beamform + MossFormer2_SE_48K) is used and the piece is flagged. The final decision uses WERs measured INSIDE the whole-class ASR of three candidate mixes (`in_context_piece_wer`),
+because the best-of-16 isolated WER is optimistic. Credits: ~10.3 per second of audio; the session ledger `v2v2/spend_ledger.jsonl` holds credits and request ids only (never the key).
+Numbers and what to listen to: work/larissa_kadu_recap/NOTES_V2.md. Never commit `speech/v2v2/` (voices of real people; work/ is git-ignored).

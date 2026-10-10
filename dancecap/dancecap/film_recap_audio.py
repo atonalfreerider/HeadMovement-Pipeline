@@ -22,8 +22,9 @@ Nothing leaves the machine: no third-party voice or speech service is involved (
 their dance (= master) time at 1.0x; every slowed, held or replayed segment plays the room-tone bed instead (policy in docs/RECAP_FILM.md:
 the teachers' speech is only ever heard at 1.0x locked to its picture).
 
-`soundtrack_class_mix` picks class_mix_v2v.wav (voice-to-voice / cleaned speech, `dancecap.speech.v2v_mix`) over class_mix.wav when it exists (switch:
-film/audio/soundtrack.json {"class_mix": "auto" | "v2v" | "original"}); class_mix.wav is never changed.
+`soundtrack_class_mix` picks class_mix_v2v_full.wav (the full cloned-voice re-recording, `dancecap.speech.v2v_full`) or class_mix_v2v.wav (cleaned speech,
+`dancecap.speech.v2v_mix`) over class_mix.wav when they exist (switch: film/audio/soundtrack.json {"class_mix": "auto" | "v2v_full" | "v2v" | "original"});
+class_mix.wav is never changed.
 
 CLI (run from dancecap/):  python -m dancecap.film_recap_audio classmix | report | check | film-mix
 """
@@ -794,14 +795,16 @@ def tile(loop: np.ndarray, n: int) -> np.ndarray:
 
 
 V2V_MIX = "class_mix_v2v.wav"
+V2V_FULL_MIX = "class_mix_v2v_full.wav"      # V2: the full cloned-voice re-recording (dancecap.speech.v2v_full)
 SOUNDTRACK_CFG = "soundtrack.json"
 
 
 def soundtrack_class_mix(audio_dir: Path | None = None) -> Path:
-    """The class mix the film soundtrack is derived from. `class_mix_v2v.wav` (the voice-to-voice / cleaned-speech mix of dancecap.speech.v2v_mix: same
-    48 kHz stereo master-clock time base and length) when it exists, else the original `class_mix.wav`, which stays untouched as the fallback. The switch is
-    <audio dir>/soundtrack.json {"class_mix": "auto" | "v2v" | "original"} (default auto: v2v when present; "original" forces the old mix; "v2v" with no
-    class_mix_v2v.wav falls back to the original too)."""
+    """The class mix the film soundtrack is derived from (all 48 kHz stereo on the master clock, the same length). The switch is
+    <audio dir>/soundtrack.json {"class_mix": "auto" | "v2v_full" | "v2v" | "original"}:
+    "v2v_full" = `class_mix_v2v_full.wav` (the full cloned-voice re-recording, dancecap.speech.v2v_full), falling back to the v2v mix and then the original
+    when a file is missing; "v2v" = `class_mix_v2v.wav` (V1: cleaned phones, 2 converted pieces), falling back to the original; "original" = the old
+    `class_mix.wav`, which is never changed; "auto" (default) = the first of v2v_full, v2v, original that exists."""
     d = audio_dir or AUDIO
     mode = "auto"
     cfg = d / SOUNDTRACK_CFG
@@ -810,8 +813,10 @@ def soundtrack_class_mix(audio_dir: Path | None = None) -> Path:
             mode = str(json.loads(cfg.read_text(encoding="utf-8")).get("class_mix", "auto")).lower()
         except (OSError, ValueError):
             mode = "auto"
-    v2v = d / V2V_MIX
-    if mode != "original" and v2v.exists():
+    full, v2v = d / V2V_FULL_MIX, d / V2V_MIX
+    if mode in ("auto", "v2v_full") and full.exists():
+        return full
+    if mode in ("auto", "v2v_full", "v2v") and v2v.exists():
         return v2v
     return d / "class_mix.wav"
 
