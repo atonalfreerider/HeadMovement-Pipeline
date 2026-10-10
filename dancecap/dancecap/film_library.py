@@ -6,10 +6,14 @@ it may hold names); this module is the one tool that writes it, so the class rec
 
     python -m dancecap.film_library build --demo                 # the finished demo film (preset "demo" of takes/library/films.toml)
     python -m dancecap.film_library build --recap                # the class recap; "Processing" in the viewer until its film exists
+    python -m dancecap.film_library build --carlos-aline         # the Jack & Jill heat: writes its auto-direction first (dancecap.film_heat)
     python -m dancecap.film_library build --id x --title T --subtitle S --capture C --direction work/<take>/film/direction.json \
                                          [--thumbnail IMG] [--chapters-file PLAN.toml|.json] [--copy-film] [--hold]
     python -m dancecap.film_library chapters --direction work/<take>/film/direction.json [--plan PLAN]   # preview the chapters
     python -m dancecap.film_library list | check
+
+A preset with a [<preset>.heat] block is a film without narration (a heat): `build` writes its auto-directed film (direction.json and the
+capture's own soundtrack as the film's mix, `film_heat.py`) before it writes the entry; the chapters are the song structure.
 
 `build` upserts the entry by id (the other entries stay, in their order), copies the thumbnail to library/thumbs/<id>.<ext> and
 writes library.json atomically. Run it again whenever the film is rebuilt (the length and the chapter times are read from the
@@ -342,7 +346,7 @@ def preset_spec(name: str, path: Path = PRESETS) -> dict:
 
 def _spec_from_args(a: argparse.Namespace) -> dict:
     spec: dict = {}
-    preset = "demo" if a.demo else "recap" if a.recap else a.preset
+    preset = "demo" if a.demo else "recap" if a.recap else "carlos_aline" if a.carlos_aline else a.preset
     if preset:
         spec.update(preset_spec(preset, Path(a.presets) if a.presets else PRESETS))
     for key in ("id", "title", "subtitle", "capture", "direction", "thumbnail"):
@@ -359,6 +363,15 @@ def _spec_from_args(a: argparse.Namespace) -> dict:
 def cmd_build(a: argparse.Namespace) -> int:
     lib_dir = Path(a.library_dir) if a.library_dir else LIBRARY_DIR
     spec = _spec_from_args(a)
+    if isinstance(spec.get("heat"), dict) and not a.dry_run and not a.keep_film:
+        from . import film_heat
+        try:
+            path, _direction, film_notes = film_heat.build_from_preset(spec)
+        except film_heat.HeatError as e:
+            raise LibraryError(str(e)) from None
+        for n in film_notes:
+            print(f"film: {n}")
+        spec["direction"] = _rel_to_workspace(path)
     entry, notes = build_entry(spec, library_dir=lib_dir, copy=a.copy_film)
     path = lib_dir / "library.json"
     library = upsert(read_library(path), entry)
@@ -413,6 +426,8 @@ def main(argv: list[str] | None = None) -> int:
     b = sub.add_parser("build", help="add or update one film of the library")
     b.add_argument("--demo", action="store_true", help="the preset 'demo' of takes/library/films.toml")
     b.add_argument("--recap", action="store_true", help="the preset 'recap'")
+    b.add_argument("--carlos-aline", action="store_true", help="the preset 'carlos_aline' (a heat: its direction is generated)")
+    b.add_argument("--keep-film", action="store_true", help="a heat preset: do not rewrite its direction.json (use the one on disk)")
     b.add_argument("--preset", help="any other preset name of the preset file")
     b.add_argument("--presets", help="a preset file other than takes/library/films.toml")
     for key in ("id", "title", "subtitle", "capture", "direction", "thumbnail"):
