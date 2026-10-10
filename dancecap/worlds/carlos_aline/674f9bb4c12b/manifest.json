@@ -1,0 +1,263 @@
+{
+ "schema": "dancecap.farm.world/1",
+ "dance": "carlos_aline",
+ "world_sha256": "674f9bb4c12b348611b3d8c39046d073748661b568d9d67d4e1ec09880698b25",
+ "world_id": "674f9bb4c12b",
+ "pose_sha256": "674f9bb4c12b348611b3d8c39046d073748661b568d9d67d4e1ec09880698b25",
+ "pose_id": "674f9bb4c12b",
+ "avatar_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+ "avatar_id": "e3b0c44298fc",
+ "created": "2026-10-10T00:34:48",
+ "reference_take": "carlos_aline",
+ "grid": {
+  "anchor": 0.0,
+  "k0": 108,
+  "k1": 5940,
+  "hz": 30.0
+ },
+ "partial": true,
+ "missing_members": [
+  "room_sfm (no COLMAP model: the room is room_model.json)",
+  "betas (MAMMA shape pass)",
+  "skeleton",
+  "ma3d_config",
+  "refine_recipe",
+  "avatar"
+ ],
+ "kind": "new room, two panning tripod cameras, no room scan (planes + per-frame camera tracks)",
+ "members": {
+  "room_model": {
+   "scope": "pose",
+   "note": "the room as measured planes (floor, back wall, carpet edge) with the evidence numbers",
+   "source": "work/carlos_aline/room",
+   "sha256": "b54e3b884f1b79fe4ed8aad59156fcd4bb5afa0c683c2b0728f8f5b590f9d0db",
+   "bytes": 9914,
+   "n_files": 2,
+   "root": "ref/room/"
+  },
+  "room_mesh": {
+   "scope": "pose",
+   "note": "textured floor + back wall for the viewer (room/room_mesh.obj + 2 textures; capture data: git-ignored)",
+   "source": "work/carlos_aline/room",
+   "sha256": "4f31c340c15a29b785a3a642a6228093cce9ff9dbce3566f3035907f3ce8bdb7",
+   "bytes": 710958,
+   "n_files": 5,
+   "root": "ref/room/"
+  },
+  "world_frame": {
+   "scope": "pose",
+   "note": "world_from_sfm.json (identity: the cameras are stored in the world frame) + world_from_prov.json (the Sim3 of the solve)",
+   "source": "work/carlos_aline/cameras",
+   "sha256": "5e6e215b41e5bf16d9d1fa9b09132004b9738003f49b66a31529f8acf26eb1c4",
+   "bytes": 1388,
+   "n_files": 2,
+   "root": "ref/cameras/"
+  },
+  "camera_rig": {
+   "scope": "pose",
+   "note": "intrinsics, centres, orientation, fit numbers, scale evidence and uncertainty of the two cameras",
+   "source": "work/carlos_aline/cameras",
+   "sha256": "cf252e6a7091a0032a3f6418f004e34005ed4cbed888418a3bf991f903c55619",
+   "bytes": 21467,
+   "n_files": 9,
+   "root": "ref/cameras/"
+  },
+  "camera_tracks": {
+   "scope": "pose",
+   "note": "per-frame K, R, tvec of both cameras in the world frame (CONTRACTS.md cameras/<cam>.npz schema)",
+   "source": "work/carlos_aline/cameras",
+   "sha256": "b87593f2635f4c49d6b85347aaa8633cb48ea9c514d07400a241878df8320a04",
+   "bytes": 2451993,
+   "n_files": 5,
+   "root": "ref/cameras/"
+  },
+  "camera_clocks": {
+   "scope": "pose",
+   "note": "sync.json of agent C1: the audio clock of camera 02 against camera 01 (reference clock)",
+   "source": "work/carlos_aline/sync/sync.json",
+   "sha256": "0ffa170ddc9ead51eb2890a6eeb5c74eb3d556f82ba21acd09b58fac0404e567",
+   "bytes": 66070,
+   "n_files": 1,
+   "root": "shared/sync.json"
+  },
+  "camera_types": {
+   "scope": "pose",
+   "note": "per-camera mount / zoom / pans (user-confirmed), without timestamps",
+   "source": "takes/carlos_aline.toml [cameras]",
+   "sha256": "e7c80d2d381a86299b8f28f1bc43e6c8d94d4790c22daa9e5fd5b9c5eefb3db1",
+   "bytes": 134,
+   "n_files": 1,
+   "root": "shared/camera_types.json"
+  },
+  "scale_reference": {
+   "scope": "pose",
+   "note": "the statures, the chain-rule scale per dancer and its disagreement (statures from the owner)",
+   "source": "takes/carlos_aline.toml + cameras/rig.json",
+   "sha256": "587315b920d930eb575cc0ef43b181c97bacfb2526d099fab99d685aaccee6e4",
+   "bytes": 1085,
+   "n_files": 1,
+   "root": "shared/scale_reference.json"
+  }
+ },
+ "n_files": 26,
+ "bytes": 3263009,
+ "builder": "dancecap.room_world_two_cams.build",
+ "files": [
+  {
+   "path": "ref/cameras/01.npz",
+   "sha256": "26396a3c98376b0ca9fc28967abc12e39b32b4e92851833621d38947a0633580",
+   "bytes": 443869,
+   "member": "camera_tracks"
+  },
+  {
+   "path": "ref/cameras/01_world.npz",
+   "sha256": "77d0e87f0d738c4d0e1dea81235856a526f3a4cc23c58532a0f24de10b84930b",
+   "bytes": 433801,
+   "member": "camera_tracks"
+  },
+  {
+   "path": "ref/cameras/02.npz",
+   "sha256": "3ac8ec852036a62b9bb153d0c34f0f54664df963d12aa0d00ea414c8ab9c34d0",
+   "bytes": 501382,
+   "member": "camera_tracks"
+  },
+  {
+   "path": "ref/cameras/02_world.npz",
+   "sha256": "ba0f57058f56b72b5f977311c8c96218993a3ee06688e14f99c4585183743232",
+   "bytes": 490423,
+   "member": "camera_tracks"
+  },
+  {
+   "path": "ref/cameras/dancers_world.npz",
+   "sha256": "d857f489a1c636dfe025c086f73b456636ea10ac3e05f5a0987d887630d4f39a",
+   "bytes": 582518,
+   "member": "camera_tracks"
+  },
+  {
+   "path": "ref/cameras/rig.json",
+   "sha256": "540466bc6ea01f3a402438cecc8d0d4e500d7a437d005ea15f9c479c839b7ed6",
+   "bytes": 9661,
+   "member": "camera_rig"
+  },
+  {
+   "path": "ref/cameras/uncertainty_jackknife.json",
+   "sha256": "33d6d26f32c12e0804c6b54ab0f2110111deb4f875033592826683d3a521d762",
+   "bytes": 8788,
+   "member": "camera_rig"
+  },
+  {
+   "path": "ref/cameras/uncertainty_variant_0.json",
+   "sha256": "3ddaf4e2676d0703b54b8cf1f8e9c666baeaba44bc1c426048bebf3aa6162ca6",
+   "bytes": 428,
+   "member": "camera_rig"
+  },
+  {
+   "path": "ref/cameras/uncertainty_variant_1.json",
+   "sha256": "9c52f131707b2f2b03f0486fc5188cf12072727a4d6cbd807f929692fdd1001b",
+   "bytes": 431,
+   "member": "camera_rig"
+  },
+  {
+   "path": "ref/cameras/uncertainty_variant_2.json",
+   "sha256": "12f2a428a43c3390b7ca7be8ea977a95e26eefd87c4d00efb3306f889a4d3681",
+   "bytes": 431,
+   "member": "camera_rig"
+  },
+  {
+   "path": "ref/cameras/uncertainty_variant_3.json",
+   "sha256": "269502b2eacab8bbd819abdde3872399ecbf24c4ee327f7b4266ac59e13c68f9",
+   "bytes": 434,
+   "member": "camera_rig"
+  },
+  {
+   "path": "ref/cameras/uncertainty_variant_4.json",
+   "sha256": "9fdde3e38a4a855fd4913fa694138c934034260729ceb1ccc324d659a994e301",
+   "bytes": 429,
+   "member": "camera_rig"
+  },
+  {
+   "path": "ref/cameras/uncertainty_variant_5.json",
+   "sha256": "851dd68e572d6c79db412c194b173c28a9ff51b79cd6951adf688b743d2e6600",
+   "bytes": 433,
+   "member": "camera_rig"
+  },
+  {
+   "path": "ref/cameras/uncertainty_variant_6.json",
+   "sha256": "3912d0315fe546e81b6b2cb783b26e83e583818acfbe08b01b2ac6266eb33ff4",
+   "bytes": 432,
+   "member": "camera_rig"
+  },
+  {
+   "path": "ref/cameras/world_from_prov.json",
+   "sha256": "445d8b58a586870de3e4a7d5422a99438dc27cd0d74eaca9284ebc145883358c",
+   "bytes": 384,
+   "member": "world_frame"
+  },
+  {
+   "path": "ref/cameras/world_from_sfm.json",
+   "sha256": "d1867efc3fefd5b9cc7b638dc6a33c8dac75e4313f4017252c5d74045ac9391c",
+   "bytes": 1004,
+   "member": "world_frame"
+  },
+  {
+   "path": "ref/room/mesh_report.json",
+   "sha256": "85934f3784b1ba1ec8a3defa3306068107454965e4d4deffbf542618383eb5ed",
+   "bytes": 783,
+   "member": "room_mesh"
+  },
+  {
+   "path": "ref/room/room_floor_tex.png",
+   "sha256": "6bb0b66c49b7fe3d1cd0f669e3524264f75b30c876053ceada1dc48c8b046c0c",
+   "bytes": 272310,
+   "member": "room_mesh"
+  },
+  {
+   "path": "ref/room/room_mesh.mtl",
+   "sha256": "b11fedf3b5b57fd1ef0a3069e7dfc8e74530819aec1edb46cf982035fe016a6c",
+   "bytes": 100,
+   "member": "room_mesh"
+  },
+  {
+   "path": "ref/room/room_mesh.obj",
+   "sha256": "393e5210f8f14f81682ec6f82a7ab6ee217323e4d6530a472d7cfbd195a4eeba",
+   "bytes": 257065,
+   "member": "room_mesh"
+  },
+  {
+   "path": "ref/room/room_mesh_tex.png",
+   "sha256": "3cc675b8a45cdcac4637e74bcbdb0b3b91db4a5237924047b6deae4067b550aa",
+   "bytes": 180700,
+   "member": "room_mesh"
+  },
+  {
+   "path": "ref/room/room_model.json",
+   "sha256": "e2683f8da51ac9e290122564a991c36e966c45d4724a2dff80dfcaa0ff7f705e",
+   "bytes": 4036,
+   "member": "room_model"
+  },
+  {
+   "path": "ref/room/walls_measure.json",
+   "sha256": "9e15f24e5edfb356d03696de54b658db3ed11028d0c484c8139584b6be2a9de4",
+   "bytes": 5878,
+   "member": "room_model"
+  },
+  {
+   "path": "shared/camera_types.json",
+   "sha256": "e7c80d2d381a86299b8f28f1bc43e6c8d94d4790c22daa9e5fd5b9c5eefb3db1",
+   "bytes": 134,
+   "member": "camera_types"
+  },
+  {
+   "path": "shared/scale_reference.json",
+   "sha256": "587315b920d930eb575cc0ef43b181c97bacfb2526d099fab99d685aaccee6e4",
+   "bytes": 1085,
+   "member": "scale_reference"
+  },
+  {
+   "path": "shared/sync.json",
+   "sha256": "0ffa170ddc9ead51eb2890a6eeb5c74eb3d556f82ba21acd09b58fac0404e567",
+   "bytes": 66070,
+   "member": "camera_clocks"
+  }
+ ]
+}

@@ -1,0 +1,158 @@
+# Carlos & Aline, JACK & JILL competition heat, Zouk SEA 2019 (owner 2026-10-09: "Carlos (5'8 white shirt) Aline (5'6 red shirt) Jack and Jill
+# Professional competition video with kojo funds (track 1) and David Guetta (track 22). two cameras both in horizontal ... all permissions
+# obtained for analysis. do full pipeline. new room analysis. profile photos included"). Take name carlos_aline, work dir work/carlos_aline/
+# (git-ignored), Unity capture 07_CarlosAline later. The source folder (videos, the two songs, the portraits carlos.jpg / aline.jpg) is the
+# owner's; it is reached through the git-ignored junction dances/Carlos-Aline and is never copied into a repo (the portraits and the songs
+# are likeness / music data: owner's Runpod volume only).
+#
+# TWO CAMERAS, ONE HEAT (work/carlos_aline/NOTES_C1.md, sync/sync.json: dancecap.carlos_aline_sync). Both are TRIPOD cameras (the heads PAN
+# to follow the couple), both horizontal, both film the SAME performance (the same sound at one constant offset, no drift: GCC-PHAT, 36 of
+# 38 windows, 0.45 ms rms):
+#   01  Carlos Aline Zouk Artist Jack Jill at Zouk SEA 2019.mp4  1920x1080 23.976 fps CFR, 202.08 s. A graded edit with the ZOUK sea /
+#       SLOAT MEDIA watermark (lower right), tighter framing than 02, slight zoom drift, ends with a zoom-out
+#       / wide shot from 196.95 s. Starts with the walk-on, 14.8 s BEFORE camera 02.
+#   02  Zouk Sea 2019 Carlos and Aline <surname> Jack Jill.mp4  1920x906 30 fps CFR, 186.27 s. Wide phone-like shot of the whole floor, no zoom.
+# REFERENCE CLOCK = camera 01's own video time (reference_time = slope * source_time + offset; camera 02 = source + 14.8158 s). Reference times
+# are all >= 0. They are AUDIO clocks: dancecap.sync must still measure the per-camera VIDEO offsets before MAMMA ([sync] required below).
+name = "carlos_aline"
+source_dir = "../../dances/Carlos-Aline"
+alignment = "../../prototype/larissa_kadu/alignment_carlos_aline.json"   # affine audio clocks; its "songs" key holds the song clocks
+exclude = []
+
+# Danced span on the reference clock (frames of both cameras, NOTES_C1.md):
+#   start 3.6 s = Aline steps into camera 01's picture from the right (Carlos has been on the floor since 1.5 s: before that he stands with the
+#     hostess who introduces the couple; he walks and skips alone 1.5-3.6 s; hand in hand at 4.6 s). Only camera 01 sees 3.6-14.82 s: monocular
+#     ([stitch] mono). The song starts at 13.31 s; before it the sound is an announcement / entrance sound, no song.
+#   end 198.0 s = the finish and the bow: camera 02 shows the arms-out finish at 182.0 s (196.8 on the reference clock) and the bow at 183.0 s
+#     (197.8 s); they hug and walk off from 184 s (198.8 s). Camera 01 cuts to a zoom-out at 196.95 s (the couple is small in 197-202 s).
+# Fused 3D grid: 30 Hz anchored on reference t = 0: t_k = k / 30, k = 108..5940 (3.6..198.0 s, T = 5833).
+window = [3.62, 197.93]   # C3 2026-10-10: was [3.6, 198.0]. Camera 01's first canonical frame is 3.6286 s (k = 109 is the first fused instant, k = 108 has no video) and camera 02, shifted by its -62 ms video offset, ends at 197.92 s (k = 5937): lattice k = 109..5937, T = 5829
+
+# Sparse snapshots of the static room (the room is NEW: a hotel ballroom, no model of it exists; "new room analysis"). Both heads pan, so
+# keyframes across the whole of both videos help the SfM map; camera 02's wide shot sees most of the room.
+keyframe_span = [0.0, 202.0]
+keyframe_step = 4.0
+
+[timeline]
+anchor = 0.0
+hz = 30.0
+
+[ingest]
+max_fps = 30        # camera 02 (30 fps) is read whole; camera 01 (23.976 fps) is read whole (the grid samples its frames)
+
+# Farm chunking (owner 2026-10-09): chunks of at most 60 s overlapping their neighbours by 4 s (the fewest equal windows: 195 s -> 4 chunks).
+[chunks]
+chunk_s = 60.0
+overlap_s = 4.0
+mode = "windows"
+profile = "carlos_aline"      # farm/ca_profile.py: C3 (two moving cameras, the pipeline's own 2D detector, teachers by colour + tracking; ids ca*)
+
+# Video sync (dancecap.sync): required = true makes 'mamma prepare' refuse to build fit inputs until this take's OWN
+# work/carlos_aline/sync/offsets.json exists and records these clocks (never copy another take's file).
+[sync]
+required = true
+
+# Quality flags (dancecap.stitch): only camera 01 records 3.6-14.82 s -> "mono"; from 14.82 s both cameras (two views) carry the heat.
+[stitch]
+mono = [[3.6, 14.82]]
+
+[dance]
+level = "professional"          # professional | intermediate | novice
+category = "jack_and_jill"      # demo | lesson | jack_and_jill
+venue = "Zouk SEA 2019"
+# TWO SONGS in one heat (the DJ mixes the second under the end of the first; sync.json "timeline", clocks in the alignment file):
+#   Kojo Funds - Check (With Raye)  = the owner's track 1: song position 0 plays at reference 13.31 s, audible to ~122.3 s (song position ~105 s)
+#   David Guetta - Say My Name      = the owner's track 22: position 0 plays at reference 113.47 s (under Kojo; first clearly detected ~121 s), audible to ~194.3 s (position ~76 s)
+# Both are played FASTER than the studio files with the pitch kept (tempo change, key lock): Kojo x1.040 (song_t = 0.96153 * ref - 12.801),
+# Guetta x1.061 (song_t = 0.94254 * ref - 106.946). The mp3s are the studio tracks supplied by the owner (not for any repo).
+song = "Check (With Raye)"
+artist = "Kojo Funds"
+song_file = "../../dances/Carlos-Aline/Kojo Funds - Check (With Raye)_01.mp3"
+song_2 = "Say My Name (feat. Bebe Rexha, J Balvin)"
+artist_2 = "David Guetta"
+song_file_2 = "../../dances/Carlos-Aline/David Guetta - Say My Name (Lyrics) ft. Bebe Rexha, J Balvin.mp3"
+song_display = "Check (With Raye) / Say My Name (feat. Bebe Rexha, J Balvin)"
+
+# Carlos = lead, Aline = follow (frames of both cameras: he starts the figures, she turns and follows; the owner lists him first). Clothes as
+# filmed (camera 01 at 5 s and 50 s; the portraits carlos.jpg / aline.jpg show the same two people). Statures from the owner (5'8" / 5'6").
+# Heads-up for identity selection: the judges (3 men and 2 women) sit on black chairs behind the couple and a hostess with a feather headband
+# stands beside Carlos in camera 01's first 1.5 s; camera 02 also sees a table crew at the left.
+[dancers.lead]
+name = "Carlos"
+pid = 1
+stature_m = 1.727   # 5'8"
+description = "white long-sleeve fitted V-neck top, black skinny trousers, black leather tassel loafers, shaved / close-cropped dark hair, short full dark beard"
+shoe_sole_m = 0.02   # thin loafer soles; UNCONFIRMED barefoot stature (as in the demo)
+# AVATAR APPEARANCE (agent C5, 2026-10-10, chosen from the frames of both cameras; the owner flips any line):
+#   Carlos: head shaved / cropped to a few mm: NO hair groom, the scalp is texture (as for the recap's lead); a short full dark beard: TEXTURE (the
+#   portrait face composite carries it), not geometry; white long-sleeve V-neck top, black skinny trousers, black tassel loafers with a textured
+#   leather finish.
+shoe_style = "neutral"
+shoe_geometry = { sole_heel_m = 0.022, sole_fore_m = 0.015, toe_spring_m = 0.008, heel_bevel_m = 0.004 }   # thin leather sole + stacked heel of a loafer
+
+[dancers.follow]
+name = "Aline"
+pid = 2
+stature_m = 1.676   # 5'6"
+description = "long black wavy hair worn down past the shoulders, red three-quarter-sleeve cropped top with a cartoon print, dark blue distressed skinny jeans with frayed hems, black slip-on sneakers with chunky white soles"
+shoe_sole_m = 0.025   # sneakers; UNCONFIRMED barefoot stature (as in the demo)
+# AVATAR APPEARANCE (agent C5, 2026-10-10): Aline: hair near-black (the video grade reads #1a1819, camera 02's warm cast makes it look brown: it is
+#   black), long (shoulder blades), wavy, worn down, side parted: the demo's groom re-coloured black (hair_groom after the poses); red
+#   three-quarter-sleeve crop top (texture), dark blue-black skinny jeans (texture), black slip-on sneakers with a chunky white midsole (style
+#   "runner": 3.2 / 2.2 cm stack, no override). NO headset prop for either dancer (none seen in the heat).
+shoe_style = "runner"
+# C7 2026-10-10 hair defaults (owner decisions pending; flip here, then `ca_avatars hair-groom` + the export): the groom is the demo's straight, sleek one recoloured black
+# (no wavy groom exists); hair_tip_glow 0 = no white tip glow on black hair (it read as white sparks in Unity); hair_albedo_gain 0.9 (the red groom's 1.85 rendered black hair grey).
+hair_tip_glow = 0.0
+hair_albedo_gain = 0.9
+
+# Owner 2026-10-09: both cameras on tripods, both horizontal; camera 01 "small zoom" (+ watermark), camera 02 "no zoom". Measured (probe A on both
+# videos, 2026-10-09): 01 zoom drift 1.7 % inside the heat (focal range 0.4-1.7 % per 4 s window) and a real zoom-out at 198-199 s (ratio 0.894), so
+# zoom = true (tripod_zoom: fixed centre, per-frame rotation + focal); 02 zoom scale 1.002, none -> zoom = false (tripod: one rigid centre, one focal,
+# per-frame rotation because the head pans). Both pan (axis motion up to 65 px/s at 640 px on 01, 3.5-8.6 px/s on 02): "pans" = true.
+# Camera type per source video (dancecap.camera_types): set in the narration tool or the Pipeline Monitor
+
+[cameras."01"]              # camera type (Pipeline Monitor / narration tool; block written by dancecap.camera_types)
+mount = "tripod"            # handheld | tripod                 (user)
+zoom = true                 # true | false, independent of mount (user)
+source = "user"             # user = confirmed | auto = suggestion, not confirmed yet
+set_at = "2026-10-10T04:05:00Z"
+pans = true                 # tripod only, automatic
+
+[cameras."02"]              # camera type (Pipeline Monitor / narration tool; block written by dancecap.camera_types)
+mount = "tripod"            # handheld | tripod                 (user)
+zoom = false                # true | false, independent of mount (user)
+source = "user"             # user = confirmed | auto = suggestion, not confirmed yet
+set_at = "2026-10-10T04:05:00Z"
+pans = true                 # tripod only, automatic
+
+# Unity capture (later): the stitched, refined motion (pose_refine smplx_rf2_noslip, the demo's recipe). The viewer floor yaw is set when the NEW
+# room's world frame exists (not the demo's 30 degrees).
+[export]
+smplx_dir = "smplx_rf2_noslip"
+# C6 2026-10-10: the viewer floor is turned to the room's wall: work/carlos_aline/room/room_model.json room_frame.yaw_deg 1.0 +- 2.0 (wall direction (cos 1, 0, sin 1)
+# in the world frame, i.e. 1 degree clockwise seen from above; world X is camera 02's mean right vector, so the room is nearly axis-aligned). The demo's 30 is its own room.
+floor_yaw_deg = -1.0
+
+# Rest-shape edits (dancecap.shape_edits, applied by every export; validated by `python -m dancecap.ca_avatars body-shape` / `head-review`, AVATAR_PLAN.md
+# in work/carlos_aline/; agent C5, 2026-10-10). The identity files are FLAME identities fitted (SMIRK + landmark refinement on a Runpod CPU pod) to each
+# portrait + 12 faces of the heat (camera 01: the tele, 26-39 px between the eyes; camera 02: the wide, 17-26 px), portrait = half of the weight;
+# the displacement is cached for the pinned betas in face_shape/<role>_identity_disp.npz (the `face-retarget` job once C3's shape pass has pinned them).
+#   * Carlos: the identity alone (neutral: no taper); the beard hides the jaw line, so the face edit is mild. Feet: slimmer / lower for loafers.
+#   * Aline: the identity alone (her lower face is narrower than the template's; NO petite taper and NO midsection edit: those were the owner's
+#     requests for another dancer and nothing here asks for them: owner decision, see AVATAR_PLAN.md). Feet: the sneaker feet of the recap.
+[dancers.lead.shape_edits]
+foot_scale = [1.0, 0.94, 0.95]
+
+[dancers.lead.shape_edits.face]
+identity = "work/carlos_aline/face_shape/lead_identity.npz"
+identity_weight = 1.0
+identity_mouth = 0.4
+
+[dancers.follow.shape_edits]
+foot_scale = [1.0, 0.9, 0.92]
+
+[dancers.follow.shape_edits.face]
+identity = "work/carlos_aline/face_shape/follow_identity.npz"
+identity_weight = 1.0
+identity_mouth = 0.4

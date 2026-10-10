@@ -1,0 +1,78 @@
+{
+ "reference": "Carlos Aline Zouk Artist Jack Jill at Zouk SEA 2019.mp4",
+ "convention": "reference_time = slope * source_time + offset; reference = camera 01's own video time",
+ "note": "audio clocks measured by dancecap.carlos_aline_sync; the reference clock is camera 01's own video time. AUDIO clocks: dancecap.sync must still measure the per-camera VIDEO offsets before MAMMA ([sync] required).",
+ "sources": [
+  {
+   "id": "01",
+   "name": "Carlos Aline Zouk Artist Jack Jill at Zouk SEA 2019.mp4",
+   "duration": 202.083,
+   "numbered": true,
+   "slope": 1.0,
+   "offset": 0.0,
+   "accepted": true,
+   "residual_ms": 0.0,
+   "confidence": 1.0,
+   "offset_source": "master"
+  },
+  {
+   "id": "02",
+   "name": "Zouk Sea 2019 Carlos and Aline Borges Jack Jill.mp4",
+   "duration": 186.27,
+   "numbered": true,
+   "slope": 1.0,
+   "offset": 14.815753692354448,
+   "accepted": true,
+   "residual_ms": 0.45,
+   "confidence": 1.0,
+   "offset_source": "measured by GCC-PHAT of the two videos' audio (same sound)"
+  }
+ ],
+ "songs": {
+  "kojo": {
+   "file": "Kojo Funds - Check (With Raye)_01.mp3",
+   "title": "Check (With Raye)",
+   "artist": "Kojo Funds",
+   "convention": "song_time = slope * reference_time + offset (song_time = the decoded mp3 from its first sample)",
+   "slope": 0.9615305360969022,
+   "offset": -12.800733843537316,
+   "residual_ms": 2.02,
+   "tempo_ratio_song_per_video": 0.9615305360969022,
+   "audible_reference_s": [
+    13.31,
+    122.25
+   ],
+   "song_zero_at_reference_s": 13.313
+  },
+  "guetta": {
+   "file": "David Guetta - Say My Name (Lyrics) ft. Bebe Rexha, J Balvin.mp3",
+   "title": "Say My Name (feat. Bebe Rexha, J Balvin)",
+   "artist": "David Guetta",
+   "convention": "song_time = slope * reference_time + offset (song_time = the decoded mp3 from its first sample)",
+   "slope": 0.9425378343464413,
+   "offset": -106.94604487997859,
+   "residual_ms": 1.97,
+   "tempo_ratio_song_per_video": 0.9425378343464413,
+   "audible_reference_s": [
+    113.47,
+    194.25
+   ],
+   "song_zero_at_reference_s": 113.466
+  }
+ },
+ "danced_span": {
+  "start_s": 3.6,
+  "end_s": 198.0,
+  "start_why": "camera 01 starts with the couple's walk-on: Carlos with the hostess (0-1.5 s), alone across the floor (1.5-3.5 s, the first skips), Aline steps in from the right at 3.6 s and they are hand in hand at 4.6 s; only camera 01 sees 3.6-14.8 s (camera 02 starts at 14.82 s, mid-dance)",
+  "end_why": "the last figure and the bow: camera 02 shows the arms-out finish at 182.0 s (183.0 s the bow, they hug and walk off from 184 s) = 196.8-198.0 s on the reference clock; camera 01 cuts to a zoom-out at 196.95 s"
+ },
+ "lattice": {
+  "anchor_s": 0.0,
+  "hz": 30.0,
+  "k0": 108,
+  "k1": 5940,
+  "frames": 5833,
+  "t_first_s": 3.6,
+  "t_last_s": 198.0
+ }
+}
