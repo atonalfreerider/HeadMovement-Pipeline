@@ -256,7 +256,8 @@ def cmd_timing(a):
         sync_sigma_s=a.sync_ms / 1000, n_cams=a.n_cams,
         noise_m=None if a.noise_mm is None else a.noise_mm / 1000,
         beat_jitter_s=None if a.beat_jitter_ms is None else a.beat_jitter_ms / 1000,
-        mc_corr_noise_m=a.mc_corr_noise_mm / 1000, mc_corr_time_s=a.mc_corr_time_s)
+        mc_corr_noise_m=a.mc_corr_noise_mm / 1000, mc_corr_time_s=a.mc_corr_time_s,
+        no_beat_intervals=tuple(tuple(float(v) for v in x.split(":")) for x in a.no_beat.split(",") if x))
     work = PACKAGE_ROOT / "work" / a.take
     if a.validate:
         rep = timing.validate_synthetic(cfg, noise_levels=(0.0, a.noise_cm / 100), work=work)
@@ -264,7 +265,7 @@ def cmd_timing(a):
         return
     from pathlib import Path
     try:
-        res = timing.run(work, cfg, Path(a.beats) if a.beats else None)
+        res = timing.run(work, cfg, Path(a.beats) if a.beats else None, smplx_dir=a.smplx_dir)
     except FileNotFoundError as e:
         raise SystemExit(f"timing: {e}")
     for role, d in res["asynchrony"].items():
@@ -592,6 +593,8 @@ def main(argv=None):
     sp.add_argument("--seed", type=int, default=0)
     sp.add_argument("--coarsen", type=int, default=1, help="2 = undo beat_this min_bpm=120 measure halving")
     sp.add_argument("--no-refine", action="store_true", help="keep the beat grid as is (no local tempo fit)")
+    sp.add_argument("--smplx-dir", default="smplx", help="folder under work/<take> with the motion (default the raw fit; smplx_rf2_noslip = the refined one)")
+    sp.add_argument("--no-beat", default="", help="A:B[,A:B...] reference-second intervals without a beat grid: steps / accents inside are dropped (carlos_aline)")
     sp.add_argument("--av-offset-ms", type=float, default=0.0, help="added to video event times (audio clock)")
     sp.add_argument("--av-sync-event", help="describe the A/V sync event that pins the offset (enables absolute claims)")
     sp.add_argument("--sync-ms", type=float, default=5.0, help="per-camera residual sync uncertainty (SD)")

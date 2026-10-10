@@ -923,6 +923,7 @@ ANALYSIS = {
     "stitch":          ("python -m dancecap.stitch {take}", 30),
     "pose_quality":    ("python -m dancecap.pose_quality {take}", 20),
     "timing":          ("python -m dancecap timing {take}", 40),
+    "timing_free":     ("python -m dancecap.timing_free {take}", 40),   # no beat grid (the class recap); farm/recap_analysis.py
     "physics":         ("python -m dancecap physics {take}", 40),
     "counterbalance":  ("python -m dancecap.counterbalance detect --take {take}", 30),
     "floorcraft":      ("python -m dancecap.floorcraft {take} --no-review", 30),

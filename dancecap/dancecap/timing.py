@@ -110,6 +110,10 @@ class TimingConfig:
     allowed_positions: tuple | None = None  # eighth positions 0..7 inside the measure; None = all
     refine_beats: bool = True
     coarsen_grid: int = 1  # 2 = undo beat_this split_measures halving (keep every other grid entry)
+    # C6 2026-10-10 (carlos_aline): intervals [[a, b], ...] (reference s) in which there is NO beat grid (an announcement before the first song, applause after
+    # the last, the seam between two DJ-mixed songs): footsteps / accents whose time lies inside one are dropped before they are matched to a beat (the nearest
+    # beat would be seconds away) and listed under res["dropped_no_beat"]. Empty = off (every other take).
+    no_beat_intervals: tuple = ()
     hit_tol_s: float = 0.05
     dense_chance_warn: float = 0.35
     av_offset_s: float = 0.0  # added to event (video) times to put them on the audio clock
@@ -1178,6 +1182,16 @@ def _summarize(evs, grid, beats_mc, sync_mc, cfg, rng, with_surrogate=True) -> d
     return s
 
 
+def drop_no_beat(events: list, intervals) -> tuple[list, list]:
+    """(kept, dropped) events whose time `t` is outside / inside any [a, b) interval of `intervals`."""
+    if not intervals:
+        return list(events), []
+    kept, dropped = [], []
+    for e in events:
+        (dropped if any(a <= e["t"] < b for a, b in intervals) else kept).append(e)
+    return kept, dropped
+
+
 def analyze(t_by_role: dict, joints_by_role: dict, beats: BeatGrid, cfg: TimingConfig) -> dict:
     """Full timing analysis for both dancers -> json-able dict (+ private '_' entries for plotting)."""
     rng = np.random.default_rng(cfg.seed)
@@ -1206,7 +1220,15 @@ def analyze(t_by_role: dict, joints_by_role: dict, beats: BeatGrid, cfg: TimingC
         res["kinematics"][role] = {"noise_m": d["noise_m"], "noise_estimated": d["noise_estimated"],
                                    "derivatives": d["derivatives"], "cross_check": d["cross_check"]}
         res["touchdown_method"][role] = {**d["touchdown_info"], "mc": d["mc"]}
-        tds = d["touchdowns"]
+        tds, drop_td = drop_no_beat(d["touchdowns"], cfg.no_beat_intervals)
+        drop_acc = {}
+        for name, kinds in d["accents"].items():
+            for kind in list(kinds):
+                kinds[kind], dr = drop_no_beat(kinds[kind], cfg.no_beat_intervals)
+                drop_acc[f"{name}.{kind}"] = len(dr)
+        if cfg.no_beat_intervals:
+            res.setdefault("dropped_no_beat", {})[role] = {"intervals": [list(map(float, x)) for x in cfg.no_beat_intervals], "touchdowns": len(drop_td),
+                                                          "touchdown_times": [round(float(e["t"]), 3) for e in drop_td], "accents": drop_acc}
         res["asynchrony"][role] = {"footsteps": _summarize(tds, grid, beats_mc, sync_mc, cfg, rng), "accents": {}}
         for name, kinds in d["accents"].items():
             res["asynchrony"][role]["accents"][name] = {
@@ -1380,19 +1402,19 @@ def resolve_sync(cfg: TimingConfig, work: Path) -> TimingConfig:
 
 
 def run(work: Path, cfg: TimingConfig, beats_path: Path | None = None, out_dir: Path | None = None,
-        noise_inject_m: float = 0.0, plot: bool = True) -> dict:
-    """Read smplx/{lead,follow}.npz + beats -> out_dir/timing.json (+ kinematics.npz, qa_timing.png)."""
+        noise_inject_m: float = 0.0, plot: bool = True, smplx_dir: str = "smplx") -> dict:
+    """Read <smplx_dir>/{lead,follow}.npz (default smplx) + beats -> out_dir/timing.json (+ kinematics.npz, qa_timing.png)."""
     out_dir = out_dir or work / "timing"
     ts, js = {}, {}
     rng = np.random.default_rng(cfg.seed + 1000)
     for role in ROLES:
-        p = work / "smplx" / f"{role}.npz"
+        p = work / smplx_dir / f"{role}.npz"
         if p.exists():
             ts[role], js[role] = load_smplx(p)
             if noise_inject_m > 0:
                 js[role] = js[role] + rng.normal(0, noise_inject_m, js[role].shape)
     if not ts:
-        raise FileNotFoundError(f"no smplx/{{lead,follow}}.npz in {work} (run the mamma stage first)")
+        raise FileNotFoundError(f"no {smplx_dir}/{{lead,follow}}.npz in {work} (run the mamma stage first)")
     beats_path = beats_path or find_beats(work)
     cfg = resolve_sync(TimingConfig(**asdict(cfg)), work)  # a copy: the caller's config is never mutated
     res = analyze(ts, js, load_beats(beats_path), cfg)
@@ -1404,7 +1426,7 @@ def run(work: Path, cfg: TimingConfig, beats_path: Path | None = None, out_dir: 
                 f"{role}: estimated white pose noise is only {nz * 1000:.1f} mm (a smooth fused fit); its real error is "
                 f"larger and temporally correlated, so sigma / CIs from the white-noise MC are LOWER bounds - set "
                 f"mc_corr_noise_m (e.g. 0.01 m, mc_corr_time_s 0.1) for an assumed low-frequency error")
-    res["inputs"] = {"smplx": {r: str(work / "smplx" / f"{r}.npz") for r in ts}, "beats": str(beats_path),
+    res["inputs"] = {"smplx": {r: str(work / smplx_dir / f"{r}.npz") for r in ts}, "beats": str(beats_path),
                      "noise_injected_m": noise_inject_m}
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "timing.json").write_text(json.dumps(_clean(res), indent=1))
