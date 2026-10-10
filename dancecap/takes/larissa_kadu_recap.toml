@@ -1,0 +1,203 @@
+# Larissa & Kadu CLASS RECAP (owner 2026-10-09): a six-minute lesson by the two teachers, filmed by seven handheld phones in
+# the SAME room as the demo (larissa_kadu_full). Take name larissa_kadu_recap, work dir work/larissa_kadu_recap/ (git-ignored),
+# Unity capture 06_LarissaKaduRecap later. The source folder is reached through the git-ignored junction
+# dances/Larissa-Kadu-recap (the owner's folder; never copied into a repo).
+#
+# SHARED CLOCK. The reference clock is the MASTER camera's own video time: 01-Recap-Tina.mp4 (1080x1920, 59.94 fps, the best
+# picture, runs the whole lesson; the demo used cam06). reference_time = slope * source_time + offset; the numbers are
+# prototype/larissa_kadu/alignment_recap.json, measured from the phones' own audio by dancecap.recap_sync (GCC-PHAT on the
+# teachers' speech: the owner's camera-time-offsets.json confirmed, sign and all, within 3-37 ms; 00 and 03 drift 13-15 ppm, so
+# those two clocks are affine; work/larissa_kadu_recap/sync/sync.json + NOTES_R1_sync.md).
+# They are AUDIO clocks: dancecap.sync must still measure the per-phone VIDEO offsets before MAMMA ([sync] required below).
+# 04-Recap-Tony.mp4 (77 s) could NOT be placed: its speech does not match the other phones at any offset and its audience is a
+# few standing people, not the seated crowd of the other six (NOTES_R1_sync.md). It is excluded; remove "04" from `exclude`
+# and set its offset in the alignment file when it is placed (by the owner, or by a geometric search once 3D poses exist).
+name = "larissa_kadu_recap"
+source_dir = "../../dances/Larissa-Kadu-recap"
+alignment = "../../prototype/larissa_kadu/alignment_recap.json"   # affine audio clocks, reference = 01-Recap-Tina.mp4
+exclude = ["04"]
+
+# The whole lesson on the master clock: 0.0 s = the master's first frame, 360.48 s = just past its last (360.477 s).
+# 00-Recap-Ali starts 8.9 s BEFORE the master (its first 8.9 s are unused: no other phone sees them).
+window = [0.0, 360.48]
+
+# Sparse snapshots of the static room; the room model is REUSED from the demo's world ([world]), so these only matter when the
+# map has to be extended. Handheld cameras give many viewpoints.
+keyframe_span = [0.0, 360.0]
+keyframe_step = 6.0
+
+# Canonical fused grid of this take: 30 Hz anchored on the master's t = 0 (k = 0..10814 = 0..360.47 s, T = 10815). The 59.94 fps
+# master keeps every 2nd frame ([ingest]).
+[timeline]
+anchor = 0.0
+hz = 30.0
+
+[ingest]
+max_fps = 30
+
+# Farm chunking (owner 2026-10-09): chunks of at most 60 s that overlap their neighbours by 4 s (to stitch), instead of the demo's
+# 30 s. chunk_s = the longest FIT WINDOW, overlap_s = the overlap region of two neighbours; the fewest equal windows are used (7 x 54.9 s,
+# cores cut at the middle of each overlap: farm/chunks.py equal_windows, the arithmetic is in work/larissa_kadu_recap/chunks.json).
+# profile = "recap" makes `farm plan` use farm/recap_profile.py: cameras from the teacher coverage, R2's camera tracks and R3's teacher tracks
+# as inputs, a shape job that fixes the betas, a stitch-only final job (no soundtrack).
+[chunks]
+chunk_s = 60.0
+overlap_s = 4.0
+mode = "windows"
+profile = "recap"
+
+# Video sync (dancecap.sync): required = true makes 'mamma prepare' refuse to build fit inputs until this take's OWN
+# work/larissa_kadu_recap/sync/offsets.json exists and records these clocks (never copy another take's file).
+[sync]
+required = true
+
+[dance]
+level = "professional"          # professional | intermediate | novice  (the dancers are the two teachers)
+category = "lesson"             # demo | lesson | jack_and_jill
+# NO SONG: the audio is the teachers talking. The song / beat stages (song_align, clock_studio, beats, beat-based timing) are
+# skipped for this take; the speech is transcribed and diarized from all phones in a separate stage (the transcript later directs
+# the film).
+soundtrack = false
+
+# Clothes as filmed in THIS class (frames of 01 / 02 / 05 / 06, 2026-10-09; the portraits kadu.jpg / larissa.jpg in the source
+# folder show the same two people). Same outfits as the demo. Kadu = lead, Larissa = follow, as in the demo.
+# Heads-up for identity selection: a second red-haired woman in a light top and jeans stands in the audience (left background of
+# 01, centre-back of 02); and many people in the audience hold phones.
+[dancers.lead]
+name = "Kadu"
+pid = 1
+stature_m = 1.727   # 5'8"
+description = "black t-shirt, blue jeans, black sneakers (all black: owner 2026-10-09), shaved head"
+shoe_sole_m = 0.025   # sneakers; UNCONFIRMED barefoot stature (as in the demo)
+
+[dancers.follow]
+name = "Larissa"
+pid = 2
+stature_m = 1.651   # 5'5"
+description = "long red hair, white crop top, light ripped jeans, white sneakers"
+shoe_sole_m = 0.025   # sneakers; UNCONFIRMED barefoot stature (as in the demo)
+# Owner default (2026-10-09, T2): the same white court sneakers as the demo, so the same sole stack (the style default would be 1 cm chunkier).
+# Flip it if the class video shows other shoes.
+shoe_geometry = { sole_heel_m = 0.029, sole_fore_m = 0.024 }
+
+# OWNER DECISIONS 2026-10-09 (appearance of the two avatars; work/larissa_kadu_recap/AVATAR_PLAN.md "Owner decisions"):
+#   * Larissa wears a HEADSET PROP: the head-worn performance microphone of the class videos (the block below). No belt pack.
+#   * Larissa's hair is RED (the portrait's crimson, the groom's default albedo_default = portrait; the class video's measured red agrees).
+#   * Larissa's sneakers are WHITE, Kadu's sneakers are BLACK: the colours live in work/<take>/avatar/shoes_override.json (shoes.py applies it at
+#     the sampling and again at every shoes export; colours are never written in a tracked file); `description` above says the same.
+# The headset (capture.json "props" -> the viewer builds ear hook + thin boom + capsule on her head mesh, VIEWER_SPEC 3.2b). Frames of the master
+# phone (01-Recap-Tina.mp4) and 06-Recap-John.mp4 2026-10-09: on HER LEFT (the left of the image when she faces the camera), a thin light-grey
+# boom from the ear hook above the front of the ear along the cheek to the black foam capsule at the corner of her mouth; no visible neck cable.
+# Every key is optional (defaults = export_unity.HEADSET_DEFAULTS); boom_length_m omitted = the boom reaches the mouth corner.
+[dancers.follow.props.headset]
+side = "left"                 # her own left ear / cheek
+boom_thickness_m = 0.0024
+capsule_length_m = 0.026
+capsule_radius_m = 0.0078
+colour = "#0e0d0d"            # the capsule (black foam)
+boom_colour = "#c4bbb2"       # the boom and the ear hook (light grey-beige plastic)
+
+# The demo's shape betas are NOT pinned here (owner: new avatars for Larissa and Kadu): no [reuse]; the betas are the recap's own
+# (work/larissa_kadu_recap_shape/mamma_pin_betas.json). The farm world package below supplies the ROOM only.
+#
+# Rest-shape edits (dancecap.shape_edits, applied by every export), validated on the recap's betas by `python -m dancecap.recap_avatars
+# body-shape` / `head-review` (work/larissa_kadu_recap/avatar/shape/*.json, review/avatar/head_*.jpg; AVATAR_PLAN.md):
+#   * rest heights of the new betas: 1.7475 m (lead, stature + sole 1.752) and 1.6564 m (follow, 1.676): 0.997 / 0.988, inside the 1.5 %
+#     world-scale gate; waist, feet and head within 1-2 % of the demo's betas, so the demo's factors act the same way.
+#   * body: the demo's midsection (12.5 % thinner than her own fitted body) and narrower / lower sneaker feet (user 2026-10-07); lengths
+#     unchanged (foot 23.5 / 25.5 cm = 14.2 / 14.6 % of the stature, as in the demo).
+#   * face: a FLAME identity fitted (SMIRK + landmark refinement, on a Runpod CPU pod) to each portrait + the clearest frames of the
+#     master phone, portrait = half of the weight (face_shape/<role>_identity.npz, the displacement is cached for THESE betas in
+#     face_shape/<role>_identity_disp.npz). Follow: the identity + the demo's petite taper (nasion-menton 111.8 -> 101.3 mm, jaw angles
+#     103.9 -> 91.1, chin 59.0 -> 47.7; the demo's head: 111.4 -> 101.1 / 106.2 -> 93.1 / 59.9 -> 48.6). Lead: the identity alone (a
+#     neutral fit, no taper): the lower face moves <= 4.7 mm (jaw angles 125.9 -> 119.8). Eyes, brows, nose, forehead, cranium, scalp and ears
+#     stay (<= 1.1 mm at the scalp, 0.03 mm at the ears).
+# Not yet seen in Unity (the demo's block was); on the first export check the neck seam and the hair roots as for the demo.
+[dancers.follow.shape_edits]
+midsection_scale = 0.875
+foot_scale = [1.0, 0.9, 0.92]
+
+[dancers.follow.shape_edits.face]
+identity = "work/larissa_kadu_recap/face_shape/follow_identity.npz"
+identity_weight = 1.0
+identity_mouth = 0.4
+jaw_taper = 0.92
+cheekbone_keep = 0.75
+chin_point = 0.35
+neck_under_jaw = 0.94
+chin_forward_mm = 4.0
+
+[dancers.lead.shape_edits]
+foot_scale = [1.0, 0.94, 0.95]
+
+[dancers.lead.shape_edits.face]
+identity = "work/larissa_kadu_recap/face_shape/lead_identity.npz"
+identity_weight = 1.0
+identity_mouth = 0.4
+
+# Room model of the demo (same room, owner 2026-10-09): SfM sparse model, world frame (gravity, floor), metric scale. NOT reused:
+# its clocks (alignment_studio.json), its camera types and its pinned betas (the world's shared/betas.json is the demo's: a recap
+# fit must not pin them).
+[world]
+dance = "larissa_kadu_full"
+id = "612dfea3d607"
+pose_id = "02974c41d6db"
+role = "recap"
+member = false
+note = "reuses the room model, world frame and scale of this world; clocks, camera types and betas/avatars are the recap's own"
+
+# Unity capture (F2, 2026-10-09): the stitched, refined motion (pose_refine smplx_rf2_noslip, the demo's recipe) is what the viewer plays.
+# floor_yaw_deg 30: the same room and the same SfM world frame as the demo (see [world]), so the demo's viewer-floor turn (user 2026-10-08,
+# "rotate the floor only, by 30 deg CCW so that it lines up with the room in the videos") applies unchanged. No role_hidden: both teachers
+# are tracked from t = 0 (two_view only for the first 7.4 s).
+[export]
+smplx_dir = "smplx_rf2_noslip"
+floor_yaw_deg = 30.0
+
+# Owner 2026-10-09: ALL seven phones are handheld and NONE zoomed (one fixed focal length per video: estimate one intrinsics set
+# per camera, solve only the per-frame pose). 02-Recap-Alyssa (848x480) is the one HORIZONTAL (landscape) camera; the others are
+# portrait as displayed (05 and 06 carry a -90 rotation tag: stored landscape, displayed portrait; the 2D pose JSONs are in DISPLAY
+# pixels). 04 is excluded above but typed for the day it is placed.
+# Camera type per source video (dancecap.camera_types): set in the narration tool or the Pipeline Monitor
+
+[cameras."00"]              # camera type (Pipeline Monitor / narration tool; block written by dancecap.camera_types)
+mount = "handheld"          # handheld | tripod                 (user)
+zoom = false                # true | false, independent of mount (user)
+source = "user"             # user = confirmed | auto = suggestion, not confirmed yet
+set_at = "2026-10-09T17:15:07Z"
+
+[cameras."01"]              # camera type (Pipeline Monitor / narration tool; block written by dancecap.camera_types)
+mount = "handheld"          # handheld | tripod                 (user)
+zoom = false                # true | false, independent of mount (user)
+source = "user"             # user = confirmed | auto = suggestion, not confirmed yet
+set_at = "2026-10-09T17:15:07Z"
+
+[cameras."02"]              # camera type (Pipeline Monitor / narration tool; block written by dancecap.camera_types)
+mount = "handheld"          # handheld | tripod                 (user)
+zoom = false                # true | false, independent of mount (user)
+source = "user"             # user = confirmed | auto = suggestion, not confirmed yet
+set_at = "2026-10-09T17:15:07Z"
+
+[cameras."03"]              # camera type (Pipeline Monitor / narration tool; block written by dancecap.camera_types)
+mount = "handheld"          # handheld | tripod                 (user)
+zoom = false                # true | false, independent of mount (user)
+source = "user"             # user = confirmed | auto = suggestion, not confirmed yet
+set_at = "2026-10-09T17:15:07Z"
+
+[cameras."04"]              # camera type (Pipeline Monitor / narration tool; block written by dancecap.camera_types)
+mount = "handheld"          # handheld | tripod                 (user)
+zoom = false                # true | false, independent of mount (user)
+source = "user"             # user = confirmed | auto = suggestion, not confirmed yet
+set_at = "2026-10-09T17:15:07Z"
+
+[cameras."05"]              # camera type (Pipeline Monitor / narration tool; block written by dancecap.camera_types)
+mount = "handheld"          # handheld | tripod                 (user)
+zoom = false                # true | false, independent of mount (user)
+source = "user"             # user = confirmed | auto = suggestion, not confirmed yet
+set_at = "2026-10-09T17:15:07Z"
+
+[cameras."06"]              # camera type (Pipeline Monitor / narration tool; block written by dancecap.camera_types)
+mount = "handheld"          # handheld | tripod                 (user)
+zoom = false                # true | false, independent of mount (user)
+source = "user"             # user = confirmed | auto = suggestion, not confirmed yet
+set_at = "2026-10-09T17:15:07Z"

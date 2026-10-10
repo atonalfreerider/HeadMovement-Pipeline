@@ -1,0 +1,92 @@
+{
+ "reference": "01-Recap-Tina.mp4",
+ "convention": "reference_time = slope * source_time + offset",
+ "note": "audio clocks of the class recap measured by dancecap.recap_sync (GCC-PHAT against the master, speech of the teachers); the reference clock is the master camera's own video time. AUDIO clocks: sound travel (3 ms/m) and phone A/V latency leave per-phone VIDEO offsets that dancecap.sync measures.",
+ "sources": [
+  {
+   "id": "00",
+   "name": "00-Recap-Ali.mp4",
+   "duration": 369.575322,
+   "numbered": true,
+   "slope": 1.0000145503035254,
+   "offset": -8.902308735670886,
+   "accepted": true,
+   "residual_ms": 1.39,
+   "confidence": 0.962,
+   "offset_source": "measured (owner's number confirmed within 18 ms)"
+  },
+  {
+   "id": "01",
+   "name": "01-Recap-Tina.mp4",
+   "duration": 360.476783,
+   "numbered": true,
+   "slope": 1.0,
+   "offset": 0.0,
+   "accepted": true,
+   "residual_ms": 0.0,
+   "confidence": 1.0,
+   "offset_source": "master"
+  },
+  {
+   "id": "02",
+   "name": "02-Recap-Alyssa.mp4",
+   "duration": 358.445,
+   "numbered": true,
+   "slope": 1.0,
+   "offset": 1.344003291854193,
+   "accepted": true,
+   "residual_ms": 2.1,
+   "confidence": 0.976,
+   "offset_source": "measured (owner's number confirmed within 3 ms)"
+  },
+  {
+   "id": "03",
+   "name": "03-Recap-Redshirt.mp4",
+   "duration": 300.336667,
+   "numbered": true,
+   "slope": 0.9999873421295628,
+   "offset": 60.93529842938207,
+   "accepted": true,
+   "residual_ms": 2.75,
+   "confidence": 0.942,
+   "offset_source": "measured (owner's number confirmed within 22 ms)"
+  },
+  {
+   "id": "04",
+   "name": "04-Recap-Tony.mp4",
+   "duration": 77.280956,
+   "numbered": true,
+   "slope": 1.0,
+   "offset": null,
+   "accepted": false,
+   "residual_ms": null,
+   "confidence": 0.0,
+   "offset_source": "not found",
+   "note": "not placed: the wide pass found no matching window and the speech-envelope search against the placed phones has z max 3.9 (median 3.7; noise only, a real match of the weakest placed phone gives z [5.8, 6.6, 7.3, 7.1, 6.5]) at any offset and for time scales 0.9-1.2"
+  },
+  {
+   "id": "05",
+   "name": "05-Recap-Liudmyla.mp4",
+   "duration": 353.101667,
+   "numbered": true,
+   "slope": 1.0,
+   "offset": 7.432647747612066,
+   "accepted": true,
+   "residual_ms": 0.72,
+   "confidence": 0.526,
+   "offset_source": "measured (owner's number confirmed within 36 ms)"
+  },
+  {
+   "id": "06",
+   "name": "06-Recap-John.mp4",
+   "duration": 331.091,
+   "numbered": true,
+   "slope": 1.0,
+   "offset": 29.3552546094742,
+   "accepted": true,
+   "residual_ms": 1.67,
+   "confidence": 0.771,
+   "offset_source": "measured (owner's number confirmed within 37 ms)"
+  }
+ ]
+}

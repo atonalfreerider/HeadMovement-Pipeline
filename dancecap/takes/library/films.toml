@@ -1,0 +1,137 @@
+# The films the Unity viewer's library offers (python -m dancecap.film_library build --demo | --recap).
+# Per-film presets for dancecap/film_library.py; paths are relative to the workspace. Titles and subtitles may name the dancers: the
+# library file they end up in (head-movement/Assets/StreamingAssets/library/library.json) is git-ignored data.
+# [<preset>.chapters] anchor each chapter at the direction segment where it starts, so the marks survive a rebuild of the film.
+
+[demo]
+id = "demo"
+title = "Kadu + Larissa × Ficar Sem Você"
+subtitle = "The counterbalance demo, rebuilt in 3D from the class's phone videos"
+capture = "05_LarissaKaduFull"
+direction = "dancecap/work/larissa_kadu_full/film/direction.json"
+thumbnail = "head-movement/Recordings/05_LarissaKaduFull_thumbnail_vertical.jpg"
+
+[[demo.chapters]]
+title = "Intro"
+segment = "open_title"
+
+[[demo.chapters]]
+title = "Filmed by the class"
+segment = "cameras_overview"
+
+[[demo.chapters]]
+title = "The exit step"
+segment = "lp1_approach"
+
+[[demo.chapters]]
+title = "Floor craft"
+segment = "floorcraft"
+
+[[demo.chapters]]
+title = "The counterbalance"
+segment = "cb2_setup"
+
+[[demo.chapters]]
+title = "The step around her"
+segment = "lp2_feet_in"
+
+[[demo.chapters]]
+title = "A path through the moves"
+segment = "graph_in"
+
+[[demo.chapters]]
+title = "Physics view"
+segment = "physics_in"
+
+[[demo.chapters]]
+title = "The exit again"
+segment = "lp3_feet_in"
+
+[[demo.chapters]]
+title = "Head movement"
+segment = "head_movement"
+
+[[demo.chapters]]
+title = "The last counterbalance"
+segment = "orbit_mid"
+
+[[demo.chapters]]
+title = "Rhythm and thanks"
+segment = "rhythm"
+
+# The class recap: a card in the library from the start ("Processing" and not playable) until its capture folder and its film exist.
+# Its chapters come from the direction itself (segments with a "chapter" field) or from a plan added here once the film is directed.
+[recap]
+id = "recap"
+title = "Class recap"
+subtitle = "The whole lesson by Larissa and Kadu, in 3D"
+capture = "06_LarissaKaduRecap"
+direction = "dancecap/work/larissa_kadu_recap/film/direction.json"
+thumbnail = "dancecap/work/larissa_kadu_recap/film/review/recap_card_thumb.jpg"   # a clean 3D frame of the two avatars (T3), no text
+
+# The recap's chapter marks: one per chapter of the class (speech/chapters.json, titles <= 5 words), anchored at the first segment of the chapter
+# (ids chNN_01_open are stable across rebuilds of the film: python -m dancecap.film_recap build; print this block again with
+# python -m dancecap.film_recap chapters). Film seconds come from the direction.
+[[recap.chapters]]
+title = "Opening jokes"
+segment = "ch00_01_open"
+
+[[recap.chapters]]
+title = "Frame and technique recap"
+segment = "ch01_01_open"
+offset_s = 0.3
+
+[[recap.chapters]]
+title = "What counterbalance means"
+segment = "ch02_01_open"
+offset_s = 0.3
+
+[[recap.chapters]]
+title = "Why the frame matters"
+segment = "ch03_01_open"
+offset_s = 0.116
+
+[[recap.chapters]]
+title = "Arm length and space"
+segment = "ch04_01_open"
+
+[[recap.chapters]]
+title = "Leader footwork options"
+segment = "ch05_01_open"
+offset_s = 0.142
+
+[[recap.chapters]]
+title = "Exits: first, second, third"
+segment = "ch06_01_open"
+offset_s = 0.108
+
+[[recap.chapters]]
+title = "Last exit and sacada"
+segment = "ch07_01_open"
+offset_s = 0.3
+
+[[recap.chapters]]
+title = "Momentum: do not stop"
+segment = "ch08_01_open"
+offset_s = 0.114
+
+[[recap.chapters]]
+title = "Second part: leg connection"
+segment = "ch09_01_open"
+offset_s = 0.3
+
+[[recap.chapters]]
+title = "Counterbalance again: first exit"
+segment = "ch10_01_open"
+offset_s = 0.3
+
+[[recap.chapters]]
+title = "Second option: step with her"
+segment = "ch11_01_open"
+offset_s = 0.3
+
+[[recap.chapters]]
+title = "Slow down, then music"
+segment = "ch12_01_open"
+offset_s = 0.3
+
