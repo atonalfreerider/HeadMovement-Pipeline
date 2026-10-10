@@ -53,10 +53,10 @@ def test_spent_counts_open_and_closed_rows(tmp_path, monkeypatch):
     assert abs(remote.remaining() - 0.2) < 0.01
 
 
-def test_default_cap_is_80(monkeypatch):
+def test_default_cap_is_101_7(monkeypatch):
     monkeypatch.delenv("DANCECAP_RUNPOD_CAP", raising=False)
-    assert remote.DEFAULT_CAP == 80.0  # raised by the user 2026-10-07
-    assert remote.cap() == 80.0
+    assert remote.DEFAULT_CAP == 101.7  # raised 2026-10-09 (was 80, raised by the user 2026-10-07)
+    assert remote.cap() == 101.7
 
 
 def test_create_args_request_direct_ssh(monkeypatch):
