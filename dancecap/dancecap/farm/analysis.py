@@ -153,6 +153,11 @@ def stitch_outputs(spec: DanceSpec) -> list[tuple[str, bool]]:
 # ----------------------------------------------------------------------------------------------- the stitch list
 
 
+def _margin_s(v) -> float | list:
+    """A chunk's edge margin for the stitch list: seconds for both ends, or a pair [first, last] (T1: the ends that face a boundary refit get more)."""
+    return [float(v[0]), float(v[1])] if isinstance(v, (list, tuple)) else float(v)
+
+
 def stitch_list(spec: DanceSpec, chunks: list, *, work_root: Path | None = None, partial: bool = True, worlds: dict | None = None,
                 ref_world: dict | None = None) -> dict:
     """The `dancecap.stitch --chunks` JSON for the dance: the reference span (larissa_kadu_38, reused bit for bit) and every
@@ -176,7 +181,7 @@ def stitch_list(spec: DanceSpec, chunks: list, *, work_root: Path | None = None,
         c = c if isinstance(c, dict) else c.to_dict()
         take = c["take"]
         e = {"name": c["id"], "src": f"{take}/smplx", "refined": f"{take}/{spec.refined_dir}", "k": [int(c["k0"]), int(c["k1"])],
-             "margin_s": float(st.get("edge_margin_s", 0.2)), "kind": "segment" if c.get("origin") == "s1" else "gap"}
+             "margin_s": _margin_s(c.get("margin_s", st.get("edge_margin_s", 0.2))), "kind": "segment" if c.get("origin") == "s1" else "gap"}
         wm = (worlds or {}).get(c["id"]) or {}
         for key in ("world_id", "pose_id"):
             if wm.get(key) or c.get(key):

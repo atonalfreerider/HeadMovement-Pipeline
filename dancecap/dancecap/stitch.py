@@ -182,6 +182,7 @@ class Spec:
     beats: Path | None = None
     tie_rel: float = 0.05
     tie_abs: float = 0.02           # in gate utilisation (1.0 = at the limit)
+    select_weights: dict = field(default_factory=dict)   # T1: {"arm": w, "fingers": w}: the window CHOICE counts those gates w times (w < 1: body / pelvis first); the gates themselves are unchanged
     min_points: int = 50            # visible landmarks (of 512) for a camera to count in n_cams
     absent_min_s: float = 1.0
     refit_s: float = 12.0
@@ -276,6 +277,11 @@ def spec_from_take(take: str, tag: str | None = None) -> Spec:
                 refit_s=float(st.get("refit_s", 12.0)))
 
 
+def _margin(v):
+    """A chunk's edge margin from the JSON list: seconds (both ends) or a pair [first, last] (T1, 2026-10-09: the ends that face a refit window get a bigger one)."""
+    return [float(v[0]), float(v[1])] if isinstance(v, (list, tuple)) else float(v)
+
+
 def spec_from_json(path: str | Path) -> Spec:
     path = Path(path)
     d = json.loads(path.read_text(encoding="utf-8"))
@@ -293,7 +299,7 @@ def spec_from_json(path: str | Path) -> Spec:
                 pass
         chunks.append(Chunk(c["name"], _wp(c["src"]), _wp(c["refined"]) if c.get("refined") else None,
                             int(k[0]) if k else None, int(k[1]) if k else None,
-                            float(c.get("margin_s", d.get("edge_margin_s", 0.2))), bool(c.get("reference", False)),
+                            _margin(c.get("margin_s", d.get("edge_margin_s", 0.2))), bool(c.get("reference", False)),
                             c.get("kind", "segment"), _wp(c["prepare"]) if c.get("prepare") else None,
                             _wp(c["ma_2d"]) if c.get("ma_2d") else None, world_id=wid, pose_id=pid))
     take = d["take"]
@@ -306,7 +312,7 @@ def spec_from_json(path: str | Path) -> Spec:
                 low_view=list(d.get("low_view", [])), out_raw=d.get("out_raw", "smplx"),
                 out_refined=d.get("out_refined", "smplx_rf2_noslip"),
                 beats=_wp(d["beats"]) if d.get("beats") else None, tie_rel=float(d.get("tie_rel", 0.05)),
-                tie_abs=float(d.get("tie_abs", 0.02)), min_points=int(d.get("n_cams_min_points", 50)),
+                tie_abs=float(d.get("tie_abs", 0.02)), select_weights=dict(d.get("select_weights", {})), min_points=int(d.get("n_cams_min_points", 50)),
                 absent_min_s=float(d.get("absent_min_s", 1.0)), refit_s=float(d.get("refit_s", 12.0)),
                 source_json=path)
 
@@ -332,7 +338,7 @@ def chunk_list(spec: Spec) -> dict:
         "take": spec.take, "anchor": spec.anchor, "hz": spec.hz, "blend_s": spec.blend_s, "edge_margin_s": spec.edge_margin_s,
         "gate_mm": spec.gate, "out_raw": spec.out_raw, "out_refined": spec.out_refined, "beats": _rel(spec.beats),
         "mono": spec.mono, "low_view": spec.low_view, **{f"{r}_absent": v for r, v in spec.absent.items()},
-        "tie_rel": spec.tie_rel, "tie_abs": spec.tie_abs, "n_cams_min_points": spec.min_points,
+        "tie_rel": spec.tie_rel, "tie_abs": spec.tie_abs, "select_weights": spec.select_weights, "n_cams_min_points": spec.min_points,
         "absent_min_s": spec.absent_min_s, "refit_s": spec.refit_s,
         **({"world_id": spec.world_id} if spec.world_id else {}), **({"pose_id": spec.pose_id} if spec.pose_id else {}),
         "chunks": [{"name": c.name, "src": _rel(c.src), "refined": _rel(c.refined),
@@ -449,10 +455,12 @@ def load_chunk(ch: Chunk, spec: Spec, want_refined: bool) -> Loaded:
             if len(ref[r]["t"]) != n or lattice_range(ref[r]["t"], spec.anchor, spec.hz, f"{ch.name} refined {r}") \
                     != (k0, k1):
                 raise ValueError(f"{ch.name}: refined {r} is not on the raw window k {k0}..{k1}")
-    m = int(round((ch.margin_s if ch.margin_s is not None else spec.edge_margin_s) * spec.hz))
+    ms = ch.margin_s if ch.margin_s is not None else spec.edge_margin_s
+    ms0, ms1 = (ms[0], ms[1]) if isinstance(ms, (list, tuple)) else (ms, ms)         # T1: a pair = (first, last) margin, a number = both
+    m0, m1 = int(round(ms0 * spec.hz)), int(round(ms1 * spec.hz))
     sha = {"raw": {r: sha256_file(Path(ch.src) / f"{r}.npz") for r in ROLES},
            "refined": {r: sha256_file(Path(ch.refined) / f"{r}.npz") for r in ROLES} if ref is not None else None}
-    return Loaded(ch, k0, k1, m, m, raw, ref, sha, warn)
+    return Loaded(ch, k0, k1, m0, m1, raw, ref, sha, warn)
 
 
 # ------------------------------------------------------------------------------------------------ rotations
@@ -780,13 +788,18 @@ def _choose_windows(spec: Spec, L: list, seams: list, J: dict, th: dict, beat_in
             sm.update(status="no_room", why="no room left after the previous seam's window")
             continue
         n = sm["n"]
+        th_sel = dict(th)                                           # the thresholds the CHOICE sees (select_weights), the gate keeps `th`
+        for key, name in (("arm", "elbow_wrist_p95"), ("fingers", "fingers_rel_wrist_p95")):
+            w = float(spec.select_weights.get(key, 1.0))
+            if w > 0:
+                th_sel[name] = th[name] / w
         dist = {}
         for r in ROLES:
             jp = J[r][sm["P"]][ov0 - P.k0:ov1 - P.k0]
             jn = J[r][sm["N"]][ov0 - N.k0:ov1 - N.k0]
             dist[r] = disagreement(jp, jn)
         los = np.arange(lo_min, lo_max + 1)
-        util = {r: np.array([utilisation(window_stats(*dist[r], slice(lo - ov0, lo - ov0 + n)), th) for lo in los])
+        util = {r: np.array([utilisation(window_stats(*dist[r], slice(lo - ov0, lo - ov0 + n)), th_sel) for lo in los])
                 for r in ROLES}
         worst = np.max([util[r] for r in ROLES], axis=0)
         worst = np.where(np.isfinite(worst), worst, np.inf)
@@ -825,7 +838,8 @@ def _choose_windows(spec: Spec, L: list, seams: list, J: dict, th: dict, beat_in
             chosen_phase = float(beat_phase(beats, centre_t[pick:pick + 1])[0])
         sm.update(lo=lo, hi=lo + n, centre_k=float(centre_k[pick]), centre_t=float(centre_t[pick]),
                   window_t=[float(spec.anchor + lo / spec.hz), float(spec.anchor + (lo + n - 1) / spec.hz)],
-                  utilisation=float(worst[pick]), best_utilisation=umin,
+                  utilisation=float(max(utilisation(window_stats(*dist[r], slice(lo - ov0, lo - ov0 + n)), th) for r in ROLES)),
+                  selection_utilisation=float(worst[pick]), select_weights=dict(spec.select_weights), best_utilisation=umin,
                   tie_break={"method": method, "n_tied": int(len(tied)), "tie_rel": spec.tie_rel, "tie_abs": spec.tie_abs,
                              "low_motion_phase": None if beat_info is None else beat_info["phase"],
                              "chosen_phase": chosen_phase, "local_motion_mps": round(float(mot[pick]), 4)},
@@ -1756,6 +1770,8 @@ def main(argv=None) -> int:
                     help="strict: exit 2 when a gate fails; report: exit 0 (stitch.json carries the verdict, the refit "
                          "windows and the rejected outputs; a pod job uses this so the results are pulled)")
     ap.add_argument("--allow-mixed-world", action="store_true", help="stitch chunks of different pose worlds (flagged)")
+    ap.add_argument("--select-weights", metavar="arm=W,fingers=W", help="T1: weigh the elbow / wrist and finger gates by W (< 1) when the blend window is CHOSEN, so "
+                                                                         "the body and pelvis gates decide first; the gates themselves are unchanged")
     ap.add_argument("--require-world", action="store_true", help="refuse chunks that carry no world_id")
     ap.add_argument("--write-chunks", metavar="FILE", help="write the chunk list JSON of this take and exit")
     ap.add_argument("--json", help="also write the report here")
@@ -1770,6 +1786,8 @@ def main(argv=None) -> int:
     if a.out:
         spec.work = _wp(a.out)
         spec.work_set = True
+    if a.select_weights:
+        spec.select_weights = {k.strip(): float(v) for k, v in (kv.split("=") for kv in a.select_weights.split(",") if kv.strip())}
     spec.allow_mixed_world = spec.allow_mixed_world or a.allow_mixed_world
     spec.require_world = spec.require_world or a.require_world
     if a.write_chunks:
