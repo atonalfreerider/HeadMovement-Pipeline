@@ -161,6 +161,7 @@ def create(name: str, *, gpu: str | None = None, cpu: str | None = None, vcpu: i
     """
     vol = volume_info()
     hard_minutes = float(hard_minutes or minutes)
+    owner = owner or os.environ.get("HM_POD_OWNER") or None      # C6 2026-10-10: a session labels its pods in the ledger without touching every caller
     remote.ensure_ssh_key()
     env = _env_for(name, minutes, hard_minutes, autostart, kinds, max_jobs, idle_min, post_grace_min, extra_env, price)
     t_create = time.time()
