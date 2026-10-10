@@ -135,3 +135,27 @@ title = "Slow down, then music"
 segment = "ch12_01_open"
 offset_s = 0.3
 
+
+# The Jack & Jill heat of Carlos and Aline (capture 07_CarlosAline): a film without narration. [carlos_aline.heat] makes `film_library build
+# --carlos-aline` write its auto-direction first (dancecap/film_heat.py: film time = dance time, the capture's own soundtrack is the mix, a slow
+# orbit in front of the room's wall, an overhead floor-craft view every ~28 s, the zouk beat counter while a song plays). Its chapters are the song
+# structure (song/segments.json timeline, one per state: the titles below are keyed by state). Camera keys of film_heat.DEFAULTS may be set here.
+[carlos_aline]
+id = "carlos_aline"
+title = "Carlos + Aline"
+subtitle = "Jack & Jill heat, Zouk SEA 2019: the whole dance in 3D, with the two songs of the heat"
+capture = "07_CarlosAline"
+direction = "dancecap/work/carlos_aline/film/direction.json"
+thumbnail = "dancecap/work/carlos_aline/film/review/card_thumb.jpg"   # a clean 3D frame of the two avatars in the room, no text
+
+[carlos_aline.heat]
+name = "carlos_aline"
+take = "carlos_aline"
+songs = "dancecap/work/carlos_aline/song/segments.json"
+
+[carlos_aline.heat.titles]
+entrance = "Entrance and announcement"
+kojo = "First song: Kojo Funds"
+mix = "DJ mix"
+guetta = "Second song: David Guetta"
+end = "Bow and applause"
