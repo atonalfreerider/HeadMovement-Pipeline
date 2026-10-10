@@ -227,6 +227,12 @@ def cmd_plan(a) -> int:
     from . import world as W
     from .timeline import DanceSpec
     spec = DanceSpec.load(a.dance)
+    if C.chunk_params(spec)["profile"]:   # a take that names its own planner profile (takes/larissa_kadu_recap.toml [chunks] profile = "recap")
+        if C.chunk_params(spec)["profile"] == "carlos_aline":   # C3: two moving cameras, 2D poses from the pipeline's own detector (farm/ca_profile.py)
+            from . import ca_profile as CAPf
+            return CAPf.cmd_plan(a, spec)
+        from . import recap_profile as RPf
+        return RPf.cmd_plan(a, spec)
     try:
         w = W.load(a.dance)
     except W.WorldError as e:
