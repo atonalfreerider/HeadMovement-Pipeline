@@ -54,6 +54,7 @@ from __future__ import annotations
 import argparse
 import colorsys
 import json
+import re
 import time
 from pathlib import Path
 
@@ -581,6 +582,45 @@ def apply_geometry(shoes: dict, take_cfg: dict) -> list[str]:
     return changed
 
 
+_HEX_COLOUR = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def apply_override(shoes: dict, override: dict) -> list[str]:
+    """Set work/<take>/avatar/shoes_override.json ({"<role>": {"<field>": "#rrggbb" | number | style}}, the owner's decisions: "Larissa's
+    shoes are white, Kadu's are black") on a shoes.json dict in place. build() applies the same file while it samples; every export applies
+    it again, so a seeded or re-sampled shoes.json cannot drift from the decision and `--export-only` picks a change up. Colours are
+    validated; a numeric field is one of the style's numbers. -> changed 'role.field' names."""
+    changed = []
+    for r, ov in (override or {}).items():
+        d = (shoes.get("dancers") or {}).get(r)
+        if d is None or not isinstance(ov, dict):
+            continue
+        for f, v in ov.items():
+            if f == "style":
+                if v not in STYLES:
+                    raise ValueError(f"{r}: unknown shoe style {v!r} ({'|'.join(STYLES)})")
+            elif f in FIELDS:
+                if not isinstance(v, str) or not _HEX_COLOUR.match(v):
+                    raise ValueError(f"{r}: shoes_override {f} must be a \"#rrggbb\" colour, got {v!r}")
+                v = v.lower()
+            elif f in STYLES["neutral"]:
+                v = float(v)
+            else:
+                raise ValueError(f"{r}: shoes_override key {f!r} is not a colour field, a style number or 'style'")
+            if d.get(f) != v:
+                changed.append(f"{r}.{f}")
+            d[f] = v
+            if f in FIELDS:
+                d.setdefault("source", {})[f] = "override (shoes_override.json: owner decision)"
+                d.setdefault("confidence", {})[f] = 1.0
+    return changed
+
+
+def read_override(take) -> dict:
+    p = take.work / "avatar" / "shoes_override.json"
+    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+
+
 def captures_for(take: str, streaming: Path = UNITY_STREAMING) -> list[Path]:
     out = []
     for d in sorted(Path(streaming).iterdir()) if Path(streaming).exists() else []:
@@ -778,6 +818,7 @@ def export(take: Take, capture: str | None = None, streaming: Path = UNITY_STREA
         raise FileNotFoundError(f"{src} missing (run python -m dancecap.shoes {take.name})")
     shoes = json.loads(src.read_text(encoding="utf-8"))
     apply_geometry(shoes, getattr(take, "cfg", None) or {})
+    apply_override(shoes, read_override(take))
     text = json.dumps(shoes, indent=1)
     dirs = [Path(streaming) / capture] if capture else captures_for(take.name, streaming)
     out = []

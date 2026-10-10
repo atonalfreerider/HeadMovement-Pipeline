@@ -282,6 +282,9 @@ def validate(cap: Path, take: Take, report: dict | None = None) -> dict:
     want_hidden = resolve_role_hidden(take.name)   # takes/<take>.toml [export] role_hidden (muted-role spans + fade-in, capture seconds)
     check("role_hidden as configured", (man.get("role_hidden") or None) == want_hidden,
           {"configured": want_hidden, "recorded": man.get("role_hidden")})
+    from .export_unity import resolve_props
+    want_props = resolve_props(take.name)   # takes/<take>.toml [dancers.<role>.props.<kind>] (head-worn props: the headset), written by the exporter
+    check("props as configured", (man.get("props") or None) == want_props, {"configured": want_props, "recorded": man.get("props")})
     if report:
         for r, d in (report.get("dancers") or {}).items():
             check(f"{r} FK vs npz joints", d["fk_max_err_mm"] < 10.0, f"{d['fk_max_err_mm']} mm")

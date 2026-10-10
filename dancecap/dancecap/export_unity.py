@@ -21,6 +21,8 @@ Files written (all little-endian):
   timing.json             Unity subset of timing/timing.json (+ per-frame |jerk| of the SMPL-24 joints from the
                           kinematics spline) in reference seconds
   physics.json            copy of physics/physics.json (world frame; Unity converts (x,y,z) -> (x,y,-z))
+  (capture.json also carries, from the take TOML: floor_yaw_deg [export], role_hidden [export], props [dancers.<role>.props.<kind>]: head-worn
+   props such as the teacher's headset microphone, built by the viewer on the head mesh - resolve_props)
 
   <role>_albedo.png       photoreal albedo (copy of work/<take>/avatar/<role>_albedo.png, SMPL-X UV layout) when the
                           texture stage ran; the skin is split at the UV seams so it can carry it (skin version 2)
@@ -699,6 +701,112 @@ def resolve_role_hidden(take: str, toml: Path | None = None) -> dict | None:
     return out or None
 
 
+# Head-worn props (owner 2026-10-09: the teacher's performance headset): takes/<take>.toml [dancers.<role>.props.<kind>] -> capture.json
+# "props" (a list of { role, kind, ...parameters }, one entry per role and kind) -> Assets/Avatar/HeadProps.cs builds the geometry on the
+# avatar's head when the capture loads, anchored to the actual (face-edited) head mesh. Roles only, never names. The defaults below are
+# the ones the viewer uses for a missing key (HeadProps.cs, VIEWER_SPEC 3.2b); an entry is written with all of them so a capture.json is
+# self-describing. Lengths are metres, colours "#rrggbb" (sRGB).
+HEADSET_DEFAULTS = {
+    "side": "left",                  # the dancer's OWN left | right ear / cheek
+    "boom_thickness_m": 0.0024,      # the thin boom's diameter
+    "standoff_m": 0.006,             # the boom's axis above the skin along the cheek
+    "bow_m": 0.004,                  # extra standoff at the middle of the boom (a stiff boom bows away from the cheek)
+    "capsule_length_m": 0.026,       # the microphone capsule (foam windscreen)
+    "capsule_radius_m": 0.0078,
+    "hook": True,                    # the ear hook over the top of the ear
+    "hook_thickness_m": 0.0024,
+    "colour": "#0e0d0d",             # the capsule
+    "boom_colour": "#c4bbb2",
+    "hook_colour": "#c4bbb2",
+    "opacity_boost": 0.15,           # added to the avatar's displayed opacity (smoothstep ramp), like the hair's +0.15; 0 = the avatar's own
+}
+# boom_length_m (arc length from the ear hook to the capsule centre; omitted = the boom reaches the mouth corner) and boom_path (a list of
+# [x, y, z] metres in the ear-anchored head frame: x outward, y up, z forward; omitted = the surface-following default path) are optional.
+HEADSET_NUMBERS = {"boom_thickness_m": (0.0005, 0.01), "standoff_m": (0.0, 0.05), "bow_m": (0.0, 0.05), "capsule_length_m": (0.005, 0.06),
+                   "capsule_radius_m": (0.002, 0.03), "hook_thickness_m": (0.0005, 0.01), "opacity_boost": (0.0, 1.0),
+                   "boom_length_m": (0.02, 0.3)}
+HEADSET_COLOURS = ("colour", "boom_colour", "hook_colour")
+PROP_KINDS = {"headset": {"defaults": HEADSET_DEFAULTS, "numbers": HEADSET_NUMBERS, "colours": HEADSET_COLOURS,
+                          "extra": ("enabled", "boom_length_m", "boom_path")}}
+_HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def resolve_props(take: str, toml: Path | None = None) -> list[dict] | None:
+    """takes/<take>.toml [dancers.<role>.props.<kind>] (kind: headset) -> the capture.json "props" list, or None (no prop configured).
+
+        [dancers.follow.props.headset]      # the headset microphone: ear hook, thin boom along the cheek, capsule at the mouth corner
+        side = "left"                       # optional keys, see HEADSET_DEFAULTS; enabled = false drops the prop
+
+    Entries are in role order (lead, follow), then kind name; each carries every parameter (defaults filled in). A key the kind does not
+    know, a colour that is not "#rrggbb" or a number out of range raises ValueError (a typo must not silently draw a default headset)."""
+    toml = Path(toml) if toml else PACKAGE_ROOT / "takes" / f"{take}.toml"
+    if not toml.exists():
+        return None
+    import tomllib
+    dancers = tomllib.loads(toml.read_text(encoding="utf-8")).get("dancers") or {}
+
+    def num(x) -> bool:
+        return isinstance(x, (int, float)) and not isinstance(x, bool) and bool(np.isfinite(x))
+
+    out: list[dict] = []
+    for role in ROLES:
+        props = (dancers.get(role) or {}).get("props")
+        if props is None:
+            continue
+        where = f"{toml.name} [dancers.{role}.props"
+        if not isinstance(props, dict):
+            raise ValueError(f"{where}] must be a table of kinds like [dancers.{role}.props.headset], got {props!r}")
+        for kind in sorted(props):
+            spec = PROP_KINDS.get(kind)
+            if spec is None:
+                raise ValueError(f"{where}.{kind}]: unknown prop kind (known: {', '.join(sorted(PROP_KINDS))})")
+            cfg = props[kind]
+            w = f"{where}.{kind}]"
+            if not isinstance(cfg, dict):
+                raise ValueError(f"{w} must be a table, got {cfg!r}")
+            unknown = sorted(set(cfg) - set(spec["defaults"]) - set(spec["extra"]))
+            if unknown:
+                raise ValueError(f"{w}: unknown key(s) {unknown} (known: {sorted(set(spec['defaults']) | set(spec['extra']))})")
+            enabled = cfg.get("enabled", True)
+            if not isinstance(enabled, bool):
+                raise ValueError(f"{w}: enabled must be true or false, got {enabled!r}")
+            if not enabled:
+                continue
+            row: dict = {"role": role, "kind": kind}
+            for key, default in spec["defaults"].items():
+                v = cfg.get(key, default)
+                if key == "side":
+                    if v not in ("left", "right"):
+                        raise ValueError(f"{w}: side must be \"left\" or \"right\" (the dancer's own side), got {v!r}")
+                elif key == "hook":
+                    if not isinstance(v, bool):
+                        raise ValueError(f"{w}: hook must be true or false, got {v!r}")
+                elif key in spec["colours"]:
+                    if not isinstance(v, str) or not _HEX.match(v):
+                        raise ValueError(f"{w}: {key} must be a \"#rrggbb\" colour, got {v!r}")
+                    v = v.lower()
+                else:
+                    lo, hi = spec["numbers"][key]
+                    if not num(v) or not lo <= float(v) <= hi:
+                        raise ValueError(f"{w}: {key} must be a number in [{lo}, {hi}], got {v!r}")
+                    v = float(v)
+                row[key] = v
+            if "boom_length_m" in cfg:
+                lo, hi = spec["numbers"]["boom_length_m"]
+                v = cfg["boom_length_m"]
+                if not num(v) or not lo <= float(v) <= hi:
+                    raise ValueError(f"{w}: boom_length_m must be a number in [{lo}, {hi}] metres, got {v!r}")
+                row["boom_length_m"] = float(v)
+            if "boom_path" in cfg:
+                p = cfg["boom_path"]
+                if (not isinstance(p, list) or not 2 <= len(p) <= 12
+                        or not all(isinstance(q, (list, tuple)) and len(q) == 3 and all(num(c) and abs(c) <= 0.25 for c in q) for q in p)):
+                    raise ValueError(f"{w}: boom_path must be 2-12 points [x, y, z] in metres (|c| <= 0.25), got {p!r}")
+                row["boom_path"] = [[float(c) for c in q] for q in p]
+            out.append(row)
+    return out or None
+
+
 PARK_DEPTH_M = 30.0
 
 
@@ -805,6 +913,9 @@ def export(take: str, capture: str | None = None, model: Path | None = None, aud
     role_hidden = resolve_role_hidden(take)
     if role_hidden:
         manifest["role_hidden"] = role_hidden   # capture-clock spans a role is hidden in, with a fade-in after each (see resolve_role_hidden)
+    props = resolve_props(take)
+    if props:
+        manifest["props"] = props   # head-worn props per role (the headset): built by the viewer on the head mesh (see resolve_props)
     edit_cfg = {}
     if shape_edits:
         from . import shape_edits as se
