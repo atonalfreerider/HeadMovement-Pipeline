@@ -160,7 +160,7 @@ def _split_run(run: list[dict], split_gap: float, max_len: float) -> list[list[d
 
 
 def plan_pieces(words: list[dict], *, open_end: float, duration: float, split_gap: float = SPLIT_GAP_S, max_len: float = MAX_PIECE_S,
-                min_len: float = MIN_PIECE_S, pad: float = PAD_S) -> tuple[list[Piece], list[dict]]:
+                min_len: float = MIN_PIECE_S, pad: float = PAD_S, split_fn=None) -> tuple[list[Piece], list[dict]]:
     """(pieces to convert, kept-original stretches [{t0, t1, speaker, why}]). Words before `open_end` or before 0 are original; a word of a teacher
     that overlaps a word of the other teacher keeps the original in the overlap (the piece around it is still converted, the overlap window is
     marked `keep`); a stretch of speech shorter than `min_len` stays original."""
@@ -176,7 +176,7 @@ def plan_pieces(words: list[dict], *, open_end: float, duration: float, split_ga
     ov = overlap_intervals(body)
     pieces: list[Piece] = []
     for run in _runs(body):
-        for part in _split_run(run, split_gap, max_len):
+        for part in (split_fn(run) if split_fn else _split_run(run, split_gap, max_len)):
             w0, w1 = part[0]["t0"], part[-1]["t1"]
             if w1 - w0 < min_len:
                 kept.append({"t0": round(w0, 3), "t1": round(w1, 3), "speaker": part[0]["speaker"],

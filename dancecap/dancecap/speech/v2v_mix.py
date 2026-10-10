@@ -54,6 +54,16 @@ def speech_level_db(x: np.ndarray, sr: int = SR, floor_db: float = -55.0) -> flo
     return float(np.percentile(e, 90)) if len(e) else -120.0
 
 
+def active_level_db(x: np.ndarray, sr: int = SR, span_db: float = 25.0) -> float:
+    """power-mean level (dB) of the 50 ms frames within `span_db` of the loudest frame: the level of the speech itself, stable also for a piece of two words
+    (the 90th percentile of v2v's `speech_level_db` jumps with the number of frames)"""
+    e = frame_rms_db(x, 0.05, sr)
+    if len(e) == 0 or e.max() < -90:
+        return -120.0
+    sel = e[e >= e.max() - span_db]
+    return float(10.0 * np.log10(np.mean(10.0 ** (sel / 10.0))))
+
+
 def cos_fade(n: int, k: int) -> np.ndarray:
     """a window of n samples that rises over k samples, stays 1, falls over k samples (raised cosine)"""
     k = min(k, n // 2)
@@ -179,7 +189,7 @@ def load_decisions(path: Path | None = None) -> dict:
 
 
 def assemble(pieces: list[V.Piece], kept: list[dict], decisions: dict, *, orig_path: Path, out_wav: Path, stems_dir: Path, report_path: Path,
-             bed_below_db: float = BED_BELOW_SPEECH_DB, bed_duck_db: float = BED_DUCK_DB, pre_dir: str = "pre", log=print) -> dict:
+             bed_below_db: float = BED_BELOW_SPEECH_DB, bed_duck_db: float = BED_DUCK_DB, pre_dir: str = "pre", log=print, loader=None) -> dict:
     """decisions {piece id: {"variant": name | None, "cam": phone}}: None = the cleaned original (best phone, light denoise) for that piece. Both kinds go into the
     speaking teacher's stem; the `original` stem holds only the class mix kept as it was (opening, overlaps of the two voices, too-short stretches)."""
     orig, sr = sf.read(str(orig_path), dtype="float32", always_2d=True)
@@ -196,6 +206,24 @@ def assemble(pieces: list[V.Piece], kept: list[dict], decisions: dict, *, orig_p
         d = decisions.get(p.id) or {}
         v = d.get("variant")
         i0 = int(round(p.t0 * SR))
+        if loader is not None:                                     # V2: the caller supplies each piece's audio: (x, label, converted) or None = the class mix as it was
+            got = loader(p, d)
+            if got is None:
+                orig_spans.append((p.t0, p.t1))
+                rows.append({"id": p.id, "speaker": p.speaker, "t0": p.t0, "t1": p.t1, "source": "original (class mix)", "why": d.get("why")})
+                continue
+            x, label, is_conv = got
+            a0, a1 = max(0, int(round((p.w0 - p.t0) * SR))), int(round((p.w1 - p.t0) * SR))
+            lvl = active_level_db(x[a0:a1] if a1 - a0 > SR // 4 else x)     # the level of the WORDS of the piece (not of its padding)
+            g = float(np.clip(target_db - 3.2 - lvl, -20.0, 20.0))     # 3.2 dB = the measured difference P90 level - active level of the words
+            y = x * (10 ** (g / 20.0))
+            for a, b in p.keep:
+                j0, j1 = int(round((a - p.t0) * SR)), int(round((b - p.t0) * SR))
+                y[max(j0, 0):max(j1, 0)] = 0.0
+                orig_spans.append((a, b))
+            place(stems["larissa" if p.speaker == "Larissa" else "kadu"], y, i0, fb if is_conv else int(ORIG_FADE_S * SR / 2))
+            rows.append({"id": p.id, "speaker": p.speaker, "t0": p.t0, "t1": p.t1, "w0": p.w0, "w1": p.w1, "source": label, "gain_db": round(g, 2), "keep": p.keep, "why": d.get("why")})
+            continue
         if v:
             x, _ = sf.read(str(V.V2V / "aligned" / v / f"{p.id}.wav"), dtype="float32")
             g = float(np.clip(target_db - speech_level_db(x), -9.0, 9.0))
