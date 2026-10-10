@@ -66,6 +66,8 @@ import json
 from pathlib import Path
 
 import cv2
+import os
+
 import numpy as np
 
 UPPER_JOINTS = (6, 9, 12, 13, 14, 16, 17)  # spine2, spine3, neck, collars, shoulders (SMPL-X joint ids)
@@ -851,7 +853,11 @@ def lab_of(srgb: np.ndarray) -> np.ndarray:
 
 def red_cast(lab: np.ndarray) -> np.ndarray:
     """Hair-coloured (red / maroon / pink hair-over-white) in CIELAB: a* > 9 and a* - b* > 3. Her skin has b* > a*,
-    the white top and jeans a* < 9 (calibrated on the follow's crown 90 %, forearms 3 %, lead upper body 0.2 %)."""
+    the white top and jeans a* < 9 (calibrated on the follow's crown 90 %, forearms 3 %, lead upper body 0.2 %).
+    HM_RED_TOP=1 (carlos_aline, C7): the follow's TOP is red and her hair black, so a red-cast texel is cloth, not leaked hair: the rule is off
+    (the guards then rest on the hair evidence alone: fill_guards' ev_bad, the hair masks); the recap / demo leave it unset."""
+    if os.environ.get("HM_RED_TOP") == "1":
+        return np.zeros(len(lab), bool)
     return (lab[:, 1] > 9) & (lab[:, 1] - lab[:, 2] > 3)
 
 
