@@ -94,7 +94,7 @@ STAGES: tuple[CA.Stage, ...] = (
              ("avatar/{lead,follow}_albedo.png",), "0 (~1 min)", "per-texel confidence-weighted fusion of the window bakes (only the visible side of a window is textured)"),
     CA.Stage("face-texture", True, "local", "face-texture [--composite]", ("avatar/{lead,follow}_albedo.png", "smplx", "lead portrait"),
              ("avatar/{lead,follow}_albedo_face.png",), "0 (~9 min CPU)", "the lead's portrait composited onto the bake; the follow's face from the video"),
-    CA.Stage("hair-groom", True, "local", "hair-groom [--from-take larissa_kadu_full]", ("smplx/follow.npz", "[avatar/follow_albedo_face.png]", "avatar/hair_palette.json", "[dancers.follow] hair_style"),
+    CA.Stage("hair-groom", True, "local", "hair-groom --from-take <donor take>", ("smplx/follow.npz", "[avatar/follow_albedo_face.png]", "avatar/hair_palette.json", "[dancers.follow] hair_style"),
              ("avatar/hair_groom.json",), "0 (~1 min)", "the ponytail groom: a donor take's roots re-based on her rest model, hair_ponytail restyle, her palette"),
     CA.Stage("shoes", True, "local", "shoes", ("capture", "avatar/shoes_override.json", "avatar/shoes_video.json"), ("avatar/shoes.json",), "0 (<1 min)",
              "sample + apply the colours / style override"),
@@ -775,7 +775,7 @@ def stage_head_review() -> dict:
 
 # ------------------------------------------------------------------------------------------------ stage: hair-groom (pose-dependent: needs her rest model)
 
-def stage_hair_groom(from_take: str = "larissa_kadu_full") -> dict:
+def stage_hair_groom(from_take: str) -> dict:
     """avatar/hair_groom.json of the follow: a donor take's groom (roots = SMPL-X vertex ids + barycentrics, measured data) re-based onto HER rest model
     (smplx/follow.npz), then dancecap.hair_ponytail's restyle ([dancers.follow] hair_style = "ponytail": tie, tail, cards, dynamics) and her palette
     (avatar/hair_palette.json). Not exported here: the demo export copies it (`python -m dancecap.hair_groom john_lula --export-only` after a re-export)."""
@@ -833,7 +833,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--min-start-gap", type=float, default=14.0)
     sub.add_parser("head-review")
     p = sub.add_parser("hair-groom")
-    p.add_argument("--from-take", default="larissa_kadu_full", help="donor take with an avatar/hair_groom.json (roots, measured data)")
+    p.add_argument("--from-take", required=True, help="donor take with an avatar/hair_groom.json (roots, measured data)")
     a = ap.parse_args(argv)
     if a.cmd == "plan":
         plan(a.json)
