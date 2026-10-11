@@ -234,7 +234,8 @@ def test_nothing_crashes_with_no_steps():
     inp = rh.synthetic_inputs("on_beat")
     inp.steps = {"lead": [], "follow": []}
     d = rh.run_analysis(inp, CFG, with_sensitivity=True)
-    assert math.isfinite(d["final"]["score"]) and d["final"]["score"] <= 55
+    assert d["final"]["score"] is None or (math.isfinite(d["final"]["score"]) and d["final"]["score"] <= 55)
+    json.dumps(d, allow_nan=False)                                     # unknown values are null, never NaN
 
 
 def test_install_writes_the_viewers_copy_and_names_it_in_capture_json(tmp_path):
