@@ -467,12 +467,12 @@ def make_loader(final: dict):
 
 
 def assemble_regen(pieces: list[V.Piece], kept: list[dict], final: dict, out_wav: Path, stems_dir: Path, report_path: Path, *, open_end: float,
-                   bed_below_db: float = BED_BELOW_SPEECH_DB) -> dict:
+                   bed_below_db: float = BED_BELOW_SPEECH_DB, events: list[dict] | None = None, event_gain_db: float = 0.0) -> dict:
     from .. import film_recap_audio as fa
     from . import v2v_mix as M
     dec = {pid: {"variant": f["tag"], "use": f["kind"], "why": f["flag"] or f"regenerated ({f['kind']})"} for pid, f in final.items()}
     return M.assemble(pieces, kept, dec, orig_path=fa.AUDIO / "class_mix.wav", out_wav=out_wav, stems_dir=stems_dir, report_path=report_path, loader=make_loader(final),
-                      bed_below_db=bed_below_db, bed_speech_spans=bed_speech_spans(open_end))
+                      bed_below_db=bed_below_db, bed_speech_spans=bed_speech_spans(open_end), events=events, event_gain_db=event_gain_db)
 
 
 # ------------------------------------------------------------------------------------------------ verification of a finished mix (the ASR and the embeddings run on the pod)

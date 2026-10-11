@@ -537,6 +537,7 @@ def apply_owner_opening(words: list[dict], opening: dict, names: set[str], raw: 
 
         {"segments": [{"start": 1.2, "end": 3.4, "speaker": "Larissa", "text": "Hello!"}, ...],     # in time order; text may hold inline emoji tokens
          "emoji": [{"t": 3.2, "speaker": "Larissa", "t1": 3.6, "joke": "name"}],                  # the laugh tokens the owner wants (none listed = none in the text)
+         # a segment may also carry "word_times": [[start, end], ...] (one per spoken word, increasing): used instead of the engines / the share of the window
          "from": 1.2, "until": 8.5,                                                              # optional: the stretch that is replaced (default: the segments + emoji)
          "conf": 0.95, "interjection": ..., "chapter_summary": "...", "note": "..."}              # all optional
 
@@ -572,7 +573,14 @@ def apply_owner_opening(words: list[dict], opening: dict, names: set[str], raw: 
         v, nm = voice_name(sg.get("speaker"))
         toks = parse_text(str(sg["text"]), names)
         run = [t for t in toks if t["kind"] != "event"]
-        place_run(run, float(sg["start"]), float(sg["end"]), raw)
+        wt = sg.get("word_times")
+        if wt is not None:                                  # the owner's words with their own times (a forced alignment of the known text): [[start, end], ...], one per spoken token
+            if len(wt) != len(run) or any(not (float(b) > float(a)) for a, b in wt) or any(float(wt[i][0]) < float(wt[i - 1][0]) for i in range(1, len(wt))):
+                raise ValueError(f"owner_opening segment {sg!r}: word_times needs one increasing [start, end] per word ({len(run)} words)")
+            for t, (a, b) in zip(run, wt):
+                t["start"], t["end"], t["time_src"] = float(a), float(b), "owner"
+        else:
+            place_run(run, float(sg["start"]), float(sg["end"]), raw)
         left = voice_name(segs[si - 1].get("speaker"))[1] if si > 0 else prev_sp
         right = voice_name(segs[si + 1].get("speaker"))[1] if si + 1 < len(segs) else next_sp
         inter = bool(sg["interjection"]) if "interjection" in sg else bool(left is not None and left == right and left != nm)
@@ -612,10 +620,11 @@ def _cap(t: str) -> str:
     return t[:1].upper() + t[1:] if t else t
 
 
-def render(words: list[dict], clean: bool = False, mark_below: float | None = None) -> str:
-    """Display text of a run of words: a capital after . ? ! (and at the start), punctuation after each word, laugh tokens inline; clean = no events and no fillers."""
+def render(words: list[dict], clean: bool = False, mark_below: float | None = None, cap_first: bool = True) -> str:
+    """Display text of a run of words: a capital after . ? ! (and at the start unless cap_first is False: an utterance that continues a sentence the previous
+    utterance left open), punctuation after each word, laugh tokens inline; clean = no events and no fillers."""
     parts: list[str] = []
-    cap = True
+    cap = cap_first
     for w in words:
         if w["kind"] == "event":
             if not clean:
@@ -682,6 +691,7 @@ def build_structure(words: list[dict], naming_conf: float, breaks: tuple | list 
                 ulist.append(cur)
         uids = []
         base_id, letter = None, 0
+        open_sentence = False                       # the previous utterance of this turn ended without . ? ! (a pause or a forced break split it): no capital at the start of this one
         for ui, u in enumerate(ulist):
             us = [w for w in u if w["kind"] != "event"]
             if not us:
@@ -699,12 +709,15 @@ def build_structure(words: list[dict], naming_conf: float, breaks: tuple | list 
                 uid += 1
             row = {
                 "id": this_id, "turn": tid, "speaker": name, "voice": voice, "start": round(min(w["start"] for w in u), 3), "end": round(max(w["end"] for w in u), 3),
-                "text": render(u), "text_clean": render(u, clean=True), "conf_mean": round(sum(confs) / len(confs), 3), "conf_min": round(min(confs), 3),
+                "text": render(u, cap_first=not open_sentence), "text_clean": render(u, clean=True, cap_first=not open_sentence), "conf_mean": round(sum(confs) / len(confs), 3), "conf_min": round(min(confs), 3),
                 "n_words": len([w for w in us if w["kind"] == "word"]), "flags": flags, "events": [e["text"] for e in ev], "pre_roll": bool(us[-1]["end"] <= 0.0),
                 "words": [slim_word(w) for w in u],
             }
             if continues:
                 row["continues"] = continues           # the same sentence as `continues`, split by an utterance break (structure only)
+            if open_sentence:
+                row["cap_first"] = False               # the renderers (text, captions, review) start this utterance in lower case
+            open_sentence = us[-1]["punct"] not in SENTENCE_END
             utts.append(row)
             uids.append(this_id)
         allc = [w["conf"] for w in spoken]

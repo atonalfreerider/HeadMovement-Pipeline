@@ -202,9 +202,12 @@ def load_decisions(path: Path | None = None) -> dict:
 
 def assemble(pieces: list[V.Piece], kept: list[dict], decisions: dict, *, orig_path: Path, out_wav: Path, stems_dir: Path, report_path: Path,
              bed_below_db: float = BED_BELOW_SPEECH_DB, bed_duck_db: float = BED_DUCK_DB, pre_dir: str = "pre", log=print, loader=None,
-             bed_speech_spans: list[tuple[float, float]] | None = None) -> dict:
+             bed_speech_spans: list[tuple[float, float]] | None = None, events: list[dict] | None = None, event_gain_db: float = 0.0, event_fade_s: float = 0.16) -> dict:
     """decisions {piece id: {"variant": name | None, "cam": phone}}: None = the cleaned original (best phone, light denoise) for that piece. Both kinds go into the
-    speaking teacher's stem; the `original` stem holds only the class mix kept as it was (opening, overlaps of the two voices, too-short stretches)."""
+    speaking teacher's stem; the `original` stem holds only the class mix kept as it was (opening, overlaps of the two voices, too-short stretches).
+    `events` (agent O1) = [{t0, t1, ...}]: stretches of the ORIGINAL class mix without speech (the room's laughter) cut in as events at their own time with
+    raised-cosine ramps of `event_fade_s` and the gain `event_gain_db` (the level the original speech had when it was kept); they go into the `original` stem and
+    the bed is absent under them."""
     orig, sr = sf.read(str(orig_path), dtype="float32", always_2d=True)
     assert sr == SR and orig.shape[1] == 2, (sr, orig.shape)
     n = len(orig)
@@ -270,6 +273,9 @@ def assemble(pieces: list[V.Piece], kept: list[dict], decisions: dict, *, orig_p
     lv_o = speech_level_db(om[mask_speech]) if mask_speech.any() else None
     g_o = float(np.clip(overall - lv_o, -12.0, 12.0)) if lv_o is not None else 0.0
     orig_stem = orig * mask[:, None] * (10 ** (g_o / 20.0))
+    ev_mask = smooth_mask(n, [(e["t0"], e["t1"]) for e in events], event_fade_s) if events else np.zeros(n, np.float32)
+    orig_stem = orig_stem + orig * ev_mask[:, None] * (10 ** (event_gain_db / 20.0))
+    mask = np.maximum(mask, ev_mask)
     # 3) the bed: room tone in the colour of the original, ducked under speech, absent where the original itself plays
     bed = room_tone(orig, n, speech_spans=bed_speech_spans)
     bed_rms = float(np.sqrt((bed.astype(np.float64) ** 2).mean()))
@@ -294,7 +300,7 @@ def assemble(pieces: list[V.Piece], kept: list[dict], decisions: dict, *, orig_p
     final = fa.measure_loudness(out_wav)
     rep = {"schema": "dancecap.speech/1/v2v_mix", "length_s": round(n / SR, 3), "rate": SR, "channels": 2, "orig": str(orig_path.name),
            "pieces": rows, "converted": sum(1 for r in rows if str(r["source"]).startswith("converted")), "original_pieces": sum(1 for r in rows if str(r["source"]).startswith("original")),
-           "kept_original": kept, "speech_target_db": {k: (None if v is None else round(v, 2)) for k, v in target.items()}, "original_gain_db": round(g_o, 2),
+           "kept_original": kept, "events": events or [], "event_gain_db": event_gain_db, "speech_target_db": {k: (None if v is None else round(v, 2)) for k, v in target.items()}, "original_gain_db": round(g_o, 2),
            "bed": {"below_speech_db": bed_below_db, "duck_db": bed_duck_db, "level_db": round(speech_ref - bed_below_db, 2)},
            "loudness": lrep, "final": final, "sample_peak_db": round(fa.sample_peak_db(y), 2)}
     report_path.write_text(json.dumps(rep, indent=1, ensure_ascii=False), encoding="utf-8")

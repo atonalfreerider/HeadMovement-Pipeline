@@ -517,7 +517,7 @@ def test_utterance_break_splits_a_sentence_without_changing_a_word_or_an_id():
     assert [u["id"] for u in plain["utterances"]] == ["u000", "u001"]
     assert [u["id"] for u in cut["utterances"]] == ["u000", "u000b", "u001"]                 # the other ids stay what they were
     first, second = cut["utterances"][0], cut["utterances"][1]
-    assert first["text"] == "So we start" and second["text"] == "With the counterbalance" and second["continues"] == "u000" and "continues" not in first
+    assert first["text"] == "So we start" and second["text"] == "with the counterbalance" and second["cap_first"] is False and second["continues"] == "u000" and "continues" not in first
     assert cut["turns"][0]["utterances"] == ["u000", "u000b"] and cut["turns"][0]["n_words"] == plain["turns"][0]["n_words"]
     assert FX.build_captions(cut)["captions"][0]["utterance"] == "u000"
 
@@ -553,6 +553,34 @@ def test_owner_opening_replaces_the_stretch_with_the_owners_words_speakers_and_e
     row = final["adjudication"]["spans"][0]
     assert row["owner_resolved"] and row["decision"] == "owner" and not row["needs_owner"] and row["editor_text"] == "we start with" and "unclear" not in row["flags"]
     assert final["stats"]["spans_needs_owner"] == 0 and final["stats"]["spans_unclear"] == 0 and final["stats"]["spans_owner_resolved"] == 1 and final["proofread_first"] == []
+
+
+def test_owner_opening_word_times_replace_the_estimate_and_are_validated():
+    c = mk_consensus()
+    seg = {"start": 10.0, "end": 12.0, "speaker": "Larissa", "text": "Hi, I'm Kadu and this is Larissa!", "word_times": [[10.0, 10.2], [10.3, 10.5], [10.5, 10.9], [11.2, 11.3], [11.3, 11.5], [11.5, 11.6], [11.6, 12.0]]}
+    final = build(c, [], [], overrides={"owner_opening": {"segments": [seg], "emoji": [{"t": 10.95, "t1": 11.2, "speaker": "Larissa"}]}})
+    ws = [w for w in spoken(final) if "owner_opening" in w.get("flags", [])]
+    assert [w["text"] for w in ws] == ["hi", "I'm", "Kadu", "and", "this", "is", "Larissa"]
+    assert [(w["start"], w["end"]) for w in ws] == [tuple(x) for x in seg["word_times"]] and all("time_owner" in w.get("flags", []) for w in ws)
+    assert final["utterances"][0]["text"].startswith("Hi, I'm Kadu 😂 and this is Larissa!") and final["events"][0]["start"] == 10.95
+    for bad in ([[10.0, 10.2]], [[10.0, 10.2], [10.3, 10.2]] + seg["word_times"][2:], [[10.4, 10.5], [10.0, 10.2]] + seg["word_times"][2:]):
+        with pytest.raises(ValueError, match="word_times"):
+            build(c, [], [], overrides={"owner_opening": {"segments": [dict(seg, word_times=bad)]}})
+
+
+def test_a_pause_split_utterance_does_not_start_with_a_capital_but_a_new_sentence_does():
+    ws = [cw(0, "we", 10.0), cw(1, "go", 10.3), cw(2, "left", 10.6, "."), cw(3, "then", 11.0), cw(4, "we", 11.4), cw(5, "stop", 13.5), cw(6, "now", 14.0, "!")]
+    c = {"turns": [{"id": "t000", "voice": 1, "speaker": "Larissa", "words": ws}], "naming": {"naming_confidence": 0.85}, "unplaced_sources": {}}
+    final = build(c, [], [])
+    u = final["utterances"]
+    assert len(u) == 3
+    assert u[0]["text"] == "We go left." and "cap_first" not in u[0]                              # a turn starts with a capital
+    assert u[1]["text"] == "Then we" and "cap_first" not in u[1]                                  # after a full stop: a new sentence
+    assert u[2]["text"] == "stop now!" and u[2]["cap_first"] is False                              # the pause split a sentence that "we" left open: no capital on "stop"
+    cap = FX.build_captions(final)["captions"]
+    assert [k["text"] for k in cap if k["utterance"] == u[2]["id"]][0].startswith("stop now!")
+    assert "] Larissa: stop now!" in FX.write_txt(final, Path(__file__).parent / "_cap_first.txt").read_text(encoding="utf-8")
+    (Path(__file__).parent / "_cap_first.txt").unlink()
 
 
 def test_owner_opening_marks_a_second_voice_between_two_stretches_of_the_other_voice():

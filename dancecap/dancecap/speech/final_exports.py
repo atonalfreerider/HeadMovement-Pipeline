@@ -34,10 +34,11 @@ def clen(s: str) -> int:
     return sum(2 if ord(c) > 0xFFFF else 1 for c in s)
 
 
-def display_words(words: list[dict]) -> list[dict]:
-    """The words of one utterance as caption tokens: display text (capital at the start of the sentence, punctuation), times, kind; fillers dropped."""
+def display_words(words: list[dict], cap_first: bool = True) -> list[dict]:
+    """The words of one utterance as caption tokens: display text (capital at the start of the sentence, punctuation), times, kind; fillers dropped.
+    cap_first False = the utterance continues a sentence the previous one left open (no capital on its first word)."""
     out: list[dict] = []
-    cap = True
+    cap = cap_first
     for w in words:
         if w["kind"] == "event":
             out.append({"text": w["text"], "start": w["start"], "end": w["end"], "kind": "emoji", "conf": w["conf"], "flags": w.get("flags", []), "event": w.get("event"), "joke": w.get("joke")})
@@ -103,7 +104,7 @@ def split_cues(toks: list[dict]) -> list[list[dict]]:
 def build_captions(final: dict) -> dict:
     caps: list[dict] = []
     for u in final["utterances"]:
-        toks = [t for t in display_words(u["words"]) if t["start"] >= 0.0]
+        toks = [t for t in display_words(u["words"], u.get("cap_first", True)) if t["start"] >= 0.0]
         if not toks or all(t["kind"] == "emoji" for t in toks):
             continue
         for cue in split_cues(toks):
@@ -187,7 +188,7 @@ def write_txt(final: dict, path: Path, jokes: dict | None = None) -> Path:
         ws = u["words"]
         who = u["speaker"] if not final_turn_interjection(final, u["turn"]) else f"{u['speaker']} (second voice)"
         doubt = " (speaker not settled)" if any("speaker_unresolved" in (w.get("flags") or []) for w in ws) else ""
-        lines.append(f"[{mmss(u['start'])}] {who}{doubt}: " + render([_as_full(w) for w in ws], mark_below=0.6))
+        lines.append(f"[{mmss(u['start'])}] {who}{doubt}: " + render([_as_full(w) for w in ws], mark_below=0.6, cap_first=u.get("cap_first", True)))
     lines += ["", "Jokes and laughter tokens:"]
     for e in final["events"]:
         lines.append(f"  {e['text']} at {mmss(e['start'])}-{mmss(e['end'])} ({e.get('joke') or e.get('event')}): {e.get('evidence') or ''}".rstrip())

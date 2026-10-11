@@ -209,7 +209,7 @@ def build_review(final: dict, chapters: dict | None, jokes: dict | None, who_cli
             ci += 1
         low = [w for w in u["words"] if w["kind"] == "word" and w["conf"] < LOW]
         cls = "row" + ("" if low else " ok")
-        parts, cap = [], True
+        parts, cap = [], u.get("cap_first", True)
         for w in u["words"]:
             parts.append(word_html(w, span_info, cap))
             if w["kind"] == "word":

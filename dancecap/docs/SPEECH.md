@@ -144,12 +144,17 @@ into `work/<take>/speech/owner_opening.json` and the next `python -m dancecap.sp
 
 - Every word and token that starts inside `[from, until)` is replaced (default window: the segments and emoji; give `until` = the start of the recap, a span only partly inside the window stays open). A segment's
   `text` is read like a decision text (case and names as usual, inline emoji allowed); its words are timed from the engines that wrote them inside the segment, else spread over it by length.
+- A segment may carry `"word_times": [[start, end], ...]` (one increasing pair per spoken word, no emoji): the times of a forced alignment of the known text, used instead of the engines /
+  the share of the window (a wrong count or a decreasing pair is an error). The 2026-10-11 answer uses it (`time_src` owner).
 - The owner's words get `conf` 0.95 (`conf_src` owner), the flags `owner_opening` / `owner_fact`, never `unclear` / `needs_owner`; a segment is a second voice (`interjection`) when the speakers before and after it
   are the same other voice (or `"interjection": true|false` in the segment). `emoji` lists every laugh token wanted (none listed = none in the text); each is a caption word, its `speaker` is kept as `laugher`.
 - The decision spans the window covers become `decision: owner`, `owner_resolved`, no longer `needs_owner` / `unclear` and drop out of `proofread_first`; `adjudication` keeps the editors' text as `editor_text`.
   A laugh candidate in `jokes.json` that holds an owner token gets `approve_emoji: true`. `utterance_breaks` inside the window are ignored. The removed words are counted in `owner_opening.removed_v0`, so the
   `lost_words` check still means "nothing disappeared without a record".
 - An empty answer (`segments` and `emoji` empty) changes nothing. Tests: `tests/test_speech_final.py` (`test_owner_opening_*`, `test_span_overrides_*`, `test_utterance_break_*`).
+
+**Capitals.** An utterance that continues a sentence the previous utterance of the turn left open (a pause of >= 1.2 s or an `utterance_breaks` entry split it, no `. ? !` before) starts in lower case
+in every export (`cap_first: false` on the utterance row; text, captions, review): the old "I don't know who | This is Kadu." and "to Gostosinho | To get" read as mid-sentence capitals.
 
 ## Voice-to-voice class audio (V1, 2026-10-10: `speech/v2v*.py`, `pod/stage_v2v.py`)
 
@@ -202,3 +207,12 @@ The opening 0 - 8.45 s (owner-pending words, the laugh) stays the original recor
     v2v_regen.choose_final -> v2v_regen_run.realign_final -> assemble_regen -> film/audio/class_mix_regen.wav, stems_regen/; verify_mix (whole-class ASR, onsets, identity, joins)
 
 Numbers and what to listen to: work/larissa_kadu_recap/NOTES_V3.md. Never commit `speech/v2v2/` (voices of real people).
+
+## The opening regenerated from the owner's words (O1, 2026-10-11: `speech/v2v_opening.py`, `asr_local.py`)
+
+The owner gave the words of the opening (Larissa "Hello! I'm Kadu and this is Larissa!", Kadu "Yeah, you see my hair?", Larissa "Yeah, it's very red."): `owner_opening.json` (segments with `word_times`,
+emoji at the laugh onset 2.25 s and after Kadu's line 6.6 s) -> `python -m dancecap.speech final`. `v2v_opening` then regenerates those lines (the transcript's owner words are the text, split into pieces n0..n3 at pauses
+of 0.6 s): ElevenLabs text-to-speech in each teacher's cloned voice with expressive settings (6 takes per piece), fitted to the word times (`v2v_regen.fit_take`), speech-to-speech tries from the three best phones
+gated by the local ASR (`asr_local.py`, faster-whisper large-v3 in `.venv-asr`): all garbled (the phones hold the laugh and overlaps), so the text-to-speech takes are used. The room's laughter without speech under it
+(`LAUGH_EVENTS`, 2.2-3.3 s) is cut from the original class mix as an EVENT (`v2v_mix.assemble(events=, event_gain_db=)`); `v2v_opening.assemble` rebuilds `class_mix_regen.wav` with no original stretch left.
+Findings, numbers, credits: work/larissa_kadu_recap/NOTES_O1.md.
