@@ -9,6 +9,7 @@ python -m dancecap.rhythm run <take> [--timing P] [--song-dir P] [--audio WAV] [
 python -m dancecap.rhythm install <take> --capture 07_Name       # put the viewer's copy into the capture folder(s): no full re-export
 python -m dancecap.rhythm selftest                               # synthetic: locked near the top, unrelated / wrong tempo near the bottom
 python -m dancecap.rhythm controls                               # the positive / negative / no-dance controls -> work/<heat>/rhythm/controls.json + controls.png
+                                                                 # (the takes of the roles are named in the git-ignored work/rhythm_controls_takes.json: demo, demo_audio, ref38, heat, recap)
 python -m dancecap.rhythm_controls --calibrate                   # the numbers the reference levels are read from (the demo's first half)
 python -m pytest dancecap/tests/test_rhythm.py -q
 ```

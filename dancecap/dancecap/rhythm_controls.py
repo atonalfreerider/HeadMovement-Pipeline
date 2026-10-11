@@ -25,10 +25,25 @@ import numpy as np
 from . import rhythm as rh
 from . import rhythm_entrain as ent
 
-DEMO = ("larissa_kadu_full", "song/studio_reference.wav")
-REF38 = ("larissa_kadu_38", None)
-HEAT = ("carlos_aline", None)
-RECAP = ("larissa_kadu_recap", None)
+TAKES_FILE = Path(__file__).resolve().parents[1] / "work" / "rhythm_controls_takes.json"      # git-ignored: which takes play which role (names stay out of the tracked code)
+ROLES_DOC = '{"demo": "<take>", "demo_audio": "song/studio_reference.wav", "ref38": "<take>", "heat": "<take>", "recap": "<take or null>"}'
+
+
+def _takes() -> dict:
+    """the takes of the controls from work/rhythm_controls_takes.json: demo (a professional couple with a trusted audio alignment; `demo_audio` = its soundtrack inside the take's work folder),
+    ref38 (a short reference span of the same performance), heat (the take the score is for), recap (a take of people who talk and barely step, or null)"""
+    if not TAKES_FILE.exists():
+        raise SystemExit(f"error: {TAKES_FILE} missing; it names the takes of the controls: {ROLES_DOC}")
+    return json.loads(TAKES_FILE.read_text(encoding="utf-8"))
+
+
+def _role(name: str):
+    t = _takes()
+    if name == "demo":
+        return (t["demo"], t.get("demo_audio"))
+    if t.get(name) is None:
+        return None
+    return (t[name], None)
 
 
 def _work(take: str) -> Path:
@@ -136,17 +151,17 @@ def calibrate(inp: rh.Inputs, cfg: rh.Config) -> dict:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="python -m dancecap.rhythm_controls", description=__doc__.split("\n\n")[0])
-    ap.add_argument("--out", help="output folder (default work/carlos_aline/rhythm)")
+    ap.add_argument("--out", help="output folder (default work/<heat>/rhythm)")
     ap.add_argument("--calibrate", action="store_true", help="print the reference levels from the demo's training half and stop")
     ap.add_argument("--only", nargs="*", help="run only the controls whose name contains one of these words")
     a = ap.parse_args(argv)
     cfg = rh.Config()
-    demo = load(*DEMO, cfg)
+    demo = load(*_role("demo"), cfg)
     if a.calibrate:
         print(json.dumps(calibrate(demo, cfg), indent=1))
         return 0
-    heat = load(*HEAT, rh.Config())
-    ref38 = load(*REF38, rh.Config())
+    heat = load(*_role("heat"), rh.Config())
+    ref38 = load(*_role("ref38"), rh.Config())
     rows = []
 
     def want(name):
@@ -164,7 +179,7 @@ def main(argv=None) -> int:
         add(f"{nm}, first half (averages restarted)", "positive" if nm == "demo" else "heat", with_grid(inp, crop_grid(g, g.t[0], mid)))
         add(f"{nm}, second half (averages restarted)", "positive" if nm == "demo" else "heat", with_grid(inp, crop_grid(g, mid + 1.0, g.t[-1])))
     add("38 s reference span (second pose fit)", "positive", ref38, note="short take: the averages fill slowly")
-    add("heat Carlos + Aline (out-of-sample)", "heat", heat)
+    add("the heat (out-of-sample)", "heat", heat)
     for nm, inp in (("demo", demo), ("heat", heat)):
         print(f"negative controls on the {nm}")
         for s in (0.78, 0.82, 1.15, 1.22, 1.30):
@@ -176,15 +191,15 @@ def main(argv=None) -> int:
         add(f"{nm}: grid shifted by +0.31 s (must not change the score)", "invariant", with_grid(inp, inp.grid.shifted(0.31)), note="the score is phase-free by design")
         add(f"{nm}: motion played backwards (must stay locked)", "invariant", reverse_inputs(inp), note="a sinusoidal lock is invariant to reversing time")
     print("no-dance control")
-    if want("recap"):
+    if want("recap") and _role("recap") is not None:
         try:
-            recap = load(*RECAP, rh.Config())
+            recap = load(*_role("recap"), rh.Config())
         except (ValueError, KeyError, TypeError) as e:
-            rc = _recap_with_borrowed_grid(demo)
+            rc = _recap_with_borrowed_grid(demo, _role("recap")[0])
             print(f"  (the recap has no beat grid: {type(e).__name__}; the pipeline refuses it. Scoring its motion against the demo's tempo grid instead)")
             recap = rc
         add("recap: teachers talking, against a 76 bpm grid", "no-dance", recap, note="no dance: the lock should be absent")
-    out_dir = Path(a.out) if a.out else _work(HEAT[0]) / "rhythm"
+    out_dir = Path(a.out) if a.out else _work(_role("heat")[0]) / "rhythm"
     out_dir.mkdir(parents=True, exist_ok=True)
     doc = {"created": time.strftime("%Y-%m-%dT%H:%M:%S"), "reference_levels": {**{k: v for k, v in vars(rh.Config().ent).items() if k.startswith("ref_")}, "ref_accent": rh.Config().ref_accent},
            "rows": rows}
@@ -197,8 +212,8 @@ def main(argv=None) -> int:
     return 0
 
 
-def _recap_with_borrowed_grid(demo: rh.Inputs) -> rh.Inputs:
-    w = _work(RECAP[0])
+def _recap_with_borrowed_grid(demo: rh.Inputs, take: str) -> rh.Inputs:
+    w = _work(take)
     d = json.loads((w / "timing" / "timing.json").read_text(encoding="utf-8"))
     steps = {r: [{"t": float(f["t"]), "foot": f.get("foot", ""), "sigma": float(f.get("sigma") or 0.02)} for f in d.get("footsteps", {}).get(r, [])] for r in rh.ROLES}
     body = ent.load_body(w)
@@ -207,7 +222,7 @@ def _recap_with_borrowed_grid(demo: rh.Inputs) -> rh.Inputs:
     rows = [[x, (1, 3, 3, 2, 1, 3, 2, 3)[i % 8], i // 8, i % 8] for i, x in enumerate(t)]
     grid = rh.build_grid(rows, no_beat_none=[], conf=np.full(len(t), 0.8), default_conf=0.8)
     return rh.Inputs(grid, steps, rh.music_from_grid(grid), rh.load_motion(w / "timing" / "kinematics.npz"), float(body.t[0]), float(body.t[-1]),
-                     {"take": RECAP[0], "av_pinned": False}, {}, body)
+                     {"take": take, "av_pinned": False}, {}, body)
 
 
 def _plot(rows: list, path: Path):
