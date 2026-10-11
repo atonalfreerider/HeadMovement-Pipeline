@@ -31,6 +31,7 @@ import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from . import film_recap_arrows as arrows
 from . import film_recap_captions as caps
 from . import film_recap_director as director
 from . import film_recap_plan as plan
@@ -208,20 +209,29 @@ def _dance_to_film(seg: dict, t: float) -> float:
 
 
 def assemble(beats: list[plan.Beat], inserts: list[dict], layers: plan.Layers, events: list[dict], chapters: list[dict], act: plan.Activity,
-             cfg: plan.Cfg, title: tuple[str, str], dropped: list[dict]) -> list[dict]:
-    """beats + inserts -> segments with film times, layers, call-outs and chapter cards"""
+             cfg: plan.Cfg, title: tuple[str, str], dropped: list[dict], arrow_ctx: dict | None = None, arrow_skips: list[dict] | None = None) -> list[dict]:
+    """beats + inserts -> segments with film times, layers, call-outs and chapter cards. `arrow_ctx` ({layers, t_axes, transfers}) switches the D4 arrows
+    on (film_recap_arrows: one per attention call, the physics view's own); the calls without one are appended to `arrow_skips`."""
     segs: list[dict] = []
     f = 0.0
     state: dict = {}
+    astate: dict = {}
     titles = [chapter_title(c["title"]) for c in chapters]
     for bi, b in enumerate(beats):
         cam, fam = _beat_camera(b, {}, layers, cfg, bi == 0, f)
-        lay = plan.treatment_layers("talk" if fam == "phone" else fam, layers, dropped, b.id, b.variant)
+        lay = plan.treatment_layers("talk" if fam == "phone" else fam, layers, dropped, b.id, b.variant, cfg.avatar_opacity, cfg.avatar_on_video)
         if fam == "phone":
             lay = dict(lay, source_video="01")
         view = plan.VIEW_STATE.get("talk" if fam == "phone" else fam, "orbit")
         view = "camera_tour" if fam == "phone" else view
         annos = plan.make_annotations(b if fam != "pov" else replace(b, family="talk"), events, layers, cfg, dropped, state) if fam != "phone" else []
+        if cfg.arrows_every_call and arrow_ctx is not None and fam != "phone":
+            ar, skp = arrows.make_arrows(b, events, cfg, arrow_ctx, act, astate)
+            if b.family == "weight" and layers.any("physics"):
+                ar += arrows.physics_extras(b, arrow_ctx.get("transfers", {}), cfg, astate, ar)
+            annos += ar
+            if arrow_skips is not None:
+                arrow_skips += skp
         items = []                                   # (position, kind, insert)
         for ins in inserts:
             if ins["kind"] == "gap_slow" and b.t0 - 1e-6 <= ins["core"][0] and ins["core"][1] <= b.t1 + 1e-6:
@@ -266,7 +276,8 @@ def assemble(beats: list[plan.Beat], inserts: list[dict], layers: plan.Layers, e
                 if rcam.get("mode") == "overhead_floorcraft":
                     rcam["across_m"] = max(float(rcam.get("across_m", 0)), 2.8)    # a pivot throws arms and legs wide: never crop them
                 seg = {"id": sid, "dance": [round(d0, 3), round(d1, 3)], "speed": ins["speed"], "camera": rcam,
-                       "view_state": plan.VIEW_STATE[rfam], "layers": plan.treatment_layers(rfam, layers, dropped, sid), "annotations": [],
+                       "view_state": plan.VIEW_STATE[rfam], "layers": plan.treatment_layers(rfam, layers, dropped, sid, 0, cfg.avatar_opacity, cfg.avatar_on_video),
+                       "annotations": [],
                        "audio": "bed", "replay": True, "status": "ok",
                        "notes": f"replay inserted at a sentence end, the speech is parked ({ins['why']}); the speech resumes at {ins['park']:.2f} s"}
             seg["film"] = [round(f, 3), round(f + dur, 3)]
@@ -319,21 +330,49 @@ def _card(idx: int, title: str, film: tuple[str, str], seg_dur: float, cfg: plan
 # ------------------------------------------------------------------------------------------------ the direction document
 
 
+def load_arrow_ctx(cap_dir: Path | None, layers: plan.Layers) -> dict:
+    """what the arrows need from the capture: the floorcraft T axes (the leader's T alive at a time) and each dancer's weight transfers (physics contact)"""
+    ctx: dict = {"layers": layers, "t_axes": [], "transfers": {}}
+    if cap_dir is None or not Path(cap_dir).is_dir():
+        return ctx
+    fc = Path(cap_dir) / "floorcraft.json"
+    if fc.exists():
+        try:
+            ctx["t_axes"] = [{"id": a["id"], "t0": a["t0"], "t1": a["t1"]} for a in json.loads(fc.read_text(encoding="utf-8")).get("t_axes", [])]
+        except (OSError, ValueError, KeyError):
+            pass
+    ph = Path(cap_dir) / "physics.json"
+    if ph.exists():
+        try:
+            d = json.loads(ph.read_text(encoding="utf-8"))
+            t = d.get("t") or []
+            hz = (len(t) - 1) / (t[-1] - t[0]) if len(t) > 2 and t[-1] > t[0] else 30.0
+            ctx["transfers"] = {r: arrows.weight_transfers(d["dancers"][r].get("contact"), hz) for r in ("lead", "follow") if r in d.get("dancers", {})}
+        except (OSError, ValueError, KeyError):
+            pass
+    return ctx
+
+
 def build_direction(sp: dict, act: plan.Activity, layers: plan.Layers, cfg: plan.Cfg, paths: Paths, capture: str, title: tuple[str, str],
-                    pov: director.PovSource | None = None, dcfg: director.DirCfg | None = None) -> tuple[dict, dict, dict]:
+                    pov: director.PovSource | None = None, dcfg: director.DirCfg | None = None, arrow_ctx: dict | None = None) -> tuple[dict, dict, dict]:
     """(direction doc, timeline doc, report). Pure given its inputs. `pov` switches the director mode on (phone POV shots, feature zooms)."""
     duration = sp["duration"]
     beats, brep = plan.plan_beats(sp["utterances"], sp["events"], sp["chapters"], act, layers, sp["roles"], duration, cfg)
     inserts, rejected = plan.plan_inserts(sp["utterances"], act, duration, cfg)
     dropped = list(brep["dropped"])
     drep: dict = {}
+    events = sp["events"]
     if pov is not None:
         dc = dcfg or director.DirCfg()
-        ctx = director.Ctx(sp["utterances"], sp["events"], sp["chapters"], act, layers, sp["roles"], duration, cfg, dc, pov, inserts,
+        events = director.physics_calls(sp["utterances"], sp["events"], dc)      # D4: the teachers' events + the physics words nothing covered
+        ctx = director.Ctx(sp["utterances"], events, sp["chapters"], act, layers, sp["roles"], duration, cfg, dc, pov, inserts,
                            director.cut_points(sp["utterances"], cfg.lead_s), dropped, brep["notes"])
         beats, drep = director.direct(beats, ctx)
-        drep["attention"] = director.attention_table(beats, sp["events"], dc)
-    segs = assemble(beats, inserts, layers, sp["events"], sp["chapters"], act, cfg, title, dropped)
+        drep["attention"] = director.attention_table(beats, [e for e in events if not e.get("synthetic")], dc)
+    arrow_skips: list[dict] = []
+    segs = assemble(beats, inserts, layers, events, sp["chapters"], act, cfg, title, dropped, arrow_ctx if arrow_ctx is not None else ({"layers": layers, "t_axes": [], "transfers": {}} if pov is not None else None), arrow_skips)
+    if drep:
+        drep["arrows"] = arrow_report(segs, drep.get("attention", []), arrow_skips)
     tm = plan.TimeMap(inserts)
     film_duration = segs[-1]["film"][1]
     # captions
@@ -362,6 +401,7 @@ def build_direction(sp: dict, act: plan.Activity, layers: plan.Layers, cfg: plan
         families[b.family] = round(families.get(b.family, 0.0) + b.dur, 2)
     doc = {
         "version": 1, "kind": "direction", "name": NAME, "title": f"{title[0]}", "capture": capture, "take": TAKE,
+        "avatar_opacity": round(float(cfg.avatar_opacity), 3),
         "time_base": "DANCE time = master seconds (the recap's master phone clock = the capture's time base, anchor 0); FILM time = seconds into the rendered "
                      "video. Locked segments run at 1.0x with the class audio; slow motion and replays are inserts (see `audio`).",
         "dance_range": [0.0, round(duration, 3)],
@@ -398,6 +438,28 @@ def build_direction(sp: dict, act: plan.Activity, layers: plan.Layers, cfg: plan
               "needs_check_captions": [c["id"] for c in sp["captions"].get("captions", []) if c.get("check")],
               "owner_opening": owner_opening_status(paths)}
     return doc, tl, report
+
+
+def arrow_report(segs: list[dict], attention: list[dict], skips: list[dict]) -> dict:
+    """the arrows of the film: counts by kind, which attention calls got one (and which did not, with the reason)"""
+    arrows_: list[tuple[dict, dict]] = [(s, a) for s in segs for a in s["annotations"] if a["kind"] in ("arrow3d", "vector_arrow", "floor_ring") and a.get("calls")]
+    by_call: dict[str, list[str]] = {}
+    for s, a in arrows_:
+        for c in a.get("calls", []):
+            by_call.setdefault(c, []).append(a["id"])
+    kinds: dict[str, int] = {}
+    for s in segs:
+        for a in s["annotations"]:
+            kinds[a["kind"]] = kinds.get(a["kind"], 0) + 1
+    why = {x["id"]: x["why"] for x in skips}
+    text_of = {a["id"]: f"{a['text']} ({a['target'].get('type') if isinstance(a.get('target'), dict) else a.get('vector', '')})" for s in segs for a in s["annotations"] if a.get("calls")}
+    rows = [{"id": a["id"], "t": a["t"], "words": a["words"], "arrows": by_call.get(a["id"], []), "labels": [text_of[i] for i in by_call.get(a["id"], []) if i in text_of],
+             "no_arrow_because": None if by_call.get(a["id"]) else why.get(a["id"], "no arrow planned")} for a in attention]
+    n = len(rows)
+    got = sum(1 for r in rows if r["arrows"])
+    pov_ar = sum(1 for s, a in arrows_ if s.get("treatment", {}).get("kind") == "pov")
+    return {"annotation_kinds": kinds, "attention_calls": n, "calls_with_arrow": got, "calls_without": n - got, "arrows_in_phone_shots": pov_ar,
+            "event_arrows": len(arrows_), "rows": rows}
 
 
 def _squash(items: list[dict]) -> list[dict]:
@@ -499,11 +561,14 @@ def validate(doc: dict, tl: dict, sp: dict) -> list[str]:
     for c in tl["captions"]["vertical"]:
         for w in c["words"]:
             pass
-    # the arrows: at most one at a time
-    arrows = sorted(((a["film_in_segment"][0] + s["film"][0], a["film_in_segment"][1] + s["film"][0], a["id"]) for s in segs for a in s["annotations"] if a["kind"] == "arrow3d"))
-    for x, y in zip(arrows, arrows[1:]):
-        if y[0] < x[1] - 0.05 and x[2] != y[2]:
-            bad.append(f"two arrows at once: {x[2]} and {y[2]}")
+    # the arrows: at most plan.Cfg.max_arrows_at_once labelled call-outs at a time (D4; the physics view's continuous velocity arrows are not call-outs)
+    spans = sorted((a["film_in_segment"][0] + s["film"][0], a["film_in_segment"][1] + s["film"][0], a["id"]) for s in segs for a in s["annotations"]
+                   if a["kind"] in ("arrow3d", "vector_arrow", "floor_ring") and not a.get("continuous"))
+    limit = plan.Cfg().max_arrows_at_once
+    for k, (x0, x1, aid) in enumerate(spans):
+        live = [b for b in spans[:k] if b[1] > x0 + 0.05]
+        if len(live) + 1 > limit:
+            bad.append(f"{len(live) + 1} arrows at once at {x0:.2f} s: {aid} with {', '.join(b[2] for b in live)}")
     return bad
 
 
@@ -576,10 +641,17 @@ def review_md(doc: dict, report: dict, sp: dict, tl: dict) -> str:
             txt = " ".join(w["text"] for u in sp["utterances"] for w in u["words"] if sg["dance"][0] <= w["start"] < sg["dance"][1] and w.get("kind") != "event")
             out.append(f"| {sg['film'][0]:.1f}-{sg['film'][1]:.1f} | {sg['dance'][0]:.1f}-{sg['dance'][1]:.1f} | {t['phone']} | {'fly in' if t.get('fly') else 'cut'} | "
                        f"{t['cover'] * 100:.0f} % | {t['height'] * 100:.0f} % | {t['zoom_median']} | {t['inside'] * 100:.0f} % | {txt[:90]} |")
+        arow = {r["id"]: r for r in (dr.get("arrows") or {}).get("rows", [])}
         out += ["", "## Attention calls: what the film shows, per call", "",
-                "| call | master s | who | the teacher's word(s) | shot | what is shown |", "|---|---|---|---|---|---|"]
+                "| call | master s | who | the teacher's word(s) | shot | what is shown | arrow |", "|---|---|---|---|---|---|---|"]
         for a in dr.get("attention", []):
-            out.append(f"| {a['id']}{' (flagged)' if a['needs_check'] else ''} | {a['t']:.1f} | {a['speaker']} | {', '.join(a['words'])} | `{a['shot']}` | {a['shown']} |")
+            r = arow.get(a["id"], {})
+            arrow = "; ".join(r.get("labels", [])) if r.get("arrows") else f"none: {r.get('no_arrow_because', '-')}"
+            out.append(f"| {a['id']}{' (flagged)' if a['needs_check'] else ''} | {a['t']:.1f} | {a['speaker']} | {', '.join(a['words'])} | `{a['shot']}` | {a['shown']} | {arrow} |")
+        ar_ = dr.get("arrows")
+        if ar_:
+            out += ["", f"Arrows: {ar_['calls_with_arrow']} of {ar_['attention_calls']} attention calls have one ({ar_['calls_without']} without, reasons in the table), "
+                        f"{ar_['event_arrows']} call-out arrows in all, {ar_['arrows_in_phone_shots']} of them in phone shots; annotation kinds {ar_['annotation_kinds']}."]
     out += ["", "## Dropped (analysis data absent)", ""]
     out += [f"- {d['what']} needs {d['needs']} ({d['n']}x; e.g. {', '.join(d['where'][:3])})" for d in report["dropped"]] or ["- nothing dropped"]
     out += ["", "## Slow motion and replays", ""]
@@ -651,7 +723,7 @@ def build(paths: Paths | None = None, *, layers_mode: str = "auto", capture: str
               "all": plan.Layers.all_on}[layers_mode]()
     act = load_activity(paths, cap_dir if cap_dir.is_dir() else None)
     pov = load_pov(paths, director_mode)
-    doc, tl, report = build_direction(sp, act, layers, cfg, paths, capture, film_title(), pov)
+    doc, tl, report = build_direction(sp, act, layers, cfg, paths, capture, film_title(), pov, arrow_ctx=load_arrow_ctx(cap_dir if cap_dir.is_dir() else None, layers))
     bad = validate(doc, tl, sp)
     if bad:
         raise RecapError("direction.json NOT written - fix these first:\n  " + "\n  ".join(bad[:40]))
@@ -676,7 +748,12 @@ def build(paths: Paths | None = None, *, layers_mode: str = "auto", capture: str
 
 def cmd_build(a: argparse.Namespace) -> int:
     try:
-        build(layers_mode=a.layers, capture=a.capture, refresh=a.refresh_speech, no_mix=a.no_mix, director_mode=a.director)
+        cfg = plan.Cfg()
+        if a.avatar_opacity is not None:
+            cfg = replace(cfg, avatar_opacity=min(1.0, max(0.0, float(a.avatar_opacity))))
+        if a.avatar_on_video:
+            cfg = replace(cfg, avatar_on_video=True)
+        build(layers_mode=a.layers, capture=a.capture, refresh=a.refresh_speech, no_mix=a.no_mix, director_mode=a.director, cfg=cfg)
     except RecapError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
@@ -731,6 +808,9 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--capture", default=CAPTURE)
     b.add_argument("--refresh-speech", choices=["auto", "yes", "no"], default="auto")
     b.add_argument("--no-mix", action="store_true")
+    b.add_argument("--avatar-opacity", type=float, default=None,
+                   help="the ONE opacity of every avatar the film draws (default plan.Cfg.avatar_opacity = 0.25, i.e. 75 %% transparent; 0.75 = 25 %% transparent)")
+    b.add_argument("--avatar-on-video", action="store_true", help="keep the 3D avatars (at that opacity) over a phone's own video too (default: only the skeleton lines)")
     b.add_argument("--director", choices=["auto", "yes", "no"], default="auto",
                    help="director mode (phone POV shots circling through the phones, tight feature zooms, closer overhead): auto = when the phones' people / camera files exist")
     b.set_defaults(fn=cmd_build)

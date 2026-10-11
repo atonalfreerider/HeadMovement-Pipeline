@@ -23,6 +23,7 @@ film shows.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field
 
 from . import film_recap_plan as plan
@@ -35,14 +36,15 @@ WATCH_WORDS = ("look at it", "this way", "that way", "do this", "like this", "fr
 
 @dataclass
 class DirCfg:
-    pov_target: tuple[float, float] = (0.38, 0.48)     # the share of the film's screen time that is a phone's own video
+    # D4 (owner 2026-10-11): "more physics, more arrows, more POV from phone video": the phones' share 38 -> 55-60 %, the physics view about twice as long
+    pov_target: tuple[float, float] = (0.56, 0.62)     # the share of the film's screen time that is a phone's own video
     pov_min_s: float = 3.0
-    pov_max_s: float = 6.4
+    pov_max_s: float = 6.8
     pov_part_s: float = 5.2                           # a long stretch of free time is cut into parts of about this length
     zoom_pre_s: float = 0.6
-    zoom_post_s: float = 1.9
+    zoom_post_s: float = 1.7
     zoom_min_s: float = 2.4
-    zoom_max_s: float = 6.5
+    zoom_max_s: float = 5.0
     merge_gap_s: float = 0.6
     repeat_s: float = 8.0                              # a body part called again this soon after its zoom is shown by the phone with the arrow
     calm_min_s: float = 2.6
@@ -50,8 +52,60 @@ class DirCfg:
     snap_tol_s: float = 0.8
     min_event_conf: float = 0.5
     insert_pad_s: float = 0.4                          # no phone shot this close to a slow-motion insert
-    max_pov_run: int = 2                               # phone shots in a row (the phones circle; a 3D shot breathes between)
+    max_pov_run: int = 3                               # phone shots in a row (the phones circle; a 3D shot breathes between)
+    chain_pov: bool = True                             # a free piece may be a phone shot right after another one (up to max_pov_run)
     first_shot_3d_s: float = 2.6                       # the film opens on the 3D couple (the title card), then the phones
+    # the physics view (load / force / momentum / centre of mass / foot pressure of the physics layer): every call about weight, balance, momentum,
+    # force, pressure, engaged, counterbalance, falling, push / pull gets it, and while the teachers move it shows at least this often
+    phys_pre_s: float = 0.5
+    phys_post_s: float = 2.0
+    phys_min_s: float = 3.0
+    phys_max_s: float = 6.5
+    phys_hold_s: float = 5.0                           # a physics view holds at most about this long
+    phys_gap_s: float = 24.0                           # moving film time without a physics view before one is inserted (the owner: every 20-25 s)
+    phys_calls: bool = True
+    zoom_to_phone: bool = True                         # when the phones are short of their share a body / feet / path / timing zoom may hand the call to a phone with its arrow
+
+
+PHYSICS_WORDS = re.compile(r"^(weights?|balance[ds]?|momentum|forces?|pressure|engaged|counterbalanc\w*|counter|fall\w*|falling|push\w*|pull\w*|heavy|suspension|energy|speed|gravity)$", re.I)
+
+
+def physics_calls(utterances: list[dict], events: list[dict], dc: DirCfg | None = None) -> list[dict]:
+    """The teaching events the physics view answers, as a new events list: the original events (those about weight / balance / counterbalance /
+    heavy / suspension / shift - tag overlay_weight_change - and momentum / speed / energy - tag overlay_timing - carry `physics_call: True`) plus a
+    synthetic event for every spoken word of PHYSICS_WORDS that no such event covers within 1.2 s (`synthetic: True`, never counted as an attention
+    call of the teachers' events table)."""
+    dc = dc or DirCfg()
+    out = []
+    marked = []
+    for e in events:
+        trig = {str(t).lower() for t in e.get("triggers", [])}
+        phys = (e.get("start", 0) >= 0 and float(e.get("conf") or 0.0) >= dc.min_event_conf and
+                ("overlay_weight_change" in e.get("tags", []) or ("overlay_timing" in e.get("tags", []) and bool(trig & {"momentum", "speed", "energy"}))
+                 or bool(trig & {"suspension", "engaged"})))
+        e2 = dict(e)
+        if phys:
+            e2["physics_call"] = True
+            marked.append(float(e["start"]))
+        out.append(e2)
+    n = 0
+    for u in utterances:
+        for w in u.get("words", []):
+            if w.get("kind") == "event" or w.get("start", -1) < 0:
+                continue
+            tx = re.sub(r"[^A-Za-z]", "", str(w.get("text", "")))
+            if not PHYSICS_WORDS.match(tx):
+                continue
+            t = float(w["start"])
+            if any(abs(t - m) < 1.2 for m in marked):
+                continue
+            marked.append(t)
+            n += 1
+            out.append({"id": f"px{n:03d}", "start": t, "end": float(w.get("end", t + 0.3)), "speaker": u.get("speaker"), "utterance": u.get("id"),
+                        "kinds": ["weight"], "triggers": [tx.lower()], "text": u.get("text", ""), "tags": ["overlay_weight_change"], "primary_tag": "overlay_weight_change",
+                        "focus": {"who": "couple", "where": None}, "conf": 0.9, "needs_check": False, "synthetic": True, "physics_call": True})
+    out.sort(key=lambda e: e["start"])
+    return out
 
 
 @dataclass
@@ -199,6 +253,19 @@ def physics_camera(variant: int, blend: float) -> dict:
 # ------------------------------------------------------------------------------------------------ pieces
 
 
+def force_physics(fam: str, sc: float, why: list[str], e: dict, w0: float, w1: float, ctx: "Ctx") -> tuple[str, float, list[str]]:
+    """a call about weight / balance / momentum / force / pressure / engaged / counterbalance / falling / push / pull is answered by the physics view
+    even where the teachers stand (a posture has a load too) - except where they stand apart (nothing to show between two people 1+ m away) or the
+    capture has no physics data"""
+    if not ctx.layers.any("physics", "counterbalance"):
+        return fam, sc, why
+    w = ctx.act.window(w0 - 0.5, w1 + 0.5, ctx.cfg)
+    if w.get("known") and w.get("apart"):
+        return fam, sc, list(why) + [f"physics call '{'/'.join(e.get('triggers', []))}' not shown: the teachers stand {w['sep_med']:.1f} m apart"]
+    word = "/".join(e.get("triggers", []))
+    return "weight", max(sc, 3.0), [x for x in why if "dropped" not in x] + [f"physics call '{word}' ({e['id']}): the physics view"]
+
+
 def split_beat(b: plan.Beat, ctx: "Ctx") -> list[Piece]:
     """one sentence-level beat -> zoom windows (one per attention call, its treatment from the call itself; neighbours of one treatment join) and
     the free time between them"""
@@ -206,17 +273,20 @@ def split_beat(b: plan.Beat, ctx: "Ctx") -> list[Piece]:
     evs = sorted((e for e in ctx.events if b.t0 - 1e-6 <= e["start"] < b.t1 and is_attention(e, dc)), key=lambda e: e["start"])
     wins: list[dict] = []                              # {w0, w1, fam, feature, es, why, sc, ids}
     for e in evs:
-        w0 = max(b.t0, e["start"] - dc.zoom_pre_s)
-        w1 = min(b.t1, e["start"] + dc.zoom_post_s)
+        phys = bool(e.get("physics_call")) and dc.phys_calls
+        w0 = max(b.t0, e["start"] - (dc.phys_pre_s if phys else dc.zoom_pre_s))
+        w1 = min(b.t1, e["start"] + (dc.phys_post_s if phys else dc.zoom_post_s))
         fam, sc, why, ids = plan.decide_unit({"id": f"{b.id or 'b'}_{e['id']}", "t0": w0, "t1": w1}, [e], ctx.act, ctx.layers, ctx.cfg, ctx.dropped, ctx.notes)
         if fam == "graph":
             fam = "talk"
+        if phys:
+            fam, sc, why = force_physics(fam, sc, why, e, w0, w1, ctx)
         feature = feature_of([e]) if fam == "body" else None
         w = {"w0": w0, "w1": w1, "fam": fam, "feature": feature, "es": [e], "why": why, "sc": sc}
         prev = wins[-1] if wins else None
         if prev is not None and w0 - prev["w1"] < dc.merge_gap_s:
             same = prev["fam"] == fam and prev["feature"] == feature
-            if same and w1 - prev["w0"] <= dc.zoom_max_s:
+            if same and w1 - prev["w0"] <= (dc.phys_max_s if fam == "weight" else dc.zoom_max_s):
                 prev["w1"] = max(prev["w1"], w1)
                 prev["es"].append(e)
                 prev["why"] += why
@@ -271,7 +341,7 @@ def split_beat(b: plan.Beat, ctx: "Ctx") -> list[Piece]:
             out[-1].t1 = p.t1
             out[-1].events += p.events
             out[-1].prefer_pov = out[-1].prefer_pov or p.prefer_pov
-        elif out and out[-1].kind == "zoom" and p.kind == "zoom" and out[-1].family == p.family and out[-1].feature == p.feature and abs(out[-1].t1 - p.t0) < 1e-6 and p.t1 - out[-1].t0 <= dc.zoom_max_s:
+        elif out and out[-1].kind == "zoom" and p.kind == "zoom" and out[-1].family == p.family and out[-1].feature == p.feature and abs(out[-1].t1 - p.t0) < 1e-6 and p.t1 - out[-1].t0 <= (dc.phys_max_s if p.family == "weight" else dc.zoom_max_s):
             out[-1].t1 = p.t1
             out[-1].events += p.events
         else:
@@ -292,7 +362,7 @@ def absorb_short(pieces: list[Piece], ctx: "Ctx") -> list[Piece]:
                 continue
             prev = pieces[i - 1] if i > 0 and not p.first_of_beat else None
             nxt = pieces[i + 1] if i + 1 < len(pieces) else None
-            if prev is not None and prev.kind == "zoom" and prev.dur + p.dur <= dc.zoom_max_s + 1.5:
+            if prev is not None and prev.kind == "zoom" and prev.dur + p.dur <= dc.zoom_max_s + 1.5 and not (prev.family == "weight" and prev.dur >= dc.zoom_min_s):
                 prev.t1 = p.t1
                 prev.events += p.events
             elif nxt is not None and not nxt.first_of_beat:
@@ -312,6 +382,23 @@ def absorb_short(pieces: list[Piece], ctx: "Ctx") -> list[Piece]:
             changed = True
             break
     return pieces
+
+
+def trim_physics(pieces: list[Piece], ctx: "Ctx") -> list[Piece]:
+    """a physics view longer than `phys_hold_s` ends at the speech's next pause after about `phys_hold_s - 0.8` s; what is left becomes free time
+    (a phone shot, else a calm one): the view is for the call, the demonstration after it belongs to the phones"""
+    dc = ctx.dc
+    out: list[Piece] = []
+    for p in pieces:
+        if p.kind == "zoom" and p.family == "weight" and p.dur > dc.phys_hold_s:
+            c = snap(p.t0 + dc.phys_hold_s - 0.8, ctx.cuts, 1.4, p.t0 + dc.phys_min_s - 0.4, p.t1 - dc.pov_min_s + 0.2)
+            if p.t0 + dc.phys_min_s - 0.4 <= c <= p.t1 - dc.pov_min_s + 0.2:
+                tail = Piece(c, p.t1, "free", p.beat, family="talk", events=[], prefer_pov=True, why=["after a physics view: the demonstration goes on in the phone's picture"])
+                p.t1 = c
+                out += [p, tail]
+                continue
+        out.append(p)
+    return out
 
 
 def overlaps_insert(t0: float, t1: float, inserts: list[dict], pad: float) -> bool:
@@ -372,7 +459,7 @@ def assign(pieces: list[Piece], ctx: "Ctx") -> None:
         p.no_pov = overlaps_insert(p.t0, p.t1, ctx.inserts, dc.insert_pad_s)
         can = ctx.pov is not None and not p.no_pov and p.dur >= dc.pov_min_s - 0.2 and ctx.pov.any_phone(p.t0, p.t1)
         first = p.t0 < dc.first_shot_3d_s
-        if can and not first and (prev != "pov" or p.prefer_pov):
+        if can and not first and (prev != "pov" or p.prefer_pov or dc.chain_pov):
             p.kind = "pov"
             if pov_run(pieces, i) > dc.max_pov_run:
                 p.kind = "calm"
@@ -441,6 +528,9 @@ def answer_calls_in_calm_shots(pieces: list[Piece], ctx: "Ctx") -> None:
         evs = [byid[i] for i in p.events if i in byid and is_attention(byid[i], ctx.dc)]
         if not evs:
             continue
+        wa = ctx.act.window(p.t0, p.t1, ctx.cfg)
+        if wa.get("known") and wa.get("apart"):
+            continue                                       # the teachers stand apart: there is no posture of the couple to show
         fams = []
         for e in evs:
             fs = [f for f in plan.event_families(e) if f[0] in ("weight", "body", "feet")]
@@ -459,6 +549,56 @@ def answer_calls_in_calm_shots(pieces: list[Piece], ctx: "Ctx") -> None:
         else:
             continue
         p.why.append("a call with no motion family and no phone turn: shown as a posture zoom")
+
+
+def physics_cadence(pieces: list[Piece], ctx: "Ctx") -> int:
+    """the physics view at least every `phys_gap_s` of film time while the teachers MOVE (stretches where they stand and talk do not count): when
+    that much moving time has passed without one, the next suitable piece (a calm 3D shot, else a zoom of another family, else a phone shot)
+    becomes a physics view. Returns the number inserted."""
+    dc = ctx.dc
+    if not dc.phys_calls or not ctx.layers.any("physics", "counterbalance"):
+        return 0
+    since = 0.0
+    made = 0
+    i = 0
+    while i < len(pieces):
+        p = pieces[i]
+        if p.kind == "zoom" and p.family == "weight":
+            since = 0.0
+            i += 1
+            continue
+        mv = ctx.act.moving(p.t0, p.t1, ctx.cfg)
+        w = ctx.act.window(p.t0, p.t1, ctx.cfg)
+        if mv is False or (w.get("known") and w.get("apart")):
+            i += 1
+            continue
+        if since >= dc.phys_gap_s:
+            # the best piece within the next ~6 s of moving film time
+            best, cum = None, 0.0
+            for j in range(i, len(pieces)):
+                q = pieces[j]
+                if q.kind == "zoom" and q.family == "weight":
+                    break
+                if cum > 6.0:
+                    break
+                cum += q.dur
+                wq = ctx.act.window(q.t0, q.t1, ctx.cfg)
+                if q.dur < dc.phys_min_s or q.dur > dc.phys_max_s + 1.0 or q.t0 < dc.first_shot_3d_s or ctx.act.moving(q.t0, q.t1, ctx.cfg) is False                         or (wq.get("known") and wq.get("apart")):
+                    continue
+                rank = {"calm": 0, "free": 0, "zoom": 1, "pov": 2}.get(q.kind, 3)
+                if best is None or rank < best[0]:
+                    best = (rank, j)
+            if best is not None:
+                q = pieces[best[1]]
+                q.why = list(q.why) + [f"physics view: {since:.0f} s of moving film without one (every {dc.phys_gap_s:.0f} s while the teachers move)"]
+                q.kind, q.family, q.feature, q.no_pov = "zoom", "weight", None, True
+                made += 1
+                since = 0.0
+                i = best[1] + 1
+                continue
+        since += p.dur
+        i += 1
+    return made
 
 
 def pov_share(pieces: list[Piece]) -> float:
@@ -518,6 +658,35 @@ def balance(pieces: list[Piece], ctx: "Ctx") -> list[Piece]:
                 if pov_run(pieces, i) > dc.max_pov_run:
                     p.kind = "calm"
                     continue
+                acted = True
+                break
+        if acted:
+            continue
+        # 4. D4: a zoom (body part, feet, path, timing, then the axis) hands its call to a phone: the phone shows the demonstration with the 3D skeleton
+        # and the call's arrow on top. The first zoom of each (family, feature) stays 3D, the physics views always do.
+        if dc.zoom_to_phone:
+            seen: set = set()
+            cands = []
+            for i, p in enumerate(pieces):
+                if p.kind != "zoom" or p.family == "weight":
+                    continue
+                key = (p.family, p.feature)
+                first = key not in seen and p.family in ("body", "axis")
+                seen.add(key)
+                if (first and (p.family == "axis" or pov_share(pieces) > lo - 0.03)) or p.no_pov or p.dur < dc.pov_min_s - 0.2 or p.dur > dc.pov_max_s + 0.6 or p.t0 < dc.first_shot_3d_s:
+                    continue
+                if overlaps_insert(p.t0, p.t1, ctx.inserts, dc.insert_pad_s) or not ctx.pov.any_phone(p.t0, p.t1):
+                    continue
+                order = {"timing": 0, "path": 0, "feet": 1, "body": 2, "axis": 3}.get(p.family, 4) + (5 if first else 0)
+                cands.append((order, -p.dur, i))
+            for _, _, i in sorted(cands):
+                p = pieces[i]
+                p.kind = "pov"
+                if pov_run(pieces, i) > dc.max_pov_run:
+                    p.kind = "zoom"
+                    continue
+                p.why = list(p.why) + [f"the {p.family} call is shown by the phone with its arrow (the phones' share is short of {lo:.0%})"]
+                p.tail_of = None
                 acted = True
                 break
         if not acted:
@@ -634,12 +803,15 @@ def direct(beats: list[plan.Beat], ctx: "Ctx") -> tuple[list[plan.Beat], dict]:
     pieces: list[Piece] = []
     for b in beats:
         pieces += split_beat(b, ctx)
+    pieces = trim_physics(pieces, ctx)
     pieces = absorb_short(pieces, ctx)
+    pieces = trim_physics(pieces, ctx)
     sub: list[Piece] = []
     for p in pieces:
         sub += subdivide(p, ctx) if p.kind == "free" else [p]
     pieces = sub
     assign(pieces, ctx)
+    report_phys = {"cadence_inserted": physics_cadence(pieces, ctx)}
     pieces = balance(pieces, ctx)
     pieces = fix_short(pieces, ctx)
     limit_runs(pieces, ctx)
@@ -647,7 +819,7 @@ def direct(beats: list[plan.Beat], ctx: "Ctx") -> tuple[list[plan.Beat], dict]:
     # chapter starts stay shot starts
     shots = to_beats(pieces, ctx)
     plan.assign_variation(shots, ctx.chapters, ctx.act, ctx.roles, ctx.cfg)
-    report: dict = {}
+    report: dict = dict(report_phys)
     build_cameras(shots, ctx, report)
     tot = sum(b.dur for b in shots)
     pov_s = sum(b.dur for b in shots if b.family == "pov")

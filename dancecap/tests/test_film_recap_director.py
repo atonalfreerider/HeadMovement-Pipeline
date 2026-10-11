@@ -96,7 +96,7 @@ def test_features_name_joints_never_hands_and_keep_the_partner_in_the_frame():
 def test_the_phones_carry_a_large_share_and_circle_with_3d_between():
     sp = long_speech()
     shots, rep, _ = direct(sp, pov_source())
-    assert 0.34 <= rep["pov_share"] <= 0.52
+    assert 0.50 <= rep["pov_share"] <= 0.66
     fam = [b.family for b in shots]
     # never more than max_pov_run phone shots in a row
     run = best = 0
@@ -158,7 +158,7 @@ def test_build_direction_in_director_mode_is_valid_and_reports_the_phones():
     act = act_positions(140, moving=[(0, 140)])
     doc, tl, rep = fr.build_direction(sp_bundle(sp), act, plan.Layers.all_on(), CFG, fr.Paths(work=Path(".")), "99_Capture", ("Class recap", "x"), pov_source())
     assert fr.validate(doc, tl, sp_bundle(sp)) == []
-    assert doc["recap_film"]["director_mode"] and 0.34 <= doc["recap_film"]["pov_share"] <= 0.52
+    assert doc["recap_film"]["director_mode"] and 0.50 <= doc["recap_film"]["pov_share"] <= 0.66
     assert rep["director"]["attention"] and rep["director"]["pov_seconds_per_phone"]
     povs = [s for s in doc["segments"] if s["camera"]["mode"] in ("camera_tour", "fly_to_camera")]
     assert povs and all(s["layers"]["source_video"] == s["treatment"]["phone"] and s["layers"]["avatars_fade_with_video"] is True for s in povs)

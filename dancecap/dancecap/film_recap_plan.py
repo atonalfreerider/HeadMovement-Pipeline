@@ -62,11 +62,22 @@ class Cfg:
     gap_min_s: float = 1.8           # a speech-free gap this long can be slowed in place (the slowed window is gap - 2 x gap_pad_s - 0.1)
     gap_pad_s: float = 0.35          # keep this far from the neighbouring words
     # call-outs
-    arrow_min_conf: float = 0.6
+    arrow_min_conf: float = 0.5
     arrow_s: float = 2.0
+    arrow_min_s: float = 1.3         # an arrow squeezed by its neighbours is never shorter than this
+    arrow_max_s: float = 2.4
     label_repeat_s: float = 40.0
     max_arrows_per_10s: int = 3
     card_s: float = 2.6
+    # D4 (owner 2026-10-11): "more arrows" - one arrow per attention call that has something to point at (film_recap_arrows), at most this many at once
+    arrows_every_call: bool = True
+    max_arrows_at_once: int = 2
+    arrow_same_label_s: float = 6.0   # the same label on the same target within this many seconds is one arrow (its window is extended)
+    # D4 (owner 2026-10-11, "when avatars are in view, we need to set to 75% transparency"): ONE value for every avatar the film draws (3D shots,
+    # physics, overhead, the flight into a phone). 0.25 opacity = 75 % transparent, read literally; 0.75 would be the other reading. The direction
+    # carries it as the top-level key `avatar_opacity` (the viewer applies it to every segment's `avatars` layer).
+    avatar_opacity: float = 0.25
+    avatar_on_video: bool = False    # the 3D avatars also over a phone's own video (layer `avatars_over_video`); off: only the skeleton lines sit on the video
     # overhead framing (D2): the couple fills this share of the frame width at the tightest; never below min_fill
     overhead_fill: float = 0.66
     overhead_min_fill: float = 0.46
@@ -284,14 +295,22 @@ VIEW_STATE = {"pov": "camera_tour", "talk": "orbit", "body": "orbit", "feet": "o
               "timing": "orbit", "graph": "dance_graph"}
 
 
-def treatment_layers(family: str, layers: Layers, dropped: list[dict] | None = None, where: str = "", variant: int = 0) -> dict:
-    """the layer dict of a family, minus the keys whose data is absent (recorded in `dropped`)"""
+def treatment_layers(family: str, layers: Layers, dropped: list[dict] | None = None, where: str = "", variant: int = 0,
+                     avatar_opacity: float | None = None, avatar_on_video: bool = False) -> dict:
+    """the layer dict of a family, minus the keys whose data is absent (recorded in `dropped`). `avatar_opacity` (D4, the film's ONE avatar value)
+    replaces every positive `avatars` value of the preset; the skeleton lines and the overlays keep their own strength."""
     base = {"pov": L_POV, "talk": L_TALK, "body": L_BODY, "feet": L_FEET, "weight": L_WEIGHT, "axis": L_AXIS, "path": L_PATH, "timing": L_TIMING,
             "graph": L_GRAPH}[family]
     out = deepcopy(base)
+    if avatar_opacity is not None and float(out.get("avatars", 0.0)) > 0.0:
+        out["avatars"] = round(float(avatar_opacity), 3)
+    if family == "pov" and avatar_on_video:
+        out["avatars_over_video"] = True
     if family == "axis" and variant % 2 == 1:
         out = deepcopy(L_PATH)                    # the floor view of the alternation: every T and the dotted path
         out["counterbalance"] = True
+        if avatar_opacity is not None:
+            out["avatars"] = round(float(avatar_opacity), 3)
 
     def drop(key: str, needs: str, replacement=None):
         if key in out:
@@ -966,6 +985,8 @@ def make_annotations(beat: Beat, events: list[dict], layers: Layers, cfg: Cfg, d
                     state["last_move"] = a0
                     n += 1
             continue
+        if cfg.arrows_every_call:
+            continue                      # D4: the arrows come from film_recap_arrows (one per attention call)
         if conf < cfg.arrow_min_conf or e.get("needs_check"):
             continue
         recent = [t for t in arrows_recent if a0 - 10.0 < t <= a0]

@@ -197,3 +197,36 @@ Overhead: `fill` 0.68 / 0.62 (the share of the frame width the box of both dance
 (VIEWER_SPEC 3.15). Audit fixes of the first render: avatars 0.95 / 0.92 / 0.85 instead of 0.55 / 0.42 / 0.30 (they read as grey ghosts); the physics legend has a fixed
 place, 1.85x; an orbit that runs along the line between the dancers lifts the eye (`avoid_inline`); same-speaker caption chunks closer than 1 s stay up (no flicker);
 the chapter marks start at the first sentence of the chapter (`offset_s` in `films.toml`), not at the shot's 0.3 s lead-in.
+
+## D4 (owner 2026-10-11): more physics, more arrows, more phone video, avatars 75 % transparent
+
+The owner's words: "the kadu larissa lesson needs to have more physics, more arrows, more POV from phone video, only use regenerated elevenlabs lines, output to
+vertical recording. when avatars are in view, we need to set to 75% transparency." Code: `film_recap_arrows.py` (new), `film_recap_director.py`,
+`film_recap_plan.py` (`Cfg`, `treatment_layers`), `film_recap.py`; tests `tests/test_film_recap_arrows.py`. The audio is not part of this (V3).
+
+* **Avatar opacity: ONE value.** `plan.Cfg.avatar_opacity = 0.25` (75 % transparent, read literally; 0.75 would be the other reading, 25 % transparent) replaces
+  every positive `avatars` value of the presets (3D orbit, zooms, feet, physics, overhead, the flight into a phone, the replay) and is written to the
+  direction's top-level `avatar_opacity` key, which the viewer applies to every segment that shows avatars. Flip it without code:
+  `python -m dancecap.film_recap build --avatar-opacity 0.75`. The skeleton lines, the physics colours and the overlays keep their own strength (only the
+  bodies fade). On a phone's own video there are no avatars (only the skeleton lines sit on the people); `--avatar-on-video` keeps them there too (layer
+  `avatars_over_video`).
+* **Physics view.** Every teaching event about weight / balance / counterbalance / heavy / suspension / shift (tag `overlay_weight_change`) and about
+  momentum / speed / energy (`overlay_timing`), and every spoken word of `director.PHYSICS_WORDS` (weight, balance, momentum, force, pressure, engaged,
+  counterbalance, fall, push, pull, heavy, suspension, energy, speed, gravity) that no event covers, gets the physics view (`physics_calls`: the events are
+  flagged `physics_call`, the other words become synthetic events that are never counted as the teachers' attention calls). Where the teachers stand
+  apart (more than 0.95 m) there is nothing to show and it is skipped. While the teachers MOVE a physics view shows at least every `phys_gap_s` (24 s) of moving
+  film time (`physics_cadence`); stretches where they stand and talk do not count. A physics view holds about 5 s (`trim_physics`), the rest of its sentence goes to
+  the phones. The legend keeps D2's fixed place and says "estimated from motion".
+* **Arrows.** `film_recap_arrows.make_arrows`: one labelled arrow for every attention call that has something to point at, in the teacher's own word, from
+  0.35 s before the word for 1.3-2.4 s (shorter when the next one needs the room), at most two call-outs at once (the validator checks it). It points at:
+  the joint of a body part; the named foot (else `stance_foot`); the centre of mass of the dancer or of the couple for weight / balance / push; the leader's T
+  alive at that time for axis / exit / rotation; the direction of travel (`vector_arrow` velocity) for path / direction / timing; a floor ring for "here".
+  Calls with nothing to point at ("look at it", "like this") and the four calls the transcript flags as unsure get none and are listed with the reason
+  (`direction_review.md`, `direction_report.json` director.arrows). The physics view adds the velocity of each centre of mass the whole view long (unlabelled,
+  explained once by a readout), the net push for push / pull / force words ("est.") and the weight moving from one foot to the other where the physics contact
+  changes (`weight_transfers`, "his weight to the right foot"). Arrows lie in the phone shots too (the viewer draws them through the phone's camera, so they
+  are registered on the video exactly as the skeleton is).
+* **Phone video.** `DirCfg.pov_target = (0.56, 0.62)`, up to three phone shots in a row (`max_pov_run`, `chain_pov`), a phone is never repeated back to back; when
+  the free time is not enough, body / feet / path / timing zooms (then the axis ones, then the first body zooms) hand their call to a phone with the arrow
+  (`zoom_to_phone`); the physics views never do. Shots stay 3-6.8 s and end at the speech's pauses; the bad stretches and the teachers-in-frame crops of D2 are
+  unchanged. Export the clips after a plan change: `python -m dancecap.recap_pov clips` (then `camera_video --install-only` when the editor owns the capture folder).
