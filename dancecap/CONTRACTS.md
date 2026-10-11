@@ -1715,3 +1715,11 @@ attach/<cam>.json|npz|_world.npz|assoc_<cam>.npz   R3's teacher-refined attach o
 `work/larissa_kadu_recap/chunks.json`: the chunk plan (arithmetic, windows, cores, seams, cameras and the reason per camera, shape window, cost table, offline validation); the farm jobs are in `farm/jobs/`.
 Chunk takes (`work/larissa_kadu_recap_<id>/`) additionally hold `dancers/teacher_tracks/<cam>.npz` (idx (F, 2) = person row of lead / follow in `people/<cam>.npz`, -1 = MISS; boxes (F, 2, 4); conf) which `recap_front`
 feeds to the demo's SAM stage as its candidate tracks (slot A = lead, slot B = follow, the colour rule's keep / swap decision forced to keep).
+
+
+## john_lula 2D people (2026-10-11, additive; dancecap.jl_people, jl_people_detect / _sam / _pose / _pod; agent J3a)
+
+One handheld camera (cam `01`), a floor heat with other couples: `work/john_lula/people/teachers_01.npz` follows the recap people contract above (row = slot in `pose_tables/01.npz`, box = SAM mask box, kp 17 joints, conf >= 0.5, role_conf,
+merged = the two mask boxes overlap > 0.5, floor = NaN until the room calibration) and ADDS: `kp_wb` (F, 2, 133, 3) COCO-WholeBody from RTMW-x (17 body, 6 feet, 68 face, 42 hands; score = min(1, RTMW peak / 6)), `wb_variant`,
+`mask_area`, `mask_agree`, `mask_dist`, `visible` (zoom-normalised), `skel_in_partner` (> 0.5: the dancer is hidden, the skeleton is a guess), `edge`, `box_iou`, `bib_dist`. `masks_01.npz`: `m_<frame>_<0 John | 1 Lula>` PNG bytes + box, area.
+Identity = competition bibs (John 124, Lula 116; 126 is another couple) read by EasyOCR on a pod, anchors from a pair Viterbi, SAM 2.1 masks between anchors (forward + backward runs, their IoU = `mask_agree`). Method, checks, hard stretches: `work/john_lula/NOTES_J3a.md`.
