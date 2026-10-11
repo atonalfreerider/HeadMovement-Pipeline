@@ -129,3 +129,19 @@ def test_a_preset_writes_the_direction_and_the_captures_soundtrack_as_the_mix(tm
     # the bow starts after this short film: no chapter for it, and the last chapter runs to the film end
     assert entry["available"] and len(entry["chapters"]) == 4 and entry["durationS"] == d["timeline"]["film_duration_s"]
     assert entry["chapters"][-1]["endS"] == d["timeline"]["film_duration_s"]
+
+
+def test_the_looks_are_data_driven_and_the_default_film_is_unchanged():
+    base = _direction()
+    assert base["avatar_opacity"] == 0.95
+    for s in base["segments"]:
+        assert "avatars" not in s["layers"] and "rhythm_score" not in s["layers"] and "rhythm_rings" not in s["layers"]
+        assert s["layers"]["room"] is True and s["layers"]["skeleton_lines"] == 0.0
+    look = _direction(cfg={"avatar_opacity": 0.25, "room": False, "skeleton_lines": 1.0, "rhythm_score": True})
+    assert look["avatar_opacity"] == 0.25
+    for s in look["segments"]:
+        lay = s["layers"]
+        assert lay["room"] is False and lay["skeleton_lines"] == 1.0 and lay["rhythm_score"] is True and lay["rhythm_rings"] is True
+        assert "avatars" not in lay                                   # the one number at the top of the direction rules every segment
+        if s["view_state"] == "overhead":
+            assert lay["grid"] is True                                # no room: the floor grid stays under the dancers from above too

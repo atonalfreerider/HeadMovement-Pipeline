@@ -152,6 +152,14 @@ thumbnail = "dancecap/work/carlos_aline/film/review/card_thumb.jpg"   # a clean 
 name = "carlos_aline"
 take = "carlos_aline"
 songs = "dancecap/work/carlos_aline/song/segments.json"
+# The looks (owner 2026-10-11: "no room and avatars should be at 75% transparent", "there should be a live score along the way"):
+#   avatar_opacity = 0.25 reads "75 % transparent" literally (opacity 0.25: the dancers are faint and the skeleton lines read through them);
+#   the other reading, "75 % opaque", is avatar_opacity = 0.75 (rebuild with `python -m dancecap.film_library build --carlos-aline`, or edit the one
+#   "avatar_opacity" number at the top of work/carlos_aline/film/direction.json).
+avatar_opacity = 0.25
+room = false                # no room mesh: the dancers float over the dark floor grid
+skeleton_lines = 1.0        # the skeleton strokes at normal strength
+rhythm_score = true         # the live rhythm score HUD and the final score card (work/carlos_aline/rhythm/rhythm.json -> the capture's rhythm layer)
 
 [carlos_aline.heat.titles]
 entrance = "Entrance and announcement"

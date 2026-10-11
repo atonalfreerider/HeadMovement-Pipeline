@@ -979,6 +979,14 @@ def export(take: str, capture: str | None = None, model: Path | None = None, aud
         (out / "timing.json").write_text(json.dumps(
             _timing_for_unity(timing, work / "timing" / "kinematics.npz", t, warnings), separators=(",", ":")))
         manifest["timing"] = "timing.json"
+    rhythm_path = work / "rhythm" / "rhythm.json"       # python -m dancecap.rhythm run <take>: the live rhythm score layer (docs/RHYTHM.md)
+    if rhythm_path.exists():
+        from .rhythm import for_unity
+        try:
+            (out / "rhythm.json").write_text(json.dumps(for_unity(json.loads(rhythm_path.read_text(encoding="utf-8"))), separators=(",", ":")))
+            manifest["rhythm"] = "rhythm.json"
+        except (KeyError, ValueError) as e:                 # a layer is optional: report and go on
+            warnings.append(f"rhythm layer not exported ({type(e).__name__}: {e}); re-run python -m dancecap.rhythm run {take}")
     phys = work / "physics" / "physics.json"
     if phys.exists() and _physics_on_grid(phys, t, warnings):
         shutil.copy2(phys, out / "physics.json")
