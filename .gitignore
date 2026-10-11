@@ -7,6 +7,7 @@
 !/README.md
 !/atlas_bridge/
 !/dancecap/
+!/docs/
 !/prototype/
 !/tools/
 
@@ -14,6 +15,10 @@
 *.pyc
 
 /atlas_bridge/sessions/*/work/
+
+# docs: only the README demo images (the guard's allow list, tools/githooks/allow.txt, lets them in; see GIT.md)
+/docs/*
+!/docs/images/
 
 # dancecap: code, configs and tests; run outputs live under work/ (ignored)
 /dancecap/work/
@@ -38,7 +43,8 @@
 # ---- defence in depth inside the tracked trees ---------------------------------------------------
 # tools/githooks/guard.py rejects the same classes at commit time (docs: dancecap/docs/GIT.md).
 # Ignore rules never touch files that are already tracked. To add a file of a class below on purpose
-# (for example a small test image) use `git add -f` AND an entry in tools/githooks/allow.txt.
+# (for example a small test image): add an un-ignore line for it at the end of its block (as for docs/images below)
+# AND an entry in tools/githooks/allow.txt, in a commit of its own, with the owner's approval. Never `git add -f`.
 
 # junk, profiler output, logs
 *.out
@@ -92,6 +98,7 @@
 *.tiff
 *.exr
 *.tga
+!/docs/images/*.jpg
 
 # secrets and the private forbidden-terms list
 *-key.txt
