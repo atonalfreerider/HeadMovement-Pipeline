@@ -478,10 +478,12 @@ def commands(stage_id: str, ctx: dict) -> list[list[str]]:
             [[*DC, "cameras", "{take}", "--stages", "map"]]
     if cmds == "timing":
         take = ctx["take"]
-        studio = paths.take_work(take) / "song" / "beats_studio.json"
+        song = paths.take_work(take) / "song"
         argv = [*DC, "timing", "{take}"]
-        if studio.exists():
-            argv += ["--beats", f"work/{take}/song/beats_studio.json", "--no-refine"]
+        # the studio grid, else (a heat with no studio file: dancecap.heat_beats, fitted on the heat's own audio) the heat grid
+        grid = next((n for n in ("beats_studio.json", "beats_heat.json") if (song / n).exists()), None)
+        if grid:
+            argv += ["--beats", f"work/{take}/song/{grid}", "--no-refine"]
         cmds = [argv]
     return [_subst(c, ctx) for c in cmds]
 

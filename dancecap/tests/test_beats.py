@@ -174,6 +174,16 @@ def test_envelope_snr_ranks_noisy_phone_last():
     assert snr["d"]["snr_db"] < snr["a"]["snr_db"] - 3
 
 
+def test_envelope_snr_single_camera_is_finite():
+    """One camera (a single-view take): no other phone to correlate with, the SNR is 0 (never inf: the plot and json need numbers)."""
+    sr = 16000
+    times, kinds, _ = zouk_events(77, 0.2, 20)
+    env = B.logmel_envelope(drum_track(times, kinds, 20, sr, noise=0.01, seed=1), sr)
+    snr = B.envelope_snr({"01": env})
+    assert snr["01"]["snr_db"] == 0.0 and snr["01"]["single_camera"] is True
+    assert np.isfinite(B.quality_score({"snr": snr["01"], "level": {"clip_frac": 0.0, "bandwidth_hz": 13000}, "beat_confidence": 0.9}))
+
+
 def test_click_track_and_wav_roundtrip(tmp_path):
     sr = 8000
     grid = np.array([[1.0, 1], [1.5, 3], [2.0, 2]])

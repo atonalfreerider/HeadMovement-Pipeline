@@ -158,7 +158,9 @@ def envelope_snr(envs: dict[str, np.ndarray], max_lag: int = 5) -> dict[str, dic
     for c in z:
         others = [z[o] for o in z if o != c]
         if not others:
-            out[c] = {"r": 1.0, "snr_db": float("inf"), "lag_frames": 0}
+            # a single-camera take has nothing to compare with: SNR is undefined, scored 0 (an infinite score broke the
+            # review plot and the quality json); the lone phone is the source
+            out[c] = {"r": 1.0, "snr_db": 0.0, "lag_frames": 0, "single_camera": True}
             continue
         cons = np.median(np.stack(others), 0)
         best = (-2.0, 0)
