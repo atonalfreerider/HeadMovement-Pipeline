@@ -38,7 +38,7 @@ def build_fix_job(tpl: dict, cid: str, k0: int, k1: int, est: dict, why: str, co
     job["take"] = take_of(cid)
     job["chunk"]["take"] = take_of(cid)
     job["chunk"]["origin"] = "fix"
-    job["outputs"] = json.loads(json.dumps(job["outputs"]).replace("larissa_kadu_recap_", f"{DANCE}_"))     # recap_fix names its optional mask / qa_mask outputs for the recap
+    job["outputs"] = json.loads(json.dumps(job["outputs"]).replace(f"{RF.DANCE}_", f"{DANCE}_"))     # recap_fix names its optional mask / qa_mask outputs for its own dance
     job["owner"] = tpl.get("owner")
     job["fix"] = {"agent": "J3b", "why": why, "sync_fixed": job["chunk"]["sync_fixed"]}
     job["profile"] = tpl.get("profile", "john_lula")
@@ -49,7 +49,7 @@ def build_fix_job(tpl: dict, cid: str, k0: int, k1: int, est: dict, why: str, co
 def final_job(tpl_final: dict, chunk_specs: list[dict], out_take: str = OUT_TAKE, jid: str = FINAL_ID) -> dict:
     from . import recap_fix as RF
     job = RF.final2_job(tpl_final, chunk_specs, out_take=out_take, jid=jid, margins=MARGINS, select_weights=SELECT_WEIGHTS)
-    s = json.dumps(job["outputs"]).replace("larissa_kadu_recap", DANCE)
+    s = json.dumps(job["outputs"]).replace(RF.DANCE, DANCE)
     job["outputs"] = json.loads(s)
     job["chunk"]["take"] = out_take
     job["owner"] = tpl_final.get("owner")
