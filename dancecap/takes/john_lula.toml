@@ -66,17 +66,26 @@ venue = "unknown (a convention hall; competition bibs 124 / 116)"
 name = "John"
 pid = 1
 stature_m = 1.803   # 5'11"
-description = "black t-shirt, dark trousers, short brown hair"
+description = "short brown hair swept to one side, short full brown beard, black crew-neck t-shirt, black trousers, dark charcoal sneakers"
+# AVATAR APPEARANCE (agent J5a, 2026-10-11, from the photo and the video stills; the owner flips any line): short brown hair and a short full brown beard are
+#   TEXTURE (no groom for the lead: the photo composite carries the beard, as for the other leads), plain black t-shirt (the bib is a texture detail the bake
+#   will not keep), black trousers, dark sneakers. The competition bib, a black wristwatch: not modelled. Palette / colours measured: work/john_lula/avatar/.
 shoe_sole_m = 0.025   # dark soft sneakers; UNCONFIRMED barefoot stature (as in the demo)
 
 [dancers.follow]
 name = "Lula"
 pid = 2
 stature_m = 1.702   # 5'7"
-description = "patterned long-sleeve crop top, grey trousers, long auburn ponytail"
+description = "long auburn ponytail tied high on the crown, sheer long-sleeve cropped top with a brown printed pattern over a coral sports top, loose grey trousers, pale pink slip-on sneakers"
+# AVATAR APPEARANCE (agent J5a, 2026-10-11): hair auburn / copper brown (a measured palette in work/john_lula/avatar/hair_palette.json: the hair at the scalp
+#   reads darker than the tail), worn in a HIGH PONYTAIL: `hair_style = "ponytail"` below makes dancecap.hair_groom (seed_from / restyle) build the ponytail groom
+#   (dancecap.hair_ponytail; overrides in [dancers.follow.hair_ponytail], e.g. tail_frac_of_height, tie_el_deg, flare; defaults: tie on the crown 52 deg above the
+#   head-sphere equator, the tail about 0.22 x stature, to the shoulder blades) with a small hair tie and a blue barrette drawn at the tie. The top is a
+#   TEXTURE (a printed pattern: only its main colours survive the 538 x 960 video: brown / maroon / cream on skin tone, coral underneath), the grey trousers are
+#   texture, the bib and the watch / wristband are not modelled. Tip glow stays on (the stylisation of the demo's hair); `hair_tip_glow = 0` drops it.
 shoe_sole_m = 0.02   # thin light-pink slip-on sneakers; UNCONFIRMED barefoot stature (as in the demo)
-# HAIR (owner 2026-10-11: "restyle lula's hair for her ponytail"): a high ponytail, auburn / light brown (the photo: a blue clip on the hair tie). A style
-# note only: the avatar hair restyle is a later agent's job (dancecap.hair_groom / the avatar stages read it).
+# HAIR (owner 2026-10-11: "restyle lula's hair for her ponytail"): a high ponytail, auburn / light brown (the photo: a blue clip on the hair tie). Read by
+# dancecap.hair_groom (ponytail_hook -> dancecap.hair_ponytail, J5a 2026-10-11) and the avatar stages; the loose style is the default of every other take.
 hair_style = "ponytail"
 
 # Camera type (dancecap.camera_types). MEASURED by agent J1 2026-10-11 (background LK tracks with the people masked, work/john_lula/NOTES_J1.md):

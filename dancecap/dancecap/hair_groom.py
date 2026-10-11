@@ -595,6 +595,13 @@ def apply_style(groom: dict, rm: RestModel | None = None, sp: dict | None = None
     return g
 
 
+def ponytail_hook(g: dict, take: Take) -> dict:
+    """[dancers.follow] hair_style = "ponytail" in the take's TOML -> the ponytail restyle (dancecap.hair_ponytail); any other take is
+    returned unchanged (the loose sleek style stays the default)."""
+    from . import hair_ponytail
+    return hair_ponytail.take_hooks(g, take)
+
+
 def restyle(take: Take, do_export: bool = True) -> dict:
     """avatar/hair_groom.json -> the current version without re-measuring (rest model only, for the colliders)."""
     p = take.work / "avatar" / "hair_groom.json"
@@ -612,6 +619,7 @@ def restyle(take: Take, do_export: bool = True) -> dict:
             print(f"[hair_groom] painted hairline of {d.name}: {cap}")
             break
     g = apply_style(groom, rm, sp, ref, cap_hairline=cap)
+    g = ponytail_hook(g, take)
     g["restyled"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     p.write_text(json.dumps(g, indent=1), encoding="utf-8")
     head = next(c for c in g["colliders"] if c["name"] == "head")
@@ -686,6 +694,7 @@ def seed_from(take: Take, src: Take, do_export: bool = True, out: Path | None = 
     if cap is None:
         cap = ((g.get("cards") or {}).get("cap") or {}).get("hairline_el_deg_vs_abs_az")  # the source take's (same texture look)
     g = apply_style(g, rm, sp, ref, cap_hairline=cap)
+    g = ponytail_hook(g, take)
     g["restyled"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     dst = out or take.work / "avatar" / "hair_groom.json"
     dst.parent.mkdir(parents=True, exist_ok=True)

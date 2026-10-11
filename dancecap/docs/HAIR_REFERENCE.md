@@ -300,3 +300,31 @@ hair 0.50 / 0.21 / 0.047, glow x 1 / 1 / 0.28; lit body p99.5 0.41 linear; post-
 glow on, 0 off, 405 halo pixels; 9.5k / 6.6k / 5.3k triangles at LOD 0 / 1 / 2; bake 0.19-0.37 s, 2.7 MB; baked
 update 0.55-0.69 ms mean. Review sheets: `work/larissa_kadu/review/realism/hair_fix_*.png` (before / after of the
 2026-10-07 review) and `hair_*.png`.
+
+## 9. Ponytail style (2026-10-11, `hair_style = "ponytail"`; `dancecap/hair_ponytail.py`, viewer `Assets/Hair/HairPonytail.cs`)
+
+The groom system's loose sleek style stays the default for every take; a take whose follow block says `hair_style = "ponytail"` gets the ponytail restyle
+when `hair_groom` seeds / restyles its groom (`ponytail_hook`). Same guide roots, colliders, render and solver; different style:
+
+- **Tie**: `style.ponytail.tie_az_deg` / `tie_el_deg` (from the head-sphere centre, az 180 = straight back; default 52 deg = a high ponytail on the crown
+  / back), `tie_lift_m` above the hair surface. The scalp hair is swept back smooth: every guide runs from its root along a great circle over the head
+  collider to the tie (pinned: `skull_hold`), the scalp cap's comb runs the same way (strands converge on the tie), the clean hairline is the cap's
+  hairline table (painted into the texture) as before.
+- **Tail**: leaves the tie along the tie normal, drooping toward gravity (`tail_droop0`, `tail_down_slerp`), `tail_frac_of_height` x rest height long (0.22:
+  about to the shoulder blades), +- `tail_length_jitter` per strand (layered cut), fanned out from the tie (`bundle_radius_m` lateral x depth at
+  full offset, `flare` x at the ends, offsets ramped over `offset_ramp_m`): each strand sits in the bundle on the side it entered from. Soft:
+  `tail_hold` (per-frame stiffness at the tie, e-fold falloff in tail fractions), deviation cone `deviation`; the existing XPBD solver, face box and body
+  colliders do the rest (the tail lies on the back and swings with the head).
+- **Cards**: a ponytail table (`hair_ponytail.CARD_LAYERS`: 18 inner / 34 mid / 40 outer / 10 flyaway, no side-part cards) that starts a few cm above
+  the tie (the cap covers the scalp), with normals turned around the tail axis (`CardDesc.tubeS / tubePhi`) so the tail is a tube from every side;
+  `neighbour_blend` 0.5 keeps the cards from collapsing onto the bundle axis.
+- **Tie + barrette**: a bumpy ring round the bundle (`tie.band_radius_m`, `tie.colour`) and an optional small barrette on the scalp (`tie.clip.*`:
+  direction, size, angle, colour), vertex-coloured meshes on the head bone with the avatar's translucent attachment materials.
+- **Colour**: the take's `work/<take>/avatar/hair_palette.json` (sRGB `mid`, `highlight`, ...; likeness colours stay in work/): `render.albedo_linear` = mid x
+  gain as for every groom; `cap_tint` (a shader multiplier on the scalp cap only: hair at the scalp reads darker than the tail in the reference photo),
+  `copper_lift` (lighter, golden tips). `[dancers.follow] hair_tip_glow` / `hair_albedo_gain` flip the palette's options.
+- **Budget**: 160 guides x 16 segments as before; 102 cards, 7.2k triangles at LOD 0 including glow; bake 0.5 s for 176 frames; sweep on the demo body: 0
+  strand resets, max stretch 1.028, face intrusions 0, turn spread r95 median 0.23 m, p90 0.27 m (fast head turns 285-300 deg/s: the tail swings out
+  and back as one sheet).
+- Re-run: `python -m dancecap.hair_groom <take> --from-take larissa_kadu_full` (needs the take's `smplx/follow.npz`; roots re-based on its betas) then the
+  export; or `python -m dancecap.hair_ponytail <take> --from-take larissa_kadu_full`.
