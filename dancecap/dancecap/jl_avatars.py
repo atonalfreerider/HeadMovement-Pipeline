@@ -94,7 +94,8 @@ STAGES: tuple[CA.Stage, ...] = (
              ("avatar/{lead,follow}_albedo.png",), "0 (~1 min)", "per-texel confidence-weighted fusion of the window bakes (only the visible side of a window is textured)"),
     CA.Stage("face-texture", True, "local", "face-texture [--composite]", ("avatar/{lead,follow}_albedo.png", "smplx", "lead portrait"),
              ("avatar/{lead,follow}_albedo_face.png",), "0 (~9 min CPU)", "the lead's portrait composited onto the bake; the follow's face from the video"),
-    CA.Stage("hair-groom", True, "local", "hair-groom (parent)", ("smplx/follow.npz", "avatar/follow_albedo_face.png"), ("avatar/hair_groom.json",), "0", "the ponytail groom"),
+    CA.Stage("hair-groom", True, "local", "hair-groom [--from-take larissa_kadu_full]", ("smplx/follow.npz", "[avatar/follow_albedo_face.png]", "avatar/hair_palette.json", "[dancers.follow] hair_style"),
+             ("avatar/hair_groom.json",), "0 (~1 min)", "the ponytail groom: a donor take's roots re-based on her rest model, hair_ponytail restyle, her palette"),
     CA.Stage("shoes", True, "local", "shoes", ("capture", "avatar/shoes_override.json", "avatar/shoes_video.json"), ("avatar/shoes.json",), "0 (<1 min)",
              "sample + apply the colours / style override"),
     CA.Stage("export", True, "local", "python -m dancecap.demo_export john_lula ... (export agent)", ("everything above", "[dancers.*] of the take TOML"),
@@ -772,6 +773,24 @@ def stage_head_review() -> dict:
     return {r: list(v) for r, v in rep.items() if r in ROLES} | {"provisional_betas": True}
 
 
+# ------------------------------------------------------------------------------------------------ stage: hair-groom (pose-dependent: needs her rest model)
+
+def stage_hair_groom(from_take: str = "larissa_kadu_full") -> dict:
+    """avatar/hair_groom.json of the follow: a donor take's groom (roots = SMPL-X vertex ids + barycentrics, measured data) re-based onto HER rest model
+    (smplx/follow.npz), then dancecap.hair_ponytail's restyle ([dancers.follow] hair_style = "ponytail": tie, tail, cards, dynamics) and her palette
+    (avatar/hair_palette.json). Not exported here: the demo export copies it (`python -m dancecap.hair_groom john_lula --export-only` after a re-export)."""
+    CA.require([WORK / "smplx" / "follow.npz"], "hair-groom")
+    from . import hair_groom, hair_ponytail
+    from .take import Take
+    take = Take.load(TAKE)
+    if hair_ponytail.hair_style_of(take) != "ponytail":
+        raise SystemExit(f"{TAKE}: [dancers.follow] hair_style is not 'ponytail'")
+    g = hair_groom.seed_from(take, Take.load(from_take), do_export=False)
+    p = (g.get("style") or {}).get("ponytail") or {}
+    return {"groom": str(AV / "hair_groom.json"), "style": g["style"]["type"], "tail_length_m": p.get("tail_length_m"),
+            "problems": hair_ponytail.validate(p), "albedo_linear": g["render"].get("albedo_linear"), "from_take": from_take}
+
+
 # ------------------------------------------------------------------------------------------------ main
 
 def csv(s: str) -> tuple[str, ...]:
@@ -813,6 +832,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--need", type=float, default=6.0)
     p.add_argument("--min-start-gap", type=float, default=14.0)
     sub.add_parser("head-review")
+    p = sub.add_parser("hair-groom")
+    p.add_argument("--from-take", default="larissa_kadu_full", help="donor take with an avatar/hair_groom.json (roots, measured data)")
     a = ap.parse_args(argv)
     if a.cmd == "plan":
         plan(a.json)
@@ -828,6 +849,8 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({k: r[k] for k in ("windows", "best_score", "median_score")} | {"per_dancer": {k: v["sides"] for k, v in r["per_dancer"].items()}}, indent=1))
     elif a.cmd == "head-review":
         print(json.dumps(stage_head_review(), indent=1))
+    elif a.cmd == "hair-groom":
+        print(json.dumps(stage_hair_groom(a.from_take), indent=1))
     else:
         from . import jl_avatars_pod as pod
         if a.cmd == "face-trust":
