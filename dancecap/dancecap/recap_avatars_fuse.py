@@ -217,12 +217,31 @@ def paint_one(img_srgb: np.ndarray, spec: dict, texel_mask: np.ndarray, atlas_in
     if sat_max is not None:                            # ... and only the grey ones (a headset's black / grey plastic; hair and skin are chromatic)
         mx, mn = img_srgb.max(-1), img_srgb.min(-1)
         mimg &= (mx - mn) <= float(sat_max) * np.maximum(mx, 1e-3)
+    sat_min = spec.get("sat_min")
+    if sat_min is not None:                            # ... or only the CHROMATIC ones (a skin-coloured patch on grey cloth)
+        mx, mn = img_srgb.max(-1), img_srgb.min(-1)
+        mimg &= (mx - mn) >= float(sat_min) * np.maximum(mx, 1e-3)
     if int(mimg.sum()) == 0:
         return {"name": spec.get("name"), "texels": 0, "note": "nothing to paint"}
     grown = grow_texels(mimg, int(spec.get("grow_texels", 8))) & (atlas_index >= 0)
     ring = grow_texels(grown, int(spec.get("ring_texels", 14))) & ~grown & (atlas_index >= 0)
     lin = srgb_to_lin(img_srgb)
     rep = {"name": spec.get("name"), "kind": spec.get("kind", "donor"), "texels": int(grown.sum()), "ring": int(ring.sum())}
+    if spec.get("kind") == "flat_median":              # the region becomes the median colour of its ring's non-chromatic texels (grey cloth: the bib's white paper -> the trousers' grey)
+        mx, mn = img_srgb.max(-1), img_srgb.min(-1)
+        calm = ring & ((mx - mn) <= float(spec.get("ring_sat_max", 0.14)) * np.maximum(mx, 1e-3))
+        if spec.get("ring_luma_max") is not None:        # e.g. a black shirt: the ring's DARK texels only (the skin of an arm next to it is not the cloth)
+            calm &= (img_srgb @ LUMA) <= float(spec["ring_luma_max"])
+        if int(calm.sum()) < 50:
+            return {"name": spec.get("name"), "texels": int(grown.sum()), "note": "no calm ring"}
+        med = np.median(lin[calm], axis=0)
+        fill = np.broadcast_to(med[None, None], lin.shape)
+        rep["gain"] = None
+        rep["median_srgb"] = [round(float(x), 3) for x in lin_to_srgb(med)]
+        a = feather(grown, float(spec.get("feather_texels", 6)))
+        a = np.where(atlas_index >= 0, a, 0.0)
+        img_srgb[...] = lin_to_srgb(lin * (1 - a[..., None]) + fill * a[..., None])
+        return rep
     if spec.get("kind", "donor") == "donor" and donor_srgb is not None:
         dl = srgb_to_lin(donor_srgb)
         g = color_match_gain(lin, dl, ring)
@@ -230,7 +249,11 @@ def paint_one(img_srgb: np.ndarray, spec: dict, texel_mask: np.ndarray, atlas_in
         fill = dl * g[None, None]
     else:
         u8 = np.clip(img_srgb * 255 + 0.5, 0, 255).astype(np.uint8)
-        fill = srgb_to_lin(cv2.inpaint(u8, grown.astype(np.uint8) * 255, 7, cv2.INPAINT_TELEA).astype(np.float32) / 255.0)
+        hole = grown | (atlas_index < 0) if spec.get("unknown_outside") else grown      # unknown_outside: the empty atlas (black) next to an island is NOT a source colour (john_lula)
+        if spec.get("ignore_sat_min") is not None:       # chromatic texels (skin, coral) are not a source colour either: grey cloth must not be filled from the skin next to it
+            mx, mn = img_srgb.max(-1), img_srgb.min(-1)
+            hole = hole | (((mx - mn) >= float(spec["ignore_sat_min"]) * np.maximum(mx, 1e-3)) & (atlas_index >= 0))
+        fill = srgb_to_lin(cv2.inpaint(u8, hole.astype(np.uint8) * 255, 7, cv2.INPAINT_TELEA).astype(np.float32) / 255.0)
         rep["gain"] = None
     a = feather(grown, float(spec.get("feather_texels", 6)))
     a = np.where(atlas_index >= 0, a, 0.0)
@@ -270,6 +293,27 @@ def smooth_scalp(img_srgb: np.ndarray, atlas, regions: dict, strength: float = 0
     return {"texels": int(m.sum()), "median_srgb": [round(float(x), 3) for x in lin_to_srgb(med)], "strength": strength, "sigma": sigma, "detail": detail, "warm": warm}
 
 
+def smooth_region(img_srgb: np.ndarray, mask_img: np.ndarray, sigma: float = 5.0, strength: float = 0.6, feather: float = 6.0) -> dict:
+    """The texels `mask_img` (H, W bool) replaced by (1 - strength) x themselves + strength x their normalised Gaussian blur (sigma texels, only the region's own texels
+    contribute), feathered at the region's edge. Linear RGB, in place."""
+    if int(mask_img.sum()) < 500:
+        return {"texels": int(mask_img.sum()), "note": "region too small"}
+    lin = srgb_to_lin(img_srgb)
+    low, _ = blur_norm(lin, mask_img.astype(np.float32), sigma)
+    a = (feather_in(mask_img, feather) * strength)[..., None]
+    img_srgb[...] = lin_to_srgb(lin * (1 - a) + low * a)
+    return {"texels": int(mask_img.sum()), "sigma": sigma, "strength": strength}
+
+
+def feather_in(mask: np.ndarray, px: float) -> np.ndarray:
+    """(H, W) float 0..1: 0 outside the mask, a ramp up over ~px texels INSIDE it."""
+    if px <= 0:
+        return mask.astype(np.float32)
+    d = cv2.distanceTransform(mask.astype(np.uint8), cv2.DIST_L2, 3)
+    t = np.clip(d / float(px), 0.0, 1.0)
+    return (t * t * (3 - 2 * t)).astype(np.float32)
+
+
 def lift_dark(img_srgb: np.ndarray, mask_img: np.ndarray, strength: float = 0.5, sigma: float = 50.0, deadband: float = 0.03) -> dict:
     """Light cloth only gets darker by what does not belong to it: shading of the baked-in lighting, a partner's dark sleeve, her hair, a dirty fold. The
     luminance of the texels `mask_img` that lies below the local mean (a Gaussian of sigma texels over the region) by more than `deadband` is lifted by
@@ -299,6 +343,8 @@ def region_texels(regions: dict, spec: dict, atlas=None, avatar_dir: Path | None
         tm = region_mask(regions["P0"], spec["centre"], float(spec["radius_m"]))
     if spec.get("joints") and spec.get("region") != "joints":
         tm &= np.isin(regions["dom"], spec["joints"])
+    if spec.get("y_max") is not None:               # only below this REST-body height (m): the seat of the trousers, not the waist skin above it
+        tm &= np.asarray(regions["P0"], float)[:, 1] <= float(spec["y_max"])
     return tm
 
 
@@ -314,6 +360,14 @@ def apply_paint(img: np.ndarray, role: str, paint_spec: dict, regions: dict, ind
                                                                                     float(spec.get("detail", 0.5)), float(spec.get("feather_m", 0.03)), float(spec.get("warm", 0.0)))})
             continue
         tm = region_texels(regions, spec, atlas, avatar_dir)
+        if spec.get("kind") == "smooth_region":     # a low-pass over the region (one low-resolution camera: the detail of a print / skin is registration noise, kept at 1 - strength)
+            ys, xs = np.nonzero(index >= 0)
+            m = np.zeros(index.shape, bool)
+            sel = tm[index[ys, xs]]
+            m[ys[sel], xs[sel]] = True
+            out.append({"name": spec.get("name"), "kind": "smooth_region", **smooth_region(img, m, float(spec.get("sigma", 5.0)), float(spec.get("strength", 0.6)),
+                                                                                         float(spec.get("feather_texels", 6)))})
+            continue
         if spec.get("kind") == "lift_dark":
             ys, xs = np.nonzero(index >= 0)
             m = np.zeros(index.shape, bool)
@@ -374,7 +428,8 @@ def load_bake(work_take: Path, role: str) -> dict:
 
 def run(work: Path, window_ids: list[str], paint: Path | None = None, out: Path | None = None, roles=("lead", "follow"), donor_take: str | None = None,
         dry_run: bool = False, low_sigma: float = 10.0, tau: float = 0.10, prefer_light: bool = True, use_prior: bool = True,
-        light_roles: tuple[str, ...] = ("follow",), powers: dict | None = None, window_weights: dict | None = None) -> dict:
+        light_roles: tuple[str, ...] = ("follow",), powers: dict | None = None, window_weights: dict | None = None,
+        min_ncam: int = 2) -> dict:
     """work = work/<take>; the window bakes live in work/../<take>_<id>/avatar/. Writes <out or work/avatar>/<role>_albedo.png, _coverage.png,
     _texels.npz and fuse_report.json (the face composite and the groom read these)."""
     from . import avatar_hair as ahair
@@ -393,7 +448,7 @@ def run(work: Path, window_ids: list[str], paint: Path | None = None, out: Path 
     for role in roles:
         bakes = [load_bake(t, role) for t in takes]
         lin = [srgb_to_lin(b["rgb"]) for b in bakes]
-        measured = [(b["alpha"] > 0.6) & (b["ncam"] >= 2) for b in bakes]
+        measured = [(b["alpha"] > 0.6) & (b["ncam"] >= min_ncam) for b in bakes]      # min_ncam 1: ONE camera (john_lula), no texel has two
         gains = exposure_gains(lin, measured)
         lin = [x * g[None] for x, g in zip(lin, gains)]
         conf_ref = float(np.median(np.concatenate([b["conf"][b["conf"] > 0] for b in bakes])))

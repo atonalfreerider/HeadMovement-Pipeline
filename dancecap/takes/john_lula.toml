@@ -93,6 +93,10 @@ shoe_geometry = { sole_heel_m = 0.018, sole_fore_m = 0.014, toe_spring_m = 0.006
 # HAIR (owner 2026-10-11: "restyle lula's hair for her ponytail"): a high ponytail, auburn / light brown (the photo: a blue clip on the hair tie). Read by
 # dancecap.hair_groom (ponytail_hook -> dancecap.hair_ponytail, J5a 2026-10-11) and the avatar stages; the loose style is the default of every other take.
 hair_style = "ponytail"
+# J5b 2026-10-11 (judged in Unity on the real poses): the white tip glow of the demo's stylisation reads as white sparks on auburn hair: OFF (1.0 brings it back); the palette's albedo gain
+# 1.85 renders the hair a bright orange against the photo's auburn (114/55/33): 1.45. Flip either, then `jl_avatars hair-groom` + `jl_export --avatars`.
+hair_tip_glow = 0.0
+hair_albedo_gain = 1.45
 
 # Camera type (dancecap.camera_types). MEASURED by agent J1 2026-10-11 (background LK tracks with the people masked, work/john_lula/NOTES_J1.md):
 # handheld (the viewpoint walks about: the room view changes across the floor; image-centre speed median 19 px/s, p90 61 px/s, max 255 px/s; roll up

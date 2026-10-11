@@ -260,3 +260,66 @@ def test_scalp_weight_survives_unreachable_vertices():
     d = np.array([-np.inf, 0.05, 0.05, 0.05], np.float32)      # a vertex far outside the scalp: the geodesic field is -inf there
     w = fz.scalp_weight(at, {"scalp_dist_v": d}, feather_m=0.03)
     assert np.isfinite(w).all()
+
+
+# ------------------------------------------------------------------------------------------------ J5b: one camera (min_ncam), the paint-out kinds of john_lula
+
+def _index(h, w):
+    """a fully covered atlas: texel index = pixel number"""
+    return np.arange(h * w).reshape(h, w)
+
+
+def test_smooth_region_blurs_only_inside_the_region_and_feathers_its_edge():
+    rng = np.random.default_rng(1)
+    img = np.clip(0.5 + 0.2 * rng.standard_normal((64, 64, 3)), 0, 1).astype(np.float32)
+    ref = img.copy()
+    mask = np.zeros((64, 64), bool)
+    mask[16:48, 16:48] = True
+    rep = fz.smooth_region(img, mask, sigma=4.0, strength=1.0, feather=4.0)
+    assert rep["texels"] == int(mask.sum())
+    assert np.allclose(img[~mask], ref[~mask], atol=1e-5)                        # untouched outside
+    assert img[24:40, 24:40].std() < 0.5 * ref[24:40, 24:40].std()              # calmer inside
+    assert np.abs(img[16, 16] - ref[16, 16]).max() < 0.1                        # the rim is feathered (a small weight at the edge)
+
+
+def test_feather_in_is_zero_outside_and_ramps_up_inside():
+    m = np.zeros((40, 40), bool)
+    m[10:30, 10:30] = True
+    f = fz.feather_in(m, 5.0)
+    assert f[~m].max() == 0.0 and f[20, 20] == 1.0 and 0.0 < f[11, 20] < f[14, 20] <= 1.0
+
+
+def test_paint_one_flat_median_fills_with_the_calm_ring_colour_not_the_skin_next_to_it():
+    h = w = 96
+    img = _flat(h, w, (0.45, 0.45, 0.46))                  # grey cloth
+    img[:, :20] = (0.85, 0.6, 0.5)                          # skin band at the left edge
+    img[40:56, 40:56] = (0.95, 0.95, 0.95)                  # the bib paper
+    spec = {"kind": "flat_median", "grow_texels": 4, "feather_texels": 2, "ring_texels": 30, "ring_sat_max": 0.14, "luma_min": 0.8, "sat_max": 0.1}
+    tm = np.ones(h * w, bool)
+    rep = fz.paint_one(img, spec, tm, _index(h, w), None)
+    assert rep["kind"] == "flat_median" and rep["texels"] >= 256
+    assert np.allclose(img[48, 48], (0.45, 0.45, 0.46), atol=0.02)                 # the grey, not the skin
+    assert np.allclose(img[5, 5], (0.85, 0.6, 0.5), atol=1e-4)                     # outside the region: untouched
+
+
+def test_paint_one_sat_min_selects_only_the_chromatic_texels():
+    img = _flat(40, 40, (0.5, 0.5, 0.5))
+    img[10:14, 10:14] = (0.9, 0.5, 0.4)
+    spec = {"kind": "inpaint", "grow_texels": 1, "feather_texels": 1, "sat_min": 0.2}
+    rep = fz.paint_one(img, spec, np.ones(1600, bool), _index(40, 40), None)
+    assert rep["texels"] >= 16
+    assert np.allclose(img[11, 11], (0.5, 0.5, 0.5), atol=0.03)
+
+
+def test_region_texels_y_max_keeps_only_the_texels_below_the_height():
+    P0 = np.zeros((5, 3))
+    P0[:, 1] = [-0.5, -0.3, -0.2, 0.0, 0.2]
+    regions = {"P0": P0, "dom": np.zeros(5, int), "head": np.zeros(5, bool)}
+    tm = fz.region_texels(regions, {"region": "joints", "joints": [0], "y_max": -0.25})
+    assert tm.tolist() == [True, True, False, False, False]
+
+
+def test_fusion_measured_mask_needs_two_cameras_unless_min_ncam_is_one():
+    import inspect
+    sig = inspect.signature(fz.run)
+    assert sig.parameters["min_ncam"].default == 2        # the other takes keep their two-camera rule
