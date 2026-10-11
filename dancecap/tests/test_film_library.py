@@ -85,7 +85,8 @@ def test_the_entry_has_the_documented_fields_and_pending_films_are_marked(tmp_pa
     spec = {"id": "demo", "title": "Title × é", "subtitle": "Sub", "direction": str(p), "thumbnail": str(thumb),
             "chapters": [{"title": "Intro", "segment": "open_title"}]}
     entry, notes = fl.build_entry(spec, library_dir=lib)
-    assert set(entry) == {"id", "title", "subtitle", "capture", "thumbnail", "direction", "durationS", "chapters", "available"}
+    assert set(entry) == {"id", "title", "subtitle", "capture", "thumbnail", "direction", "durationS", "chapters", "available", "dialogue", "slowmoAudio"}
+    assert entry["dialogue"] is False and entry["slowmoAudio"] == "pitch"            # the defaults: music slows with the picture
     assert entry["capture"] == "99_Capture" and entry["durationS"] == 74.0 and entry["available"] is True
     assert entry["thumbnail"] == "thumbs/demo.jpg" and (lib / "thumbs" / "demo.jpg").read_bytes() == thumb.read_bytes()
     assert entry["chapters"][0] == {"title": "Intro", "startS": 0.0, "endS": 74.0}
@@ -108,6 +109,33 @@ def test_bad_specs_say_what_to_change(tmp_path):
         fl.build_entry({"id": "a", "direction": "x"}, library_dir=lib)
     with pytest.raises(fl.LibraryError, match="capture"):
         fl.build_entry({"id": "a", "title": "T", "direction": str(tmp_path / "missing.json")}, library_dir=lib)
+
+
+def test_the_slow_motion_sound_flags_are_data(tmp_path):
+    """dialogue (speech: the viewer fades it out in slow motion) and slowmo_audio (pitch | mute, for a film without dialogue)"""
+    lib = tmp_path / "library"
+    p = _direction(tmp_path, SEGS)
+    base = {"id": "x", "title": "T", "direction": str(p)}
+    talk, _ = fl.build_entry({**base, "dialogue": True}, library_dir=lib)
+    assert talk["dialogue"] is True and talk["slowmoAudio"] == "pitch"
+    mute, _ = fl.build_entry({**base, "slowmo_audio": "Mute"}, library_dir=lib)
+    assert mute["dialogue"] is False and mute["slowmoAudio"] == "mute"
+    with pytest.raises(fl.LibraryError, match="slowmo_audio"):
+        fl.build_entry({**base, "slowmo_audio": "loud"}, library_dir=lib)
+    with pytest.raises(fl.LibraryError, match="dialogue"):
+        fl.build_entry({**base, "dialogue": "yes"}, library_dir=lib)
+    bad = {"films": [{"id": "a", "title": "T", "capture": "C", "direction": "d", "dialogue": "yes", "slowmoAudio": "loud"}]}
+    text = " | ".join(fl.check_library(bad))
+    assert "dialogue must be" in text and "slowmoAudio must be" in text
+    old = {"films": [{"id": "a", "title": "T", "capture": "C", "direction": "d"}]}       # a library file written before the flags existed
+    assert fl.check_library(old) == []
+
+
+def test_the_presets_say_which_film_carries_speech():
+    presets = fl.read_presets()
+    assert presets["recap"]["dialogue"] is True                                          # the class recap: the teachers speak
+    for name in ("demo", "carlos_aline", "john_lula"):                                   # the music films keep the pitch behaviour
+        assert not presets[name].get("dialogue") and presets[name].get("slowmo_audio", "pitch") == "pitch"
 
 
 def test_upsert_keeps_the_other_films_and_their_order():

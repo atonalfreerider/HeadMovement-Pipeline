@@ -2,6 +2,9 @@
 # Per-film presets for dancecap/film_library.py; paths are relative to the workspace. Titles and subtitles may name the dancers: the
 # library file they end up in (head-movement/Assets/StreamingAssets/library/library.json) is git-ignored data.
 # [<preset>.chapters] anchor each chapter at the direction segment where it starts, so the marks survive a rebuild of the film.
+# Sound in slow motion (owner 2026-10-11: "don't play dialogue in slow motion because it drops too many octaves"): `dialogue = true` marks a film whose
+# soundtrack is speech (the viewer fades it out below 1x, the captions stay); a film without dialogue says what its music does with `slowmo_audio`:
+# "pitch" (default: the music slows with the picture, as before) or "mute". Both are optional; docs/FILM_LIBRARY.md section 7.
 
 [demo]
 id = "demo"
@@ -10,6 +13,7 @@ subtitle = "The counterbalance demo, rebuilt in 3D from the class's phone videos
 capture = "05_LarissaKaduFull"
 direction = "dancecap/work/larissa_kadu_full/film/direction.json"
 thumbnail = "head-movement/Recordings/05_LarissaKaduFull_thumbnail_vertical.jpg"
+slowmo_audio = "pitch"   # music: it slows with the picture (set "mute" to silence it in slow motion)
 
 [[demo.chapters]]
 title = "Intro"
@@ -68,6 +72,7 @@ subtitle = "The whole lesson by Larissa and Kadu, in 3D"
 capture = "06_LarissaKaduRecap"
 direction = "dancecap/work/larissa_kadu_recap/film/direction.json"
 thumbnail = "dancecap/work/larissa_kadu_recap/film/review/recap_card_thumb.jpg"   # a clean 3D frame of the two avatars (T3), no text
+dialogue = true   # the teachers speak: no sound in slow motion (the captions stay)
 
 # The recap's chapter marks: one per chapter of the class (speech/chapters.json, titles <= 5 words), anchored at the first segment of the chapter
 # (ids chNN_01_open are stable across rebuilds of the film: python -m dancecap.film_recap build; print this block again with
@@ -147,6 +152,7 @@ subtitle = "Jack & Jill heat, Zouk SEA 2019: the whole dance in 3D, with the two
 capture = "07_CarlosAline"
 direction = "dancecap/work/carlos_aline/film/direction.json"
 thumbnail = "dancecap/work/carlos_aline/film/review/card_thumb.jpg"   # a clean 3D frame of the two avatars in the room, no text
+slowmo_audio = "pitch"   # the music of the heat slows with the picture (set "mute" to silence it in slow motion)
 
 [carlos_aline.heat]
 name = "carlos_aline"
@@ -180,6 +186,7 @@ subtitle = "Jack & Jill heat: the whole dance in 3D from one phone, with its bea
 capture = "08_JohnLula"
 direction = "dancecap/work/john_lula/film/direction.json"
 thumbnail = "dancecap/work/john_lula/film/review/card_thumb.jpg"   # a clean 3D frame of the two avatars, no text
+slowmo_audio = "pitch"   # the music of the heat slows with the picture (set "mute" to silence it in slow motion)
 
 [john_lula.heat]
 name = "john_lula"

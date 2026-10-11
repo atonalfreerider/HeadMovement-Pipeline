@@ -28,6 +28,12 @@ CHAPTERS (the marks on the viewer's scrubber, in FILM seconds), first source tha
   3. an automatic split: one chapter per run of segments that share the id prefix (the text before the first "_"), runs shorter than
      MIN_CHAPTER_S merged into the chapter before (the title is the prefix, capitalised; edit it with a plan).
 Chapters are contiguous: each ends where the next begins, the last at the film's end.
+
+SOUND IN SLOW MOTION (docs/FILM_LIBRARY.md section 7): the viewer slows the soundtrack's pitch with the playback speed, which turns speech
+into a low growl at 0.25x. Two data flags per film (preset keys; library.json keys `dialogue` and `slowmoAudio`):
+  dialogue = true            the soundtrack carries speech (the class recap): below 1x the viewer fades the sound out (the captions stay)
+  slowmo_audio = "pitch"|"mute"   what a film WITHOUT dialogue does in slow motion: "pitch" (default) = the sound slows with the picture,
+                             "mute" = it is faded out as for dialogue
 """
 from __future__ import annotations
 
@@ -48,6 +54,7 @@ LIBRARY_DIR = VIEWER / "Assets" / "StreamingAssets" / "library"
 PRESETS = PACKAGE_ROOT / "takes" / "library" / "films.toml"
 MIN_CHAPTER_S = 8.0
 MAX_TITLE = 48
+SLOWMO_AUDIO_MODES = ("pitch", "mute")
 
 
 class LibraryError(ValueError):
@@ -222,9 +229,16 @@ def build_entry(spec: dict, *, library_dir: Path, copy: bool = False) -> tuple[d
     if direction_path is None:
         raise LibraryError(f"film '{fid}' needs a direction path (where the film's direction.json is, or will be)")
 
+    dialogue = spec.get("dialogue", False)
+    if not isinstance(dialogue, bool):
+        raise LibraryError(f"film '{fid}': dialogue must be true or false, not {dialogue!r}")
+    slowmo = str(spec.get("slowmo_audio", "pitch")).strip().lower()
+    if slowmo not in SLOWMO_AUDIO_MODES:
+        raise LibraryError(f"film '{fid}': slowmo_audio must be one of {', '.join(SLOWMO_AUDIO_MODES)}, not {spec.get('slowmo_audio')!r}")
+
     entry: dict = {"id": fid, "title": str(spec["title"]), "subtitle": str(spec.get("subtitle") or ""),
                    "capture": spec.get("capture"), "thumbnail": None, "direction": None, "durationS": None, "chapters": [],
-                   "available": not bool(spec.get("hold"))}
+                   "available": not bool(spec.get("hold")), "dialogue": dialogue, "slowmoAudio": slowmo}
 
     if direction_path.exists():
         direction = read_direction(direction_path)
@@ -322,6 +336,10 @@ def check_library(library: dict) -> list[str]:
         dur = f.get("durationS")
         if dur is not None and any(s is not None and s >= dur for s in starts):
             problems.append(f"{fid}: a chapter starts after the film's end ({dur} s)")
+        if "dialogue" in f and not isinstance(f["dialogue"], bool):
+            problems.append(f"{fid}: dialogue must be true or false")
+        if f.get("slowmoAudio", "pitch") not in SLOWMO_AUDIO_MODES:
+            problems.append(f"{fid}: slowmoAudio must be one of {', '.join(SLOWMO_AUDIO_MODES)}")
     return problems
 
 
@@ -354,6 +372,10 @@ def _spec_from_args(a: argparse.Namespace) -> dict:
         v = getattr(a, key)
         if v is not None:
             spec[key] = v
+    if a.dialogue:
+        spec["dialogue"] = True
+    if a.slowmo_audio:
+        spec["slowmo_audio"] = a.slowmo_audio
     if a.chapters_file:
         spec["chapters"] = read_plan(Path(a.chapters_file))
     if a.hold:
@@ -407,7 +429,8 @@ def cmd_list(a: argparse.Namespace) -> int:
     lib_dir = Path(a.library_dir) if a.library_dir else LIBRARY_DIR
     lib = read_library(lib_dir / "library.json")
     for f in lib["films"]:
-        print(f"{f['id']:12s} {str(f.get('durationS')):>9s} s  {len(f.get('chapters') or []):2d} chapters  capture {f.get('capture')}  {f.get('title')}")
+        sound = "dialogue" if f.get("dialogue") else f"slow-mo {f.get('slowmoAudio', 'pitch')}"
+        print(f"{f['id']:12s} {str(f.get('durationS')):>9s} s  {len(f.get('chapters') or []):2d} chapters  {sound:14s} capture {f.get('capture')}  {f.get('title')}")
     return 0
 
 
@@ -437,6 +460,8 @@ def main(argv: list[str] | None = None) -> int:
         b.add_argument(f"--{key}")
     b.add_argument("--chapters-file", help="a chapter plan (.toml with [[chapters]], or .json)")
     b.add_argument("--copy-film", action="store_true", help="copy direction + narration + mix into library/films/<id>/ instead of referencing the take's folder")
+    b.add_argument("--dialogue", action="store_true", help="the film's soundtrack carries speech: the viewer fades the sound out in slow motion")
+    b.add_argument("--slowmo-audio", choices=SLOWMO_AUDIO_MODES, help="a film without dialogue: pitch (default) or mute in slow motion")
     b.add_argument("--hold", action="store_true", help="available=false: shown as Processing even when the files exist")
     b.add_argument("--library-dir", help="default: head-movement/Assets/StreamingAssets/library")
     b.add_argument("--dry-run", action="store_true")

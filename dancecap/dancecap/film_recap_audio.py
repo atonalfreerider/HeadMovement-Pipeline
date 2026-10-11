@@ -20,7 +20,11 @@ Nothing leaves the machine: no third-party voice or speech service is involved (
 
 `film_mix` derives the film soundtrack `<film dir>/audio/<direction.name>_mix.wav` from a direction: LOCKED segments copy the class mix at
 their dance (= master) time at 1.0x; every slowed, held or replayed segment plays the room-tone bed instead (policy in docs/RECAP_FILM.md:
-the teachers' speech is only ever heard at 1.0x locked to its picture).
+the teachers' speech is only ever heard at 1.0x locked to its picture). The bed is the speech-free `bed` stem of the chosen class mix
+(`bed_for`: stems_regen/bed.wav for the regenerated mix, ...), else a room-tone loop of a stretch of the class mix that has NO word in it,
+else silence: it is never a stretch that contains speech (S8: an earlier fallback looped a stretch with a teacher's words in it under the
+replay). `slow_audio_report` / `python -m dancecap.film_recap_audio slow-check` measure what the film mix plays in every slowed, held or
+replayed segment and fail when any of them is louder than `SLOW_MAX_DB` (room tone only).
 
 `soundtrack_class_mix` picks class_mix_regen.wav (every teacher line regenerated, `dancecap.speech.v2v_regen`), class_mix_v2v_full.wav (the full cloned-voice
 re-recording, `dancecap.speech.v2v_full`) or class_mix_v2v.wav (cleaned speech, `dancecap.speech.v2v_mix`) over class_mix.wav when they exist (switch:
@@ -761,9 +765,10 @@ def word_timing_check(mix_path: Path, transcript: Path | None = None, n_words: i
 # ------------------------------------------------------------------------------------------------ the room tone bed and the film mix
 
 
-def room_tone(mix: np.ndarray, words_spans: list[tuple[float, float]], sr: int = SR, length_s: float = 6.0) -> np.ndarray:
+def room_tone(mix: np.ndarray, words_spans: list[tuple[float, float]], sr: int = SR, length_s: float = 6.0, *, strict: bool = False) -> np.ndarray | None:
     """a loop of room tone: the quietest speech-free stretch of the class mix (no word within 0.5 s), `length_s` long, made loopable by a
-    raised-cosine self cross-fade; stereo. If no speech-free stretch exists the quietest stretch overall is used."""
+    raised-cosine self cross-fade; stereo. If no speech-free stretch exists the quietest stretch overall is used (that stretch can hold
+    speech: `strict=True` returns None instead, which is what the film mix asks for)."""
     mono = mix.mean(axis=1)
     e = band_db(mono, sr, band=(100.0, 6000.0), frame_s=0.1)
     n = int(length_s / 0.1)
@@ -778,16 +783,52 @@ def room_tone(mix: np.ndarray, words_spans: list[tuple[float, float]], sr: int =
         if v < best:
             best, best_i = v, i
     if best >= 1e9:
+        if strict:
+            return None
         for i in range(0, len(e) - n, 5):
             v = float(np.mean(e[i:i + n]))
             if v < best:
                 best, best_i = v, i
     seg = mix[int(best_i * 0.1 * sr):int((best_i * 0.1 + length_s) * sr)].copy()
-    xf = int(1.0 * sr)
+    return loopable(seg, sr)
+
+
+def loopable(seg: np.ndarray, sr: int = SR, xf_s: float = 1.0) -> np.ndarray:
+    """a stretch made loopable: its tail is cross-faded into its head (raised cosine) and cut off; the loop is `xf_s` shorter"""
+    xf = int(xf_s * sr)
     fout, fin = crossfade_curves(xf)
     loop = seg[:-xf].copy()
     loop[:xf] = seg[:xf] * fin[:, None] + seg[-xf:] * fout[:, None]
     return loop
+
+
+STEM_DIRS = {"class_mix_regen.wav": "stems_regen", "class_mix_v2v_full.wav": "stems_v2v_full", "class_mix_v2v.wav": "stems"}
+
+
+def bed_for(class_mix: Path) -> Path | None:
+    """the room-tone `bed` stem of a class mix (stems_regen/bed.wav for class_mix_regen.wav, ...), when it exists. The stem holds the mix's
+    room tone only (built from non-speech frames, ducked under the speech); the original class mix has none."""
+    d = STEM_DIRS.get(class_mix.name)
+    if d is None:
+        return None
+    p = class_mix.parent / d / "bed.wav"
+    return p if p.exists() else None
+
+
+def stem_bed_loop(stem: np.ndarray, sr: int = SR, length_s: float = 6.0, block_s: float = 0.5) -> np.ndarray | None:
+    """a loop out of the bed stem: the stretch whose QUIETEST half second is loudest (a steady room tone, never a ducked-out hole), made loopable.
+    None when the stem is shorter than a stretch or is silent throughout."""
+    mono = stem.mean(axis=1)
+    blk = int(block_s * sr)
+    nb = len(mono) // blk
+    k = int(round(length_s / block_s))
+    if nb < k + 1:
+        return None
+    lv = np.array([10.0 * math.log10(float(np.mean(mono[i * blk:(i + 1) * blk] ** 2)) + 1e-18) for i in range(nb)])
+    if float(lv.max()) < -110.0:
+        return None
+    best = max(range(nb - k), key=lambda i: float(lv[i:i + k].min()))
+    return loopable(stem[best * blk:(best + k) * blk].copy(), sr)
 
 
 def tile(loop: np.ndarray, n: int) -> np.ndarray:
@@ -826,11 +867,37 @@ def soundtrack_class_mix(audio_dir: Path | None = None) -> Path:
     return d / "class_mix.wav"
 
 
+def is_locked(seg: dict) -> bool:
+    """a segment whose sound is the class mix at its dance time: speed 1, not a replay, not a hold, audio 'locked'"""
+    return seg.get("audio", "locked") == "locked" and seg.get("speed", 1.0) == 1.0 and not seg.get("replay") and seg.get("hold_s") is None
+
+
+def slow_segments(direction: dict) -> list[dict]:
+    """the segments the film mix does NOT lock to the class sound (slow motion, replays, holds, audio 'bed'): [{id, film, speed, replay, hold_s, audio}]"""
+    return [{"id": s.get("id"), "film": [float(s["film"][0]), float(s["film"][1])], "speed": s.get("speed", 1.0), "replay": bool(s.get("replay")),
+             "hold_s": s.get("hold_s"), "audio": s.get("audio", "locked")} for s in direction.get("segments", []) if not is_locked(s)]
+
+
+def film_bed(class_mix: Path, mix: np.ndarray, spans: list[tuple[float, float]], sr: int = SR) -> tuple[np.ndarray | None, float, str]:
+    """(the bed loop, its gain, where it came from) for the segments that are not locked: the class mix's speech-free `bed` stem, else a loop of a
+    stretch of the class mix with no word in it, else (None, 0, 'silence'). Never a stretch that has speech in it."""
+    stem = bed_for(class_mix)
+    if stem is not None:
+        loop = stem_bed_loop(read_wav(stem)[0], sr)
+        if loop is not None:
+            return loop, 1.0, f"stem {stem.parent.name}/{stem.name}"
+    loop = room_tone(mix, spans, sr, strict=True)
+    if loop is not None:
+        return loop, 10 ** (-3.0 / 20.0), "room tone of a speech-free stretch of the class mix"
+    return None, 0.0, "silence"
+
+
 def film_mix(direction_path: Path, class_mix: Path | None = None, out: Path | None = None, word_spans: list[tuple[float, float]] | None = None) -> dict:
     """Render `<film dir>/audio/<direction.name>_mix.wav` from a direction: sample 0 = film time 0, length = the film.
     LOCKED segments (speed 1, no replay) copy the class mix at their dance time; any other segment (slow motion, holds, replays, audio
-    'bed') plays the room-tone bed, so the speech is never heard at another speed or out of sync with its picture. Junctions cross-fade
-    over 0.15 s (silence->bed->speech, the speech never pre-empted: a locked segment starts on the speech's own time)."""
+    'bed') plays the room-tone bed (`film_bed`: the speech-free bed stem, else a speech-free loop, else silence), so the speech is never heard
+    at another speed or out of sync with its picture. Junctions cross-fade over 0.15 s (silence->bed->speech, the speech never pre-empted:
+    a locked segment starts on the speech's own time). The result lists what every such segment plays (level, peak)."""
     d = json.loads(direction_path.read_text(encoding="utf-8"))
     cm = class_mix or soundtrack_class_mix(direction_path.parent / "audio")
     out = out or (direction_path.parent / "audio" / f"{d['name']}_mix.wav")
@@ -844,7 +911,8 @@ def film_mix(direction_path: Path, class_mix: Path | None = None, out: Path | No
         if tr.exists():
             t = json.loads(tr.read_text(encoding="utf-8"))
             spans = [(w["start"], w["end"]) for u in t["utterances"] for w in u["words"] if w["start"] >= 0]
-    bed = tile(room_tone(mix, spans, sr), n + sr)
+    loop, bed_gain, bed_source = film_bed(cm, mix, spans, sr)
+    bed = tile(loop, n + sr) if loop is not None else np.zeros((n + sr, mix.shape[1]), dtype=np.float32)
     film = np.zeros((n, mix.shape[1]), dtype=np.float32)
     bed_w = np.zeros(n, dtype=np.float32)        # weight of the bed
     xf = int(0.15 * sr)
@@ -853,9 +921,7 @@ def film_mix(direction_path: Path, class_mix: Path | None = None, out: Path | No
         f1 = min(f1, n)
         if f1 <= f0:
             continue
-        spd = s.get("speed", 1.0)
-        locked = s.get("audio", "locked") == "locked" and spd == 1.0 and not s.get("replay") and s.get("hold_s") is None
-        if locked:
+        if is_locked(s):
             d0 = int(round(s["dance"][0] * sr))
             seg = mix[max(0, d0):d0 + (f1 - f0)]
             film[f0:f0 + len(seg)] = seg
@@ -866,15 +932,43 @@ def film_mix(direction_path: Path, class_mix: Path | None = None, out: Path | No
     if xf > 1:
         k = np.ones(xf, dtype=np.float32) / xf
         bed_w = np.convolve(bed_w, k, mode="same")
-    bed_gain = 10 ** (-3.0 / 20.0)
     film = film * (1.0 - bed_w[:, None]) + bed[:n] * bed_w[:, None] * bed_gain
     # the picture fades from black over its first 0.5 s and to black over its last 0.9 s (FilmOverlay): the sound follows
     fi, fo = min(n, int(0.12 * sr)), min(n, int(0.9 * sr))
     film[:fi] *= (0.5 - 0.5 * np.cos(np.pi * np.linspace(0, 1, fi, dtype=np.float32)))[:, None]
     film[n - fo:] *= (0.5 + 0.5 * np.cos(np.pi * np.linspace(0, 1, fo, dtype=np.float32)))[:, None]
     write_wav(out, film)
-    inserted = sum(1 for s in d["segments"] if not (s.get("audio", "locked") == "locked" and s.get("speed", 1.0) == 1.0 and not s.get("replay") and s.get("hold_s") is None))
-    return {"out": out.name, "seconds": round(n / sr, 3), "bed_segments": inserted, "bed_seconds": round(float(bed_w.sum() / sr), 2)}
+    slow = slow_segments(d)
+    return {"out": out.name, "seconds": round(n / sr, 3), "bed_segments": len(slow), "bed_seconds": round(float(bed_w.sum() / sr), 2),
+            "bed_source": bed_source, "slow": _slow_levels(slow, film, sr)}
+
+
+SLOW_MAX_DB = -40.0     # the loudest a slowed / held / replayed stretch of the film mix may be (RMS dBFS): room tone, never speech (the speech sits near -20)
+SLOW_EDGE_S = 0.2       # the junction cross-fades (0.15 s) are not judged
+
+
+def _db(x: np.ndarray) -> float:
+    return round(20.0 * math.log10(float(np.sqrt(np.mean(np.square(x, dtype=np.float64)))) + 1e-9), 1) if len(x) else -180.0
+
+
+def _slow_levels(slow: list[dict], film: np.ndarray, sr: int) -> list[dict]:
+    """per slowed segment: the RMS and peak (dBFS) of the film mix inside it (the 0.2 s next to a junction left out), and whether it is room tone only"""
+    rows = []
+    for sg in slow:
+        a, b = sg["film"]
+        i0, i1 = int(round((a + SLOW_EDGE_S) * sr)), int(round((b - SLOW_EDGE_S) * sr))
+        x = film[max(0, i0):max(0, i1)]
+        rows.append({**sg, "rms_db": _db(x), "peak_db": round(20.0 * math.log10(float(np.abs(x).max()) + 1e-9), 1) if len(x) else -180.0,
+                     "room_tone_only": bool(len(x) == 0 or _db(x) <= SLOW_MAX_DB)})
+    return rows
+
+
+def slow_audio_report(direction_path: Path, mix_path: Path | None = None) -> list[dict]:
+    """what the RENDERED film mix plays in each slowed, held or replayed segment of the direction (see `_slow_levels`)"""
+    d = json.loads(direction_path.read_text(encoding="utf-8"))
+    mix_path = mix_path or (direction_path.parent / "audio" / f"{d['name']}_mix.wav")
+    film, sr = read_wav(mix_path)
+    return _slow_levels(slow_segments(d), film, sr)
 
 
 # ------------------------------------------------------------------------------------------------ CLI
@@ -929,6 +1023,18 @@ def cmd_film_mix(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_slow_check(a: argparse.Namespace) -> int:
+    dp = Path(a.direction) if a.direction else FILM / "direction.json"
+    rows = slow_audio_report(dp, Path(a.mix) if a.mix else None)
+    for r in rows:
+        kind = "replay" if r["replay"] else f"hold {r['hold_s']} s" if r["hold_s"] is not None else f"speed {r['speed']}"
+        print(f"{r['id']:28s} film {r['film'][0]:8.3f} .. {r['film'][1]:8.3f} s  {kind:10s} rms {r['rms_db']:7.1f} dB  peak {r['peak_db']:7.1f} dB  "
+              f"{'room tone only' if r['room_tone_only'] else 'NOT room tone (speech?)'}")
+    bad = [r for r in rows if not r["room_tone_only"]]
+    print(f"{len(rows)} slowed / held / replayed segment(s), {len(bad)} above {SLOW_MAX_DB} dB")
+    return 1 if bad else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m dancecap.film_recap_audio", description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -945,6 +1051,10 @@ def main(argv: list[str] | None = None) -> int:
     f.add_argument("direction")
     f.add_argument("--class-mix")
     f.set_defaults(fn=cmd_film_mix)
+    k = sub.add_parser("slow-check", help="what the film mix plays in every slowed / held / replayed segment (must be room tone: exit 1 otherwise)")
+    k.add_argument("direction", nargs="?")
+    k.add_argument("--mix")
+    k.set_defaults(fn=cmd_slow_check)
     a = ap.parse_args(argv)
     try:
         return a.fn(a)

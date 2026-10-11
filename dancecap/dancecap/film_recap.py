@@ -745,7 +745,10 @@ def build(paths: Paths | None = None, *, layers_mode: str = "auto", capture: str
         from . import film_recap_audio as fa
         cm = fa.soundtrack_class_mix(paths.audio)       # class_mix_v2v.wav when present (switch: audio/soundtrack.json), else class_mix.wav
         if cm.exists():
-            log(f"film mix from {cm.name}: " + json.dumps(fa.film_mix(paths.film / "direction.json", cm)))
+            mixed = fa.film_mix(paths.film / "direction.json", cm)
+            log(f"film mix from {cm.name}: " + json.dumps({k: v for k, v in mixed.items() if k != "slow"}))
+            for row in mixed["slow"]:       # S8: the slowed / held / replayed parts play room tone only, never speech
+                log(f"  slowed {row['id']} film {row['film'][0]:.1f}-{row['film'][1]:.1f} s: {row['rms_db']} dB " + ("room tone only" if row["room_tone_only"] else "NOT ROOM TONE: speech may play in slow motion"))
         else:
             log("no audio/class_mix.wav yet: run `python -m dancecap.film_recap mix class` (a few minutes), then `build` again")
     return report

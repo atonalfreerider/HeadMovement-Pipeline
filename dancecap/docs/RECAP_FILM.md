@@ -96,8 +96,12 @@ request, and neither is "slowing down" (dance advice): both off by default (`Cfg
 ("See so he start pivoting and then went", 240.5 s: the strongest burst of the class, 1.0 m/s): one replay, +7.2 s. The film is 367.7 s (6:07.7) for 360.5 s of class.
 
 The film soundtrack (`film_mix`): a LOCKED segment (speed 1, no replay) copies the class mix at its dance time sample for sample; any other segment plays the room-tone
-bed (the quietest speech-free 6 s of the class, looped with a raised-cosine self cross-fade, -3 dB), junctions cross-faded over 0.15 s; fades follow the picture's
-(0.12 s in, 0.9 s out). Checked by `validate`: a locked segment's film-minus-dance offset equals the inserts before it (so speech and picture cannot drift), a
+bed, junctions cross-faded over 0.15 s; fades follow the picture's (0.12 s in, 0.9 s out). The bed (S8 fix: until then the "quietest 6 s" fallback looped a stretch
+that had a teacher's words in it, so the replay played speech at -24 dB) is, in this order, the speech-free `bed` stem of the chosen class mix (`audio/stems_regen/bed.wav`
+for the regenerated mix; the steadiest 6 s, looped with a raised-cosine self cross-fade, unity gain), else a loop of a stretch of the class mix that has no word within 0.5 s
+(-3 dB), else silence; never a stretch that has speech. `python -m dancecap.film_recap_audio slow-check` lists what the rendered mix plays in every slowed / held / replayed
+segment and exits 1 when one is louder than -40 dB RMS (the replay now plays -49 dB). The viewer's slow motion (the bar's 0.5x, the VR panel's 0.25x ...) is a separate
+rule: the recap is a `dialogue` lesson, so the viewer plays no sound at all below 1x (head-movement/docs/FILM_LIBRARY.md section 7). Checked by `validate`: a locked segment's film-minus-dance offset equals the inserts before it (so speech and picture cannot drift), a
 non-locked segment must use the bed, a slowed segment must not contain a word, every caption word stands at its master time plus the same offset.
 
 ## The class audio mix (`audio/class_mix.wav`)

@@ -297,3 +297,111 @@ def test_soundtrack_class_mix_regen_switch_and_fallbacks(tmp_path):
     assert fa.soundtrack_class_mix(tmp_path) == tmp_path / "class_mix_v2v_full.wav"          # regen missing: falls back down the list
     (tmp_path / "class_mix_v2v_full.wav").unlink()
     assert fa.soundtrack_class_mix(tmp_path) == tmp_path / "class_mix_v2v.wav"
+
+
+# ------------------------------------------------------------------------------------------------ nothing but room tone in slow motion (S8)
+
+
+def _speech_film(tmp_path, *, with_stem, spans_cover_all, name="class_mix_regen.wav"):
+    """a 24 s film: a (0-10), a 4 s replay (10-14) of dance 3-5, b (14-24). The class mix is 'speech' (440 Hz) throughout; with_stem adds the
+    mix's bed stem (a faint noise with a ducked-out hole in it)."""
+    sr = fa.SR
+    n = sr * 20
+    t = np.arange(n) / sr
+    tone = (0.3 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+    mix = np.stack([tone, tone], axis=1)
+    cm = tmp_path / "audio" / name
+    cm.parent.mkdir(parents=True)
+    sf.write(str(cm), mix, sr, subtype="PCM_16")
+    if with_stem:
+        bed = np.random.default_rng(3).normal(0, 0.002, (n, 2)).astype(np.float32)
+        bed[sr * 5: sr * 8] = 0.0                                          # a hole where the bed was ducked right out
+        sd = cm.parent / fa.STEM_DIRS[name]
+        sd.mkdir()
+        sf.write(str(sd / "bed.wav"), bed, sr, subtype="PCM_24")
+    direction = {"name": "film", "timeline": {"film_duration_s": 24.0},
+                 "segments": [{"id": "a", "film": [0, 10], "dance": [0, 10], "speed": 1.0, "audio": "locked"},
+                              {"id": "r", "film": [10, 14], "dance": [3, 5], "speed": 0.5, "audio": "bed", "replay": True},
+                              {"id": "b", "film": [14, 24], "dance": [10, 20], "speed": 1.0, "audio": "locked"}]}
+    dp = tmp_path / "direction.json"
+    dp.write_text(json.dumps(direction), encoding="utf-8")
+    spans = [(0.0, 20.0)] if spans_cover_all else []
+    return dp, cm, spans
+
+
+def test_the_replay_plays_the_bed_stem_never_speech(tmp_path):
+    dp, cm, spans = _speech_film(tmp_path, with_stem=True, spans_cover_all=True)
+    out = tmp_path / "audio" / "film_mix.wav"
+    res = fa.film_mix(dp, cm, out, word_spans=spans)
+    assert res["bed_source"].startswith("stem stems_regen/bed.wav")
+    row = res["slow"][0]
+    assert row["id"] == "r" and row["film"] == [10.0, 14.0] and row["replay"] and row["room_tone_only"] and row["rms_db"] < fa.SLOW_MAX_DB
+    y, _ = sf.read(str(out))
+    assert np.abs(y[int(10.3 * fa.SR): int(13.7 * fa.SR), 0]).max() < 0.02          # no 440 Hz "speech" in it
+    assert np.allclose(y[fa.SR: 9 * fa.SR, 0], sf.read(str(cm))[0][fa.SR: 9 * fa.SR, 0], atol=2e-4)       # the locked parts are still the class mix
+    assert [r["room_tone_only"] for r in fa.slow_audio_report(dp, out)] == [True]
+
+
+def test_without_a_speech_free_stretch_or_a_stem_the_slow_parts_are_silent_not_speech(tmp_path):
+    """the old fallback looped the quietest stretch of the class mix even when every stretch had speech in it"""
+    dp, cm, spans = _speech_film(tmp_path, with_stem=False, spans_cover_all=True)
+    out = tmp_path / "audio" / "film_mix.wav"
+    res = fa.film_mix(dp, cm, out, word_spans=spans)
+    assert res["bed_source"] == "silence"
+    y, _ = sf.read(str(out))
+    assert np.abs(y[int(10.3 * fa.SR): int(13.7 * fa.SR)]).max() == 0.0
+    assert res["slow"][0]["room_tone_only"] is True
+
+
+def test_the_slow_audio_report_catches_speech_under_the_picture(tmp_path):
+    dp, cm, spans = _speech_film(tmp_path, with_stem=True, spans_cover_all=True)
+    bad = tmp_path / "audio" / "bad_mix.wav"
+    sr = fa.SR
+    t = np.arange(24 * sr) / sr
+    x = (0.1 * np.sin(2 * np.pi * 300 * t)).astype(np.float32)               # speech-level sound all over the film, replay included
+    sf.write(str(bad), np.stack([x, x], axis=1), sr, subtype="PCM_16")
+    rows = fa.slow_audio_report(dp, bad)
+    assert len(rows) == 1 and rows[0]["room_tone_only"] is False and rows[0]["rms_db"] > -30
+    assert fa.main(["slow-check", str(dp), "--mix", str(bad)]) == 1
+    good = tmp_path / "audio" / "film_mix.wav"
+    fa.film_mix(dp, cm, good, word_spans=spans)
+    assert fa.main(["slow-check", str(dp), "--mix", str(good)]) == 0
+
+
+def test_room_tone_strict_refuses_a_stretch_that_has_speech():
+    sr = fa.SR
+    x = np.stack([(0.3 * np.sin(2 * np.pi * 300 * np.arange(sr * 30) / sr)).astype(np.float32)] * 2, axis=1)
+    assert fa.room_tone(x, [(0.0, 30.0)], sr, length_s=4.0, strict=True) is None
+    assert fa.room_tone(x, [(0.0, 30.0)], sr, length_s=4.0) is not None            # the old behaviour is still available
+
+
+def test_the_bed_stem_loop_is_the_steadiest_stretch_and_skips_ducked_holes():
+    sr = fa.SR
+    rng = np.random.default_rng(5)
+    stem = rng.normal(0, 0.001, (sr * 40, 2)).astype(np.float32)
+    stem[sr * 10: sr * 14] = 0.0                                                    # ducked out under speech
+    stem[sr * 25: sr * 33] *= 4.0                                                   # a steady, louder room-tone stretch
+    loop = fa.stem_bed_loop(stem, sr, length_s=6.0)
+    assert loop is not None and len(loop) == 5 * sr
+    assert np.sqrt(np.mean(loop ** 2)) > 0.002                                      # from the louder stretch, not the quiet or the hole
+    assert np.abs(loop).max() > 0
+    assert fa.stem_bed_loop(np.zeros((sr * 40, 2), dtype=np.float32), sr) is None   # a silent stem has no loop
+    assert fa.stem_bed_loop(stem[: sr * 3], sr) is None                             # too short
+
+
+def test_the_stem_of_each_class_mix_is_found_by_name(tmp_path):
+    for cm, d in (("class_mix_regen.wav", "stems_regen"), ("class_mix_v2v_full.wav", "stems_v2v_full"), ("class_mix_v2v.wav", "stems")):
+        (tmp_path / d).mkdir(exist_ok=True)
+        (tmp_path / d / "bed.wav").write_bytes(b"x")
+        assert fa.bed_for(tmp_path / cm) == tmp_path / d / "bed.wav"
+    assert fa.bed_for(tmp_path / "class_mix.wav") is None                           # the original mix has no stems
+    (tmp_path / "stems_regen" / "bed.wav").unlink()
+    assert fa.bed_for(tmp_path / "class_mix_regen.wav") is None
+
+
+def test_holds_and_slow_gaps_count_as_slowed_segments():
+    d = {"segments": [{"id": "a", "film": [0, 5], "dance": [0, 5], "speed": 1.0},
+                      {"id": "g", "film": [5, 9], "dance": [5, 7], "speed": 0.5, "audio": "bed"},
+                      {"id": "h", "film": [9, 12], "dance": [7, 7], "speed": 1.0, "hold_s": 3.0},
+                      {"id": "b", "film": [12, 20], "dance": [7, 15], "speed": 1.0, "audio": "locked"}]}
+    assert [s["id"] for s in fa.slow_segments(d)] == ["g", "h"]
