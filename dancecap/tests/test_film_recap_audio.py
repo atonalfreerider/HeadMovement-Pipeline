@@ -275,3 +275,25 @@ def test_soundtrack_class_mix_v2v_full_switch_and_fallbacks(tmp_path):
     (tmp_path / "class_mix_v2v_full.wav").unlink()
     cfg.write_text(json.dumps({"class_mix": "v2v_full"}))
     assert fa.soundtrack_class_mix(tmp_path) == tmp_path / "class_mix_v2v.wav"               # v2v_full missing: falls back to V1's mix
+
+
+def test_soundtrack_class_mix_regen_switch_and_fallbacks(tmp_path):
+    cfg = tmp_path / "soundtrack.json"
+    for name in ("class_mix.wav", "class_mix_v2v.wav", "class_mix_v2v_full.wav"):
+        (tmp_path / name).write_bytes(b"x")
+    assert fa.soundtrack_class_mix(tmp_path) == tmp_path / "class_mix_v2v_full.wav"          # no regenerated mix yet
+    (tmp_path / "class_mix_regen.wav").write_bytes(b"x")
+    assert fa.soundtrack_class_mix(tmp_path) == tmp_path / "class_mix_regen.wav"             # auto: the newest, the regenerated lines
+    cfg.write_text(json.dumps({"class_mix": "regen"}))
+    assert fa.soundtrack_class_mix(tmp_path) == tmp_path / "class_mix_regen.wav"
+    cfg.write_text(json.dumps({"class_mix": "v2v_full"}))
+    assert fa.soundtrack_class_mix(tmp_path) == tmp_path / "class_mix_v2v_full.wav"          # the earlier mixes stay selectable
+    cfg.write_text(json.dumps({"class_mix": "v2v"}))
+    assert fa.soundtrack_class_mix(tmp_path) == tmp_path / "class_mix_v2v.wav"
+    cfg.write_text(json.dumps({"class_mix": "original"}))
+    assert fa.soundtrack_class_mix(tmp_path) == tmp_path / "class_mix.wav"
+    (tmp_path / "class_mix_regen.wav").unlink()
+    cfg.write_text(json.dumps({"class_mix": "regen"}))
+    assert fa.soundtrack_class_mix(tmp_path) == tmp_path / "class_mix_v2v_full.wav"          # regen missing: falls back down the list
+    (tmp_path / "class_mix_v2v_full.wav").unlink()
+    assert fa.soundtrack_class_mix(tmp_path) == tmp_path / "class_mix_v2v.wav"

@@ -115,10 +115,12 @@ def duck_gain(activity: np.ndarray, depth_db: float, attack_s: float = 0.08, rel
 
 
 def room_tone(orig: np.ndarray, n: int, sr: int = SR, *, block_s: float = 10.0, pct: float = 15.0, nfft: int = 2048, seed: int = 7,
-              mod_db: float = 2.0) -> np.ndarray:
+              mod_db: float = 2.0, speech_spans: list[tuple[float, float]] | None = None, min_gap_frames: int = 24) -> np.ndarray:
     """Stationary room tone [n, ch] in the colour of `orig` (stereo): per channel the `pct`-th percentile of every frequency bin's power over each
     `block_s` block (speech never lasts in every frame of a bin, so what remains is the room), random phase, inverse STFT; the blocks are interpolated
-    over time, and the level follows the original's noise floor by at most +-mod_db. Unit-free (the caller sets the level)."""
+    over time, and the level follows the original's noise floor by at most +-mod_db. Unit-free (the caller sets the level).
+    With `speech_spans` (seconds, already widened by the caller) the percentile is taken over the STFT frames OUTSIDE those spans (pauses and room only) whenever a
+    block has at least `min_gap_frames` of them: the bed is then built from non-speech gaps only."""
     rng = np.random.default_rng(seed)
     out = np.zeros((n, orig.shape[1]), dtype=np.float32)
     hop = nfft // 4
@@ -127,7 +129,17 @@ def room_tone(orig: np.ndarray, n: int, sr: int = SR, *, block_s: float = 10.0, 
         P = np.abs(Z) ** 2
         nb = max(1, int(round(len(t) * (t[1] - t[0]) / block_s))) if len(t) > 1 else 1
         edges = np.linspace(0, P.shape[1], nb + 1).astype(int)
-        prof = np.stack([np.percentile(P[:, a:max(b, a + 1)], pct, axis=1) for a, b in zip(edges[:-1], edges[1:])], axis=1)   # [bins, blocks]
+        gap = np.ones(len(t), bool)
+        if speech_spans:
+            for a0, b0 in speech_spans:
+                gap[(t >= a0) & (t <= b0)] = False
+
+        def block_prof(a, b):
+            sel = P[:, a:max(b, a + 1)]
+            g = gap[a:max(b, a + 1)]
+            return np.percentile(sel[:, g] if g.sum() >= min_gap_frames else sel, pct, axis=1)
+
+        prof = np.stack([block_prof(a, b) for a, b in zip(edges[:-1], edges[1:])], axis=1)   # [bins, blocks]
         centres = (edges[:-1] + edges[1:]) / 2.0
         mag = np.empty((P.shape[0], n // hop + 3))
         cols = np.arange(mag.shape[1]) * (P.shape[1] / mag.shape[1])
@@ -189,7 +201,8 @@ def load_decisions(path: Path | None = None) -> dict:
 
 
 def assemble(pieces: list[V.Piece], kept: list[dict], decisions: dict, *, orig_path: Path, out_wav: Path, stems_dir: Path, report_path: Path,
-             bed_below_db: float = BED_BELOW_SPEECH_DB, bed_duck_db: float = BED_DUCK_DB, pre_dir: str = "pre", log=print, loader=None) -> dict:
+             bed_below_db: float = BED_BELOW_SPEECH_DB, bed_duck_db: float = BED_DUCK_DB, pre_dir: str = "pre", log=print, loader=None,
+             bed_speech_spans: list[tuple[float, float]] | None = None) -> dict:
     """decisions {piece id: {"variant": name | None, "cam": phone}}: None = the cleaned original (best phone, light denoise) for that piece. Both kinds go into the
     speaking teacher's stem; the `original` stem holds only the class mix kept as it was (opening, overlaps of the two voices, too-short stretches)."""
     orig, sr = sf.read(str(orig_path), dtype="float32", always_2d=True)
@@ -258,7 +271,7 @@ def assemble(pieces: list[V.Piece], kept: list[dict], decisions: dict, *, orig_p
     g_o = float(np.clip(overall - lv_o, -12.0, 12.0)) if lv_o is not None else 0.0
     orig_stem = orig * mask[:, None] * (10 ** (g_o / 20.0))
     # 3) the bed: room tone in the colour of the original, ducked under speech, absent where the original itself plays
-    bed = room_tone(orig, n)
+    bed = room_tone(orig, n, speech_spans=bed_speech_spans)
     bed_rms = float(np.sqrt((bed.astype(np.float64) ** 2).mean()))
     speech_ref = overall
     bed *= 10 ** ((speech_ref - bed_below_db) / 20.0) / (bed_rms + 1e-12)

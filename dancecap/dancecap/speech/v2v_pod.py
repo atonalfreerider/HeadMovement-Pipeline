@@ -22,6 +22,13 @@ OWNER = "V2"
 GPUS = ["NVIDIA RTX A4500", "NVIDIA L4", "NVIDIA RTX A5000", "NVIDIA GeForce RTX 4090"]
 
 
+def use_label(owner: str, state_name: str) -> None:
+    """work under another owner label and state file (agent V3: "V3", pod_v3.json) without touching V2's record"""
+    global OWNER, STATE
+    OWNER = owner
+    STATE = SPEECH / "v2v2" / state_name
+
+
 def load() -> dict:
     try:
         return json.loads(STATE.read_text(encoding="utf-8"))
@@ -51,7 +58,7 @@ def up(gpu: str | None = None, minutes: float = 150, hard_minutes: float = 180, 
             continue
         try:
             gate = pods.gate(worst)
-            info = pods.create(f"hm-farm-v2-{time.strftime('%m%d-%H%M')}", gpu=g, minutes=minutes, hard_minutes=hard_minutes, entry=True,
+            info = pods.create(f"hm-farm-{OWNER.lower()}-{time.strftime('%m%d-%H%M')}", gpu=g, minutes=minutes, hard_minutes=hard_minutes, entry=True,
                                autostart=False, disk_gb=disk_gb, price=o["price"], wait=True, owner=OWNER)
         except Exception as e:  # noqa: BLE001
             errs.append(f"{g}: {str(e)[:200]}")
@@ -74,7 +81,7 @@ def down() -> dict:
     cur = load()
     if not cur.get("pod_id") or cur.get("deleted"):
         return {"deleted": False}
-    pods.delete(cur["pod_id"], reason="V2 work finished")
+    pods.delete(cur["pod_id"], reason=f"{OWNER} work finished")
     cur.update(deleted=True, cost_usd=round(cur["price_hr"] * (time.time() - cur["created"]) / 3600, 3))
     save(cur)
     return {"deleted": True, "cost_usd": cur["cost_usd"]}

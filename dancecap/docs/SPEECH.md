@@ -169,8 +169,8 @@ Gate (per piece, vs transcript_final.json): WER of the converted piece clearly b
 and not worse than the cleaned original it would replace, not above 0.6, at most 2 inserted words, own teacher's reference nearer than the other's by 0.10, no clipping.
 A piece that fails keeps the CLEANED ORIGINAL (best phone by SNR + the S1 engines' own WER on that phone, light denoise). The opening (0 to the first pause after 9 s) stays the
 class mix until `speech/owner_opening.json` exists; then re-run `plan` (unchanged pieces keep their ids and conversions), `convert --only`, the gate, `decide`, `assemble`.
-`film_recap_audio.soundtrack_class_mix` picks `class_mix_v2v_full.wav` (V2), else `class_mix_v2v.wav` (V1), else `class_mix.wav` (switch `film/audio/soundtrack.json`
-{"class_mix": "auto"|"v2v_full"|"v2v"|"original"}); `class_mix.wav` and V1's `class_mix_v2v.wav` are never changed. `recap_export --audio` reads the same switch.
+`film_recap_audio.soundtrack_class_mix` picks `class_mix_regen.wav` (V3), else `class_mix_v2v_full.wav` (V2), else `class_mix_v2v.wav` (V1), else `class_mix.wav` (switch `film/audio/soundtrack.json`
+{"class_mix": "auto"|"regen"|"v2v_full"|"v2v"|"original"}); `class_mix.wav` and V1's `class_mix_v2v.wav` are never changed. `recap_export --audio` reads the same switch.
 Findings and numbers: work/larissa_kadu_recap/NOTES_V1.md.
 
 ## Full cloned-voice re-recording (V2, 2026-10-10: `speech/v2v_full.py`, `v2v_splice.py`, `v2v_warp.py`, `v2v_check.py`, `v2v_pod.py`, `pod/enh_v2v.py`, `pod/asr_v2v.py`)
@@ -188,3 +188,17 @@ Policy (`decide_policy`, the owner's): use the converted piece unless its WER is
 (3-phone beamform + MossFormer2_SE_48K) is used and the piece is flagged. The final decision uses WERs measured INSIDE the whole-class ASR of three candidate mixes (`in_context_piece_wer`),
 because the best-of-16 isolated WER is optimistic. Credits: ~10.3 per second of audio; the session ledger `v2v2/spend_ledger.jsonl` holds credits and request ids only (never the key).
 Numbers and what to listen to: work/larissa_kadu_recap/NOTES_V2.md. Never commit `speech/v2v2/` (voices of real people; work/ is git-ignored).
+
+## Only regenerated lines (V3, 2026-10-11: `speech/v2v_regen.py` pure parts, `speech/v2v_regen_run.py` orchestration)
+
+Owner: only regenerated ElevenLabs lines. Per sentence piece (V2's 81, plus `o3` = the opening's last words and `g1` = Kadu's 0.26 s "good"): (1) a speech-to-speech try whose isolated ASR WER is <= 0.15 and whose speech-band envelope
+never lags the best phone by more than 80 ms in a 1 s window (V2's tries re-scored, up to 32 new ones `sts_recipes`, a lagging try re-timed with `v2v_warp.retime`, a try's stretches after a pause moved onto the transcript
+onsets with `realign_runs`); (2) else text-to-speech in the same cloned voice from the transcript sentence (`tts_request`: with-timestamps, multilingual v2, neighbouring sentences of the same teacher as context, up to 6 takes, the
+best by `tts_key`), fitted to the transcript clock by `fit_take` (runs of continuous words time-warped with WSOLA onto the transcript word times, pauses = silence, the audible onset replaces the alignment's character start).
+The opening 0 - 8.45 s (owner-pending words, the laugh) stays the original recording; everything else is regenerated. `v2v_mix.assemble(..., bed_speech_spans=)` builds the room-tone bed from non-speech frames only.
+
+    use v2v_pod.use_label("V3", "pod_v3.json")      # own pod record and owner label
+    v2v_regen_run.sts_batch / tts_batch / asr_tags   # tries -> aligned/<tag>/<id>.wav (v2v2), candidate table v2v2/regen.json, credits v2v2/spend_ledger_v3.jsonl (never the key)
+    v2v_regen.choose_final -> v2v_regen_run.realign_final -> assemble_regen -> film/audio/class_mix_regen.wav, stems_regen/; verify_mix (whole-class ASR, onsets, identity, joins)
+
+Numbers and what to listen to: work/larissa_kadu_recap/NOTES_V3.md. Never commit `speech/v2v2/` (voices of real people).
