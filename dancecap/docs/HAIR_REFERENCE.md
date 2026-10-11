@@ -326,5 +326,5 @@ when `hair_groom` seeds / restyles its groom (`ponytail_hook`). Same guide roots
 - **Budget**: 160 guides x 16 segments as before; 102 cards, 7.2k triangles at LOD 0 including glow; bake 0.5 s for 176 frames; sweep on the demo body: 0
   strand resets, max stretch 1.028, face intrusions 0, turn spread r95 median 0.23 m, p90 0.27 m (fast head turns 285-300 deg/s: the tail swings out
   and back as one sheet).
-- Re-run: `python -m dancecap.hair_groom <take> --from-take larissa_kadu_full` (needs the take's `smplx/follow.npz`; roots re-based on its betas) then the
-  export; or `python -m dancecap.hair_ponytail <take> --from-take larissa_kadu_full`.
+- Re-run: `python -m dancecap.hair_groom <take> --from-take <a take with a groom>` (needs the take's `smplx/follow.npz`; roots re-based on its betas) then the
+  export; or `python -m dancecap.hair_ponytail <take> --from-take <a take with a groom>`.
