@@ -1,6 +1,7 @@
 """Rhythm analysis of a heat or a take with a beat grid and step events, and a causal LIVE SCORE (agent S6, 2026-10-11).
 
     python -m dancecap.rhythm run <take> [--timing P] [--song-dir P] [--audio WAV] [--out DIR] [--no-plots] [--no-sensitivity]
+    python -m dancecap.rhythm install <take> --capture <NN_Name>   # the viewer's copy into the capture folder(s), nothing else touched
     python -m dancecap.rhythm selftest                 # the synthetic checks (perfect steps -> near the top, random steps -> near the bottom)
 
 What it is. For every footstep (touchdown) of the lead and the follow it finds the phase inside the beat grid (on a pulse, on the "and", between),
@@ -762,7 +763,7 @@ def add_event(st: State, kind: str, e: dict, w: float = 1.0):
 def skill(acc: Acc, ideal: float, n0: float, prior: float) -> tuple[float, float]:
     """(0..1 above chance, number of events) with `n0` prior events at `prior`"""
     if acc.w <= 1e-9:
-        return prior, 0.0
+        return (prior if n0 > 0 else float("nan")), 0.0                       # nothing seen and no prior: unknown (a descriptive window with no events)
     v, c = acc.wv / acc.w, acc.wc / acc.w
     s = float(np.clip((v - c) / max(ideal - c, 1e-6), 0.0, 1.0))
     return (n0 * prior + acc.w * s) / (n0 + acc.w), acc.w
@@ -822,9 +823,10 @@ def components(st: State, cfg: Config, prior_scale: float = 1.0) -> dict:
         else:
             tempo_num += n0 * p
         tempo_w += n0 + t.w
-    lock = lock_num / max(lock_w, 1e-9)
-    flow = flow_num / max(flow_w, 1e-9)
-    tempo = tempo_num / max(tempo_w, 1e-9)
+    nan = float("nan")
+    lock = lock_num / lock_w if lock_w > 1e-9 else nan
+    flow = flow_num / flow_w if flow_w > 1e-9 else nan
+    tempo = tempo_num / tempo_w if tempo_w > 1e-9 else nan
     acc_steps, n_acc = skill(st.accent, cfg.accent_ideal, n0, p)
     hold, n_hold = skill(st.hold, cfg.accent_ideal + 0.15, n0, p)
     hshare = cfg.hold_weight * (n_hold / (n_hold + 2.0)) if st.hold.w > 1e-9 else 0.0
@@ -836,9 +838,18 @@ def components(st: State, cfg: Config, prior_scale: float = 1.0) -> dict:
             "R": float(np.mean(R_all)) if R_all else 0.0}
 
 
+def _r(x, p: int = 3):
+    """round, with an unknown (NaN) value as None (valid JSON)"""
+    return None if x is None or (isinstance(x, float) and math.isnan(x)) else round(float(x), p)
+
+
 def score_of(comp: dict, cfg: Config) -> float:
-    wsum = sum(cfg.weights.values())
-    return float(100.0 * sum(cfg.weights[k] * comp[k] for k in COMPONENTS) / wsum)
+    """100 x the weighted components; a component with nothing seen (NaN, descriptive windows only) is left out and the weights renormalised"""
+    ok = [k for k in COMPONENTS if not math.isnan(comp[k])]
+    if not ok:
+        return float("nan")
+    wsum = sum(cfg.weights[k] for k in ok)
+    return float(100.0 * sum(cfg.weights[k] * comp[k] for k in ok) / wsum)
 
 
 def all_events(ev: Events):
@@ -927,7 +938,7 @@ def annotate_steps(ev: Events, live: dict, cfg: Config):
 
 
 # --------------------------------------------------------------------------------------------------------------- aggregates (whole dance / windows / measures)
-def aggregate(ev: Events, cfg: Config, t_lo: float = -1e9, t_hi: float = 1e9, n0_scale: float = 0.5) -> dict:
+def aggregate(ev: Events, cfg: Config, t_lo: float = -1e9, t_hi: float = 1e9, n0_scale: float = 0.0) -> dict:
     st = State()
     for kind in ("lock", "accent", "tempo", "sync", "hold"):
         for e in getattr(ev, kind):
@@ -966,7 +977,7 @@ def measure_table(inp: Inputs, ev: Events, cfg: Config, grid: Grid | None = None
                     "on_share": round(sum(1 for s in sub if s.get("class") == "on") / len(sub), 3) if sub else None,
                     "steps_per_pulse": {r: round(sum(1 for s in sub if s["role"] == r) / 4.0, 3) for r in ROLES},
                     "mean_offset_ms": round(float(np.mean([s["offset_ms"] for s in sub])), 1) if sub else None,
-                    "score": round(comp["score"], 1), "components": {k: round(comp[k], 3) for k in COMPONENTS},
+                    "score": _r(comp["score"], 1), "components": {k: _r(comp[k]) for k in COMPONENTS},
                     "levels": {r: LEVELS[comp["sel"][r]]["name"] for r in ROLES}, "conf": round(float(np.mean(grid.conf[idx])), 3)})
     return out
 
@@ -979,8 +990,8 @@ def window_table(inp: Inputs, ev: Events, cfg: Config) -> list:
         a, b = t - half, t + half
         comp = aggregate(ev, cfg, a, b)
         beat = float(np.mean([inp.grid.state_at(x) == 0 for x in np.arange(a, b, 0.25)]))
-        out.append({"t": round(t, 2), "score": round(comp["score"], 1) if beat > 0.3 else None, "beat_share": round(beat, 2),
-                    "components": {k: round(comp[k], 3) for k in COMPONENTS}, "n_lock": round(comp["n"]["lock"], 1)})
+        out.append({"t": round(t, 2), "score": _r(comp["score"], 1) if beat > 0.3 else None, "beat_share": round(beat, 2),
+                    "components": {k: _r(comp[k]) for k in COMPONENTS}, "n_lock": round(comp["n"]["lock"], 1)})
         t += cfg.window_step_s
     return out
 
@@ -1057,10 +1068,10 @@ def sensitivity(inp: Inputs, cfg: Config) -> dict:
     for gname, g in grids.items():
         for sh in (-cfg.av_uncertainty_ms, 0.0, cfg.av_uncertainty_ms):
             f = analyse_one(inp, cfg, g, av_shift_s=sh / 1000.0, full=False)["final"]
-            rows.append({"grid": gname, "shift_ms": sh, "score": round(f["score"], 1), "components": {k: round(f[k], 3) for k in COMPONENTS},
+            rows.append({"grid": gname, "shift_ms": sh, "score": _r(f["score"], 1), "components": {k: _r(f[k]) for k in COMPONENTS},
                          "levels": {r: LEVELS[f["sel"][r]]["name"] for r in ROLES}, "n_lock": round(f["n"]["lock"], 1)})
-    sc = [r["score"] for r in rows]
-    shift_only = [r["score"] for r in rows if r["grid"].startswith("default")]
+    sc = [r["score"] for r in rows if r["score"] is not None] or [None]
+    shift_only = [r["score"] for r in rows if r["grid"].startswith("default") and r["score"] is not None] or [None]
     return {"rows": rows, "range": [min(sc), max(sc)], "range_shift_only": [min(shift_only), max(shift_only)],
             "note": "av shift: the motion is moved against the music by +-%g ms (the unpinned audio-video offset); seam variants: the first / second song's pulses through the DJ mix" % cfg.av_uncertainty_ms}
 
@@ -1113,7 +1124,7 @@ def run_analysis(inp: Inputs, cfg: Config | None = None, with_sensitivity: bool 
         "formula": {"score": "100 * sum_k weight_k * component_k", "weights": cfg.weights,
                     "components": "each 0..1, 0 = what random steps would give, 1 = perfect; live = (1 - share) * whole dance so far + share * exponential memory (half-life s)",
                     "live_share": cfg.recent_share, "half_life_s": cfg.half_life_s, "prior": f"neutral 0.5 worth {cfg.prior_events:g} events"},
-        "final": {"score": round(final["score"], 1), "components": {k: round(final[k], 3) for k in COMPONENTS}, "weights": cfg.weights,
+        "final": {"score": _r(final["score"], 1), "components": {k: _r(final[k]) for k in COMPONENTS}, "weights": cfg.weights,
                   "n": {k: round(v, 1) for k, v in final["n"].items()}, "flow_R": round(final["R"], 3), "levels": {r: LEVELS[final["sel"][r]]["name"] for r in ROLES},
                   "confidence": conf, "range_under_uncertainty": sens["range"] if sens else None},
         "final_card": {"from_t": round(t_end - cfg.final_card_s, 3), "to_t": round(t_end, 3), "title": TITLE},
@@ -1257,7 +1268,7 @@ def make_plots(doc: dict, inp: Inputs, out_dir: Path) -> list[str]:
 
     fig, ax = plt.subplots(1, 2, figsize=(13, 4.2))
     ms = doc["measures"]
-    ax[0].bar([m["measure"] for m in ms], [m["score"] for m in ms], color="#6a8caf")
+    ax[0].bar([m["measure"] for m in ms], [m["score"] or 0 for m in ms], color="#6a8caf")
     ax[0].set_title("score per measure (descriptive, non-causal)")
     w = [x for x in doc["windows"] if x["score"] is not None]
     ax[1].plot([x["t"] for x in w], [x["score"] for x in w], color="#6a8caf")

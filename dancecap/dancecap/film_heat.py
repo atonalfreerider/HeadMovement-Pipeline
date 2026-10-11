@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -291,6 +292,8 @@ def build_from_preset(preset: dict, *, out_dir: Path | None = None, dry_run: boo
     if not mix.exists() or mix.stat().st_size != audio.stat().st_size or mix.stat().st_mtime < audio.stat().st_mtime:
         shutil.copy2(audio, mix)
         notes.append(f"copied the capture's soundtrack to {mix}")
+    # the recorder refuses a mix older than the direction: the mix is a copy of the capture's audio, so it is as current as the direction just written
+    os.utime(mix, None)
     return direction_path, direction, notes
 
 
