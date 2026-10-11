@@ -166,7 +166,7 @@ def cmd_status(a) -> int:
         print("coverage  (not computed yet: python -m dancecap.farm coverage)")
     print("chunks  " + (", ".join(f"{v} {k}" for k, v in sorted(by.items())) or "none"))
     for c in obj["chunks"]["list"]:
-        print(f"   {c['id']:<8} {c['status']:<10} {c['kind']:<6} {c['core_s']} s  pod {c['pod'] or '-'}")
+        print(f"   {c['id']:<8} {c['status']:<10} {str(c.get('kind')):<6} {c.get('core_s') or '-'} s  pod {c['pod'] or '-'}")
     print(f"pods    {len(obj['pods'])} open" + "".join(f"\n   {p.get('id')} {p.get('state')} {p.get('gpu', '')}" for p in obj["pods"]))
     sp = obj["spend"]
     print(f"spend   ${sp.get('spent', '?')} of ${sp.get('cap', '?')} cap, ${sp.get('remaining', '?')} left, ${sp.get('rate_hr', 0)}/h open")
@@ -231,6 +231,9 @@ def cmd_plan(a) -> int:
         if C.chunk_params(spec)["profile"] == "carlos_aline":   # C3: two moving cameras, 2D poses from the pipeline's own detector (farm/ca_profile.py)
             from . import ca_profile as CAPf
             return CAPf.cmd_plan(a, spec)
+        if C.chunk_params(spec)["profile"] == "john_lula":   # J3b: ONE moving camera, single-camera ma_3d (farm/jl_profile.py)
+            from . import jl_profile as JLPf
+            return JLPf.cmd_plan(a, spec)
         from . import recap_profile as RPf
         return RPf.cmd_plan(a, spec)
     try:

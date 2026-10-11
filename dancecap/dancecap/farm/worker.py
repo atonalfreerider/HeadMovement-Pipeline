@@ -207,6 +207,10 @@ class Worker:
         cd = self.chunk_dir(jid)
         if jid in self.failed_here or (cd / "done.json").exists() or (cd / "failed.json").exists():
             return False
+        # J3b (additive): a spec with an "owner" is claimed only by workers whose HM_OWNER is the same, and a worker with an HM_OWNER takes only its own specs, so one
+        # session's pods never run another session's jobs from the shared queue (specs and workers without an owner behave as before).
+        if str(spec.get("owner") or "") != os.environ.get("HM_OWNER", ""):
+            return False
         if needs_gpu(spec) and not self.gpu0 and self.gpu_required is not False:
             return False  # a CPU pod leaves GPU jobs to the GPU pods
         for dep in spec.get("after") or []:

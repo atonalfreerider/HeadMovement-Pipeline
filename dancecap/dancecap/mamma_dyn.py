@@ -75,6 +75,12 @@ MA3D_CONFIG = "config_files/contact_configs/config_real_gmf_small_vals_detr_exp_
 # third/fourth runs keep the upstream values.
 MA3D_OVERRIDES = {"optim": {"second_run": {"losses": {"angular_acc_loss": {"weight": 0.0005},
                                                       "acceleration_loss": {"weight": 0.0002}}}}}
+# J3b (additive, john_lula): the ONE-camera path (MAMMA_MONO=1, mamma-turing optimization/utils/mono.py). Triangulation needs two views, so the first stage's
+# l2 term (against triangulated points, all zero with one camera) is switched off, and the floor (y = 0 of the camera track's world frame) and, in the shape
+# pass, the dancer's stature (MAMMA_STATURE) enter as losses. Merged over MA3D_OVERRIDES when MAMMA_MONO=1 (write_ma3d_config).
+MA3D_MONO_OVERRIDES = {"optim": {"first_run": {"losses": {"l2_loss_3d_points": {"weight": 0.0}}},
+                                 "second_run": {"losses": {"floor_loss": {"weight": 5.0}, "stature_loss": {"weight": 3.0}}},
+                                 "third_run": {"losses": {"floor_loss": {"weight": 5.0}, "stature_loss": {"weight": 3.0}}}}}
 GRID_HZ = 30.0
 N_LMK = 512
 CROP_PX = 512  # MAMMA's sigma scale (losses.py: sigma / 2 * 512)
@@ -757,7 +763,11 @@ def write_ma3d_config(out: Path, base: str = MA3D_CONFIG, overrides: dict | None
         return a
 
     cfg = yaml.safe_load((MAMMA_ROOT / "optimization" / base).read_text())
-    cfg = merge(cfg, MA3D_OVERRIDES if overrides is None else overrides)
+    if overrides is None:
+        overrides = MA3D_OVERRIDES
+        if os.environ.get("MAMMA_MONO") == "1":      # J3b: one camera
+            overrides = merge(merge({}, MA3D_OVERRIDES), MA3D_MONO_OVERRIDES)
+    cfg = merge(cfg, overrides)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("# dancecap: " + base + " + mamma_dyn.MA3D_OVERRIDES (generated, do not edit)\n"
                    + yaml.safe_dump(cfg, sort_keys=False))

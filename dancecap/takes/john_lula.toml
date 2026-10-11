@@ -36,11 +36,12 @@ max_fps = 30        # the video is 29.994 fps: read whole
 # Farm chunking (owner 2026-10-09: chunks of at most 60 s overlapping their neighbours by 4 s, the fewest equal windows). Arithmetic
 # (farm/chunks.py equal_windows(2643 frames, 30 Hz, 60 s, 4 s)): one window would be 88.1 s > 60 s; n = 2 windows of L = (2643 + 1 x 120) / 2 =
 # 1381.5 frames = 46.05 s each (1382 and 1381 frames: windows k 0..1381 and 1262..2642, overlap 120 frames = 4.0 s), cores cut at the middle of the
-# overlap: 0..1321 (44.07 s) and 1322..2642 (44.03 s). No farm profile for a single camera exists yet (profile = "" = the generic windows).
+# overlap: 0..1321 (44.07 s) and 1322..2642 (44.03 s). Planner profile "john_lula" (farm/jl_profile.py, single-camera ma_3d), see below.
 [chunks]
 chunk_s = 60.0
 overlap_s = 4.0
 mode = "windows"
+profile = "john_lula"   # J3b: farm/jl_profile.py (one moving camera, single-camera ma_3d)
 
 # Quality flags (dancecap.stitch): ONE camera, so the whole window is monocular.
 [stitch]
@@ -71,10 +72,10 @@ description = "short brown hair swept to one side, short full brown beard, black
 #   TEXTURE (no groom for the lead: the photo composite carries the beard, as for the other leads), plain black t-shirt (the bib is a texture detail the bake
 #   will not keep), black trousers, dark sneakers. The competition bib, a black wristwatch: not modelled. Palette / colours measured: work/john_lula/avatar/.
 shoe_sole_m = 0.025   # dark soft sneakers; UNCONFIRMED barefoot stature (as in the demo)
-
 portrait = "GM6B6189.jpg"   # J5a: the photo of the two (source_dir): the lead faces the camera in it (beard, smile); the follow is seen from behind
 shoe_style = "neutral"      # low-top lace-up sneakers, dark charcoal upper, light-grey chunky cupsole (work/john_lula/avatar/shoes_override.json carries the colours)
 shoe_geometry = { sole_heel_m = 0.032, sole_fore_m = 0.024, toe_spring_m = 0.009, heel_bevel_m = 0.005 }
+
 [dancers.follow]
 name = "Lula"
 pid = 2
@@ -87,9 +88,9 @@ description = "long auburn ponytail tied high on the crown, sheer long-sleeve cr
 #   TEXTURE (a printed pattern: only its main colours survive the 538 x 960 video: brown / maroon / cream on skin tone, coral underneath), the grey trousers are
 #   texture, the bib and the watch / wristband are not modelled. Tip glow stays on (the stylisation of the demo's hair); `hair_tip_glow = 0` drops it.
 shoe_sole_m = 0.02   # thin light-pink slip-on sneakers; UNCONFIRMED barefoot stature (as in the demo)
-# HAIR (owner 2026-10-11: "restyle lula's hair for her ponytail"): a high ponytail, auburn / light brown (the photo: a blue clip on the hair tie). Read by
 shoe_style = "neutral"      # pale dusty-pink slip-on flats with a thin cream sole (colours: work/john_lula/avatar/shoes_override.json)
 shoe_geometry = { sole_heel_m = 0.018, sole_fore_m = 0.014, toe_spring_m = 0.006, heel_bevel_m = 0.003 }
+# HAIR (owner 2026-10-11: "restyle lula's hair for her ponytail"): a high ponytail, auburn / light brown (the photo: a blue clip on the hair tie). Read by
 # dancecap.hair_groom (ponytail_hook -> dancecap.hair_ponytail, J5a 2026-10-11) and the avatar stages; the loose style is the default of every other take.
 hair_style = "ponytail"
 

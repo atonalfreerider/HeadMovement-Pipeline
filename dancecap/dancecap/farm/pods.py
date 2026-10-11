@@ -163,6 +163,8 @@ def create(name: str, *, gpu: str | None = None, cpu: str | None = None, vcpu: i
     hard_minutes = float(hard_minutes or minutes)
     owner = owner or os.environ.get("HM_POD_OWNER") or None      # C6 2026-10-10: a session labels its pods in the ledger without touching every caller
     remote.ensure_ssh_key()
+    if os.environ.get("HM_QUEUE_OWNER"):         # J3b (additive): this session's pods claim only the jobs whose spec names the same owner (worker.claimable)
+        extra_env = {**(extra_env or {}), "HM_OWNER": os.environ["HM_QUEUE_OWNER"]}
     env = _env_for(name, minutes, hard_minutes, autostart, kinds, max_jobs, idle_min, post_grace_min, extra_env, price)
     t_create = time.time()
     if gpu:
