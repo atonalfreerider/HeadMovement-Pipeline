@@ -152,7 +152,9 @@ segment of each chapter (`chNN_01_open`, stable across rebuilds). The recap card
   reviewed on the real capture and the camera rules below were tuned from them (`work/larissa_kadu_recap/film/PREVIEW_REVIEW.md`).
 - The first ~8 s (opening jokes) are the owner's words: the transcript carries the hint-based reading; the film shows it, and `build --refresh-speech auto` applies the owner's answer.
 - Which phones are better is judged by a level-contour proxy, not by intelligibility; the replaced stretches are few and small. 05's clock is the weakest.
-- The 16:9 aspect uses the same shots; the orbit is not tightened for it (the couple is small in the frame, as in the demo film).
+- The 16:9 aspect uses the same shots; since R10 (2026-10-11) the camera blocks carry opt-in `horizontal` overrides (`plan.with_horizontal`: physics band / distance, a parallax-aware
+  closer overhead, a narrower talk / body lens, the finale band, the feet shot) and the horizontal preset the phone-clip switches (`phone_side_fill`, `portrait_zoom`, `safe.side_frac`,
+  `legend_scale`; `presets_for`); the 9:16 render ignores all of them (`build --no-horizontal-overrides` omits them). See the viewer spec 3.15.
 
 ## Camera rules fixed after looking at the real stills (T3)
 

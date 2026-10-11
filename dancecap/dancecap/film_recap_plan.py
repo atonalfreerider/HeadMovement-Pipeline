@@ -82,6 +82,22 @@ class Cfg:
     # overhead framing (D2): the couple fills this share of the frame width at the tightest; never below min_fill
     overhead_fill: float = 0.66
     overhead_min_fill: float = 0.46
+    # R10 (2026-10-11): the 16:9 render. The shots were designed for 9:16; the camera blocks carry an opt-in `horizontal` block (the viewer reads it only
+    # while rendering 16:9, so the 9:16 render is byte-identical with or without it). `horizontal_overrides` = False omits it (the old 16:9 framing).
+    horizontal_overrides: bool = True
+    h_overhead_fill: float = 0.7     # 16:9 overhead: the couple's joints + margin fill this share of the WIDTH at the tightest (the height binds in a wide frame)
+    h_overhead_min_fill: float = 0.66
+    h_overhead_margin_m: float = 0.16
+    h_overhead_never: float = 0.97
+    h_overhead_follow_s: float = 0.45  # the camera's damping of the couple's centre (9:16: 0.8 s; a looser look point inflates the extent the frame must hold)
+    h_physics_distance_m: float = 3.4
+    h_rhythm_band: tuple = (0.2, 0.9)
+    h_physics_band: tuple = (0.21, 0.88)   # the couple's floor-to-top span between the captions (bottom 10 %) and the top safe margin, 70 % of the height
+    h_orbit_fov_scale: float = 0.8   # 16:9 talk / body orbits: the lens narrowed to this share (fit_span keeps both teachers inside 90 % of the width)
+    h_feet_distance_m: float = 3.0
+    h_feet_fov_deg: float = 52.0
+    h_portrait_zoom: float = 1.3     # 16:9: factor on the crop zoom of a portrait phone clip (the viewer caps the result at 2.1x: the clips are 480-720 px wide)
+    phone_side_fill: float = 0.42     # 16:9: brightness of the blurred copy of a portrait phone clip behind / beside the centred clip (0 = plain black)
 
 
 # ------------------------------------------------------------------------------------------------ activity
@@ -340,6 +356,39 @@ def treatment_layers(family: str, layers: Layers, dropped: list[dict] | None = N
         drop("footprints", "timing.json / floorcraft.json")
     if not layers.has("graph") and out.get("graph") not in (None, "off"):
         drop("graph", "moves/graph.json", "off")
+    return out
+
+
+def with_horizontal(cam: dict, cfg: "Cfg | None" = None) -> dict:
+    """the camera block plus its opt-in `horizontal` overrides (the keys the viewer swaps in while rendering 16:9). Phone shots (their frame is the
+    clip's, cropped by `crop`) and the modes that already fit themselves (orbit `fit_span`, rhythm, feature zoom) are left alone."""
+    cfg = cfg or Cfg()
+    out = dict(cam)
+    if not cfg.horizontal_overrides or "horizontal" in out:
+        return out
+    mode = out.get("mode")
+    h: dict = {}
+    if mode == "physics_3q":
+        # fit_band's band is a 9:16 one (couple between the physics legend and the caption block: 34 %..74 % of the height); in a wide frame the
+        # couple took 40 % of the height and 8 % of the width. 17 %..87 % keeps the heads under the top margin and the feet above the captions.
+        h = {"distance_m": cfg.h_physics_distance_m, "band_lo": cfg.h_physics_band[0], "band_hi": cfg.h_physics_band[1]}
+    elif mode == "overhead_floorcraft" and out.get("framing") == "couple" and out.get("fill"):
+        fill = float(out["fill"])
+        # the 9:16 fills (0.60 / 0.66) are shares of a narrow frame's width; a wide frame is bound by its HEIGHT (a couple's footprint is about square):
+        # `parallax` counts the head and raised hands as nearer the lens, so nothing is cropped; fill = the width share at the tightest
+        h = {"parallax": True, "fill": round(cfg.h_overhead_fill - (0.04 if fill < cfg.overhead_fill - 0.01 else 0.0), 3), "min_fill": cfg.h_overhead_min_fill,
+             "margin_m": cfg.h_overhead_margin_m, "never": cfg.h_overhead_never, "follow_s": cfg.h_overhead_follow_s}
+    elif mode == "orbit" and out.get("fit_span"):
+        # the calm talk / body orbit: a lens that makes a couple 2.3 m tall fill 72 % of the height leaves two standing teachers a third of a wide frame;
+        # narrowed (fit_span widens it again whenever they stand apart: both always stay inside 90 % of the width)
+        h = {"fov_scale": cfg.h_orbit_fov_scale}
+    elif mode == "rhythm":
+        # the finale's orbit fits a 2.2 m column between 30 % and 94 % of the height: a 1.9 m couple fills half of a wide frame's height
+        h = {"band_lo": cfg.h_rhythm_band[0], "band_hi": cfg.h_rhythm_band[1]}
+    elif mode == "feet_closeup":
+        h = {"distance_m": cfg.h_feet_distance_m, "fov_deg": cfg.h_feet_fov_deg}
+    if h:
+        out["horizontal"] = h
     return out
 
 
