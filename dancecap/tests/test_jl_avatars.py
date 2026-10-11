@@ -210,7 +210,7 @@ def test_projection_scale_and_nearest_rank():
 
 
 def test_pod_job_has_its_own_kind_that_no_farm_worker_claims():
-    assert jl.KIND == "avatarjl" and jl.OWNER == "J5a"
+    assert jl.KIND == "avatarjl" and jl.OWNER == "J5b"
     farm_kinds = {"front", "fit", "refine", "full", "asr", "analyse", "avatar", "avatarca", "default", "agents"}
     assert jl.KIND not in farm_kinds
     steps = jp.identity_steps()
@@ -238,3 +238,34 @@ def test_no_name_or_absolute_path_in_the_module_sources():
         src = Path(mod.__file__).read_text(encoding="utf-8")
         assert not re.search(r"[A-Za-z]:[\\/]Users", src)
         assert not re.search(r"\b(John|Lula|Carlos|Aline)\b", src), mod.__name__
+
+
+# ------------------------------------------------------------------------------------------------ J5b: texture windows of the fitted poses, the one-camera texture job
+
+def test_interval_mask_and_blind_stretches():
+    t = np.arange(0, 10, 0.5)
+    m = jl.interval_mask(t, ((1.0, 2.0), (8.0, 9.0)))
+    assert m.sum() == 6 and m[2] and m[4] and not m[5]
+    assert all(a < b for r in jl.POSE_BLIND.values() for a, b in r)
+
+
+def test_window_job_is_a_one_camera_front_job_of_the_window(tmp_path, monkeypatch):
+    base = {"id": "jlg0000", "take": "john_lula_jlg0000", "cams": ["01"], "kind": "full", "stages": ["front", "fit"], "after": ["x"],
+            "chunk": {"id": "jlg0000", "k0": 0, "k1": 1381, "core_k0": 0, "core_k1": 1321, "overlap_k": 120, "cams": ["01"], "take": "john_lula_jlg0000"}, "inputs": []}
+    (tmp_path / "farm" / "jobs").mkdir(parents=True)
+    (tmp_path / "farm" / "jobs" / "jlg0000.json").write_text(json.dumps(base))
+    monkeypatch.setattr(jl, "WORK", tmp_path)
+    job = jp.window_job("jt9", 10.0, 20.0)
+    c = job["chunk"]
+    assert (c["k0"], c["k1"], c["T"]) == (300, 599, 300) and job["take"] == "john_lula_jt9" and job["cams"] == ["01"]
+    assert job["stages"] == ["front"] and job["after"] == [] and "owner" not in job
+
+
+def test_texture_steps_one_camera_no_sam_head_fix_off():
+    steps = jp.texture_steps("jt1", 66.7, 6, 0.7, "01:1.00:2.00")
+    cmds = [s["cmd"] for s in steps]
+    assert any("jl_front texture-front jt1" in c for c in cmds) and not any("pod-texture-front" in c for c in cmds)
+    bake = [c for c in cmds if " texture john_lula_jt1" in c][0]
+    assert "--head-fix off" in bake and "--hair-mode exclude" in bake and "--step-ms 66.7" in bake
+    assert any("pod-mask-cams jt1 --mask 01:1.00:2.00" in c for c in cmds)
+    assert not any("pod-mask-cams" in c for c in [s["cmd"] for s in jp.texture_steps("jt1")])

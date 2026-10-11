@@ -134,6 +134,74 @@ def step_mono_init(chunk: dict) -> dict:
     return rep
 
 
+# ------------------------------------------------------------------------------------------------ texture window front (agent J5b)
+
+
+def step_hair(chunk: dict) -> dict:
+    """dancers/01/body|hair masks of the window from J3a's full masks: the lead's body = his full mask; the follow is split into hair / body by
+    dancers_hair.split_hair (keypoint-anchored, one Lab colour model for the camera pooled over the window's frames: hair seeds in the head zone, skin, rest).
+    The 2D skeleton is J3a's COCO-17 track (people/teachers_01.npz) at the frame's dance-wide row."""
+    import cv2
+
+    from . import dancers_hair as DH
+    work = RF.take_work(chunk["id"])
+    dd = work / "dancers" / CAM
+    meta = json.loads((work / "frames" / CAM / "frames.json").read_text())
+    z = np.load(RF.dance_work() / "cameras" / f"{CAM}.npz", allow_pickle=True)
+    idx = RF.frame_range(np.asarray(z["t"], float), chunk["t0"], chunk["t1"])
+    fi = np.asarray(z["frame_index"], int)[idx]
+    kp = np.load(PEOPLE / f"teachers_{CAM}.npz", allow_pickle=True)["kp"][:, 1]
+    for sub in ("body", "hair"):
+        (dd / sub).mkdir(parents=True, exist_ok=True)
+    cfg = DH.HairConfig()
+    colour = DH.HairColour(cfg)
+    F = len(meta["frames"])
+
+    def read_mask(i: int, pid: int):
+        m = cv2.imread(str(dd / "masks" / f"mask_{i:04d}_{pid:02d}.png"), cv2.IMREAD_GRAYSCALE)
+        return None if m is None else (m > 127)
+
+    for i in range(0, F, cfg.seed_stride):
+        fol = read_mask(i, 2)
+        if fol is None or not fol.any():
+            continue
+        img = cv2.imread(str(work / "frames" / CAM / f"{i:06d}.jpg"))
+        ys = np.nonzero(fol.any(1))[0]
+        colour.add_frame(img, fol, DH.head_geom(kp[fi[i]], float(ys[-1] - ys[0] + 1), cfg), kp[fi[i]])
+    ok = colour.fit()
+    n_hair = n_fol = 0
+    for i in range(F):
+        lead, fol = read_mask(i, 1), read_mask(i, 2)
+        if lead is not None:
+            cv2.imwrite(str(dd / "body" / f"mask_{i:04d}_01.png"), lead.astype(np.uint8) * 255)
+        if fol is None:
+            continue
+        img = cv2.imread(str(work / "frames" / CAM / f"{i:06d}.jpg"))
+        hair, body = DH.split_hair(img, fol, kp[fi[i]], colour, cfg)
+        cv2.imwrite(str(dd / "body" / f"mask_{i:04d}_02.png"), body.astype(np.uint8) * 255)
+        cv2.imwrite(str(dd / "hair" / f"mask_{i:04d}_02.png"), hair.astype(np.uint8) * 255)
+        n_fol += 1
+        n_hair += int(hair.any())
+    rep = {"frames": F, "follow_masks": n_fol, "with_hair": n_hair, "colour_model": bool(ok), "seeds": colour.seeds}
+    log(f"hair split: {rep}")
+    (work / "dancers" / "hair_split.json").write_text(json.dumps(rep, default=str))
+    return rep
+
+
+def texture_front(chunk_id: str) -> int:
+    """The front of a TEXTURE window (no fit follows): frames, cameras (the focal hypothesis of the env included), J3a's masks + roles.json, the follow's hair /
+    body split. Plain sequential CPU steps (a 32 s window decodes in about a minute); the bake reads exactly this."""
+    chunk = RF.load_chunk(chunk_id)
+    work = RF.take_work(chunk_id)
+    (work / "front").mkdir(parents=True, exist_ok=True)
+    RF.step_frames(chunk)
+    step_cameras(chunk)
+    step_masks(chunk)
+    step_hair(chunk)
+    (work / "front" / "front_done.json").write_text(json.dumps({"rc": 0, "purpose": "texture window front (J5b)", "finished": time.strftime("%Y-%m-%dT%H:%M:%S")}))
+    return 0
+
+
 # ------------------------------------------------------------------------------------------------ DAG
 
 
@@ -195,14 +263,16 @@ def run(chunk_id: str, resume: bool = False) -> int:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="python -m dancecap.jl_front", description=__doc__.split("\n")[0])
-    ap.add_argument("cmd", choices=("run", "masks", "cameras", "mono-init"))
+    ap.add_argument("cmd", choices=("run", "masks", "cameras", "mono-init", "hair", "texture-front"))
     ap.add_argument("chunk")
     ap.add_argument("--resume", action="store_true")
     a = ap.parse_args(argv)
     if a.cmd == "run":
         return run(a.chunk, a.resume)
+    if a.cmd == "texture-front":
+        return texture_front(a.chunk)
     chunk = RF.load_chunk(a.chunk)
-    {"masks": step_masks, "cameras": step_cameras, "mono-init": step_mono_init}[a.cmd](chunk)
+    {"masks": step_masks, "cameras": step_cameras, "mono-init": step_mono_init, "hair": step_hair}[a.cmd](chunk)
     return 0
 
 

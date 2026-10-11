@@ -39,7 +39,7 @@ from . import ca_avatars as CA
 from .take import PACKAGE_ROOT
 
 TAKE = "john_lula"
-OWNER = "J5a"
+OWNER = "J5b"
 KIND = "avatarjl"
 ROLES = CA.ROLES
 WHO = {"lead": 0, "follow": 1}                    # index in the people tables (0 = lead, 1 = follow)
@@ -55,6 +55,7 @@ FPS = 14997 / 500
 # the lead's portrait photo (the take folder holds it next to the video); the follow has none (seen from behind). The TOML key that makes
 # CA.portrait_path-style readers find it: [dancers.lead] portrait = "<this file>"
 DEFAULT_PORTRAITS = {"lead": "GM6B6189.jpg", "follow": None}
+PIN = PACKAGE_ROOT / "work" / "john_lula_jlshape" / "mamma_pin_betas.json"      # J3b's shape pass: the betas of every chunk (pinned, identical)
 ZOOM_FALLBACK = ((17.84, 18.57), (51.51, 52.24), (78.75, 79.38))   # measured by the camera stage (the TOML's zoom_events)
 COCO = {"nose": 0, "leye": 1, "reye": 2, "lear": 3, "rear": 4, "ls": 5, "rs": 6, "lh": 11, "rh": 12}
 WB_FEET = {"L": (17, 18, 19), "R": (20, 21, 22)}   # COCO-WholeBody: big toe, small toe, heel
@@ -86,20 +87,24 @@ STAGES: tuple[CA.Stage, ...] = (
              ("avatar/texture/windows_preview.json",), "0 (seconds)", "provisional texture windows: which seconds show which body side (one moving camera)"),
     CA.Stage("head-review", False, "local", "head-review", ("face_shape/*", "provisional betas", "lead portrait"), ("review/avatar/head_{lead,follow}.jpg",),
              "0 (~3 min)", "front / 3-4 / profile renders of the rest heads (template vs identity) on the recap's provisional betas"),
-    CA.Stage("texture-select", True, "local", "(J3b's smplx first) ca_avatars.texture_select is two-camera: a one-camera variant is to be written", ("smplx/{lead,follow}.npz",),
-             ("avatar/texture/windows.json",), "0", "windows of the fitted poses (replaces the preview)"),
-    CA.Stage("texture-run", True, "pod", "(like ca_avatars_pod.texture_run, one camera)", ("windows.json", "smplx", "volume: source video"),
-             ("work/john_lula_<window>/avatar/*",), "~0.3-0.5 per window (4090 pod)", "front (frames, SAM masks) then the hair-aware bake, one pod job per window"),
-    CA.Stage("texture-fuse", True, "local", "texture-fuse --windows tx1,tx2,tx3", ("work/john_lula_<window>/avatar/*_texels.npz",),
-             ("avatar/{lead,follow}_albedo.png",), "0 (~1 min)", "per-texel confidence-weighted fusion of the window bakes (only the visible side of a window is textured)"),
-    CA.Stage("face-texture", True, "local", "face-texture [--composite]", ("avatar/{lead,follow}_albedo.png", "smplx", "lead portrait"),
-             ("avatar/{lead,follow}_albedo_face.png",), "0 (~9 min CPU)", "the lead's portrait composited onto the bake; the follow's face from the video"),
+    CA.Stage("face-retarget", True, "local", "face-retarget", ("face_shape/*_identity.npz", "work/john_lula_jlshape/mamma_pin_betas.json"), ("face_shape/{lead,follow}_identity_disp.npz",), "0 (~10 s)",
+             "the identity displacement retargeted to the rest head of the fitted (pinned) betas"),
+    CA.Stage("body-shape", True, "local", "body-shape", ("work/john_lula_jlshape/mamma_pin_betas.json",), ("avatar/shape/body_report.json",), "0 (seconds)",
+             "rest height of each fitted body against stature + sole (the avatar follows the fit's size)"),
+    CA.Stage("texture-select", True, "local", "texture-select [--length 32] [--n-windows 3]", ("smplx_rf2_noslip/{lead,follow}.npz", "cameras/01_world.npz", "people/teachers_01.npz"),
+             ("avatar/texture/windows.json",), "0 (seconds)", "windows of the fitted poses (heading x the one camera's azimuth: 8 body-relative sectors, resolution weighted), with the stretches the bake skips"),
+    CA.Stage("texture-run", True, "pod", "texture-run --which K --window-id jtK [--wait-stock-min 45]", ("windows.json", "smplx_rf2_noslip", "volume: source video, jl_in.tar"),
+             ("work/john_lula_jt<K>/avatar/*",), "~0.05-0.15 per window (any GPU >= 12 GB, ~4 min)", "front (frames, J3a masks, hair / body split, no SAM) then the hair-aware bake, one pod job per window"),
+    CA.Stage("texture-fuse", True, "local", "texture-fuse [--windows jt1,jt2,jt3]", ("work/john_lula_jt<K>/avatar/*_texels.npz", "avatar/paint_out.json"),
+             ("avatar/{lead,follow}_albedo.png",), "0 (~2-3 min)", "per-texel confidence-weighted fusion of the window bakes + the paint-out (bibs, smudges, seat patches); one camera: min_ncam 1"),
+    CA.Stage("face-texture", True, "local", "face-texture --composite", ("avatar/{lead,follow}_albedo.png", "smplx", "lead portrait"),
+             ("avatar/{lead,follow}_albedo_face.png",), "0 (~9 min CPU)", "the lead's portrait composited onto the fused bake; the follow has no portrait: her face is the video bake's (copied). RE-RUN after every texture-fuse"),
     CA.Stage("hair-groom", True, "local", "hair-groom --from-take <donor take>", ("smplx/follow.npz", "[avatar/follow_albedo_face.png]", "avatar/hair_palette.json", "[dancers.follow] hair_style"),
-             ("avatar/hair_groom.json",), "0 (~1 min)", "the ponytail groom: a donor take's roots re-based on her rest model, hair_ponytail restyle, her palette"),
+             ("avatar/hair_groom.json",), "0 (~1 min)", "the ponytail groom: a donor take's roots re-based on her rest model, hair_ponytail restyle, her palette (+ [dancers.follow] hair_tip_glow / hair_albedo_gain)"),
     CA.Stage("shoes", True, "local", "shoes", ("capture", "avatar/shoes_override.json", "avatar/shoes_video.json"), ("avatar/shoes.json",), "0 (<1 min)",
              "sample + apply the colours / style override"),
-    CA.Stage("export", True, "local", "python -m dancecap.demo_export john_lula ... (export agent)", ("everything above", "[dancers.*] of the take TOML"),
-             ("StreamingAssets/<capture>/",), "0", "the Unity capture"),
+    CA.Stage("export", True, "local", "python -m dancecap.jl_export --avatars", ("everything above", "[dancers.*] of the take TOML"),
+             ("StreamingAssets/08_JohnLula/",), "0 (~20 s)", "the Unity capture (J4's re-runnable export; under the Unity lock when the editor has the capture loaded)"),
 )
 
 
@@ -733,6 +738,201 @@ def plan(as_json: bool = False) -> dict:
     return doc
 
 
+# ------------------------------------------------------------------------------------------------ stage: texture-select (the fitted poses, ONE moving camera)
+
+# Stretches where a dancer's pose is the temporal prior's guess, not a measurement (J3b, PROVISIONAL.md "known weak stretches"): the texture must not be
+# projected through them (the body is somewhere else than the pose says). [t0, t1] in video seconds, per role.
+POSE_BLIND = {"lead": ((23.9, 25.3), (27.3, 28.4), (37.5, 37.75)),
+              "follow": ((27.0, 28.4), (30.5, 32.2), (43.4, 46.5))}
+ZOOM_MARGIN_S = 0.35          # the zoom steps are 0.7 s of blur and two focal scales: left out with this margin each side
+REPROJ_BAD_PCT = 5.0          # a second whose reprojection against the 2D keypoints is above this % of the height weighs 0 for that dancer
+
+
+def interval_mask(t: np.ndarray, spans) -> np.ndarray:
+    m = np.zeros(len(t), bool)
+    for a, b in spans:
+        m |= (t >= a) & (t <= b)
+    return m
+
+
+def texture_weights(smplx_dir: Path, margin: float = ZOOM_MARGIN_S) -> dict:
+    """Per frame and role the quality weight of the ONE camera's view of that dancer, from the fitted poses:
+    resolution (focal / distance to the fitted pelvis, against 400 px per m) x the camera track is ok x the 2D track is confident, visible and not inside the
+    partner's skeleton x outside the zoom steps (+- margin) x the pose is measured (not a POSE_BLIND stretch) x the second reprojects within REPROJ_BAD_PCT.
+    -> {t, weight {role: (T,)}, sight (T, 2, 8) sector seconds, azimuth {role: (T,) camera azimuth relative to the heading}, contact (T,), dt}"""
+    from . import recap_avatars_select as rs
+    sm = {r: np.load(smplx_dir / f"{r}.npz", allow_pickle=True) for r in ROLES}
+    t = np.asarray(sm["lead"]["t"], float)
+    T = len(t)
+    dt = float(np.median(np.diff(t)))
+    cz = np.load(WORK / "cameras" / f"{CAM}_world.npz", allow_pickle=True)
+    c01 = np.load(WORK / "cameras" / f"{CAM}.npz", allow_pickle=True)
+    tc = np.asarray(c01["t"], float)
+    C = np.stack([np.interp(t, np.asarray(cz["t"], float), np.asarray(cz["C"], float)[:, k]) for k in range(3)], 1)
+    foc = np.interp(t, tc, np.asarray(c01["focal_px"], float))
+    cam_ok = np.interp(t, tc, np.asarray(c01["ok"], float), left=0.0, right=0.0) > 0.99
+    people = load_people()
+    zoom = in_zoom_step(t, zoom_events(), margin)
+    rep = json.loads((WORK / "review" / "reproj_final.json").read_text())["per_second"] if (WORK / "review" / "reproj_final.json").exists() else {}
+    weight, azim, sight = {}, {}, np.zeros((T, 2, CA.N_SECTORS))
+    pel = {r: np.asarray(sm[r]["joints"], float)[:, 0] for r in ROLES}
+    for role in ROLES:
+        w = WHO[role]
+        dist = np.hypot(C[:, 0] - pel[role][:, 0], C[:, 2] - pel[role][:, 2])
+        res = CA.camera_quality(dist, foc)
+        tracked = (people["conf"][:, w] >= 0.5) & (people["visible"][:, w] >= 0.5) & (people["skel_in_partner"][:, w] < 0.5) & (people["role_conf"][:, w] >= 0.5)
+        ok = cam_ok & tracked & ~zoom & ~interval_mask(t, POSE_BLIND[role])
+        if role in rep:
+            sec, pct = np.asarray(rep[role]["sec"], float), np.asarray(rep[role]["pct"], float)
+            bad_s = sec[np.nan_to_num(pct, nan=0.0) >= REPROJ_BAD_PCT]
+            for s in bad_s:
+                ok &= ~((t >= s) & (t < s + 1.0))
+        weight[role] = np.where(ok, res, 0.0)
+        head = rs.heading_azimuth(np.asarray(sm[role]["global_orient"]))
+        az = np.arctan2(C[:, 0] - pel[role][:, 0], C[:, 2] - pel[role][:, 2]) - head
+        azim[role] = az
+        np.add.at(sight[:, w], (np.arange(T), CA.sector_of(az)), weight[role] * dt)
+    contact = (np.linalg.norm(pel["lead"][:, [0, 2]] - pel["follow"][:, [0, 2]], axis=1) < rs.CONTACT_M).astype(float)
+    return {"t": t, "weight": weight, "sight": sight, "azimuth": azim, "contact": contact, "dt": dt, "zoom": zoom}
+
+
+def stage_texture_select(smplx_dir: Path | None = None, length_s: float = 32.0, n_windows: int = 3, need_s: float = 4.0, min_start_gap_s: float = 14.0,
+                         out: Path | None = None) -> dict:
+    """windows.json for texture-run: the windows (greedy on the UNION coverage of the 8 body-relative sectors of both dancers by the quality-weighted sight of
+    the one camera, texture_weights) plus, per window, the stretches the bake must skip: the zoom steps, the camera track's not-ok stretches and the stretches
+    where either dancer's pose is the prior's guess (`mask`: 'cam:t0:t1', the bake switches those frames' camera track off)."""
+    smplx_dir = smplx_dir or (WORK / "smplx_rf2_noslip")
+    CA.require([smplx_dir / f"{r}.npz" for r in ROLES], "texture-select")
+    d = texture_weights(smplx_dir)
+    t, dt, sight, contact = d["t"], d["dt"], d["sight"], d["contact"]
+    T = len(t)
+    length = int(round(length_s / dt))
+    starts = np.arange(0, T - length + 1, int(round(1.0 / dt)))
+    chosen = choose_complementary(sight, contact, starts, length, n_windows, int(round(min_start_gap_s / dt)), need_s)
+    union = np.zeros(T, bool)
+    skip = [list(map(float, s)) for s in zoom_events()]
+    blind = sorted({tuple(s) for r in ROLES for s in POSE_BLIND[r]})
+    c01 = np.load(WORK / "cameras" / f"{CAM}.npz", allow_pickle=True)
+    notok = intervals(~np.asarray(c01["ok"], bool), np.asarray(c01["t"], float), gap_s=0.2, min_s=0.0)
+    spans = [(a - ZOOM_MARGIN_S, b + ZOOM_MARGIN_S) for a, b in skip] + [tuple(s) for s in blind] + [(a - 0.1, b + 0.1) for a, b in notok]
+    spans = sorted(spans)
+    merged: list[list[float]] = []
+    for a, b in spans:
+        if merged and a <= merged[-1][1] + 0.05:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    sides = (("front", (7, 0, 1)), ("right_side", (2,)), ("back", (3, 4, 5)), ("left_side", (6,)))
+    wins = []
+    for k, b in enumerate(sorted(chosen, key=lambda i: starts[i])):
+        s0, s1 = int(starts[b]), min(int(starts[b]) + length, T)
+        union[s0:s1] = True
+        t0, t1 = float(t[s0]), float(t[s1 - 1]) + dt
+        masks = [f"{CAM}:{max(a, t0):.2f}:{min(b2, t1):.2f}" for a, b2 in merged if b2 > t0 and a < t1]
+        wins.append({"id": f"tx{k + 1}", "t0": round(t0, 2), "t1": round(t1, 2), "mask": masks,
+                     "contact_share": round(float(contact[s0:s1].mean()), 2),
+                     "weighted_seconds_by_side": {r: {nm: round(float(sum(sight[s0:s1, WHO[r], s].sum() for s in secs)), 1) for nm, secs in sides} for r in ROLES},
+                     "sector_cover": {r: [round(float(min(1.0, sight[s0:s1, WHO[r], s].sum() / need_s)), 2) for s in range(CA.N_SECTORS)] for r in ROLES}})
+    res = {"created": time.strftime("%Y-%m-%dT%H:%M:%S"), "smplx_dir": str(smplx_dir), "length_s": length_s, "need_weighted_s": need_s, "windows": wins,
+           "skip_spans_s": [[round(a, 2), round(b, 2)] for a, b in merged],
+           "union": {"seconds": round(float(union.sum() * dt), 1),
+                     "weighted_seconds_by_side": {r: {nm: round(float(sum(sight[union, WHO[r], s].sum() for s in secs)), 1) for nm, secs in sides} for r in ROLES},
+                     "sector_cover": {r: [round(float(min(1.0, sight[union, WHO[r], s].sum() / need_s)), 2) for s in range(CA.N_SECTORS)] for r in ROLES}},
+           "all_frames": {"weighted_seconds_by_side": {r: {nm: round(float(sum(sight[:, WHO[r], s].sum() for s in secs)), 1) for nm, secs in sides} for r in ROLES},
+                          "sector_cover": {r: [round(float(min(1.0, sight[:, WHO[r], s].sum() / need_s)), 2) for s in range(CA.N_SECTORS)] for r in ROLES}},
+           "sectors": "8 body-relative sectors of the FITTED heading, 0 = the camera straight in front of the dancer, 4 = behind; weight = focal / distance / 400 px per m",
+           "honest": ["one camera: a side is textured only where a window sees it; unseen sectors are fills", "sector sides come from the fitted heading (monocular fit)"]}
+    out = out or (AV / "texture" / "windows.json")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(res, indent=1))
+    return res
+
+
+# ------------------------------------------------------------------------------------------------ stages on the fitted betas: face-retarget, body-shape
+
+def stage_face_retarget() -> dict:
+    """The FLAME identity displacement of each dancer retargeted to the REST head of the fitted (pinned) betas (face_identity.cached_displacement ->
+    face_shape/<role>_identity_disp.npz, the cache the export reads). ~10 s per dancer on the PC."""
+    from . import export_unity as eu
+    from . import face_identity as fi
+    betas = CA.pinned_betas(PIN)
+    if betas is None:
+        raise FileNotFoundError(f"{PIN} (J3b's shape pass) is missing")
+    AV.mkdir(parents=True, exist_ok=True)
+    (AV / "betas.json").write_text(json.dumps({r: [float(x) for x in v] for r, v in betas.items()}, indent=1))
+    rep: dict = {"created": time.strftime("%Y-%m-%dT%H:%M:%S"), "betas": "work/john_lula_jlshape/mamma_pin_betas.json", "roles": {}}
+    for role in ROLES:
+        sk = eu.shaped_skin(eu.model_for({"model": "smplx_locked_head"}), np.asarray(betas[role], float))
+        t1 = time.time()
+        _, _, r = fi.cached_displacement(sk.vertices, FACE_SHAPE / f"{role}_identity.npz", WORK, role, 1.0)
+        rep["roles"][role] = {k: r.get(k) for k in ("equivalent_rms_mm", "equivalent_max_mm", "stable_residual_mm", "max_move_mm", "occ_mm_head_vs_identity", "cache_hit")}
+        rep["roles"][role]["seconds"] = round(time.time() - t1, 1)
+        log(f"{role}: retargeted {rep['roles'][role]}")
+    (FACE_ID / "retarget_report.json").write_text(json.dumps(rep, indent=1, default=float))
+    return rep
+
+
+def stage_body_shape() -> dict:
+    """Rest height of each shaped T-pose against stature + sole (the avatar follows the fit's size: J3b held the shape pass to the owner's statures) and the
+    body edits of the take (none by default)."""
+    from . import recap_avatars as RA
+    from . import shape_edits as se
+    betas = CA.pinned_betas(PIN)
+    if betas is None:
+        raise FileNotFoundError(f"{PIN} (J3b's shape pass) is missing")
+    cfg = take_cfg()
+    out: dict = {"created": time.strftime("%Y-%m-%dT%H:%M:%S"), "betas": "work/john_lula_jlshape/mamma_pin_betas.json",
+                 "gauge": "rest height = crown to sole of the shaped T-pose; target = stature_m + shoe_sole_m", "roles": {}}
+    for role in ROLES:
+        d = cfg["dancers"][role]
+        stature, sole = float(d["stature_m"]), float(d.get("shoe_sole_m", 0.025))
+        sk, _ = CA.rest_skin(betas[role])
+        rec = {"name": d["name"], "rest": RA.body_numbers(sk, stature, sole), "beta_norm": round(float(np.linalg.norm(betas[role])), 3)}
+        body_cfg = {k: v for k, v in (d.get("shape_edits") or {}).items() if k != "face"}
+        if body_cfg:
+            v, rep = se.apply_vertices(body_cfg, sk.vertices, sk.joints, sk.weights, sk.faces, role, WORK)
+            rec["edits_body"] = {"config": rep["config"], "moved_vertices": rep["moved_vertices"], "max_move_mm": rep["max_move_mm"]}
+        out["roles"][role] = rec
+        log(f"{d['name']}: rest height {rec['rest']['rest_height_m']} m (target {rec['rest']['stature_plus_sole_m']}, ratio {rec['rest']['ratio_to_stature']})")
+    p = AV / "shape" / "body_report.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(out, indent=1, default=float))
+    return out
+
+
+# ------------------------------------------------------------------------------------------------ stages after the bakes: texture-fuse, face-texture, shoes
+
+# texture-fuse settings of THIS pair (one camera, windows overlap in nothing but the texel atlas): his black tee and trousers and her patterned top / grey trousers
+# are not "light cloth that hair and sleeves only darken" (the recap's white top), so no prefer-light rule for either; a softer winner for him, a sharper one for her print
+FUSE_LIGHT_ROLES: tuple[str, ...] = ()
+# one camera + imperfect registration: a sharp winner per texel stitches a patchwork of windows (looked at: the 6th power gave a watercolour of patches); a soft one (2) averages the
+# windows that agree and keeps the texture calm
+FUSE_POWERS = {"follow": {"low": 2.0, "high": 2.5}, "lead": {"low": 1.5, "high": 2.0}}
+FUSE_TAU = 0.15
+
+
+def stage_texture_fuse(windows: tuple[str, ...], paint: Path | None = None, weights: dict | None = None, tau: float = FUSE_TAU, dry_run: bool = False) -> dict:
+    from . import recap_avatars_fuse as fz
+    return fz.run(WORK, list(windows), paint or (AV / "paint_out.json"), None, ROLES, dry_run=dry_run, tau=tau, light_roles=FUSE_LIGHT_ROLES, powers=FUSE_POWERS,
+                  use_prior=False, window_weights=weights or {}, min_ncam=1)
+
+
+def stage_face_texture(composite: bool = False) -> dict:
+    """The lead's portrait composited onto the fused bake (dancecap.avatar_face --roles lead: beard, skin, eyes); the follow has NO portrait (the only photo shows her
+    from behind): her face is the video bake's own (a copy of follow_albedo.png as follow_albedo_face.png, which the exporter and the groom read)."""
+    import shutil
+    CA.require([AV / f"{r}_albedo.png" for r in ROLES] + [WORK / "smplx" / f"{r}.npz" for r in ROLES], "face-texture")
+    with_portrait = [r for r in ROLES if portrait_path(r) is not None]
+    out: dict = {"portrait_roles": with_portrait}
+    if with_portrait:
+        out["avatar_face"] = CA.run_module("dancecap.avatar_face", TAKE, "--roles", *with_portrait, *(["--composite"] if composite else []))
+    for r in ROLES:
+        if r not in with_portrait:
+            shutil.copyfile(AV / f"{r}_albedo.png", AV / f"{r}_albedo_face.png")
+            out[f"{r}_face"] = "the video bake's own face (no portrait)"
+    return out
+
+
 # ------------------------------------------------------------------------------------------------ head review (provisional betas)
 
 def stage_head_review() -> dict:
@@ -740,9 +940,11 @@ def stage_head_review() -> dict:
 
     from . import recap_avatars_review as rv
     from . import shape_edits as se
-    betas = CA.pinned_betas(CA.PROVISIONAL_BETAS)
+    real = CA.pinned_betas(PIN)
+    betas = real if real is not None else CA.pinned_betas(CA.PROVISIONAL_BETAS)
     scratch = AV / "review_scratch"
-    rep: dict = {"provisional_betas": True, "betas": "the recap's pinned betas (stand-in body; J3b's shape is not there yet): the HEAD is judged"}
+    rep: dict = {"provisional_betas": real is None,
+                 "betas": "J3b's pinned betas (the fitted body)" if real is not None else "the recap's pinned betas (stand-in body; J3b's shape is not there yet): the HEAD is judged"}
     for role in ROLES:
         sk, mp = CA.rest_skin(betas[role])
         alb = rv.load_albedo(CA.flat_albedo(scratch / f"flat_{role}.png", CA.SKIN_STANDIN[role]))
@@ -770,7 +972,7 @@ def stage_head_review() -> dict:
         cv2.imwrite(str(REVIEW / f"head_{role}.jpg"), rv.sheet(rows_tex, pt), [cv2.IMWRITE_JPEG_QUALITY, 90])
         rep[role] = numbers
     rv.write_report(AV / "shape" / "head_review.json", rep)
-    return {r: list(v) for r, v in rep.items() if r in ROLES} | {"provisional_betas": True}
+    return {r: list(v) for r, v in rep.items() if r in ROLES} | {"provisional_betas": real is None}
 
 
 # ------------------------------------------------------------------------------------------------ stage: hair-groom (pose-dependent: needs her rest model)
@@ -832,6 +1034,37 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--need", type=float, default=6.0)
     p.add_argument("--min-start-gap", type=float, default=14.0)
     sub.add_parser("head-review")
+    sub.add_parser("face-retarget")
+    p = sub.add_parser("texture-fuse")
+    p.add_argument("--windows", default="jt1,jt2,jt3")
+    p.add_argument("--paint", type=Path, default=AV / "paint_out.json")
+    p.add_argument("--weights", default="", help="window=factor,..")
+    p.add_argument("--tau", type=float, default=FUSE_TAU)
+    p.add_argument("--dry-run", action="store_true")
+    p = sub.add_parser("face-texture")
+    p.add_argument("--composite", action="store_true")
+    sub.add_parser("shoes")
+    sub.add_parser("body-shape")
+    p = sub.add_parser("texture-select")
+    p.add_argument("--smplx-dir", type=Path, default=None)
+    p.add_argument("--length", type=float, default=32.0)
+    p.add_argument("--n-windows", type=int, default=3)
+    p.add_argument("--need", type=float, default=4.0)
+    p.add_argument("--min-start-gap", type=float, default=14.0)
+    p = sub.add_parser("texture-run", help="ONE GPU pod job per window: the window's front + the hair-aware bake (needs smplx_rf2_noslip/ + windows.json)")
+    p.add_argument("--windows", type=Path, default=AV / "texture" / "windows.json")
+    p.add_argument("--which", type=int, default=0)
+    p.add_argument("--window-id", default="jt1")
+    p.add_argument("--smplx-dir", type=Path, default=WORK / "smplx_rf2_noslip")
+    p.add_argument("--top-k", type=int, default=6)
+    p.add_argument("--body-ref-q", type=float, default=0.7)
+    p.add_argument("--step-ms", type=float, default=100.0)
+    p.add_argument("--max-cost", type=float, default=1.5)
+    p.add_argument("--minutes", type=float, default=50)
+    p.add_argument("--hard-minutes", type=float, default=75)
+    p.add_argument("--mask", default=None)
+    p.add_argument("--wait-stock-min", type=float, default=45.0, help="wait this long for a 24 GB GPU to be in stock")
+    p.add_argument("--dry-run", action="store_true")
     p = sub.add_parser("hair-groom")
     p.add_argument("--from-take", required=True, help="donor take with an avatar/hair_groom.json (roots, measured data)")
     a = ap.parse_args(argv)
@@ -849,10 +1082,25 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({k: r[k] for k in ("windows", "best_score", "median_score")} | {"per_dancer": {k: v["sides"] for k, v in r["per_dancer"].items()}}, indent=1))
     elif a.cmd == "head-review":
         print(json.dumps(stage_head_review(), indent=1))
+    elif a.cmd == "texture-fuse":
+        print(json.dumps(stage_texture_fuse(csv(a.windows), a.paint, {k: float(v) for k, v in (x.split("=") for x in csv(a.weights))}, a.tau, a.dry_run), indent=1, default=float))
+    elif a.cmd == "face-texture":
+        print(json.dumps(stage_face_texture(a.composite)))
+    elif a.cmd == "shoes":
+        print(json.dumps(CA.run_module("dancecap.shoes", TAKE)))
+    elif a.cmd == "face-retarget":
+        print(json.dumps(stage_face_retarget(), indent=1, default=float))
+    elif a.cmd == "body-shape":
+        stage_body_shape()
+    elif a.cmd == "texture-select":
+        r = stage_texture_select(a.smplx_dir, a.length, a.n_windows, a.need, a.min_start_gap)
+        print(json.dumps({k: r[k] for k in ("windows", "union", "all_frames", "skip_spans_s")}, indent=1))
     elif a.cmd == "hair-groom":
         print(json.dumps(stage_hair_groom(a.from_take), indent=1))
     else:
         from . import jl_avatars_pod as pod
+        if a.cmd == "texture-run":
+            return pod.texture_run(a)
         if a.cmd == "face-trust":
             print(json.dumps(pod.stage_face_trust(), indent=1))
             return 0

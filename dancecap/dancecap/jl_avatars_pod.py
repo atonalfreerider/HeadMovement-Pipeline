@@ -261,19 +261,28 @@ def load_state() -> dict:
 
 def save_state(st: dict) -> None:
     STATE.parent.mkdir(parents=True, exist_ok=True)
+    disk = load_state()
+    merged = {"pods": {**disk.get("pods", {}), **st.get("pods", {})}, "jobs": {**disk.get("jobs", {}), **st.get("jobs", {})},
+              "pulled": sorted(set(disk.get("pulled", [])) | set(st.get("pulled", [])))}
     tmp = STATE.with_name(f"{STATE.stem}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(st, indent=1, default=str))
-    for k in range(40):
+    tmp.write_text(json.dumps(merged, indent=1, default=str))
+    for k in range(40):          # Windows: a parallel window's process may hold the target for a moment (WinError 5 / 32)
         try:
             tmp.replace(STATE)
             return
         except PermissionError:
             time.sleep(0.05 * (k + 1))
+    try:
+        tmp.unlink()
+    except OSError:
+        pass                     # bookkeeping only: a lost update never aborts a paid run
 
 
 def run_job(spec: dict, *, vcpu: int = 8, minutes: float = 30, hard_minutes: float = 50, max_cost: float = 1.0, upload_models: bool = False,
-            poll_s: float = 20.0, log_fn=log) -> dict:
-    """Queue `spec` on the volume, start ONE CPU pod of kind `avatarjl`, wait, pull, delete every pod this call created (also on an error)."""
+            poll_s: float = 20.0, log_fn=log, cpu: bool = True, gpus: list[str] | None = None, kind: str | None = None) -> dict:
+    """Queue `spec` on the volume, start ONE pod (CPU, or a GPU when cpu=False) of kind `avatarjl` (or `kind`: parallel windows take a kind each), wait, pull,
+    delete every pod this call created (also on an error)."""
+    kind = kind or spec.get("kind") or J.KIND
     from . import recap_avatars_pod as rap
     from . import recap_cameras as rc
     from .farm import pods, volume
@@ -292,20 +301,26 @@ def run_job(spec: dict, *, vcpu: int = 8, minutes: float = 30, hard_minutes: flo
             t0 = time.time()
             r = rap.ensure_models(link)
             log_fn(f"models on the volume: {r} in {time.time() - t0:.0f} s")
-        have = link.sh("ls /workspace/hm/models/flame/FLAME2020/generic_model.pkl /workspace/hm/models/smirk/pretrained_models/SMIRK_em1.pt 2>&1 | tail -3", 60)
-        if "No such file" in have and not upload_models:
-            raise RuntimeError(f"FLAME / SMIRK are not on the volume ({have.strip()}): rerun with --upload-models")
-        log_fn("FLAME + SMIRK present on the volume")
+        if spec.get("kind") == J.KIND and cpu:
+            have = link.sh("ls /workspace/hm/models/flame/FLAME2020/generic_model.pkl /workspace/hm/models/smirk/pretrained_models/SMIRK_em1.pt 2>&1 | tail -3", 60)
+            if "No such file" in have and not upload_models:
+                raise RuntimeError(f"FLAME / SMIRK are not on the volume ({have.strip()}): rerun with --upload-models")
+            log_fn("FLAME + SMIRK present on the volume")
         volume.submit_job(link, spec)
         st["jobs"][spec["id"]] = {"status": "queued", "queued": time.time(), "code": info.get("key")}
         save_state(st)
-        log_fn(f"job {spec['id']} queued (code {info['key']}); starting one CPU pod of kind {J.KIND}")
-        launched = pods.launch_cpu(1, vcpu=vcpu, minutes=minutes, hard_minutes=hard_minutes, max_cost=max_cost, kinds=J.KIND, idle_min=4,
+        log_fn(f"job {spec['id']} queued (code {info['key']}); starting one {'CPU' if cpu else 'GPU'} pod of kind {kind}")
+        if cpu:
+            launched = pods.launch_cpu(1, vcpu=vcpu, minutes=minutes, hard_minutes=hard_minutes, max_cost=max_cost, kinds=kind, idle_min=4,
+                                       prefix="hm-farm-jlavatar", owner=J.OWNER)
+        else:
+            launched = pods.launch(1, gpus=gpus, minutes=minutes, hard_minutes=hard_minutes, max_cost=max_cost, kinds=kind, idle_min=4,
                                    prefix="hm-farm-jlavatar", owner=J.OWNER)
         for l in launched:
             if l.get("pod_id"):
                 mine.append(l["pod_id"])
-                st["pods"][l["pod_id"]] = {"role": "cpu", "price_hr": l.get("cost_per_hr"), "started": time.time(), "kill_at": l.get("kill_at")}
+                st["pods"][l["pod_id"]] = {"role": "cpu" if cpu else "gpu", "gpu": l.get("gpu"), "price_hr": l.get("cost_per_hr"), "started": time.time(),
+                                           "kill_at": l.get("kill_at")}
             else:
                 log_fn(f"launch problem: {l}")
         save_state(st)
@@ -347,6 +362,139 @@ def run_job(spec: dict, *, vcpu: int = 8, minutes: float = 30, hard_minutes: flo
             except Exception as e:  # noqa: BLE001
                 log_fn(f"WARNING pod {pid} NOT confirmed deleted: {e}")
         save_state(st)
+
+
+# ------------------------------------------------------------------------------------------------ the pose-dependent texture job (agent J5b)
+# ONE farm job per window (kind `avatarjl<window>` so parallel windows never claim each other's job): the window's farm job spec = a copy of the take's own
+# fit job jlg0000 (sources, jl_in.tar, env HM_FRONT_DANCE ...) with the window as its chunk; chunk-take writes the window's take TOML on the pod;
+# `python -m dancecap.jl_front texture-front <window>` is the front WITHOUT SAM / ma_2d / prepare (frames, cameras, J3a's masks, the follow's hair / body
+# split); then `dancecap texture john_lula_<window>` bakes (ONE camera: head fix off, there is no held-out camera to validate it).
+
+BASE_JOB = "jlg0000"
+
+
+def texture_take(window_id: str) -> str:
+    return f"{J.TAKE}_{window_id}"
+
+
+def window_job(window_id: str, t0: float, t1: float, base_id: str = BASE_JOB) -> dict:
+    import copy
+    import math
+    base = json.loads((J.WORK / "farm" / "jobs" / f"{base_id}.json").read_text())
+    job = copy.deepcopy(base)
+    k0, k1 = int(math.ceil(t0 * 30.0 - 1e-6)), int(math.floor(t1 * 30.0 + 1e-6)) - 1
+    take = texture_take(window_id)
+    job.update({"id": window_id, "take": take, "cams": list(base["cams"]), "kind": "front", "what": "texture window", "stages": ["front"], "after": []})
+    job["chunk"].update({"id": window_id, "k0": k0, "k1": k1, "core_k0": k0, "core_k1": k1, "overlap_k": 0, "take": take, "cams": list(base["cams"]),
+                         "T": k1 - k0 + 1, "core_s": round((k1 - k0 + 1) / 30.0, 2), "origin": "texture window"})
+    return job
+
+
+def texture_archive(window_id: str, job_file: Path, smplx_dir: Path) -> dict:
+    from .farm import chunks as C
+    tk = texture_take(window_id)
+    items = [(job_file, f"{J.REL}/farm/jobs/{window_id}.json")]
+    items += [(smplx_dir / f"{r}.npz", f"dancecap/work/{tk}/smplx/{r}.npz") for r in J.ROLES]
+    miss = [str(src) for src, _ in items if not src.exists()]
+    if miss:
+        raise FileNotFoundError(f"texture job inputs missing: {miss}")
+    dest = J.AV / "texture" / "in" / f"texture_in_{window_id}.tar"
+    C.pack_tar(dest, items)
+    return {"path": f"dancecap/work/{tk}/texture_in.tar", "archive": True, "sha256": hashlib.sha256(dest.read_bytes()).hexdigest(),
+            "bytes": dest.stat().st_size, "local": str(dest), "files": len(items)}
+
+
+def texture_steps(window_id: str, step_ms: float = 100.0, top_k: int = 6, body_ref_q: float | None = 0.7, mask: str | None = None) -> list[dict]:
+    tk = texture_take(window_id)
+    w = f"dancecap/work/{tk}"
+    steps = [
+        {"name": "chunk_take", "cmd": f"python -m dancecap.farm chunk-take {window_id}", "timeout_min": 3, "optional": False},
+        {"name": "front", "cmd": f"python -m dancecap.jl_front texture-front {window_id}", "timeout_min": 25, "optional": False},
+        {"name": "stage", "cmd": f"cd ..; touch {w}/smplx/*.npz; ls {w}/dancers/roles.json", "timeout_min": 3, "optional": False},
+    ] + ([{"name": "maskcams", "cmd": f"python -m dancecap.recap_avatars pod-mask-cams {window_id} --mask {mask}", "timeout_min": 3, "optional": False}] if mask else []) + [
+        {"name": "bake", "cmd": f"DANCECAP_POD=1 python -m dancecap texture {tk} --preset pod --step-ms {step_ms:g} --top-k {top_k} --align-passes 2 --head-fix off "
+                               + (f"--body-ref-q {body_ref_q:g} " if body_ref_q else "") + "--hair-mode exclude --blend multiband --no-lock --allow-stale",
+         "timeout_min": 60, "optional": False},
+    ]
+    return steps
+
+
+def texture_outputs(window_id: str) -> list[dict]:
+    from .avatar_pod import OUTPUTS
+    w = f"dancecap/work/{texture_take(window_id)}"
+    must = {"avatar/lead_albedo.png", "avatar/follow_albedo.png", "avatar/report.json"}
+    rows = [{"path": f"{w}/{o}", **({} if o in must else {"optional": True})} for o in OUTPUTS]
+    rows += [{"path": f"{w}/{o}", "optional": True} for o in ("dancers/roles.json", "dancers/hair_split.json", "front/front_done.json", "frames/01/frames.json")]
+    return rows
+
+
+def texture_spec(job_id: str, window_id: str, step_ms: float, job_file: Path, smplx_dir: Path, top_k: int = 6, body_ref_q: float | None = 0.7,
+                 mask: str | None = None, kind: str = J.KIND) -> dict:
+    from .farm import worker
+    base = json.loads((J.WORK / "farm" / "jobs" / f"{BASE_JOB}.json").read_text())
+    shared = [dict(r) for r in base["inputs"]]      # the video and jl_in.tar under src/: content-addressed, uploaded once
+    for r in shared:
+        if r.get("local") and not Path(r["local"]).is_absolute():
+            r["local"] = str(PACKAGE_ROOT.parent / r["local"])
+    inputs = [texture_archive(window_id, job_file, smplx_dir)] + shared
+    spec = worker.analyse_spec(job_id, J.TAKE, texture_steps(window_id, step_ms, top_k, body_ref_q, mask), texture_outputs(window_id), inputs=inputs,
+                               max_minutes=95, priority=10, gpu=True, kind=kind)
+    env = {k: v for k, v in (base.get("env") or {}).items() if k in ("HM_FRONT_DANCE", "HM_FRONT_CAPTURE")}
+    spec.update({"code": {}, "retries": 0, "needs_gpu": True, "min_vram_gb": 12,   # measured: the bake peaks at 1.6 GB of GPU memory (487 views, 2048 atlas)
+                
+                 # no "owner" key: a spec with one is claimed only by workers with a matching HM_OWNER (the farm queue isolation); the dedicated kind isolates these jobs
+                 "env": {**env, "DANCECAP_FARM_DANCE": J.TAKE, "DANCECAP_POD": "1", "HM_TEACHER_EVIDENCE": "1",
+                         "HM_RED_TOP": "1"}})   # her top is brown / maroon / coral (and the hair auburn): the bake's red-hair leak guards would erase the print; the hair masks are real here
+    return spec
+
+
+def wait_for_gpu(wait_min: float, min_gb: float = 12.0, poll_s: float = 20.0) -> list[str]:
+    """The names of the GPUs in stock in the volume's data centre with at least min_gb of memory (the bake peaks at 1.6 GB), the cheapest first, waiting up to
+    wait_min minutes for one to appear (the stock comes and goes). Raises when none shows up."""
+    from .farm import pods
+    t_end = time.time() + wait_min * 60.0
+    while True:
+        offers = sorted((o for o in pods.gpu_offers() if float(o.get("memory_gb") or 0) >= min_gb), key=lambda o: o["price"])
+        if offers:
+            return [o["gpu"] for o in offers]
+        if time.time() > t_end:
+            raise RuntimeError(f"no GPU with {min_gb:g} GB in stock after {wait_min:g} min")
+        log("no GPU with enough memory in stock: waiting")
+        time.sleep(poll_s)
+
+
+def texture_run(a) -> int:
+    """`texture-run`: windows.json (texture-select) -> ONE pod job: the window's front + the bake on the sliced fitted poses."""
+    from .recap_avatars_pod import slice_smplx
+    doc = json.loads(a.windows.read_text())
+    w = doc["windows"][a.which]
+    t0, t1 = float(w["t0"]), float(w["t1"])
+    mask = a.mask or ",".join(w.get("mask") or []) or None
+    log(f"window {a.window_id}: {t0:.1f}-{t1:.1f} s, camera 01; masked {mask}")
+    job = window_job(a.window_id, t0, t1)
+    jdir = J.AV / "texture" / "jobs"
+    jdir.mkdir(parents=True, exist_ok=True)
+    jf = jdir / f"{a.window_id}.json"
+    jf.write_text(json.dumps(job, indent=1))
+    sm = PACKAGE_ROOT / "work" / texture_take(a.window_id) / "smplx"
+    sl = slice_smplx(a.smplx_dir, sm, t0 - 0.5, t1 + 0.5)
+    log(f"poses sliced: {sl} frames -> {sm}")
+    jid = f"jl-texture-{a.window_id}-{time.strftime('%m%d%H%M')}"
+    kind = f"{J.KIND}{a.window_id}"
+    spec = texture_spec(jid, a.window_id, a.step_ms, jf, sm, a.top_k, a.body_ref_q, mask, kind)
+    log(f"job {jid}: {len(spec['steps'])} steps, inputs {[i['path'] for i in spec['inputs']]}")
+    if a.dry_run:
+        print(json.dumps({"job": {k: spec[k] for k in ("id", "kind", "needs_gpu", "max_minutes", "env")}, "steps": [s["cmd"] for s in spec["steps"]]}, indent=1))
+        return 0
+    gpus = wait_for_gpu(a.wait_stock_min)
+    res = run_job(spec, cpu=False, gpus=gpus, minutes=a.minutes, hard_minutes=a.hard_minutes, max_cost=a.max_cost, kind=kind)
+    print(json.dumps(res, default=str))
+    log(f"ledger spend of owner {J.OWNER}: {owner_spend()} USD")
+    return 0 if res.get("status") == "done" else 1
+
+
+TEXTURE_FILES = ("lead_albedo.png", "follow_albedo.png", "lead_coverage.png", "follow_coverage.png", "lead_texels.npz", "follow_texels.npz",
+                 "uv_mesh.npz", "head_fix.npz", "report.json", "follow_hair_region.png", "follow_hair.json", "follow_hair_strip.png", "follow_hair_cover.png")
 
 
 def owner_spend() -> float:
