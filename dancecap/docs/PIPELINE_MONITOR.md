@@ -1,6 +1,6 @@
 # Pipeline Monitor: technology, double-click launch, UI and API contract (`dancecap.monitor/1`)
 
-> Research stage "gui" of the pipeline-monitor workflow (2026-10-07). **Nothing here is implemented yet.** This is
+> Research stage "gui" of the pipeline-monitor workflow (2026-10-07). **Status (2026-10-11): implemented** (`dancecap/pipeline/monitor/`; see the integration addendum and section 11). It was written as
 > the shared contract for the backend builder (`dancecap/dancecap/pipeline/monitor/`, the run wrapper, the
 > launcher) and the frontend builder (`.../monitor/static/`). Companion docs:
 > - `docs/PIPELINE_PROGRESS.md` owns the progress events, the ETA and the budget maths. This doc only exposes them.

@@ -1,7 +1,7 @@
 # Hair reference: the follow's hair, acceptance criteria for the Unity hair
 
 > **Local only.** Sections 2-4 hold body and hair measurements of a consenting dancer (non-commercial demo). This
-> file lives in the workspace repo (no remote); strip sections 2-4 before this doc goes anywhere public. The numbers
+> file lives in the workspace repo (private remote since 2026-10-11); strip sections 2-4 before this doc goes anywhere public. The numbers
 > are also in `work/<take>/avatar/hair_reference.json` (git-ignored), which is the source of truth.
 
 Target for the hair review and rebuild of the follow avatar in the demo: match her real hair in **shape and colour**
