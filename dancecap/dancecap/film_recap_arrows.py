@@ -41,11 +41,24 @@ WORD_LABEL = {
 HERE_WORDS = ("here", "from here", "starting here", "do here")
 
 
-def label_of(e: dict) -> str | None:
-    """the call-out's text: the teacher's own word(s) (docs/RECAP_FILM.md): the event's triggers, tidied; None when the event has none worth showing"""
+AXIS_WORDS = ("axis", "second exit", "first exit", "exit", "rotation", "rotate", "pivoting", "pivot")
+FEET_WORDS = ("right foot", "left foot", "walk around", "footwork", "step", "lunge", "foot")
+WEIGHT_WORDS = ("counterbalance", "weights", "weight", "balance", "heavy", "suspension", "shift", "push", "fall", "engaged", "energy")
+GENERIC = {"again", "here", "this", "that"}
+
+
+def label_of(e: dict, prefer: tuple[str, ...] = ()) -> str | None:
+    """the call-out's text: the teacher's own word(s) (docs/RECAP_FILM.md): the event's trigger that names what the arrow points at (`prefer`, in order),
+    else the triggers, tidied; None when the event has none worth showing"""
     trig = [str(t).lower().strip() for t in e.get("triggers", []) if str(t).strip()]
+    trig = [t for t in trig if t not in GENERIC] or trig
     if not trig:
         return None
+    # one trigger inside another ('exit' in 'second exit'): the longer one
+    trig = [t for t in trig if not any(t != o and t in o for o in trig)]
+    for w in prefer:
+        if w in trig:
+            return WORD_LABEL.get(w, TIDY.get(w, w))
     key = tuple(trig)
     if key in plan.LABELS:
         return plan.LABELS[key]
@@ -109,8 +122,9 @@ def spec_for_event(e: dict, ctx: dict) -> Spec | None:
     where = (e.get("focus") or {}).get("where")
     who = _who(e)
     trig = [str(t).lower() for t in e.get("triggers", [])]
-    text = label_of(e)
     layers = ctx.get("layers")
+    focus_words = AXIS_WORDS if (tags & {"overlay_T_axis"} and where not in plan.BODY_ARROWS and where not in plan.FEET_WORDS_SET) else         FEET_WORDS if (where in plan.FEET_WORDS_SET) else WEIGHT_WORDS if ("overlay_weight_change" in tags or e.get("physics_call")) else ()
+    text = label_of(e, focus_words)
     has_phys = layers is None or layers.any("physics")
     if not text:
         return None
@@ -167,6 +181,24 @@ def scan_reason(e: dict, ctx: dict) -> str:
     if "overlay_T_axis" in tags and not (tags & {"camera_focus", "overlay_weight_change"}) and t_axis_at(ctx.get("t_axes"), float(e["start"])) is None:
         return "no leader's T axis alive at that time (floorcraft)"
     return "nothing to point at (a demonstration cue without a body part, a weight or a place)"
+
+
+def com_speed(ctx: dict, who: str | None, t0: float, t1: float) -> float | None:
+    """median horizontal speed (m/s) of a dancer's centre of mass ('lead' | 'follow') or of the couple's (None / 'couple': mass-weighted) over [t0, t1] from
+    the physics stage (ctx['vcom'] = {t: array, lead / follow: (T, 3) velocities, mass_lead / mass_follow}); None when the capture has no physics data"""
+    v = ctx.get("vcom")
+    if not v:
+        return None
+    t = v["t"]
+    i0, i1 = int(np.searchsorted(t, t0)), int(np.searchsorted(t, t1))
+    if i1 <= i0:
+        return None
+    if who in ("lead", "follow"):
+        vel = v[who][i0:i1]
+    else:
+        ml, mf = v["mass_lead"], v["mass_follow"]
+        vel = (ml * v["lead"][i0:i1] + mf * v["follow"][i0:i1]) / (ml + mf)
+    return float(np.median(np.hypot(vel[:, 0], vel[:, 2])))
 
 
 # ------------------------------------------------------------------------------------------------ windows
@@ -234,20 +266,22 @@ def weight_transfers(contact: list[str] | None, hz: float = 30.0, hold_s: float 
     return out
 
 
-def physics_extras(beat: plan.Beat, transfers: dict[str, list[dict]], cfg: plan.Cfg, state: dict, existing: list[dict] | None = None) -> list[dict]:
-    """the physics view's own arrows: the velocity of each centre of mass the whole view long (unlabelled but for the first: "momentum"), and at most two
-    weight transfers (foot -> foot) in it"""
+def physics_extras(beat: plan.Beat, transfers: dict[str, list[dict]], cfg: plan.Cfg, state: dict, existing: list[dict] | None = None,
+                   ctx: dict | None = None) -> list[dict]:
+    """the physics view's own arrows: the velocity of each centre of mass the whole view long (unlabelled, the first view's leader arrow says
+    "weight heading (est.)"), and at most two weight transfers (foot -> foot) in it"""
     out: list[dict] = []
     a0, a1 = round(beat.t0 + 0.5, 3), round(beat.t1 - 0.2, 3)
     if a1 - a0 >= 1.5:
         for k, d in enumerate(("lead", "follow")):
-            out.append({"id": f"{beat.id}_v{k}", "kind": "vector_arrow", "target": {"type": "com", "dancer": d}, "vector": "velocity", "dance_t": [a0, a1],
-                        "needs_motion": True, "continuous": True})
-        if not state.get("physics_readout_done"):
-            # the first physics view says what the unlabelled arrows are (once)
-            state["physics_readout_done"] = True
-            out.append({"id": f"{beat.id}_vro", "kind": "readout", "dance_t": [a0, round(min(a1, a0 + 3.0), 3)],
-                        "text": "arrows: where each body's weight is heading (estimated from motion)"})
+            it = {"id": f"{beat.id}_v{k}", "kind": "vector_arrow", "target": {"type": "com", "dancer": d}, "vector": "velocity", "dance_t": [a0, a1],
+                  "needs_motion": True, "continuous": True}
+            sp_ = com_speed(ctx or {}, d, beat.t0, beat.t1)
+            if k == 0 and beat.t0 - state.get("velocity_label_t", -1e9) > 90.0 and (sp_ is None or sp_ >= 0.15):
+                # the first physics view (and one every 90 s) says what the unlabelled arrows are, on the leader's: it sits where the label has room
+                it["text"] = "weight heading (est.)"
+                state["velocity_label_t"] = beat.t0
+            out.append(it)
     n = 0
     for d, ts in transfers.items():
         for tr in ts:
@@ -302,11 +336,15 @@ def make_arrows(beat: plan.Beat, events: list[dict], cfg: plan.Cfg, ctx: dict, a
         if w is None:
             skipped.append({"id": e["id"], "t": round(float(e["start"]), 2), "words": e.get("triggers", []), "why": "the call falls in the last moment of the shot"})
             continue
-        if sp.needs_motion and act is not None and act.known:
-            wa = act.window(w[0], w[1] + 0.5, cfg)
-            if wa.get("known") and wa["speed_med"] < 0.14 and wa["speed_p90"] < 0.3:
-                # standing: a velocity arrow would point nowhere; the couple's centre of mass is still a thing to point at
-                sp = Spec("arrow3d", {"type": "couple_com"}, sp.text, "the couple (standing: no direction of travel)")
+        if sp.needs_motion:
+            cs = com_speed(ctx, sp.dancer, w[0], w[1])
+            if cs is None and act is not None and act.known:
+                wa = act.window(w[0], w[1] + 0.5, cfg)
+                cs = wa["speed_med"] if wa.get("known") else None
+            if cs is not None and cs < cfg.vector_min_speed:
+                # standing: a velocity arrow would point nowhere; the body's centre of mass is still a thing to point at
+                tgt = sp.target if sp.target.get("type") in ("com", "couple_com") else {"type": "couple_com"}
+                sp = Spec("arrow3d", tgt, sp.text, "the centre of mass (standing: no direction of travel)")
         key = (sp.kind, sp.text, repr(sp.target))
         prev = last.get(key)
         if prev is not None and w[0] - prev["dance_t"][1] < cfg.arrow_same_label_s and prev.get("_beat") == beat.id:

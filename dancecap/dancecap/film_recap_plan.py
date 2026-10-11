@@ -71,6 +71,7 @@ class Cfg:
     card_s: float = 2.6
     # D4 (owner 2026-10-11): "more arrows" - one arrow per attention call that has something to point at (film_recap_arrows), at most this many at once
     arrows_every_call: bool = True
+    vector_min_speed: float = 0.1    # m/s: a centre of mass slower than this has no direction of travel to show (the viewer hides a velocity arrow below 0.05)
     max_arrows_at_once: int = 2
     arrow_same_label_s: float = 6.0   # the same label on the same target within this many seconds is one arrow (its window is extended)
     # D4 (owner 2026-10-11, "when avatars are in view, we need to set to 75% transparency"): ONE value for every avatar the film draws (3D shots,
@@ -266,6 +267,7 @@ TAG_FAMILY = {
     "graph_moves": ("graph", 1.6),
 }
 FEET_WHERE = {"feet", "legs"}
+FEET_WORDS_SET = FEET_WHERE | {"feet"}
 
 # layer presets (the vocabulary of the demo film's layers: FilmDirector.ReadLayers)
 # D2 (2026-10-10): the audit read the 0.55 / 0.42 avatars under the skeleton overlay as translucent grey ghosts (her white top and light jeans

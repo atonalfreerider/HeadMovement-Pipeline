@@ -31,6 +31,8 @@ import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+import numpy as np
+
 from . import film_recap_arrows as arrows
 from . import film_recap_captions as caps
 from . import film_recap_director as director
@@ -228,10 +230,13 @@ def assemble(beats: list[plan.Beat], inserts: list[dict], layers: plan.Layers, e
         if cfg.arrows_every_call and arrow_ctx is not None and fam != "phone":
             ar, skp = arrows.make_arrows(b, events, cfg, arrow_ctx, act, astate)
             if b.family == "weight" and layers.any("physics"):
-                ar += arrows.physics_extras(b, arrow_ctx.get("transfers", {}), cfg, astate, ar)
+                ar += arrows.physics_extras(b, arrow_ctx.get("transfers", {}), cfg, astate, ar, arrow_ctx)
             annos += ar
             if arrow_skips is not None:
                 arrow_skips += skp
+            if fam == "pov" and layers.has("floorcraft") and any((a.get("target") or {}).get("type") == "leader_t" for a in ar):
+                # an arrow on the leader's T needs the T under it: drawn on the phone's own floor (registered like the skeleton)
+                lay.update({"floorcraft": "current_t", "t_width_m": 0.05, "t_brightness": 1.0})
         items = []                                   # (position, kind, insert)
         for ins in inserts:
             if ins["kind"] == "gap_slow" and b.t0 - 1e-6 <= ins["core"][0] and ins["core"][1] <= b.t1 + 1e-6:
@@ -348,6 +353,9 @@ def load_arrow_ctx(cap_dir: Path | None, layers: plan.Layers) -> dict:
             t = d.get("t") or []
             hz = (len(t) - 1) / (t[-1] - t[0]) if len(t) > 2 and t[-1] > t[0] else 30.0
             ctx["transfers"] = {r: arrows.weight_transfers(d["dancers"][r].get("contact"), hz) for r in ("lead", "follow") if r in d.get("dancers", {})}
+            if all(r in d.get("dancers", {}) and d["dancers"][r].get("vcom") for r in ("lead", "follow")):
+                ctx["vcom"] = {"t": np.asarray(t, float), "lead": np.asarray(d["dancers"]["lead"]["vcom"], float), "follow": np.asarray(d["dancers"]["follow"]["vcom"], float),
+                               "mass_lead": float(d["dancers"]["lead"].get("mass_kg") or 75.0), "mass_follow": float(d["dancers"]["follow"].get("mass_kg") or 55.0)}
         except (OSError, ValueError, KeyError):
             pass
     return ctx

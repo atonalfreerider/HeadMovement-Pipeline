@@ -142,26 +142,27 @@ def test_the_validator_rejects_three_arrows_at_once():
     assert any("arrows at once" in p for p in fr.validate(doc, tl, sp_bundle(sp)))
 
 
-def test_the_physics_view_adds_velocity_arrows_and_says_what_they_are_once():
+def test_the_physics_view_adds_velocity_arrows_and_names_them_once():
     b = plan.Beat(id="ch00_01_weight", t0=10.0, t1=15.0, family="weight", chapter=0)
     st: dict = {}
     out = ar.physics_extras(b, {"lead": [{"t": 12.0, "frm": "L", "to": "R"}]}, CFG, st, [])
     kinds = [(o["kind"], o.get("vector")) for o in out]
-    assert kinds.count(("vector_arrow", "velocity")) == 2 and ("vector_arrow", "between") in kinds and any(o["kind"] == "readout" for o in out)
+    assert kinds.count(("vector_arrow", "velocity")) == 2 and ("vector_arrow", "between") in kinds
     assert next(o for o in out if o.get("vector") == "between")["text"] == "his weight to the right foot"
+    assert [o.get("text") for o in out if o.get("vector") == "velocity"] == ["weight heading (est.)", None]
     again = ar.physics_extras(b, {}, CFG, st, [])
-    assert not any(o["kind"] == "readout" for o in again)
+    assert not any(o.get("text") for o in again)
     # the teachers' call-outs have the room: a transfer that would make a third labelled arrow is not drawn
     busy = [{"dance_t": [11.0, 14.0]}, {"dance_t": [11.0, 14.0]}]
-    assert not any(o.get("vector") == "between" for o in ar.physics_extras(b, {"lead": [{"t": 12.0, "frm": "L", "to": "R"}]}, CFG, {"physics_readout_done": True}, busy))
+    assert not any(o.get("vector") == "between" for o in ar.physics_extras(b, {"lead": [{"t": 12.0, "frm": "L", "to": "R"}]}, CFG, {"velocity_label_t": 12.0}, busy))
 
 
 # ------------------------------------------------------------------------------------------------ physics calls and the physics view
 
 
 def test_physics_calls_cover_the_events_and_the_words_no_event_covers():
-    utts = [utt("u1", 1.0, 9.0, "Kadu", "so the momentum and the pressure and the weight and the balance all matter"),
-            utt("u2", 10.0, 14.0, "Kadu", "do not fall and do not push too hard")]
+    utts = [utt("u1", 1.0, 9.0, "Teacher", "so the momentum and the pressure and the weight and the balance all matter"),
+            utt("u2", 10.0, 14.0, "Teacher", "do not fall and do not push too hard")]
     evs = [ev("e1", 2.1, 2.5, ["overlay_timing"], ["timing"], ["momentum"]), ev("e2", 5.0, 5.4, ["camera_focus"], ["body_part"], ["frame"], where="frame")]
     out = fd.physics_calls(utts, evs)
     marked = {e["id"] for e in out if e.get("physics_call")}
@@ -178,10 +179,10 @@ def physics_speech():
     texts = ["so today we talk about the frame and how important it is to keep it", "now you can feel the momentum when you walk forward together",
              "and then we simply talk for a while about nothing special at all and it goes on and on", "the pressure on the left foot is what the follower can feel"]
     for i, tx in enumerate(texts * 6):
-        utts.append(utt(f"u{i}", t, t + 7.0, "Kadu", tx))
+        utts.append(utt(f"u{i}", t, t + 7.0, "Teacher", tx))
         t += 7.5
     chapters = [{"start": 0.0, "end": 180.0, "title": "All", "id": "ch00"}]
-    return {"utterances": utts, "events": evs, "chapters": chapters, "roles": {"Kadu": "leader"}, "duration": 180.0}
+    return {"utterances": utts, "events": evs, "chapters": chapters, "roles": {"Teacher": "leader"}, "duration": 180.0}
 
 
 def direct_phys(sp, pov, act, dc=None):
@@ -271,3 +272,31 @@ def test_the_skeleton_lines_and_overlays_keep_their_strength_when_the_avatars_fa
     lay = plan.treatment_layers("weight", plan.Layers.all_on(), None, "", 0, 0.25)
     assert lay["skeleton_mode"] == "physics" and lay["physics"] is True and lay["counterbalance"] is True and "skeleton_lines" not in lay
     assert plan.treatment_layers("body", plan.Layers.all_on(), None, "", 0, 0.25)["spine_beads"] is True
+
+
+# ------------------------------------------------------------------------------------------------ velocity arrows need a moving body
+
+
+def vcom_ctx(speed_lead, speed_follow):
+    import numpy as np
+    t = np.arange(0, 60, 1 / 30)
+    z = np.zeros((len(t), 3))
+    lead, fol = z.copy(), z.copy()
+    lead[:, 0], fol[:, 2] = speed_lead, speed_follow
+    return {**CTX, "vcom": {"t": t, "lead": lead, "follow": fol, "mass_lead": 80.0, "mass_follow": 60.0}}
+
+
+def test_the_centre_of_mass_speed_comes_from_the_physics_stage():
+    c = vcom_ctx(0.8, 0.0)
+    assert abs(ar.com_speed(c, "lead", 5, 8) - 0.8) < 1e-9 and ar.com_speed(c, "follow", 5, 8) == 0.0
+    assert abs(ar.com_speed(c, None, 5, 8) - 0.8 * 80 / 140) < 1e-9          # mass-weighted couple velocity
+    assert ar.com_speed(CTX, "lead", 5, 8) is None and ar.com_speed(c, "lead", 100, 101) is None
+
+
+def test_a_direction_of_travel_arrow_falls_back_to_the_centre_of_mass_when_the_body_stands():
+    sp = long_speech()
+    b = plan.Beat(id="ch00_01_x", t0=10.0, t1=16.0, family="talk", chapter=0, events=["p1"])
+    e = ev("p1", 12.0, 12.4, ["overlay_path/floorcraft"], ["path"], ["forward"])
+    for speed, kind in ((0.8, "vector_arrow"), (0.02, "arrow3d")):
+        out, _ = ar.make_arrows(b, [e], CFG, vcom_ctx(speed, speed), None, {})
+        assert len(out) == 1 and out[0]["kind"] == kind and out[0]["text"] == "forward"

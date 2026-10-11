@@ -200,7 +200,7 @@ the chapter marks start at the first sentence of the chapter (`offset_s` in `fil
 
 ## D4 (owner 2026-10-11): more physics, more arrows, more phone video, avatars 75 % transparent
 
-The owner's words: "the kadu larissa lesson needs to have more physics, more arrows, more POV from phone video, only use regenerated elevenlabs lines, output to
+The owner's words: "the lesson needs to have more physics, more arrows, more POV from phone video, only use regenerated elevenlabs lines, output to
 vertical recording. when avatars are in view, we need to set to 75% transparency." Code: `film_recap_arrows.py` (new), `film_recap_director.py`,
 `film_recap_plan.py` (`Cfg`, `treatment_layers`), `film_recap.py`; tests `tests/test_film_recap_arrows.py`. The audio is not part of this (V3).
 
@@ -214,8 +214,8 @@ vertical recording. when avatars are in view, we need to set to 75% transparency
   momentum / speed / energy (`overlay_timing`), and every spoken word of `director.PHYSICS_WORDS` (weight, balance, momentum, force, pressure, engaged,
   counterbalance, fall, push, pull, heavy, suspension, energy, speed, gravity) that no event covers, gets the physics view (`physics_calls`: the events are
   flagged `physics_call`, the other words become synthetic events that are never counted as the teachers' attention calls). Where the teachers stand
-  apart (more than 0.95 m) there is nothing to show and it is skipped. While the teachers MOVE a physics view shows at least every `phys_gap_s` (24 s) of moving
-  film time (`physics_cadence`); stretches where they stand and talk do not count. A physics view holds about 5 s (`trim_physics`), the rest of its sentence goes to
+  apart (more than 0.95 m) there is nothing to show and it is skipped. While the teachers MOVE a physics view shows at least every `phys_gap_s` (20 s) of moving
+  film time (`physics_cadence`); stretches where they stand and talk do not count. A physics view holds about 4 s (`trim_physics`), the rest of its sentence goes to
   the phones. The legend keeps D2's fixed place and says "estimated from motion".
 * **Arrows.** `film_recap_arrows.make_arrows`: one labelled arrow for every attention call that has something to point at, in the teacher's own word, from
   0.35 s before the word for 1.3-2.4 s (shorter when the next one needs the room), at most two call-outs at once (the validator checks it). It points at:

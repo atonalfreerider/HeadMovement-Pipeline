@@ -58,11 +58,11 @@ class DirCfg:
     # the physics view (load / force / momentum / centre of mass / foot pressure of the physics layer): every call about weight, balance, momentum,
     # force, pressure, engaged, counterbalance, falling, push / pull gets it, and while the teachers move it shows at least this often
     phys_pre_s: float = 0.5
-    phys_post_s: float = 2.0
+    phys_post_s: float = 1.8
     phys_min_s: float = 3.0
     phys_max_s: float = 6.5
-    phys_hold_s: float = 5.0                           # a physics view holds at most about this long
-    phys_gap_s: float = 24.0                           # moving film time without a physics view before one is inserted (the owner: every 20-25 s)
+    phys_hold_s: float = 4.2                           # a physics view holds at most about this long
+    phys_gap_s: float = 20.0                           # moving film time without a physics view before one is inserted (the owner: every 20-25 s)
     phys_calls: bool = True
     zoom_to_phone: bool = True                         # when the phones are short of their share a body / feet / path / timing zoom may hand the call to a phone with its arrow
 
@@ -563,8 +563,8 @@ def physics_cadence(pieces: list[Piece], ctx: "Ctx") -> int:
     i = 0
     while i < len(pieces):
         p = pieces[i]
-        if p.kind == "zoom" and p.family == "weight":
-            since = 0.0
+        if p.kind == "zoom" and p.family == "weight" and p.dur >= dc.phys_min_s - 0.4:
+            since = 0.0                                    # (a sliver of a physics window is merged into its neighbour later: it does not count)
             i += 1
             continue
         mv = ctx.act.moving(p.t0, p.t1, ctx.cfg)
