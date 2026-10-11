@@ -1,0 +1,93 @@
+# John & Lula, JACK & JILL heat (owner 2026-10-11: "let's run John (5'11 black shirt) and Lula (5'7) through the pipeline also for jack and
+# jill. restyle lula's hair for her ponytail. do the rhythm analysis"). Take name john_lula, work dir work/john_lula/ (git-ignored), notes
+# work/john_lula/NOTES_J1.md. The source folder dances/John-Lula (a git-ignored junction to a folder in the owner's Zouk videos directory that holds
+# hard links to ONLY the two files of this job) is the owner's; the video and the photo are likeness data of real people: used locally and on the
+# owner's Runpod volume only, never copied into a repo.
+#
+# ONE CAMERA. john_lula_jnj.mp4 is a single handheld phone video, 538x960 portrait, 29.994 fps (14997/500), 88.118 s, h264 + AAC 44.1 kHz stereo:
+# the only source, so it IS the reference clock (identity clock, work/john_lula/clock/alignment.json written by dancecap.pipeline.audio_sync's
+# single-view identity; the pipeline's "single" variant). There is nothing to sync against: no [sync] table (dancecap.sync is multi-view geometry,
+# mamma_dyn.read_sync_offsets returns {} when work/john_lula/sync/offsets.json is absent = a zero offset, and a missing [sync] required means that
+# is allowed). The whole window is monocular: [stitch] mono below.
+#
+# A multi-couple floor, not a stage: 3-5 other couples dance on the same floor at the same time, judges / spectators stand round the edge of the
+# floor (clipboards, phones). The couple is identified by the competition bibs on their backs: John 124 (black t-shirt), Lula 116 (grey trousers).
+# The clip is cut mid-dance at both ends (the couple is already dancing in frame 0 and still dancing in the last frame).
+name = "john_lula"
+source_dir = "../../dances/John-Lula"
+alignment = "../work/john_lula/clock/alignment.json"   # identity clock of the single view (pipeline.audio_sync.identity)
+exclude = []
+
+# Danced span = the whole video: first frame 0.0 s, last frame 88.084 s (30 Hz lattice anchored on t = 0: k = 0..2642, t = 0..88.067 s, T = 2643).
+window = [0.0, 88.08]
+
+# Sparse snapshots of the static room (the room is a convention hall; J2 calibrates room and camera). The camera is handheld, walks about and zooms
+# (3 steps), so a keyframe every 2 s (44 frames) gives the SfM map many viewpoints.
+keyframe_span = [0.0, 88.0]
+keyframe_step = 2.0
+
+[timeline]
+anchor = 0.0
+hz = 30.0
+
+[ingest]
+max_fps = 30        # the video is 29.994 fps: read whole
+
+# Farm chunking (owner 2026-10-09: chunks of at most 60 s overlapping their neighbours by 4 s, the fewest equal windows). Arithmetic
+# (farm/chunks.py equal_windows(2643 frames, 30 Hz, 60 s, 4 s)): one window would be 88.1 s > 60 s; n = 2 windows of L = (2643 + 1 x 120) / 2 =
+# 1381.5 frames = 46.05 s each (1382 and 1381 frames: windows k 0..1381 and 1262..2642, overlap 120 frames = 4.0 s), cores cut at the middle of the
+# overlap: 0..1321 (44.07 s) and 1322..2642 (44.03 s). No farm profile for a single camera exists yet (profile = "" = the generic windows).
+[chunks]
+chunk_s = 60.0
+overlap_s = 4.0
+mode = "windows"
+
+# Quality flags (dancecap.stitch): ONE camera, so the whole window is monocular.
+[stitch]
+mono = [[0.0, 88.08]]
+
+[dance]
+level = "professional"          # professional | intermediate | novice
+category = "jack_and_jill"      # demo | lesson | jack_and_jill
+# SONG: UNKNOWN. There is no studio file and no on-screen text; the heat's own audio is the only sound. dancecap.song (needs [dance] song_file) cannot
+# run on this take; dancecap.heat_beats builds the beat grid from the heat's audio: 75.00 BPM (pulse 0.8000 s, bar 3.200 s), constant tempo, music
+# from 3.4 s to 80.2 s on the video clock (work/john_lula/NOTES_J1.md). The grid file is the role of beats_studio.json:
+song = "unknown"
+artist = "unknown"
+song_source = "heat audio only (no studio file)"
+beats = "work/john_lula/song/beats_heat.json"
+venue = "unknown (a convention hall; competition bibs 124 / 116)"
+
+# John = lead, Lula = follow (the video: he frames and leads the figures, she spins and follows; John listed first by the owner). Clothes and hair as
+# filmed (frames at 0.5, 20, 45, 85 s) and in the photo GM6B6189.jpg of the same two people. Statures from the owner (5'11" = 1.803 m, 5'7" = 1.702 m).
+# Heads-up for identity selection: other couples on the floor wear black / white / red; the dancers are told apart by the bibs (John 124 on the back
+# of the t-shirt, Lula 116 on the back of her trousers).
+[dancers.lead]
+name = "John"
+pid = 1
+stature_m = 1.803   # 5'11"
+description = "black t-shirt, dark trousers, short brown hair"
+shoe_sole_m = 0.025   # dark soft sneakers; UNCONFIRMED barefoot stature (as in the demo)
+
+[dancers.follow]
+name = "Lula"
+pid = 2
+stature_m = 1.702   # 5'7"
+description = "patterned long-sleeve crop top, grey trousers, long auburn ponytail"
+shoe_sole_m = 0.02   # thin light-pink slip-on sneakers; UNCONFIRMED barefoot stature (as in the demo)
+# HAIR (owner 2026-10-11: "restyle lula's hair for her ponytail"): a high ponytail, auburn / light brown (the photo: a blue clip on the hair tie). A style
+# note only: the avatar hair restyle is a later agent's job (dancecap.hair_groom / the avatar stages read it).
+hair_style = "ponytail"
+
+# Camera type (dancecap.camera_types). MEASURED by agent J1 2026-10-11 (background LK tracks with the people masked, work/john_lula/NOTES_J1.md):
+# handheld (the viewpoint walks about: the room view changes across the floor; image-centre speed median 19 px/s, p90 61 px/s, max 255 px/s; roll up
+# to 8 deg over a few seconds) with THREE fast zoom steps of ~0.7 s each: x1.97 at 17.84-18.57 s (zoom in), x0.51 at 51.51-52.24 s (out), x1.89 at
+# 78.75-79.38 s (in): the phone's 1x / 2x switch; in between the zoom is constant (net scale within 3.3 % per 5 s, mostly under 1.3 %). Not confirmed by the owner:
+# source = "auto" (the stages keep the general model handheld + zoom until it is confirmed).
+[cameras."01"]
+file = "john_lula_jnj.mp4"
+mount = "handheld"          # handheld | tripod                 (measured)
+zoom = true                 # true | false, independent of mount (measured: three 1x <-> 2x steps)
+source = "auto"             # user = confirmed | auto = suggestion, not confirmed yet
+set_at = "2026-10-11T03:00:00Z"
+zoom_events = [[17.84, 18.57, 1.97], [51.51, 52.24, 0.51], [78.75, 79.38, 1.89]]   # [t0, t1, focal ratio], video seconds (measured)
