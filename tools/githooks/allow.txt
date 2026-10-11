@@ -6,4 +6,6 @@
 #   <glob>   # why this file is safe to commit
 #
 # The list is read from the last commit (HEAD), so an entry applies from the commit AFTER the one
-# that adds it.  No entries are needed today: the workspace tracks code, configs and small docs.
+# that adds it.
+
+docs/images/*   # README demo images: the dancers' public demo images, used with the artists' approval; owner approval 2026-10-11
