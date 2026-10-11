@@ -1,0 +1,188 @@
+{
+ "schema": "dancecap.farm.world/1",
+ "dance": "john_lula",
+ "world_sha256": "1822b3c948bd1e9ab9863e6512201974f2caba28cbec2b6cb6d1a3d6f2f093e7",
+ "world_id": "1822b3c948bd",
+ "pose_sha256": "1822b3c948bd1e9ab9863e6512201974f2caba28cbec2b6cb6d1a3d6f2f093e7",
+ "pose_id": "1822b3c948bd",
+ "avatar_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+ "avatar_id": "e3b0c44298fc",
+ "created": "2026-10-11T03:51:30",
+ "reference_take": "john_lula",
+ "grid": {
+  "anchor": 0.0,
+  "k0": 0,
+  "k1": 2642,
+  "hz": 30.0
+ },
+ "partial": true,
+ "missing_members": [
+  "room_sfm (no COLMAP model: the room is room_model.json)",
+  "betas (MAMMA shape pass)",
+  "skeleton",
+  "ma3d_config",
+  "refine_recipe",
+  "avatar"
+ ],
+ "kind": "new room, ONE handheld zooming phone camera, no room scan (planes + per-frame camera track)",
+ "members": {
+  "room_model": {
+   "scope": "pose",
+   "note": "the hall as measured planes (floor, far wall, left wall, ceiling) with the evidence numbers",
+   "source": "work/john_lula/room",
+   "sha256": "d9a7a7cb0bb1dd782a81eec93f9ac91580bcacbe8a854e7175090686ef2a4a5c",
+   "bytes": 5012,
+   "n_files": 1,
+   "root": "ref/room/room_model.json"
+  },
+  "room_mesh": {
+   "scope": "pose",
+   "note": "textured floor + far / left wall for the viewer (room/room_mesh.obj + 2 textures; capture data: git-ignored)",
+   "source": "work/john_lula/room",
+   "sha256": "00b5932469c1a9236578afc98ac126a8b0b629522ee3718ab2b5b1f0843efe85",
+   "bytes": 177356,
+   "n_files": 5,
+   "root": "ref/room/"
+  },
+  "world_frame": {
+   "scope": "pose",
+   "note": "world_from_sfm.json (identity: the camera is stored in the world frame)",
+   "source": "work/john_lula/cameras",
+   "sha256": "0b1dce0fd2b8390077660ca2b03b3339547727d1685b292898768efc48fdf4fe",
+   "bytes": 543,
+   "n_files": 1,
+   "root": "ref/cameras/world_from_sfm.json"
+  },
+  "camera_rig": {
+   "scope": "pose",
+   "note": "intrinsics, centre, orientation, fit numbers, scale evidence, the focal / distance / height table, motion statistics",
+   "source": "work/john_lula/cameras",
+   "sha256": "7992e4d549a3f2628c1c4d59d8ccd037373266fd590c06d20d4b3b2a8fa683fa",
+   "bytes": 7697,
+   "n_files": 3,
+   "root": "ref/cameras/"
+  },
+  "camera_tracks": {
+   "scope": "pose",
+   "note": "per-frame K, R, tvec of the camera in the world frame (CONTRACTS.md cameras/<cam>.npz schema) + the dancers' floor positions",
+   "source": "work/john_lula/cameras",
+   "sha256": "067588577aaf03333cea7cd3975e9711745d57a7fb23145407513cd49c8ca25f",
+   "bytes": 656332,
+   "n_files": 3,
+   "root": "ref/cameras/"
+  },
+  "camera_types": {
+   "scope": "pose",
+   "note": "per-camera mount / zoom (handheld, three 1x <-> 2x steps), without timestamps",
+   "source": "takes/john_lula.toml [cameras]",
+   "sha256": "4fcceb10600ee8773a2df7b0006366c74353964b8118ebb27cf373b243853aac",
+   "bytes": 234,
+   "n_files": 1,
+   "root": "shared/camera_types.json"
+  },
+  "scale_reference": {
+   "scope": "pose",
+   "note": "the statures, the camera height they give and the focal hypothesis it rests on (statures from the owner)",
+   "source": "takes/john_lula.toml + cameras/rig.json",
+   "sha256": "a7f7cb376293baf5b6cf8fef6ad00681f18dd11e35d7946f36ac80832c62002b",
+   "bytes": 1318,
+   "n_files": 1,
+   "root": "shared/scale_reference.json"
+  }
+ },
+ "n_files": 15,
+ "bytes": 848492,
+ "builder": "dancecap.room_world_single_cam.build",
+ "files": [
+  {
+   "path": "ref/cameras/01.npz",
+   "sha256": "e9f757b2e4c52bcf43976de19d8cdffb101e0c2b5f04ca68d7b3f755c57923bc",
+   "bytes": 305340,
+   "member": "camera_tracks"
+  },
+  {
+   "path": "ref/cameras/01_world.npz",
+   "sha256": "5c9b165786c123cccc55a9172a0b641c4c747f1776efe09ac6fa5b9da7702edf",
+   "bytes": 268480,
+   "member": "camera_tracks"
+  },
+  {
+   "path": "ref/cameras/dancers_world.npz",
+   "sha256": "65d9854b5ed67a12c7a9c71a5bc42727a3f724801b2f9b2935bcf6094cbf0495",
+   "bytes": 82512,
+   "member": "camera_tracks"
+  },
+  {
+   "path": "ref/cameras/motion_stats.json",
+   "sha256": "b2024a1d3806635ef9000c615a8e76b71000e38cc3032a0bb32cf4b9b58d1ed9",
+   "bytes": 737,
+   "member": "camera_rig"
+  },
+  {
+   "path": "ref/cameras/rig.json",
+   "sha256": "9c3a9ab71eebe28bb0d3579c9f6abd0ec22b37790476ee77e7bcdd0367fd696e",
+   "bytes": 4055,
+   "member": "camera_rig"
+  },
+  {
+   "path": "ref/cameras/uncertainty_variants.json",
+   "sha256": "b292951cee4b380afcb7d0dd9541dd7f33aad2eb36b84422b05e9caf1c507109",
+   "bytes": 2905,
+   "member": "camera_rig"
+  },
+  {
+   "path": "ref/cameras/world_from_sfm.json",
+   "sha256": "0b1dce0fd2b8390077660ca2b03b3339547727d1685b292898768efc48fdf4fe",
+   "bytes": 543,
+   "member": "world_frame"
+  },
+  {
+   "path": "ref/room/mesh_report.json",
+   "sha256": "5a3c7671bd4faf3253ecd269ecc940b4e77cbf6cc9289ac3376a50413bd76a9f",
+   "bytes": 536,
+   "member": "room_mesh"
+  },
+  {
+   "path": "ref/room/room_floor_tex.png",
+   "sha256": "caa9fbce27dbe377b26d66f3ba409b969cd59a205154ea15842be87f20cd7b95",
+   "bytes": 44775,
+   "member": "room_mesh"
+  },
+  {
+   "path": "ref/room/room_mesh.mtl",
+   "sha256": "b11fedf3b5b57fd1ef0a3069e7dfc8e74530819aec1edb46cf982035fe016a6c",
+   "bytes": 100,
+   "member": "room_mesh"
+  },
+  {
+   "path": "ref/room/room_mesh.obj",
+   "sha256": "cb8e22288ed552db7a2dc3eb5ef0e7ba6929550232cc5eb61a2f08f670aea76e",
+   "bytes": 42676,
+   "member": "room_mesh"
+  },
+  {
+   "path": "ref/room/room_mesh_tex.png",
+   "sha256": "3ee1f8399f9194fb6d518df5b5723a79cf0e766bd1f8db8ae90c68addf772cf0",
+   "bytes": 89269,
+   "member": "room_mesh"
+  },
+  {
+   "path": "ref/room/room_model.json",
+   "sha256": "d9a7a7cb0bb1dd782a81eec93f9ac91580bcacbe8a854e7175090686ef2a4a5c",
+   "bytes": 5012,
+   "member": "room_model"
+  },
+  {
+   "path": "shared/camera_types.json",
+   "sha256": "4fcceb10600ee8773a2df7b0006366c74353964b8118ebb27cf373b243853aac",
+   "bytes": 234,
+   "member": "camera_types"
+  },
+  {
+   "path": "shared/scale_reference.json",
+   "sha256": "a7f7cb376293baf5b6cf8fef6ad00681f18dd11e35d7946f36ac80832c62002b",
+   "bytes": 1318,
+   "member": "scale_reference"
+  }
+ ]
+}

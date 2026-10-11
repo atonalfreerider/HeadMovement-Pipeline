@@ -48,7 +48,8 @@ def _frames_and_masks(video, meta, step, start, count, rects, yolo, batch=8):
 
 
 def skeleton(video: str, out: Path, step: int | None = None, rects=(), yolo: str = "yolo11x-seg.pt",
-             device: str = "cuda", per_pair: int = 40, log=print) -> dict:
+             device: str = "cuda", per_pair: int = 40, log=print,
+             f0s: tuple[float, ...] = (1200, 1800, 2600, 3600, 4600)) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     meta = probe(video)
     step = step or int(round(meta["fps"]))
@@ -83,7 +84,7 @@ def skeleton(video: str, out: Path, step: int | None = None, rects=(), yolo: str
     lens0 = P.Lens(meta["width"], meta["height"])
     init_edges = {k: v for k, v in edges.items() if k[1] - k[0] <= 2}
     best = None
-    for f0 in (1200, 1800, 2600, 3600, 4600):
+    for f0 in f0s:
         rv, f, order = P.init_chain(n, init_edges, lens0, f0)
         if len(order) < n:
             log(f"  f0 {f0}: only {len(order)}/{n} frames reachable")
@@ -134,8 +135,8 @@ def track(video: str, skel_dir: Path, frames: list[int], out: Path, rects=(), yo
     from scipy.spatial.transform import Rotation as Rot
     sk = dict(np.load(skel_dir / "skeleton.npz"))
     meta = probe(video)
-    step = int(round(meta["fps"]))
     sk_frames = sk["frame"]
+    step = int(sk_frames[1] - sk_frames[0]) if len(sk_frames) > 1 else int(round(meta["fps"]))     # the skeleton's own step (J2: 15)
     lens = P.Lens(int(sk["size"][0]), int(sk["size"][1]), float(sk["lens"][0]), float(sk["lens"][1]),
                   float(sk["lens"][2]), float(sk["lens"][3]))
     sol = P.PtzSolution(sk["rv"], sk["f"], lens)
@@ -255,6 +256,7 @@ def main(argv=None):
     s.add_argument("--step", type=int)
     s.add_argument("--rect", action="append", default=[], help="x0,y0,x1,y1 screen-fixed overlay to ignore")
     s.add_argument("--yolo", default="yolo11x-seg.pt")
+    s.add_argument("--f0", default="", help="comma list of initial focals (px) to try, default 1200..4600 (a 1920 px wide frame)")
     s2 = sub.add_parser("track")
     s2.add_argument("video")
     s2.add_argument("--skeleton", required=True)
@@ -287,7 +289,8 @@ def main(argv=None):
         return
     if a.cmd == "skeleton":
         rects = [tuple(int(v) for v in r.split(",")) for r in a.rect]
-        info = skeleton(a.video, Path(a.out), a.step, rects, a.yolo)
+        info = skeleton(a.video, Path(a.out), a.step, rects, a.yolo,
+                        f0s=tuple(float(v) for v in a.f0.split(",")) if a.f0 else (1200, 1800, 2600, 3600, 4600))
         print(json.dumps(info, indent=1))
 
 
