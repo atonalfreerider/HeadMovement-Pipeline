@@ -1,4 +1,4 @@
-"""dancecap.rhythm: the rhythm analysis and the causal live score (synthetic takes; no data of any real take).
+"""dancecap.rhythm / rhythm_entrain: the rhythm entrainment analysis and the causal live score (synthetic takes; no data of any real take).
 
     .venv-nopo4d/Scripts/python.exe -m pytest dancecap/tests/test_rhythm.py -q
 """
@@ -7,7 +7,6 @@ from __future__ import annotations
 import json
 import math
 import sys
-import wave
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dancecap import rhythm as rh  # noqa: E402
+from dancecap import rhythm_entrain as ent  # noqa: E402
 
 CFG = rh.Config()
 
@@ -24,113 +24,118 @@ def _final(kind, **kw):
     return rh.run_analysis(inp, CFG, with_sensitivity=False)
 
 
-def test_perfectly_on_beat_steps_score_near_the_top():
-    d = _final("on_beat")
+def _score(kind, **kw):
+    inp = rh.synthetic_inputs(kind, **kw)
+    return rh.aggregate(rh.run_series(inp, CFG), CFG)
+
+
+def test_a_sway_and_steps_locked_to_the_grid_score_at_the_top():
+    d = _final("locked")
     assert d["final"]["score"] >= 90
-    assert all(d["final"]["components"][k] > 0.8 for k in ("lock", "tempo", "flow", "sync"))
+    assert all(d["final"]["components"][k] > 0.8 for k in rh.COMPONENTS)
+    assert d["final"]["levels"]["lead"] == "halfbar"              # the synthetic sway is one cycle per two pulses
+    assert d["final"]["confidence"]["label"] == "high"
 
 
-def test_random_steps_score_near_the_bottom():
-    scores = [_final("random", seed=s)["final"]["score"] for s in range(4)]
-    assert max(scores) <= 10 and np.mean(scores) <= 6
+def test_unrelated_motion_scores_near_the_bottom():
+    s = [_score("random", seed=k)["score"] for k in range(4)]
+    assert np.mean(s) <= 12 and max(s) <= 22
 
 
-def test_steady_off_beat_steps_do_not_get_the_flow_credit():
-    d = _final("off_beat")
-    assert d["final"]["components"]["lock"] < 0.05
-    assert d["final"]["components"]["flow"] < 0.3
-    assert d["final"]["score"] < 35
+def test_a_sway_at_the_wrong_tempo_gets_no_entrainment_credit():
+    f = _score("wrong_tempo", body_tempo=1.12)
+    for k in ("body", "feet", "recent"):
+        assert f[k] < 0.1, k
+    assert f["score"] < 15
 
 
-def test_a_small_constant_offset_is_inside_the_audio_video_uncertainty():
-    d = _final("offset_consistent", offset_ms=30.0, jitter_ms=15.0)
-    assert d["final"]["score"] >= 80
-    assert abs(d["describe"]["both"]["binary_grid"]["mean_offset_ms"] - 30.0) < 8
+def test_a_constant_phase_offset_is_not_penalised_by_design():
+    # the audio-video offset is unpinned (+-30 ms) and where in the beat a weight transfer lands is not established: only the tempo and a steady phase count
+    # (the accents component IS absolute: it asks whether the stops, hits and steps sit on the music's strong onsets)
+    a, b = _score("locked", seed=3), _score("offset", seed=3, offset_ms=140.0)
+    for k in ("body", "feet", "recent", "couple"):
+        assert abs(a[k] - b[k]) < 0.05, k
+    assert b["accents"] < a["accents"]
 
 
-def test_jitter_lowers_the_score_monotonically():
-    s = [_final("on_beat", jitter_ms=j, seed=3)["final"]["score"] for j in (10, 50, 90)]
-    assert s[0] > s[1] > s[2]
+def test_the_score_does_not_depend_on_where_the_grid_starts():
+    inp = rh.synthetic_inputs("locked", seed=2)
+    a = rh.aggregate(rh.run_series(inp, CFG), CFG)["score"]
+    g = inp.grid.shifted(0.211)
+    inp2 = rh.Inputs(g, inp.steps, inp.music, inp.motion, inp.t0, inp.t1, dict(inp.meta), {}, inp.body)
+    assert abs(a - rh.aggregate(rh.run_series(inp2, CFG), CFG)["score"]) < 4
 
 
-def test_step_classes_and_offsets():
-    inp = rh.synthetic_inputs("on_beat", jitter_ms=5.0)
+def test_jitter_in_the_footwork_lowers_the_footwork_component_monotonically():
+    s = [_score("locked", jitter_ms=j, seed=3)["feet"] for j in (10, 150, 260)]       # a pulse is 714 ms: 260 ms of jitter is nearly uniform
+    assert s[0] > s[1] > s[2] and s[0] > 0.9 and s[2] < 0.3
+
+
+def test_step_classes_follow_the_dancers_own_locked_step_rhythm():
+    inp = rh.synthetic_inputs("locked", jitter_ms=5.0)
     d = rh.run_analysis(inp, CFG, with_sensitivity=False)
     cols = d["steps"]["columns"]
     rows = [dict(zip(cols, r)) for r in d["steps"]["rows"] if r[cols.index("valid")]]
     assert len(rows) > 100
-    assert np.mean([r["class"] == "on" for r in rows]) > 0.95
-    assert all(abs(r["offset_ms"]) < 60 for r in rows)
+    late = [r for r in rows if r["t"] > inp.grid.t[0] + 60]
+    assert np.mean([r["class"] == "on" for r in late]) > 0.9
     assert {r["kind"] for r in rows} == {"beat"}                      # steps on the pulses only
+    assert rows[0]["class"] == "neutral" and rows[1]["class"] == "neutral"       # no lock evidence yet: no colour
 
 
 def test_a_step_on_the_and_is_labelled_and():
-    inp = rh.synthetic_inputs("on_beat", jitter_ms=5.0, rate="eighth")
+    inp = rh.synthetic_inputs("locked", jitter_ms=5.0, rate="eighth")
     d = rh.run_analysis(inp, CFG, with_sensitivity=False)
     cols = d["steps"]["columns"]
     kinds = {r[cols.index("kind")] for r in d["steps"]["rows"] if r[cols.index("valid")]}
     assert kinds == {"beat", "and"}
 
 
-def test_three_in_two_steps_are_recognised_as_a_lock_not_as_random():
-    # steps every 2/3 of a pulse starting on a pulse: a 3-against-2 cadence that the plain beat / 'and' grid cannot see
-    inp = rh.synthetic_inputs("on_beat", jitter_ms=10.0)
-    P = 60.0 / 84.0
-    t0 = inp.grid.t[0]
-    tr = [t0 + k * (2.0 / 3.0) * P for k in range(int((inp.grid.t[-1] - t0) / ((2.0 / 3.0) * P)) - 1)]
-    for r in rh.ROLES:
-        inp.steps[r] = [{"t": x + float(np.random.default_rng(i).normal(0, 0.01)), "foot": "left", "sigma": 0.015} for i, x in enumerate(tr)]
-    d = rh.run_analysis(inp, CFG, with_sensitivity=False)
-    assert d["final"]["levels"]["lead"].startswith("triplet")
-    assert d["final"]["components"]["lock"] > 0.6
+def test_the_entrainment_levels_are_found_without_being_told():
+    # a sway at 1.5 cycles per pulse = three in two... the level set contains it; a sway at the half-bar level is chosen as such
+    inp = rh.synthetic_inputs("locked")
+    A = rh.run_series(inp, CFG)
+    m = A.valid & (A.elapsed > 30)
+    assert np.mean(A.S.best_body["lead"][m] == ent.LEVEL_NAMES.index("halfbar")) > 0.95
 
 
 def test_the_live_score_is_causal():
-    inp = rh.synthetic_inputs("on_beat", seed=1)
-    ev = rh.build_events(inp, CFG)
-    full = rh.live_timeline(inp, ev, CFG)
-    cut = 40.0
-    inp2 = rh.synthetic_inputs("on_beat", seed=1)
-    for r in rh.ROLES:
-        inp2.steps[r] = [s for s in inp2.steps[r] if s["t"] <= cut]
-    ev2 = rh.build_events(inp2, CFG)
-    part = rh.live_timeline(inp2, ev2, CFG)
-    i = int((cut - 0.3 - inp.t0) * CFG.live_hz)
-    for k in ("score", "lock", "accents", "tempo", "flow", "sync"):
-        assert abs(full[k][i] - part[k][i]) < 1e-9, k
+    inp = rh.synthetic_inputs("locked", seed=1)
+    full = rh.run_series(inp, CFG)
+    cut = 90.0
+    b = inp.body
+    m = b.t <= cut
+    body2 = ent.Body(b.t[m], {r: {k: v[m] for k, v in b.sig[r].items()} for r in rh.ROLES}, b.source)
+    steps2 = {r: [s for s in inp.steps[r] if s["t"] <= cut] for r in rh.ROLES}
+    inp2 = rh.Inputs(inp.grid, steps2, inp.music, inp.motion, inp.t0, cut, dict(inp.meta), {}, body2)
+    part = rh.run_series(inp2, CFG)
+    n = len(part.t) - 3
+    for k in rh.COMPONENTS:
+        assert np.nanmax(np.abs(full.comps[k][:n] - part.comps[k][:n])) < 1e-9, k
 
 
-def test_the_live_score_starts_neutral_and_rises_for_a_good_dance_and_falls_for_a_bad_one():
-    good = rh.analyse_one(rh.synthetic_inputs("on_beat"), CFG)["live"]
+def test_the_live_score_starts_neutral_and_settles_up_for_a_good_dance_and_down_for_a_bad_one():
+    good = rh.analyse_one(rh.synthetic_inputs("locked"), CFG)["live"]
     bad = rh.analyse_one(rh.synthetic_inputs("random"), CFG)["live"]
     assert abs(good["score"][0] - 50.0) < 1e-6 and abs(bad["score"][0] - 50.0) < 1e-6
     assert good["score"][-1] > 85
-    assert bad["score"][-1] < 15
-    # it falls where a dancer drifts off the beat
-    inp = rh.synthetic_inputs("on_beat", seed=2)
-    mid = 0.5 * (inp.grid.t[0] + inp.grid.t[-1])
-    for r in rh.ROLES:
-        for s in inp.steps[r]:
-            if s["t"] > mid:
-                s["t"] += 0.185
-    live = rh.analyse_one(inp, CFG)["live"]
-    i_mid = int((mid - inp.t0) * CFG.live_hz)
-    assert live["score"][i_mid] > live["score"][-1] + 15
+    assert bad["score"][-1] < 25
+    assert good["evidence"][-1] > 0.9 and bad["evidence"][-1] < 0.4
 
 
 def test_the_score_is_frozen_in_the_no_beat_stretches():
-    inp = rh.synthetic_inputs("on_beat", seed=4)
+    inp = rh.synthetic_inputs("locked", seed=4)
     live = rh.analyse_one(inp, CFG)["live"]
     st = live["state"]
     assert st[0] == 1                                                  # before the first slot: no song
     pre = np.where(st == 1)[0]
-    assert np.allclose(live["score"][pre[pre < 100]], 50.0)           # neutral and frozen until the beat starts
+    assert np.allclose(live["score"][pre[pre < 40]], 50.0)            # neutral and frozen until the beat starts
     assert live["confidence"][0] == 0.0
     assert live["state"][-1] == 1 and abs(live["score"][-1] - live["score"][np.where(st == 0)[0][-1]]) < 1e-9
 
 
-def test_a_seam_gap_in_the_grid_is_found_and_frozen():
-    inp = rh.synthetic_inputs("on_beat", seed=5)
+def test_a_seam_gap_in_the_grid_is_found_frozen_and_the_entrainment_restarts():
+    inp = rh.synthetic_inputs("locked", seed=5)
     g = inp.grid
     keep = ~((g.t > 40.0) & (g.t < 46.0))
     rows = [[t, ty, m, s] for t, ty, m, s, k in zip(g.t, g.type, g.measure, g.slot, keep) if k]
@@ -144,40 +149,32 @@ def test_a_seam_gap_in_the_grid_is_found_and_frozen():
     i0, i1 = int((41.0 - live["t0"]) * live["hz"]), int((45.0 - live["t0"]) * live["hz"])
     assert set(live["state"][i0:i1]) == {2}
     assert max(live["score"][i0:i1]) - min(live["score"][i0:i1]) < 1e-9
+    A = rh.run_series(inp, CFG)
+    j = int(np.searchsorted(A.t, 46.5))
+    assert A.elapsed[j] < 2.0                                          # a new grid segment: the averages restarted
 
 
-def test_the_audio_video_shift_moves_the_score_a_little_for_a_tight_dancer():
-    inp = rh.synthetic_inputs("on_beat", jitter_ms=15.0)
+def test_the_audio_video_shift_barely_moves_the_score_of_a_body_lock():
+    inp = rh.synthetic_inputs("locked", jitter_ms=15.0)
     s = rh.sensitivity(inp, CFG)
     assert len(s["rows"]) == 3 and s["range"][0] <= s["range"][1]
-    assert s["range"][1] - s["range"][0] < 12                          # +-30 ms is inside the kernel
-
-
-def test_the_final_equals_the_whole_dance_and_the_live_ends_near_it():
-    d = _final("on_beat")
-    assert abs(d["live"]["score"][-1] - d["final"]["score"]) < 6
+    assert s["range"][1] - s["range"][0] < 8                           # +-30 ms is a few degrees of a 1.6 s cycle
 
 
 def test_output_is_json_and_complete():
-    d = _final("on_beat")
-    txt = json.dumps(d)
-    back = json.loads(txt)
+    d = _final("locked")
+    back = json.loads(json.dumps(d, allow_nan=False))
     for k in ("final", "final_card", "describe", "steps", "measures", "windows", "live", "no_beat", "claims", "title", "formula", "config"):
         assert k in back
     live = back["live"]
     n = live["n"]
-    assert all(len(live[k]) == n for k in ("score", "lock", "accents", "tempo", "flow", "sync", "confidence", "state"))
-    assert "not an official score" in back["title"]
+    assert all(len(live[k]) == n for k in (*rh.COMPONENTS, "score", "confidence", "evidence", "state"))
+    assert "not an official score" in back["title"] and "entrainment" in back["title"]
     assert back["final_card"]["to_t"] > back["final_card"]["from_t"]
     assert abs(sum(back["formula"]["weights"].values()) - 1.0) < 1e-9
     assert back["measures"] and all("score" in m for m in back["measures"])
-
-
-def test_lock_chance_is_what_uniform_phases_score():
-    rng = np.random.default_rng(0)
-    d = rng.uniform(-185.5, 185.5, 200000)
-    mc = float(np.exp(-0.5 * (d / 60.0) ** 2).mean())
-    assert abs(mc - rh.lock_chance(60.0, 371.0)) < 0.003
+    assert back["final"]["score_interval_90"][0] <= back["final"]["score"] <= back["final"]["score_interval_90"][1]
+    assert any("validates a mapping" in c for c in back["claims"])
 
 
 def test_accents_from_a_click_track_and_a_break(tmp_path):
@@ -204,7 +201,7 @@ def test_accents_from_a_click_track_and_a_break(tmp_path):
 
 
 def test_without_a_soundtrack_the_grid_downbeats_stand_in():
-    inp = rh.synthetic_inputs("on_beat")
+    inp = rh.synthetic_inputs("locked")
     m = rh.music_from_grid(inp.grid)
     assert m.source == "grid" and m.acc_s.max() == 1.0 and len(m.acc_t) == len(inp.grid)
 
@@ -218,28 +215,45 @@ def test_load_timing_and_a_fake_take(tmp_path):
     steps = {r: [{"t": round(rows[i][0] + 0.01, 4), "foot": "left", "sigma": 0.02} for i in range(0, len(rows) - 2, 2)] for r in rh.ROLES}
     d = {"beats": {"grid": rows, "tempo_bpm": 80.0}, "footsteps": steps, "dropped_no_beat": {"lead": {"intervals": [[0.0, 12.0]]}, "follow": {"intervals": [[0.0, 12.0]]}},
          "absolute_timing": {"valid": False}, "inputs": {"beats": "fake"}}
-    tp = tmp_path / "timing.json"
-    tp.write_text(json.dumps(d))
     work = tmp_path / "work"
     (work / "timing").mkdir(parents=True)
     (work / "timing" / "timing.json").write_text(json.dumps(d))
     inp = rh.load_inputs("fake", None, None, None, CFG, work)
-    assert len(inp.grid) == 160 and inp.music.source == "grid" and not inp.meta["av_pinned"]
+    assert len(inp.grid) == 160 and inp.music.source == "grid" and not inp.meta["av_pinned"] and inp.body is None
     assert any(k == "none" for _, _, k in inp.grid.no_beat)
     doc = rh.run_analysis(inp, CFG, with_sensitivity=False)
-    assert doc["final"]["score"] > 80
+    assert doc["final"]["components"]["feet"] is not None
+    assert any("foot touchdowns only" in c for c in doc["claims"])      # no body signals: said so
 
 
-def test_nothing_crashes_with_no_steps():
-    inp = rh.synthetic_inputs("on_beat")
+def test_a_take_without_a_beat_grid_has_no_score(tmp_path):
+    d = {"beats": {"grid": None, "skipped": True}, "footsteps": {"lead": [], "follow": []}}
+    work = tmp_path / "work"
+    (work / "timing").mkdir(parents=True)
+    (work / "timing" / "timing.json").write_text(json.dumps(d))
+    with pytest.raises(ValueError, match="no beat grid"):
+        rh.load_inputs("nodance", None, None, None, CFG, work)
+
+
+def test_nothing_crashes_with_no_steps_and_no_body():
+    inp = rh.synthetic_inputs("locked")
     inp.steps = {"lead": [], "follow": []}
+    inp.body = None
     d = rh.run_analysis(inp, CFG, with_sensitivity=True)
-    assert d["final"]["score"] is None or (math.isfinite(d["final"]["score"]) and d["final"]["score"] <= 55)
     json.dumps(d, allow_nan=False)                                     # unknown values are null, never NaN
+    assert d["final"]["score"] is None or math.isfinite(d["final"]["score"])
+    assert d["final"]["insufficient_evidence"] is True
+
+
+def test_the_wrong_tempo_baseline_leaves_unrelated_noise_near_zero():
+    inp = rh.synthetic_inputs("random", seed=11)
+    A = rh.run_series(inp, CFG)
+    m = A.valid & (A.elapsed > 30)
+    assert np.nanmean(A.comps["body"][m]) < 0.15
 
 
 def test_install_writes_the_viewers_copy_and_names_it_in_capture_json(tmp_path):
-    d = _final("on_beat")
+    d = _final("locked")
     cap = tmp_path / "99_Cap"
     cap.mkdir()
     (cap / "capture.json").write_text(json.dumps({"version": 3, "fps": 30}))
@@ -250,6 +264,19 @@ def test_install_writes_the_viewers_copy_and_names_it_in_capture_json(tmp_path):
     assert m["rhythm"] == "rhythm.json" and m["fps"] == 30
     v = json.loads((cap / "rhythm.json").read_text())
     assert v["kind"] == "rhythm_view" and v["live"]["n"] == d["live"]["n"] and v["steps"]["rows"]
-    assert [c["label"] for c in v["components"]] == ["Beat lock", "Accents", "Tempo", "Flow", "Couple sync"]
-    assert all(r[2] in (0, 1, 2) and r[1] in (0, 1) for r in v["steps"]["rows"])
+    assert [c["label"] for c in v["components"]] == ["Body sway", "Footwork", "Recent form", "Couple sync", "Accents"]
+    assert [c["key"] for c in v["components"]] == list(rh.COMPONENTS)
+    assert all(r[2] in (0, 1, 2, 3) and r[1] in (0, 1) for r in v["steps"]["rows"])
+    assert v["final"]["insufficient_evidence"] is False and "lock_evidence_z" in v["final"]
     assert (cap / "rhythm.json").stat().st_size < 600_000
+
+
+def test_the_controls_helpers_build_the_wrong_grids():
+    from dancecap import rhythm_controls as rc
+    inp = rh.synthetic_inputs("locked")
+    g = rc.stretch_grid(inp.grid, 1.2)
+    assert abs((g.t[-1] - g.t[0]) - (inp.grid.t[-1] - inp.grid.t[0]) / 1.2) < 1e-6
+    w = rc.wandering_grid(inp.grid, 0)
+    assert len(w.t) == len(inp.grid.t) and np.all(np.diff(w.t) > 0)
+    c = rc.crop_grid(inp.grid, 40.0, 80.0)
+    assert c.t[0] >= 40.0 and c.t[-1] <= 80.0 and any(k == "none" for _, _, k in c.no_beat)
