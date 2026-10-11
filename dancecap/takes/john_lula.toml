@@ -72,6 +72,9 @@ description = "short brown hair swept to one side, short full brown beard, black
 #   will not keep), black trousers, dark sneakers. The competition bib, a black wristwatch: not modelled. Palette / colours measured: work/john_lula/avatar/.
 shoe_sole_m = 0.025   # dark soft sneakers; UNCONFIRMED barefoot stature (as in the demo)
 
+portrait = "GM6B6189.jpg"   # J5a: the photo of the two (source_dir): the lead faces the camera in it (beard, smile); the follow is seen from behind
+shoe_style = "neutral"      # low-top lace-up sneakers, dark charcoal upper, light-grey chunky cupsole (work/john_lula/avatar/shoes_override.json carries the colours)
+shoe_geometry = { sole_heel_m = 0.032, sole_fore_m = 0.024, toe_spring_m = 0.009, heel_bevel_m = 0.005 }
 [dancers.follow]
 name = "Lula"
 pid = 2
@@ -85,6 +88,8 @@ description = "long auburn ponytail tied high on the crown, sheer long-sleeve cr
 #   texture, the bib and the watch / wristband are not modelled. Tip glow stays on (the stylisation of the demo's hair); `hair_tip_glow = 0` drops it.
 shoe_sole_m = 0.02   # thin light-pink slip-on sneakers; UNCONFIRMED barefoot stature (as in the demo)
 # HAIR (owner 2026-10-11: "restyle lula's hair for her ponytail"): a high ponytail, auburn / light brown (the photo: a blue clip on the hair tie). Read by
+shoe_style = "neutral"      # pale dusty-pink slip-on flats with a thin cream sole (colours: work/john_lula/avatar/shoes_override.json)
+shoe_geometry = { sole_heel_m = 0.018, sole_fore_m = 0.014, toe_spring_m = 0.006, heel_bevel_m = 0.003 }
 # dancecap.hair_groom (ponytail_hook -> dancecap.hair_ponytail, J5a 2026-10-11) and the avatar stages; the loose style is the default of every other take.
 hair_style = "ponytail"
 
@@ -100,3 +105,16 @@ zoom = true                 # true | false, independent of mount (measured: thre
 source = "auto"             # user = confirmed | auto = suggestion, not confirmed yet
 set_at = "2026-10-11T03:00:00Z"
 zoom_events = [[17.84, 18.57, 1.97], [51.51, 52.24, 0.51], [78.75, 79.38, 1.89]]   # [t0, t1, focal ratio], video seconds (measured)
+
+# Face identities (J5a 2026-10-11, work/john_lula/NOTES_J5a_face.md): the lead = his portrait photo + 4 video faces (14-40 px outer-canthal), weight 1.0; the follow
+# has NO portrait (seen from behind in the photo): 6 video faces of 13-33 px outer-canthal only, so her identity is shrunk to 0.65 (the measured scale of a video-only
+# code against a portrait code, face-trust). Both are displacements of the lower face / jaw only. The retarget to the fitted betas runs after the pose stage.
+[dancers.lead.shape_edits.face]
+identity = "work/john_lula/face_shape/lead_identity.npz"
+identity_weight = 1.0
+identity_mouth = 0.4
+
+[dancers.follow.shape_edits.face]
+identity = "work/john_lula/face_shape/follow_identity.npz"
+identity_weight = 0.65
+identity_mouth = 0.4
