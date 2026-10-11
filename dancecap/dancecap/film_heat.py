@@ -124,6 +124,28 @@ def chapters_from_songs(songs: dict, titles: dict[str, str], film_end: float, so
     return out
 
 
+def split_timeline(songs: dict, split: dict | None) -> dict:
+    """Chapters inside one long timeline state (a heat with ONE song has a single 'music' state): `split` = {state: {"every_s": L}} cuts that state into round(length / L)
+    EQUAL runs (about L seconds each) named "<state>_1", "<state>_2", ... in the timeline copy that is returned; the preset's
+    titles are keyed by those names. No `split` = the structure unchanged."""
+    if not split:
+        return songs
+    out = dict(songs)
+    rows: list[dict] = []
+    for t in songs.get("timeline") or []:
+        sp = split.get(str(t.get("state", "")))
+        a, b = float(t["from_s"]), float(t["to_s"])
+        if not isinstance(sp, dict) or not sp.get("every_s") or b - a <= float(sp["every_s"]) * 1.0001:
+            rows.append(dict(t))
+            continue
+        L = float(sp["every_s"])
+        n = max(1, int(round((b - a) / L)))
+        for i in range(n):
+            rows.append({**t, "from_s": round(a + i * (b - a) / n, 6), "to_s": round(a + (i + 1) * (b - a) / n, 6), "state": f"{t['state']}_{i + 1}"})
+    out["timeline"] = rows
+    return out
+
+
 def shot_plan(film_end: float, cfg: dict) -> list[dict]:
     """camera shots [{kind, start, end}] covering [0, film_end]: orbit shots with an overhead of `overhead_s` every `cycle_s`"""
     ov = []
@@ -259,7 +281,7 @@ def build_from_preset(preset: dict, *, out_dir: Path | None = None, dry_run: boo
     if not isinstance(times, list) or not times:
         raise HeatError(f"{cap_dir / 'times.json'} holds no frame times")
     first, last = float(times[0]), float(times[-1])
-    songs = read_json(_abs(heat["songs"]))
+    songs = split_timeline(read_json(_abs(heat["songs"])), heat.get("split"))
     audio = cap_dir / (cap.get("audio") or "audio.wav")
     if not audio.exists():
         raise HeatError(f"the capture has no soundtrack at {audio}")

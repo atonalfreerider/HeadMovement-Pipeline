@@ -7,6 +7,7 @@ it may hold names); this module is the one tool that writes it, so the class rec
     python -m dancecap.film_library build --demo                 # the finished demo film (preset "demo" of takes/library/films.toml)
     python -m dancecap.film_library build --recap                # the class recap; "Processing" in the viewer until its film exists
     python -m dancecap.film_library build --carlos-aline         # the Jack & Jill heat: writes its auto-direction first (dancecap.film_heat)
+    python -m dancecap.film_library build --john-lula            # a second heat (one song, one phone); --heat <preset> builds any heat preset
     python -m dancecap.film_library build --id x --title T --subtitle S --capture C --direction work/<take>/film/direction.json \
                                          [--thumbnail IMG] [--chapters-file PLAN.toml|.json] [--copy-film] [--hold]
     python -m dancecap.film_library chapters --direction work/<take>/film/direction.json [--plan PLAN]   # preview the chapters
@@ -346,7 +347,7 @@ def preset_spec(name: str, path: Path = PRESETS) -> dict:
 
 def _spec_from_args(a: argparse.Namespace) -> dict:
     spec: dict = {}
-    preset = "demo" if a.demo else "recap" if a.recap else "carlos_aline" if a.carlos_aline else a.preset
+    preset = "demo" if a.demo else "recap" if a.recap else "carlos_aline" if a.carlos_aline else "john_lula" if a.john_lula else (a.heat or a.preset)
     if preset:
         spec.update(preset_spec(preset, Path(a.presets) if a.presets else PRESETS))
     for key in ("id", "title", "subtitle", "capture", "direction", "thumbnail"):
@@ -427,6 +428,8 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--demo", action="store_true", help="the preset 'demo' of takes/library/films.toml")
     b.add_argument("--recap", action="store_true", help="the preset 'recap'")
     b.add_argument("--carlos-aline", action="store_true", help="the preset 'carlos_aline' (a heat: its direction is generated)")
+    b.add_argument("--john-lula", action="store_true", help="the preset 'john_lula' (a one-song heat: its direction is generated)")
+    b.add_argument("--heat", help="the name of any heat preset of the preset file (same as --preset: a [<name>.heat] block makes `build` write its direction first)")
     b.add_argument("--keep-film", action="store_true", help="a heat preset: do not rewrite its direction.json (use the one on disk)")
     b.add_argument("--preset", help="any other preset name of the preset file")
     b.add_argument("--presets", help="a preset file other than takes/library/films.toml")

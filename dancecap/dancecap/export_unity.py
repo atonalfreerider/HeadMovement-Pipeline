@@ -306,6 +306,14 @@ def _beats_audio(work: Path, beats: Path | None, timing: dict | None, time_to_au
     return [[round(t + time_to_audio, 6), k] for t, k in grid]
 
 
+def _step_for_unity(s: dict, keep: tuple) -> dict:
+    """one touchdown for the viewer: the kept keys, plus `low_confidence` (reasons) when the take's analysis flagged the step (dancecap.jl_lowconf: interpolated / hidden stretches, zoom steps)"""
+    out = {k: s.get(k) for k in keep}
+    if s.get("low_confidence"):
+        out["low_confidence"] = s["low_confidence"]
+    return out
+
+
 def _timing_for_unity(timing: dict, kin: Path, times: np.ndarray, warnings: list[str] | None = None) -> dict:
     """The parts of timing.json the overlays use, plus per-frame |jerk| (SMPL-24 joints) on the capture grid.
     A role's jerk is used only when its kinematics grid covers the capture's [t0, t1] within half a frame (else a
@@ -315,8 +323,7 @@ def _timing_for_unity(timing: dict, kin: Path, times: np.ndarray, warnings: list
     keep = ("t", "foot", "async_ms", "beat_t", "beat_type", "sigma", "count", "measure", "detect_rate", "method")
     out = {"version": 1, "time": "reference seconds; audio time = t + capture.time_to_audio",
            "beats": {k: timing["beats"].get(k) for k in ("grid", "grid_columns", "measure_s", "tempo_bpm", "warnings")},
-           "footsteps": {r: [{k: s.get(k) for k in keep} for s in timing.get("footsteps", {}).get(r, [])]
-                         for r in ROLES},
+           "footsteps": {r: [_step_for_unity(s, keep) for s in timing.get("footsteps", {}).get(r, [])] for r in ROLES},
            "asynchrony": {}}
     for r in ROLES:
         fs = timing.get("asynchrony", {}).get(r, {}).get("footsteps", {})

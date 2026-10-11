@@ -119,3 +119,9 @@ identity_mouth = 0.4
 identity = "work/john_lula/face_shape/follow_identity.npz"
 identity_weight = 0.65
 identity_mouth = 0.4
+
+# Unity capture (J4, 2026-10-11; python -m dancecap.jl_export): the stitched REFINED motion; the viewer's floor visuals are not turned: the world frame's X is already
+# the hall's axis (J2: the far wall is parallel to X within 1 degree, work/john_lula/NOTES_J2.md).
+[export]
+smplx_dir = "smplx_rf2_noslip"
+floor_yaw_deg = 0.0

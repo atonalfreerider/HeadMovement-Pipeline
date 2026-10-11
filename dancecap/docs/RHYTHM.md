@@ -160,6 +160,25 @@ A take without a `song/` folder works: the grid's own gaps (more than 1.6 slots)
 4. Set `rhythm_score = true` in the take's `[<preset>.heat]` block and rebuild the film.
 5. Compare couples only with the same recipe on takes of comparable length (the evidence and the interval grow with the time seen), and never quote a number without its interval and confidence.
 
+## A second heat: one handheld phone, one song (`john_lula`, 2026-10-11)
+
+Same recipe, same reference levels (out of sample), `python -m dancecap.rhythm run john_lula` (17 s; the inputs: `timing/timing.json` on the heat's own beat grid `song/beats_heat.json`, constant 75.0 BPM, 24 whole bars 3.40 to 80.20 s,
+`physics/physics.npz`, the video's own mono audio `audio/audio_overlap.wav` for the accents; `beats_merged.json` has no `song` column, so the grid confidence stays at the default 0.8). The motion is a MONOCULAR fit (the distance from the camera is +-10 %; the body sway is read from the horizontal speed of the centre of mass, whose band-passed lock does not depend on that scale).
+
+| | |
+|---|---|
+| final score | **57.1**, confidence **medium** (0.60, lock evidence 4.0 baseline sd, 76.4 s of beat-covered time), 90 % noise interval 24.8 to 89.3 |
+| components | body sway 0.68, footwork 0.06, recent form 0.64, couple sync 0.96, accents 0.34 |
+| levels | both roles lock at the half-bar level (lead 0.48 against 0.34 for the wrong-tempo metronomes, 2.4 baseline sd; follow 0.63 against 0.36, 4.4 sd) |
+| the +-30 ms offset | 54.7 to 57.2 (only the accents move; body, feet and couple are phase-free) |
+| music-referenced components only (body, footwork, recent form, weights 45 / 15 / 20) | 55 |
+| live number | starts at 50, reads "insufficient beat-lock evidence" until **44.7 s** (live evidence below 0.3 for the first 41 s of the music: 49 % of the beat-covered time is out of evidence), 63 at 52 s, 66 at 60 s, then 51 to 54 |
+| footwork | 98 touchdowns (lead 72, follow only 26: her steps are small and half hidden), 40 % within 60 ms of a slot against 30 % at random, R 0.08 against 0.10: no step lock (zouk steps are not on every slot), as for the other heat |
+| no-beat stretches | the 3.4 s lead-in and the 7.9 s of applause (13 % of the video): the score is frozen there, the final card shows at 84 to 88 s over the applause |
+
+Reading: the sway locks to the song about as strongly as in the professional demo and the other heat (the body component 0.68 against 0.39 and 0.48, the couple coherence saturated at 0.96 as for any two bodies moving together), but the number is a statement about 76 s of one phone's monocular fit:
+it settles only in the last 30 s, the interval (25 to 89) is wide, the follow's half-hidden stretches (27 to 32 s, 43 to 46 s, 83 to 88 s) are the pose prior's guesses (flagged low-confidence in the layers, `dancecap.jl_lowconf`), and nothing validates the scale. Not tuned: the first run is the one reported.
+
 ## Limits (read before quoting a number)
 
 * **No validated mapping to judges' scores.** There is no ground truth: no judged heat with scores was available, so nothing says that 41 is "good" or that a higher number wins. It is an estimate of motion-music phase-locking against a reference taken from one professional demonstration.

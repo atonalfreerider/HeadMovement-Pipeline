@@ -167,3 +167,39 @@ kojo = "First song: Kojo Funds"
 mix = "DJ mix"
 guetta = "Second song: David Guetta"
 end = "Bow and applause"
+
+
+# The Jack & Jill heat of John and Lula (capture 08_JohnLula): ONE phone, ONE song (unknown, 75 BPM), a film without narration like the Carlos + Aline one
+# (film_heat.py). The chapters are the song structure of song/segments.json (intro without a beat, the music, the applause) with the music cut into its
+# three 8-bar phrases (24 whole bars, 3.2 s each: `split`); the looks are the Carlos + Aline heat's (no room, avatars at 75 % transparency, skeleton
+# lines, the live rhythm score). The camera keeps both dancers framed and close (the couple about 50 to 60 percent of the frame height; the overhead views closer).
+[john_lula]
+id = "john_lula"
+title = "John + Lula"
+subtitle = "Jack & Jill heat: the whole dance in 3D from one phone, with its beat grid and rhythm score"
+capture = "08_JohnLula"
+direction = "dancecap/work/john_lula/film/direction.json"
+thumbnail = "dancecap/work/john_lula/film/review/card_thumb.jpg"   # a clean 3D frame of the two avatars, no text
+
+[john_lula.heat]
+name = "john_lula"
+take = "john_lula"
+songs = "dancecap/work/john_lula/song/segments.json"
+avatar_opacity = 0.25       # "75 % transparent" read literally (opacity 0.25), as for the other heat; the one number to edit for the other reading (0.75)
+room = false                # the film does not show the room (J2's hall model is weak: wall offsets +-2.5 m)
+skeleton_lines = 1.0
+rhythm_score = true
+radius_m = 3.0              # a little wider than the default 2.7 m: the couple about 50 to 60 percent of the frame height (portrait), both always inside the frame
+radius_vertical_m = 2.4
+overhead_fill = 0.85
+no_overhead_after_s = 80.0  # no overhead view in the applause
+
+[john_lula.heat.split]
+music = { every_s = 25.6 }  # 24 bars of 3.2 s = three 8-bar phrases
+
+[john_lula.heat.titles]
+intro = "Intro, no beat yet"
+music_1 = "Dance, first phrase (bars 1-8)"
+music_2 = "Dance, second phrase (bars 9-16)"
+music_3 = "Dance, third phrase (bars 17-24)"
+outro = "Applause"
