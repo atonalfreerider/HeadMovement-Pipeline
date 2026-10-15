@@ -1,5 +1,8 @@
 # atlas_bridge
 
+> **Superseded (2026-10-15).** The one-phone -> Atlas / 4D provider -> virtual cameras -> MAMMA route now lives in
+> `dancecap.mono4d`; findings and the vendor status are in `dancecap/docs/MONO4D_NOVEL_VIEWS.md`. This folder is kept as history.
+
 ## Larissa/Kadu multiview test — 2026-10-02
 
 NoPo4D was tested on `dances/Larissa-Kadu-demo`, including handheld motion,

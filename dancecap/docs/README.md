@@ -37,12 +37,13 @@ sit one level up in [`../CONTRACTS.md`](../CONTRACTS.md).
 |---|---|
 | [HAIR_REFERENCE.md](HAIR_REFERENCE.md) | Acceptance criteria for the follow's hair in the viewer. Sections 2-4 hold a dancer's measurements: strip them before sharing the file. |
 | [DANCER_SPLATS_RESEARCH.md](DANCER_SPLATS_RESEARCH.md) | Research and build notes for Gaussian splats of the dancers guided by the avatars (a PC review layer, not for the headset). |
+| [MONO4D_NOVEL_VIEWS.md](MONO4D_NOVEL_VIEWS.md) | One phone video -> a 4D provider (Gracia, World Labs Atlas, the World API) -> virtual cameras -> MAMMA: what the vendors offer (2026-10-15), why generated views are not measurements, `dancecap.mono4d`, the hold-out protocol and next steps. |
 
 ## Other documentation in the repository
 
 | Document | What it is |
 |---|---|
-| [`../../atlas_bridge/README.md`](../../atlas_bridge/README.md) | The early prototype: audio sync of phone videos and the NoPo4D experiment, with the quality gate that rejected it. Historical. |
+| [`../../atlas_bridge/README.md`](../../atlas_bridge/README.md) | The early prototype: audio sync of phone videos and the NoPo4D experiment, with the quality gate that rejected it. Historical; the Atlas route continues in [MONO4D_NOVEL_VIEWS.md](MONO4D_NOVEL_VIEWS.md). |
 | `../takes/*.toml` | Per-take configuration (footage folder, clocks, window, dancers, camera types); each file carries its own comments. |
 | `../taxonomy/` | The move graph, trigger rules and Portuguese terminology as data. |
 | `../worlds/` | World package manifests (hashes and paths only) that tie a take to its room model. |

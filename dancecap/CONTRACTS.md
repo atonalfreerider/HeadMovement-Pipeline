@@ -1723,3 +1723,33 @@ One handheld camera (cam `01`), a floor heat with other couples: `work/john_lula
 merged = the two mask boxes overlap > 0.5, floor = NaN until the room calibration) and ADDS: `kp_wb` (F, 2, 133, 3) COCO-WholeBody from RTMW-x (17 body, 6 feet, 68 face, 42 hands; score = min(1, RTMW peak / 6)), `wb_variant`,
 `mask_area`, `mask_agree`, `mask_dist`, `visible` (zoom-normalised), `skel_in_partner` (> 0.5: the dancer is hidden, the skeleton is a guess), `edge`, `box_iou`, `bib_dist`. `masks_01.npz`: `m_<frame>_<0 John | 1 Lula>` PNG bytes + box, area.
 Identity = competition bibs (John 124, Lula 116; 126 is another couple) read by EasyOCR on a pod, anchors from a pair Viterbi, SAM 2.1 masks between anchors (forward + backward runs, their IoU = `mask_agree`). Method, checks, hard stretches: `work/john_lula/NOTES_J3a.md`.
+
+
+## mono4d - one phone -> 4D provider -> virtual cameras (2026-10-15, additive; dancecap.mono4d, docs/MONO4D_NOVEL_VIEWS.md)
+
+`work/<take>/mono4d/<run>/` (run = `<provider>_<cam>_<t0 ms>_<t1 ms>` unless named):
+`request/request.json` (Mono4DRequest: take, input_cam, provider, t0, t1, grid = the 30 Hz master grid of the window, video, video_fps,
+video_frames, targets, allow_upload, notes); `request/inputs/<cam>.mp4` (every canonical frame of the window, upright, at the window's mean
+rate) + `<cam>.times.json` {t, source_files} (frame i = t[i]); `request/source_trajectory.json` and `request/target_trajectory.json`
+(`dancecap.mono4d.trajectory/1`: time_s, frame "world" | "scene", world_from_scene, cameras {name: {kind ring | holdout | source, width,
+height, static, frames [{t, ok, fx, fy, cx, cy, c2w_opencv 4x4, c2w_opengl 4x4}]}}; a static camera has one frame entry; source = per INPUT
+frame, targets = per grid time; ring cameras v00.., held-out real-phone poses h<cam>); `request/REQUEST.md`; `drop/` (the delivery:
+`views/<name>.mp4` or `views/<name>/NNNNNN.jpg` with exactly one frame per grid time at the requested size, or `asset.mint` /
+`splats/frame_NNNNN.ply` (+ `scene_cameras.json` {input: [T x 4x4 c2w, OpenCV axes, scene frame]} or `world_from_scene.json` Sim3);
+`static_world.ply` from the World API); `provider_job.json` (ids only, never a key); `result.json` (Mono4DResult: provider, kind views |
+mint | ply_sequence | static_splat, dynamic, views {name: path}, asset, world_from_scene {s, R, t, rms m, rot_err_deg {median, p95}, n,
+spread_m}, scene_meta, checks, notes); `render_job.json` (render_gracia.py input: COLMAP qvec/tvec in the asset frame, times in asset
+seconds); `judge.json` (judge.judge_views: views {name: {frames [{t, path, ok, why, answers, model}], judged, errors, bad, bad_frac, ok}},
+input_tokens, model, thresholds); `views2d.json` ({h<cam>: holdout.compare_views}); `holdout.json` ({reference, test, baseline, window,
+route, baseline_fit, verdict}); `quality_gate.json` (gate.decide: admit, views_admitted, views_dropped, why, notes, checks, thresholds).
+
+Virtual take `work/<take>__m4d_<run>/` (virtual_take.package): the CONTRACTS layout for frames/ and cameras/ (generated views: one frame
+per grid time, t = grid time; the real input phone: its own frames and track over the window), `cameras/world_from_sfm.json` = identity,
+`mono4d.json` (`dancecap.mono4d.virtual_take/1`: source_take, run, provider, input_cam, real_cams, synthetic_cams, independent_views = 1,
+window, grid [t0, t1, n], world_from_scene, excluded, warning). Rule: generated views are the provider's prior, never measurements;
+h<cam> views are for comparison with the real phone and stay out of the fit set; nothing enters MAMMA without quality_gate.json admit.
+
+`work/mono4d/vendor_watch/<date_time>.json` (`dancecap.mono4d.vendor_watch/1`: vendors {v: {pages [{url, passages, chars, model,
+input_tokens, capabilities {cap: {stated, ruled_out, evidence_id, evidence_conf, evidence}}}], decision {cap: {status yes | no | unclear,
+p, url, evidence}, _ready}}, changes); `work/mono4d/calibration/` (labelled mannequin frames, labels.json, calibration_<variant>.json).
+
