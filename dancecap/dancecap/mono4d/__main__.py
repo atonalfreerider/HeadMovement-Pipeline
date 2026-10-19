@@ -14,6 +14,8 @@
     oracle   <take> --run R                 stand-in delivery: the take's own fit drawn as mannequins at every camera
     viggle-test <take> --cam 06 --t0 58 --t1 62 --allow-upload
                                             Viggle JST-2 Motion 3D per dancer (masked crops), scored vs the take's fit
+    cand-score <take> --name N [--t0 --t1]  score one one-camera pose candidate (mono4d/cand/<name>) vs the fit
+    leaderboard <take> [--t0 --t1]          every candidate + the multi-view floor in one table
     atlas-test <take> --cam 06 --t 60 --targets 01,03,05,07 --allow-upload [--clean-plate]
                                             Atlas beta (Marble 2 API): pose one frame, render the other phones' poses,
                                             score them against those phones (YOLO PCK, Jev) -> mono4d/atlas/<cam>_<ms>/
@@ -280,6 +282,22 @@ def cmd_viggle_test(a) -> int:
     return 0
 
 
+def cmd_cand_score(a) -> int:
+    from .candidates import score
+    print(json.dumps(score(a.take, a.name, (a.t0, a.t1))["roles"], indent=1))
+    return 0
+
+
+def cmd_leaderboard(a) -> int:
+    from .candidates import import_viggle, leaderboard
+    vd = _work(a.take) / "mono4d" / "viggle"
+    for d in (sorted(vd.iterdir()) if vd.exists() else []):
+        if (d / "lead_mixamo.glb").exists():
+            import_viggle(a.take, d)
+    print(leaderboard(a.take, (a.t0, a.t1)))
+    return 0
+
+
 def cmd_calibrate(a) -> int:
     from . import calibrate
     doc = calibrate.run(times=a.times, with_source=not a.no_source)
@@ -359,6 +377,14 @@ def main(argv=None) -> int:
     sp.add_argument("--reference", help="smplx dir to score against (default work/<take>/smplx)")
     sp.add_argument("--allow-upload", action="store_true", help="the owner's go-ahead to send the clips to Viggle")
     sp.set_defaults(fn=cmd_viggle_test)
+    for name, fn in (("cand-score", cmd_cand_score), ("leaderboard", cmd_leaderboard)):
+        sp = sub.add_parser(name)
+        sp.add_argument("take")
+        if name == "cand-score":
+            sp.add_argument("--name", required=True)
+        sp.add_argument("--t0", type=float, default=58.0)
+        sp.add_argument("--t1", type=float, default=62.0)
+        sp.set_defaults(fn=fn)
     sp = sub.add_parser("judge-calibrate")
     sp.add_argument("--times", type=int, default=3)
     sp.add_argument("--no-source", action="store_true")
