@@ -10,8 +10,13 @@ file we can render ourselves. Vendors change fast (Atlas was announced 2026-09-0
     <cap>_evidence    Choice over the passage ids (+ "none"): which passage bears most directly on it?
 
 Code owns the rest: a capability is "yes" when stated >= 0.7 on some page and not ruled out (>= 0.6 on some page),
-"no" when ruled out, else "unclear"; a vendor is "ready" when monocular_input, dynamic_output and self_serve_api are
-all "yes" and camera_control or export is. Snapshots go to work/mono4d/vendor_watch/<date>.json with the evidence
+"no" when ruled out, else "unclear"; a vendor is "ready" (for the 4D-provider route) when monocular_input,
+dynamic_output and self_serve_api are all "yes" and camera_control or export is. Since 2026-10-19 the watch also covers
+the tools proposed for the owner's end goal ("highly realistic 3D moving dancers with correct poses and natural
+appearance, clothes, hair ... from monocular video"): the Atlas beta docs, NVIDIA Kimodo, Dense4D, Viggle JST-2 and the
+Unity Learned Motion Matching asset, with five more capabilities (released, motion_from_video, clothing_hair,
+motion_export, engine_playback). `_dancer_fit` counts the "yes" answers among DANCER_NEEDS: a ranking aid, not a
+verdict (the measured tests in docs/MONO4D_NOVEL_VIEWS.md decide). Snapshots go to work/mono4d/vendor_watch/<date>.json with the evidence
 passage of every answer, and each run reports what changed since the previous snapshot.
 
     python -m dancecap.mono4d vendors [--vendor gracia] [--no-save]
@@ -42,6 +47,17 @@ VENDORS = {
     "worldlabs_world_api": {"name": "the World Labs World API (Marble)", "urls": [
         "https://docs.worldlabs.ai/marble/create/prompt-guides/video-prompt.md",
         "https://docs.worldlabs.ai/api/index.md", "https://docs.worldlabs.ai/marble/create/prompt-guides/index.md"]},
+    "worldlabs_atlas_beta": {"name": "the World Labs Atlas beta API (Marble 2)", "urls": [
+        "http://atlas-beta.worldlabs.ai/docs/best-practices.md", "http://atlas-beta.worldlabs.ai/docs/how-to-use-atlas.md",
+        "http://atlas-beta.worldlabs.ai/docs/atlas-generate.md"]},
+    "nvidia_kimodo": {"name": "NVIDIA Kimodo", "urls": [
+        "https://research.nvidia.com/labs/sil/projects/kimodo/",
+        "https://raw.githubusercontent.com/nv-tlabs/kimodo/main/README.md"]},
+    "dense4d": {"name": "Dense4D", "urls": ["https://alpguler.com/dense4d/", "https://arxiv.org/abs/2610.22325"]},
+    "viggle_jst2": {"name": "Viggle JST-2", "urls": ["https://viggle.ai/jst2", "https://docs.viggle.ai/v1/introduction"]},
+    "unity_lmm": {"name": "the Learned Motion Matching Unity asset (AiKodex)", "urls": [
+        "https://assetstore.unity.com/packages/tools/animation/learned-motion-matching-312510",
+        "https://www.aikodex.com/"]},
 }
 
 CAPABILITIES = {
@@ -69,9 +85,28 @@ CAPABILITIES = {
     "humans_in_motion": {
         "claim": "is shown or stated to work on real people performing in motion, such as dancers, athletes, actors "
                  "or musicians",
-        "against": "tells users to avoid filming moving people"},
+        "against": "tells users to avoid filming moving people, or says people are not yet a strength of its models"},
+    "released": {
+        "claim": "can be used today: its code and model weights are publicly downloadable, or a public product or API "
+                 "is open to anyone",
+        "against": "is not available yet: code or weights are coming soon, or access is only on request"},
+    "motion_from_video": {
+        "claim": "estimates or captures the 3D body motion of real people from ordinary video",
+        "against": None},
+    "clothing_hair": {
+        "claim": "reconstructs, tracks or models people's clothing and hair, not only a skeleton or a body model",
+        "against": None},
+    "motion_export": {
+        "claim": "outputs human motion as skeleton animation or body-model parameters (for example BVH, FBX, SMPL, "
+                 "SMPL-X or SOMA) that a game engine can play",
+        "against": None},
+    "engine_playback": {
+        "claim": "runs inside or plays back in a real-time engine such as Unity or Unreal, or on a VR headset",
+        "against": None},
 }
 READY_NEEDS = ("monocular_input", "dynamic_output", "self_serve_api")
+DANCER_NEEDS = ("monocular_input", "humans_in_motion", "motion_from_video", "clothing_hair", "released",
+                "motion_export")
 
 
 class _Text(HTMLParser):
@@ -225,6 +260,7 @@ def decide(pages: list[dict]) -> dict:
             out[cap] = {"status": "unclear", "p": best_s["stated"], "url": url_s, "evidence": best_s["evidence"]}
     out["_ready"] = (all(out[c]["status"] == "yes" for c in READY_NEEDS)
                      and any(out[c]["status"] == "yes" for c in ("camera_control", "export")))
+    out["_dancer_fit"] = sum(out[c]["status"] == "yes" for c in DANCER_NEEDS)
     return out
 
 
@@ -267,13 +303,18 @@ def run(vendors: list[str] | None = None, save: bool = True, client=None, http=N
     return doc
 
 
+ABBR = {"monocular_input": "mono", "dynamic_output": "4D", "self_serve_api": "api", "camera_control": "cam",
+        "export": "export", "humans_in_motion": "people", "released": "released", "motion_from_video": "mocap",
+        "clothing_hair": "cloth/hair", "motion_export": "anim-out", "engine_playback": "engine"}
+
+
 def table(doc: dict) -> str:
+    """One row per vendor: each capability as yes (Y) / no (n) / unclear (?) with its P, then ready and dancer fit."""
     caps = list(CAPABILITIES)
-    rows = ["vendor".ljust(22) + "".join(c[:15].ljust(17) for c in caps) + "ready"]
+    mark = {"yes": "Y", "no": "n", "unclear": "?"}
+    rows = ["vendor".ljust(22) + "".join(ABBR.get(c, c)[:10].ljust(11) for c in caps) + "ready  dancer"]
     for v, d in doc["vendors"].items():
-        cells = []
-        for c in caps:
-            x = d["decision"][c]
-            cells.append(f"{x['status']} {x.get('p', 0) or 0:.2f}".ljust(17))
-        rows.append(v.ljust(22) + "".join(cells) + str(d["decision"]["_ready"]))
+        dec = d["decision"]
+        cells = [f"{mark[dec[c]['status']]} {dec[c].get('p', 0) or 0:.2f}".ljust(11) for c in caps]
+        rows.append(v[:21].ljust(22) + "".join(cells) + f"{str(dec['_ready']):7}{dec['_dancer_fit']}/{len(DANCER_NEEDS)}")
     return "\n".join(rows)
