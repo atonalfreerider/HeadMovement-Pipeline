@@ -305,6 +305,16 @@ class Pod:
     def put(self, local: Path, remote: str, timeout: float | None = None) -> None:
         self._scp(str(local), f"{self.user}@{self.host}:{remote}", timeout)
 
+    def put_secret(self, name: str, value: str, timeout: float = 60) -> None:
+        """Write a secret to /workspace/.secrets/<name> (mode 600) through ssh STDIN: the value never appears in a command
+        line, a log, a bundle or a session file."""
+        if not name.replace("_", "").isalnum() or not name[0].isalpha():
+            raise ValueError(f"bad secret name {name!r}")
+        p = subprocess.run(self._ssh_base() + [f"bash -lc 'umask 077; mkdir -p /workspace/.secrets && cat > /workspace/.secrets/{name}'"],
+                           input=value, capture_output=True, text=True, timeout=timeout)
+        if p.returncode != 0:
+            raise RuntimeError(f"could not write secret {name} on the pod (rc {p.returncode})")
+
     def get(self, remote: str, local: Path, timeout: float | None = None) -> None:
         local.parent.mkdir(parents=True, exist_ok=True)
         self._scp(f"{self.user}@{self.host}:{remote}", str(local), timeout)

@@ -91,6 +91,7 @@ class JobSpec:
     needs: list[str] = field(default_factory=list)  # bootstrap features
     exclude: list[str] = field(default_factory=list)
     env: dict = field(default_factory=dict)
+    secrets: dict = field(default_factory=dict)  # {ENV_NAME: local key file}: pushed over ssh stdin, exported per command
     cwd: str = "dancecap"
     setup: list[str] = field(default_factory=list)
     verify: list[str] = field(default_factory=list)
@@ -162,7 +163,7 @@ def _parse_v1(d: dict, source: str | None) -> JobSpec:
                    name=d["name"], take=d["take"], max_minutes=mm,
                    commands=[_command(c, i, mm) for i, c in enumerate(d["commands"])],
                    outputs=[ws_rel(o) for o in d["outputs"]], inputs=inputs, needs=list(d.get("needs", [])),
-                   exclude=list(d.get("exclude", [])), env=dict(d.get("env", {})),
+                   exclude=list(d.get("exclude", [])), env=dict(d.get("env", {})), secrets=_secrets(d.get("secrets", {})),
                    cwd=ws_rel(d.get("cwd", "dancecap")).rstrip("/"), setup=list(d.get("setup", [])),
                    verify=[ws_rel(v) for v in d.get("verify", d["outputs"])], extract=d.get("extract", "workspace"),
                    after_download=list(d.get("after_download", [])), notes=list(d.get("notes", [])), source=source)
@@ -568,6 +569,36 @@ def pack_command(job: JobSpec, log_rel: str, out_path: str) -> str:
             f"echo SIZE $(stat -c %s {out_path}); echo SHA $(sha256sum {out_path} | cut -d' ' -f1)")
 
 
+SECRETS_DIR = "/workspace/.secrets"
+
+
+def _secrets(d: dict) -> dict:
+    """{ENV_NAME: local key file} (names upper-case identifiers; files are read only when the job runs)."""
+    out = {}
+    for k, v in (d or {}).items():
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]*", str(k)):
+            raise ValueError(f"secret name must be an upper-case identifier: {k!r}")
+        out[str(k)] = str(v)
+    return out
+
+
+def secret_exports(job: JobSpec) -> str:
+    """Shell prefix exporting the job's secrets from the pod's 0600 files (never their values)."""
+    return "".join(f"export {k}=\"$(cat {SECRETS_DIR}/{k})\"; " for k in job.secrets)
+
+
+def push_secrets(pod, job: JobSpec) -> list[str]:
+    """Read each secret's local key file and write it to the pod through ssh stdin -> the names pushed."""
+    names = []
+    for k, f in job.secrets.items():
+        p = Path(os.path.expanduser(f))
+        if not p.exists():
+            raise FileNotFoundError(f"secret {k}: key file {p} does not exist")
+        pod.put_secret(k, p.read_text().strip())
+        names.append(k)
+    return names
+
+
 def command_script(job: JobSpec, cmd: Command, log_rel: str) -> str:
     """Pod shell for one command: skip when its .done marker exists; log with tee; exit code to <name>.rc."""
     logd = f"{POD_WS}/{log_rel}"
@@ -575,7 +606,7 @@ def command_script(job: JobSpec, cmd: Command, log_rel: str) -> str:
                                                                 **_progress_env(job, cmd, log_rel), **job.env}.items())
     secs = int(cmd.timeout_min * 60)
     return (f"mkdir -p {logd}; if [ -f {logd}/{cmd.name}.done ]; then echo '[pod-runner] {job.name}/{cmd.name} "
-            f"already done'; exit 0; fi; cd {POD_WS}/{job.cwd} || exit 97; export {envs}; set -o pipefail; "
+            f"already done'; exit 0; fi; cd {POD_WS}/{job.cwd} || exit 97; export {envs}; {secret_exports(job)}set -o pipefail; "
             f"echo \"[pod-runner] $(date -u +%FT%TZ) start {job.name}/{cmd.name}\" | tee -a {logd}/{cmd.name}.log; "
             f"timeout --kill-after=30 {secs} bash -c {shlex.quote(cmd.cmd)} 2>&1 | tee -a {logd}/{cmd.name}.log; "
             f"rc=${{PIPESTATUS[0]}}; echo $rc > {logd}/{cmd.name}.rc; "
@@ -908,9 +939,14 @@ def _run_job(ses: Session, pod, job: JobSpec, st: dict) -> None:
         if rc != 0:
             failed = f"archive {Path(a).name} rc={rc}"
             break
+    if job.secrets and not failed:
+        try:
+            st["secrets"] = ses.timed(f"{job.name}/secrets", lambda: push_secrets(pod, job))
+        except Exception as e:  # never echo a value: the message names the secret / file only
+            failed = f"secrets: {type(e).__name__}: {e}"
     for i, c in enumerate(job.setup if not failed else []):
         rc = ses.timed(f"{job.name}/setup{i + 1}", lambda c=c: pod.run(
-            f"cd {POD_WS}/{job.cwd} && {c}", check=False, log=ses.runner_log, timeout=1800))
+            f"cd {POD_WS}/{job.cwd} && {secret_exports(job)}{c}", check=False, log=ses.runner_log, timeout=1800))
         if rc != 0:
             failed = f"setup{i + 1} rc={rc}"
             break
