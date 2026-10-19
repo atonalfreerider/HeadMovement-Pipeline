@@ -53,10 +53,10 @@ def test_spent_counts_open_and_closed_rows(tmp_path, monkeypatch):
     assert abs(remote.remaining() - 0.2) < 0.01
 
 
-def test_default_cap_is_101_7(monkeypatch):
+def test_default_cap_is_106_7(monkeypatch):
     monkeypatch.delenv("DANCECAP_RUNPOD_CAP", raising=False)
-    assert remote.DEFAULT_CAP == 101.7  # raised 2026-10-09 (was 80, raised by the user 2026-10-07)
-    assert remote.cap() == 101.7
+    assert remote.DEFAULT_CAP == 106.7  # J3b 2026-10-11 (101.7 on 2026-10-09, 80 on 2026-10-07)
+    assert remote.cap() == 106.7
 
 
 def test_create_args_request_direct_ssh(monkeypatch):
@@ -362,3 +362,37 @@ def test_echo_survives_a_console_that_cannot_encode_pod_output(monkeypatch):
     remote._echo("[pod] Creating new Ultralytics Settings v0.0.6 file \u2705\n")  # used to raise and kill the session
     out.flush()
     assert raw.getvalue().decode("cp1252") == "[pod] Creating new Ultralytics Settings v0.0.6 file ?\n"
+
+
+def test_job_secrets_are_pushed_and_exported_never_written(tmp_path):
+    """secrets {ENV: local key file}: validated names, the value read only at push time, exported from the pod's 0600
+    file in setup and command shells; the spec, its fingerprint and the scripts carry the name, never the value."""
+    key = tmp_path / "hf-token.txt"
+    key.write_text("  hf_exampleSECRET123 \n")
+    d = {"name": "s", "take": "x", "max_minutes": 5, "commands": ["echo ok"], "outputs": ["dancecap/work/x/o/"],
+         "secrets": {"HF_TOKEN": str(key)}}
+    job = rj._parse_v1(d, None)
+    script = rj.command_script(job, job.commands[0], "dancecap/work/runpod/sessions/s1/pod_logs/s")
+    assert 'export HF_TOKEN="$(cat /workspace/.secrets/HF_TOKEN)"' in script and "hf_example" not in script
+    assert "hf_example" not in json.dumps(rj.asdict(job)) and "hf_example" not in job.fingerprint()
+
+    class FakePod:
+        got = {}
+
+        def put_secret(self, k, v):
+            self.got[k] = v
+
+    pod = FakePod()
+    assert rj.push_secrets(pod, job) == ["HF_TOKEN"] and pod.got == {"HF_TOKEN": "hf_exampleSECRET123"}
+    for bad in ({"bad-name": str(key)}, {"lower": str(key)}):
+        try:
+            rj._parse_v1({**d, "secrets": bad}, None)
+            raise AssertionError("bad secret name accepted")
+        except ValueError:
+            pass
+    missing = rj._parse_v1({**d, "secrets": {"HF_TOKEN": str(tmp_path / "nope.txt")}}, None)
+    try:
+        rj.push_secrets(pod, missing)
+        raise AssertionError("missing key file accepted")
+    except FileNotFoundError as e:
+        assert "nope.txt" in str(e)
