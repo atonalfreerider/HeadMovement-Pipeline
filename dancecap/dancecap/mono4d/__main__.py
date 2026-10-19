@@ -12,6 +12,8 @@
     gate     <take> --run R                 may the views enter MAMMA? -> quality_gate.json
     judge-calibrate [--times 3]             live check of the judge on labelled mannequin frames (no real people)
     oracle   <take> --run R                 stand-in delivery: the take's own fit drawn as mannequins at every camera
+    viggle-test <take> --cam 06 --t0 58 --t1 62 --allow-upload
+                                            Viggle JST-2 Motion 3D per dancer (masked crops), scored vs the take's fit
     atlas-test <take> --cam 06 --t 60 --targets 01,03,05,07 --allow-upload [--clean-plate]
                                             Atlas beta (Marble 2 API): pose one frame, render the other phones' poses,
                                             score them against those phones (YOLO PCK, Jev) -> mono4d/atlas/<cam>_<ms>/
@@ -270,6 +272,14 @@ def cmd_atlas_test(a) -> int:
     return 0
 
 
+def cmd_viggle_test(a) -> int:
+    from .viggle import run
+    rep = run(a.take, a.cam, a.t0, a.t1, allow_upload=a.allow_upload, fps=a.fps, reference=a.reference)
+    print(json.dumps({r: {k: d[k] for k in ("frames", "joints", "pa_mpjpe_mm", "limb_err_deg_all")}
+                      for r, d in rep["dancers"].items()}, indent=1))
+    return 0
+
+
 def cmd_calibrate(a) -> int:
     from . import calibrate
     doc = calibrate.run(times=a.times, with_source=not a.no_source)
@@ -340,6 +350,15 @@ def main(argv=None) -> int:
     sp.add_argument("--no-jev", action="store_true")
     sp.add_argument("--allow-upload", action="store_true", help="the owner's go-ahead to send the frames to World Labs")
     sp.set_defaults(fn=cmd_atlas_test)
+    sp = sub.add_parser("viggle-test")
+    sp.add_argument("take")
+    sp.add_argument("--cam", required=True)
+    sp.add_argument("--t0", type=float, required=True)
+    sp.add_argument("--t1", type=float, required=True)
+    sp.add_argument("--fps", type=float, default=30.0)
+    sp.add_argument("--reference", help="smplx dir to score against (default work/<take>/smplx)")
+    sp.add_argument("--allow-upload", action="store_true", help="the owner's go-ahead to send the clips to Viggle")
+    sp.set_defaults(fn=cmd_viggle_test)
     sp = sub.add_parser("judge-calibrate")
     sp.add_argument("--times", type=int, default=3)
     sp.add_argument("--no-source", action="store_true")
