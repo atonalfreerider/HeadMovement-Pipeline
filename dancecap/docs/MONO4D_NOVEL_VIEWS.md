@@ -6,6 +6,16 @@ candidate APIs. This file is the decision record: what the two vendors offer tod
 (`dancecap.mono4d`), what was tested, and the next steps. Numbers marked *measured* come from runs on 2026-10-15.
 Numbers marked *stated* come from the vendors' own pages, read that day; *estimate* means reasoned, not measured.
 
+> **Update 2026-10-19 (section 10).** The owner now has Atlas beta access and widened the question: "highly
+> realistic 3D moving dancers with correct poses and natural appearance, clothes, hair ... from monocular video
+> (handheld phone)", with Atlas, Unity Learned Motion Matching, NVIDIA Kimodo, Dense4D and Viggle JST-2 as
+> candidates ("there are several other new tools that might do a better job"). Section 10 holds:
+> - live measurements of Atlas and Viggle on the 38-s take;
+> - a TypeSafe judge calibrated on real frames;
+> - a verified research sweep, including stronger released tools than the five named;
+> - the scoring harness every candidate now reports to;
+> - the pod tests of the candidates.
+
 ---
 
 ## 1. Summary
@@ -268,3 +278,123 @@ manual provider takes their output as-is: render the requested trajectories and 
    into MAMMA views. Not a route for phone videos.
 6. Re-run `python -m dancecap.mono4d vendors` monthly, or after announcements; the table and its change log say when
    a vendor becomes "ready".
+
+---
+
+## 10. Tool round 2026-10-19: realistic moving dancers from one phone
+
+The owner's end goal, verbatim: "highly realistic 3D moving dancers with correct poses and natural appearance,
+clothes, hair for 3d tutorial dance videos and playback in VR, from monocular video (handheld phone)". The tools
+named were World Labs Atlas (now accessible), the Unity asset Learned Motion Matching, NVIDIA Kimodo, Dense4D and
+Viggle JST-2. The owner consented to any images and likenesses being used for these tests, and set a Runpod cap of
+$25 for the round.
+
+Method:
+- Six research tracks: one per tool, plus a sweep for other 2026 tools. Each was re-checked by an independent
+  adversarial verifier against primary sources.
+- Live tests where access allowed.
+- One scoring harness: `mono4d/candidates.py`.
+
+### 10.1 What each tool is, for this goal (verified)
+
+| Tool | What it is | Role for us | Verdict |
+|---|---|---|---|
+| **World Labs Atlas beta** (Marble 2 API) | Hosted IMAGE tasks on posed RGBD views (images2PosedRGBD, atlasGenerate, atlasMasked, atlasChisel, text-to-image, splats2Mesh). 1280x720 generation grid; no video, temporal or human task. Its own best-practices page says people and dynamic objects are not yet a strength. Paid users own outputs (ToS 3.3) and can revoke the training licence. | Single-image camera + depth estimation (measured: very good); room views. Not the dancers. | **Use for cameras/depth only**: 10.2 |
+| **Viggle JST-2** (API) | Commercial cloud service: one person's video -> skeletal animation (GLB/FBX on a 65-joint Mixamo rig with fingers, plus MetaHuman rigs), $0.05 per source second; image -> Gaussian-splat character (.vsplat). | A one-person articulation prior. | **Measured: 84-108 mm PA-MPJPE**: 10.3 |
+| **NVIDIA Kimodo** | Motion DIFFUSION model (text + kinematic constraints -> motion) on SOMA / G1 / SMPL-X skeletons. Code Apache-2.0; SOMA weights NVIDIA Open Model License. The SMPL-X weights are gated, under an R&D licence that forbids "generating works for sale or distribution". No video input. | In-betweening / gap filling, lesson variations. Not pose estimation. | Pod test (10.6); open SOMA weights only (owner's choice) |
+| **Dense4D** (arXiv 2610.22325, 2026-10-15) | Feed-forward, template-free dense 4D correspondence of body, clothing and hair from monocular frames (VGGT-Omega backbone, about 974M parameters). | The best match to "clothes, hair" from one phone: measuring clothed-surface and hair motion. | **Code not released** ("coming soon"); likely non-commercial; it does not take person masks as input, which matters in a close embrace |
+| **Unity Learned Motion Matching** (AiKodex, $20) | Locomotion-only, single-character runtime controller; pinned to a 2023 pre-release Sentis; reviews report it broken on current Sentis; no custom-data training path. | None. Our viewer already replays the captured fits at 72 fps on Quest 3. | **Do not buy** |
+
+The sweep found released tools that fit parts of the goal better than the five named ones (licence and release
+status verified):
+- **Pose:**
+  - Meta SAM 3D Body + SAM-Body4D: gated on Hugging Face (SAM License); reported 3DPW MPJPE 54.8.
+  - NAVER Multi-HMR 2: multi-person metric placement; non-commercial.
+- **Partner contact:** CloseApp (CVPR 2025, MIT code, SMPL), the only released monocular method built for two
+  people in close contact.
+- **Appearance:** LHM++ (Apache-2.0), an animatable Gaussian human from frames, as a texture source and PC layer.
+- **Hair:** DiffLocks (non-commercial, registration), about 100K strands from one frontal photo.
+- **Novel views:** MV-Performer, human-specific monocular -> 360-degree multi-view video; its repository has no
+  licence file.
+- **Physics:** ProtoMotions3 (Apache-2.0 code; NVIDIA Open Model License weights).
+- **Paid video-to-mocap services** (Move.ai, DeepMotion, Flow Studio, Rokoko) publish no close-contact accuracy.
+  They rank last.
+
+### 10.2 Atlas beta, measured (larissa_kadu_38, phone 06, 59.98 s)
+
+`python -m dancecap.mono4d atlas-test larissa_kadu_38 --cam 06 --t 60 --targets 01,03,05,07 --allow-upload`, with a
+report under `work/larissa_kadu_38/mono4d/atlas/06_60000/`.
+- **images2PosedRGBD** (one portrait frame at 720x1280, 2.7-3.2 s):
+  - the focal length came within **0.6 %** of our calibration (760 vs 765 px);
+  - gravity agreed within about 1 degree;
+  - depth was **x1.11 of metric** against 3,586 room SfM points with the people masked (IQR 1.04-1.25).
+
+  That is a usable single-frame camera + depth prior for one-phone takes, for example to settle the focal
+  ambiguity the john_lula one-camera path could not exclude.
+- **atlasGenerate** at four other phones' real poses (cameras mapped into Atlas's frame by that Sim3):
+  - The first request mixed an RUB context camera with RDF targets and came back upside down and facing away. All
+    cameras are now sent in RUB.
+  - Afterwards the couple sits in the right place, but the bodies are not turned correctly in 3D. YOLO11x-pose
+    PCK@0.1 per phone and dancer was 0.31/0.06 (01), 0.67/0.63 (03), 0.0/0.31 (05) and 0.0/0.0 (07), **median
+    0.19**, against the gate's 0.8.
+  - Jev same_pose: 0.12-0.64.
+  - Atlas does not give correct dancer novel views.
+- **atlasMasked** clean plate:
+  - Removing the people refilled the mask with melted human figures (Jev: any person 1.00, plausible empty studio
+    0.06), and the first canvas attempt left blurred ghosts.
+  - Not usable for clean plates of a crowded room.
+- Five paid beta calls in all. The prompt enhancer wrote a detailed description of the dancers into the operation
+  record. Library uploads are not purged automatically.
+
+### 10.3 Viggle JST-2, measured (same take, 58-62 s)
+
+`python -m dancecap.mono4d viggle-test larissa_kadu_38 --cam 06 --t0 58 --t1 62 --allow-upload`: 40 credits ($0.40).
+- **Input:** one fixed crop per dancer, with the partner's SAM mask inpainted away. A flat grey fill would leave a
+  body-shaped silhouette that a tracker can still follow.
+- **Scoring:** the 65-joint Mixamo GLB, read by our own numpy GLB reader, on the 14 joints both rigs define.
+- **Result:** PA-MPJPE median **108 mm (lead) / 84 mm (follow)** (p95 142 / 136); limb-direction error **21 / 17
+  degrees**.
+  - Time-aligned: the best shift is 0 to +1 frame.
+  - Hands are worst (about 150 mm): the arms wrap the inpainted partner.
+- **Terms:** ToS 5(b) gives Viggle a perpetual, irrevocable, sublicensable licence to uploaded content from EVERY
+  user, API users included. The API section only forbids training, third-party use and marketing. The motions are
+  deletable through the API.
+
+### 10.4 The TypeSafe (Jev) visual judge, calibrated on real frames
+
+With the owner's consent:
+- **Data:** 60 known-bad NoPo4D renders against 60 real phone frames of the same takes, downscaled to the same
+  resolution so that blur does not decide (jev-1.13.0, 122k input tokens).
+- **render_defects:** AUC 1.000, threshold 0.80.
+- **broken_anatomy:** AUC 1.000, threshold 0.60. It is decisive on real frames, though it was useless on
+  mannequins.
+- **duplicate_person:** AUC 0.999, threshold 0.45.
+- **cut_off:** AUC 0.904 and advisory, because real phones that crop the dancers score up to 0.92.
+- **Result:** 60/60 bad and 0/60 good frames flagged. Fitted on one take, the thresholds score 0.963 / 0.975 on the
+  other.
+- The Atlas views (clean-looking, wrongly posed) pass, as they should: their error is the pose, which same_pose and
+  the YOLO PCK catch.
+- The mannequin values remain as `PRESETS["mannequin"]` for oracle runs.
+
+The Jev vendor watch now also reads the five tools' own pages (`python -m dancecap.mono4d vendors`: 8 vendors,
+9 s, 102k tokens). Its page-based verdicts:
+- Kimodo: released.
+- Dense4D: clothing/hair and motion from video, release unclear.
+- Viggle: video -> motion, usable today.
+- Atlas beta: people ruled out as a strength.
+
+### 10.5 One scoring harness for every one-camera candidate
+
+`dancecap/mono4d/candidates.py`.
+- **Contract:** a candidate is per-dancer joints in SMPL body order (world, camera or free frame) under
+  `work/<take>/mono4d/cand/<name>/`.
+- **Role assignment:** each predicted track is projected into the phone against our lead/follow boxes.
+- **Metrics:** PA-MPJPE (22 joints, and the 14 that every rig defines), root-relative MPJPE and metric pelvis error
+  for world/camera candidates, and limb-direction error.
+- **Leaderboard:** `python -m dancecap.mono4d leaderboard larissa_kadu_38`. It includes the multi-view floor: the
+  7-phone held-out chunk agrees with the 8-phone reference to 4-10 mm on these metrics. That is a consistency
+  floor, not ground truth, since the reference is built from the same chunks.
+
+### 10.6 Pod tests (Runpod, $25 cap for the round)
+
+Pending: written when the workflow `monocular-candidates-pod-tests` returns.
