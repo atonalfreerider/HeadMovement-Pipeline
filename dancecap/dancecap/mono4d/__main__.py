@@ -12,6 +12,9 @@
     gate     <take> --run R                 may the views enter MAMMA? -> quality_gate.json
     judge-calibrate [--times 3]             live check of the judge on labelled mannequin frames (no real people)
     oracle   <take> --run R                 stand-in delivery: the take's own fit drawn as mannequins at every camera
+    atlas-test <take> --cam 06 --t 60 --targets 01,03,05,07 --allow-upload [--clean-plate]
+                                            Atlas beta (Marble 2 API): pose one frame, render the other phones' poses,
+                                            score them against those phones (YOLO PCK, Jev) -> mono4d/atlas/<cam>_<ms>/
 """
 from __future__ import annotations
 
@@ -251,6 +254,17 @@ def cmd_oracle(a) -> int:
     return 0
 
 
+def cmd_atlas_test(a) -> int:
+    from .atlas_eval import run
+    rep = run(a.take, a.cam, a.t, [c.strip() for c in a.targets.split(",") if c.strip()], clean_plate=a.clean_plate,
+              use_jev=not a.no_jev, allow_upload=a.allow_upload)
+    print(json.dumps({"focal_ratio": rep["atlas_focal_vs_ours"], "scale": rep["world_from_atlas"]["s"],
+                      "pck_median": rep["pck_median"],
+                      "targets": {k: {"dancers": v["dancers"], "jev": v.get("jev")} for k, v in rep["targets"].items()},
+                      "clean_plate": rep.get("clean_plate"), "calls": rep["calls"]}, indent=1))
+    return 0
+
+
 def cmd_calibrate(a) -> int:
     from . import calibrate
     doc = calibrate.run(times=a.times, with_source=not a.no_source)
@@ -310,6 +324,15 @@ def main(argv=None) -> int:
             sp.add_argument("--test", required=True, help="smplx dir of the route's fit (fit A)")
             sp.add_argument("--baseline", help="smplx dir of the one-camera fit of the same window (fit B)")
             sp.add_argument("--reference", help="smplx dir of the multi-camera fit (default work/<take>/smplx)")
+    sp = sub.add_parser("atlas-test")
+    sp.add_argument("take")
+    sp.add_argument("--cam", required=True)
+    sp.add_argument("--t", type=float, required=True, help="reference seconds of the input frame")
+    sp.add_argument("--targets", required=True, help="other phones whose poses Atlas renders, comma-separated")
+    sp.add_argument("--clean-plate", action="store_true", help="also try atlasMasked people removal")
+    sp.add_argument("--no-jev", action="store_true")
+    sp.add_argument("--allow-upload", action="store_true", help="the owner's go-ahead to send the frames to World Labs")
+    sp.set_defaults(fn=cmd_atlas_test)
     sp = sub.add_parser("judge-calibrate")
     sp.add_argument("--times", type=int, default=3)
     sp.add_argument("--no-source", action="store_true")
