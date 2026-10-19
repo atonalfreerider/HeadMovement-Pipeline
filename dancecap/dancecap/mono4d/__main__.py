@@ -29,6 +29,11 @@ import numpy as np
 from ..take import PACKAGE_ROOT
 
 
+def judge_presets() -> dict:
+    from .judge import PRESETS
+    return PRESETS
+
+
 def _work(take: str) -> Path:
     return PACKAGE_ROOT / "work" / take
 
@@ -186,7 +191,7 @@ def cmd_judge(a) -> int:
         for r, s in zip(rows, src):
             r["source"] = None if a.no_context else s["reference"]
         frames[v] = rows
-    rep = judge.judge_views(frames, allow_upload=a.allow_upload, workers=a.workers)
+    rep = judge.judge_views(frames, allow_upload=a.allow_upload, workers=a.workers, th=judge.PRESETS[a.preset])
     (rd / "judge.json").write_text(json.dumps(rep, indent=1))
     for v, r in rep["views"].items():
         print(f"[mono4d] judge {v}: {r['bad']} of {r['judged']} frames flagged ({r['errors']} errors) -> "
@@ -316,6 +321,8 @@ def main(argv=None) -> int:
                             help="the owner's go-ahead to send these frames (likeness) to TypeSafe")
             sp.add_argument("--every", type=float, default=1.0, help="seconds between judged frames")
             sp.add_argument("--workers", type=int, default=4)
+            sp.add_argument("--preset", default="real", choices=sorted(judge_presets()),
+                            help="thresholds: real renders (default) or mannequin (oracle / calibration runs)")
             sp.add_argument("--no-context", action="store_true",
                             help="send only the generated frames (no real reference / source frames)")
         if name == "oracle":

@@ -373,8 +373,11 @@ def test_judge_request_shape_and_image_limits(tmp_path):
 
 
 def test_frame_verdict_decisive_vs_advisory():
-    clean = {"duplicate_person": 0.1, "broken_anatomy": 0.99, "render_defects": 0.3, "cut_off": 0.1}
-    assert judge.frame_verdict(clean) == (True, [])  # broken_anatomy is advisory
+    clean = {"duplicate_person": 0.1, "broken_anatomy": 0.3, "render_defects": 0.3, "cut_off": 0.99}
+    assert judge.frame_verdict(clean) == (True, [])  # cut_off is advisory
+    ok, why = judge.frame_verdict({**clean, "broken_anatomy": 0.7})  # decisive on real frames (2026-10-19)
+    assert not ok and why == ["broken_anatomy 0.70"]
+    assert judge.frame_verdict({**clean, "broken_anatomy": 0.7}, judge.PRESETS["mannequin"])[0]  # not on mannequins
     ok, why = judge.frame_verdict({**clean, "duplicate_person": 0.8})
     assert not ok and why[0].startswith("duplicate_person")
     ok, why = judge.frame_verdict({**clean, "same_pose": 0.2})

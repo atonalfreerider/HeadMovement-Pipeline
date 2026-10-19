@@ -12,7 +12,7 @@ capsule mannequins in a plain studio from one ring camera, at a few times, in th
     python -m dancecap.mono4d judge-calibrate [--times 3] [--out work/mono4d/calibration]
 
 run() judges every image (the judge's real questions, one request per frame) and reports, per question, the mean
-P(yes) on positives and negatives and the accuracy at judge.THRESHOLDS. Mannequins are not dancers: this tests that
+P(yes) on positives and negatives and the accuracy at judge.PRESETS["mannequin"]. Mannequins are not dancers: this tests that
 the questions discriminate the defects, not how well Jev reads a real render. That needs labelled real frames, which
 need the owner's go-ahead (likeness data).
 """
@@ -158,7 +158,7 @@ def build(times: int = 3, out: Path = OUT) -> list[dict]:
 
 def score(rows: list[dict], answers: list[dict], th: dict | None = None) -> dict:
     """Per question: mean P(yes) on positives / negatives, accuracy at the judge threshold (same_pose: yes = p >= th)."""
-    th = {**judge.THRESHOLDS, **(th or {})}
+    th = {**judge.PRESETS["mannequin"], **(th or {})}
     rep = {}
     for q in LABELS:
         pos = [a[q] for r, a in zip(rows, answers) if a and q in a and r["labels"].get(q) is True]
@@ -185,7 +185,7 @@ def run(times: int = 3, out: Path = OUT, client=None, workers: int = 4, with_sou
     frames = {"calibration": [{"t": i, "path": r["path"], "reference": r["reference"],
                                "source": r["source"] if with_source else None} for i, r in enumerate(rows)]}
     # mannequins drawn here, no real person: the upload needs no go-ahead
-    rep = judge.judge_views(frames, allow_upload=True, workers=workers, client=client,
+    rep = judge.judge_views(frames, allow_upload=True, workers=workers, client=client, th=judge.PRESETS["mannequin"],
                             about=MANNEQUIN_ABOUT if mannequin_about else judge.ABOUT)
     answers = [f.get("answers") for f in rep["views"]["calibration"]["frames"]]
     doc = {"images": len(rows), "input_tokens": rep["input_tokens"], "model": rep["model"],

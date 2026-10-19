@@ -12,13 +12,20 @@ request with several Noul questions (asked together, answered independently):
                        hold the same poses and partner hold?
 
 Counting people is left to code (YOLO boxes in holdout.compare_views): TypeSafe's own notes say Jev does not count
-reliably. Thresholds are PROVISIONAL. The synthetic mannequin set (calibrate.py, jev-1.13.0, 2026-10-15, 18 frames x 4
-prompt variants) gave: same_pose 1.00 accuracy (0.98-0.99 vs 0.09-0.14), duplicate_person ghosts 0.47 / 0.71 / 0.73
-while the 90 clean frames (15 calibration + the oracle run: the 38 s take's own fit drawn at 15 cameras, 75 frames, with
-overlapping partners) peak at 0.62, hence 0.65 (2 of 3 ghosts caught, no false alarm); render_defects ranks every
-defect frame above every clean one, but clean mannequins already score 0.45-0.8 (so 0.9); broken_anatomy does not
-separate on mannequins (0.70-0.82 vs 0.29-0.69): it is ADVISORY (reported, never decisive) until labelled real renders
-(known-bad: the NoPo4D views; known-good: phone frames) calibrate it.
+reliably.
+
+Calibration (jev-1.13.0). REAL frames, 2026-10-19 (owner: "it's fine to use any images and likenesses"): 60 known-bad
+NoPo4D renders (larissa_kadu novel 0.1 / 0.5 views, carlos_aline middle view) vs 60 real phone frames of the same takes
+downscaled to the same resolution (so blur does not decide), 122k input tokens:
+    render_defects    AUC 1.000   bad 0.81-0.97, good 0.38-0.79      -> 0.80
+    broken_anatomy    AUC 1.000   bad 0.55-0.85, good 0.15-0.55      -> 0.60 (decisive on real frames)
+    duplicate_person  AUC 0.999   bad 0.36-0.78, good 0.06-0.39      -> 0.45
+    cut_off           AUC 0.904   real phones that crop the dancers score up to 0.92 -> advisory (framing is checked in code)
+THRESHOLDS flag 60/60 bad and 0/60 good; fitted on one take they score 0.963 / 0.975 on the other. The Atlas views of
+2026-10-19 (clean-looking, wrongly posed) pass them, as they should: their error is the pose, which same_pose and the
+YOLO PCK of holdout.py catch. same_pose: 0.96 for a frame against itself, 0.98-0.99 vs 0.09-0.14 on mannequins.
+The synthetic MANNEQUIN set (calibrate.py, 2026-10-15) needs other values: clean capsule figures already score 0.45-0.8
+on render_defects and up to 0.69 on broken_anatomy, so oracle / calibration runs use PRESETS["mannequin"].
 
 Images are a "dreamer-ready" TypeSafe feature (header TypeSafe-Danger-Zone-Images: true; jev-1.13 and 1.14 accept
 them): advisory evidence for gate.py, never the only reason a run passes. Frames of real dancers are likeness data:
@@ -37,10 +44,12 @@ from typesafe_sdk import Noul
 MODEL = "jev-latest"
 IMAGE_HEADERS = {"TypeSafe-Danger-Zone-Images": "true"}
 MAX_SIDE = 1024  # TypeSafe accepts 256-1568 px per side; 1024 keeps tokens down and limbs visible
-THRESHOLDS = {"duplicate_person": 0.65, "broken_anatomy": 0.85, "render_defects": 0.9, "cut_off": 0.6,
+THRESHOLDS = {"duplicate_person": 0.45, "broken_anatomy": 0.60, "render_defects": 0.80, "cut_off": 0.6,
               "same_pose": 0.5, "bad_frame_frac": 0.15, "min_bad_frames": 2}
-DECISIVE = ("duplicate_person", "render_defects", "cut_off")  # + same_pose when a reference is given
-ADVISORY = ("broken_anatomy",)  # reported in every row, never drops a frame (see the calibration note above)
+PRESETS = {"real": THRESHOLDS,
+           "mannequin": {**THRESHOLDS, "duplicate_person": 0.65, "render_defects": 0.9, "broken_anatomy": 1.01}}
+DECISIVE = ("duplicate_person", "render_defects", "broken_anatomy")  # + same_pose when a reference is given
+ADVISORY = ("cut_off",)  # reported in every row, never drops a frame (see the calibration note above)
 
 ABOUT = ("`view` is one frame rendered by a 3D reconstruction model from a video of two people partner dancing in a "
          "dance studio (one leads, one follows; they often hold each other closely or turn). Walls may have mirrors.")
