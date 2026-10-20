@@ -406,6 +406,7 @@ and deleted by the farm runner. Licensed weights stayed on the pods; outputs sta
 | candidate | PA22 | root-rel | pelvis | limb (deg) | cost | note |
 |---|---|---|---|---|---|---|
 | multi-view floor (7 phones) | 4 / 8 | 5 / 10 | 7 / 8 | 1 / 2 | - | consistency floor |
+| **SAM 3D Body**, our masks + K | **34 / 43** | **44 / 50** | **47** / 93 | **8 / 9** | $1.18 | best per-frame pose; 5x the jitter |
 | **fit B** `mamma_mono06` (our MAMMA_MONO) | 47 / 44 | 63 / 55 | 67 / 48 | 13 / 9 | $1.38 | the bar; free shape from the statures |
 | CloseApp (refining fit B) | 48 / 44 | 64 / 54 | 62 / 56 | 12 / 9 | $0.23 | changes the pose by < 1 mm |
 | Multi-HMR 2, our mask identities | 63 / 61 | 81 / 77 | 254 / 72 | 13 / 13 | $0.10 | follow missing in ~20 % of frames |
@@ -423,11 +424,20 @@ and deleted by the farm runner. Licensed weights stayed on the pods; outputs sta
 - **Multi-HMR 2** (`cand_multihmr2.py`, NAVER non-commercial): our focal passed to the decoder (its own predicted
   focal is 19 % short, which puts the dancers 0.7-0.9 m too close). Front/back ordering of the couple agrees with the
   reference on 88 % of frames, against 99 % for fit B. **Not adopted**, not even as a placement prior.
-- **SAM 3D Body** (`remote/cand_sam3d_body/`): **running**. The first pod attempt hit HTTP 403 ($0.04): the
-  owner's Hugging Face access to `facebook/sam-3d-body-dinov3` was not yet approved. Meta approved the request at
-  17:22 the same day. The job prompts the model with our SAM 2.1 masks and our K, and converts MHR -> SMPL-X with
-  Meta's official converter. Note: listing a gated repo's files succeeds without access; only a download (HEAD)
-  proves access.
+- **SAM 3D Body** (`cand_sam3d_body.py`, sam-3d-body b5c765a, SAM License, gated; $1.18 in all): each dancer
+  prompted with our SAM 2.1 mask + its box and our K; MHR -> SMPL-X with Meta's official converter (fit error
+  0.9 cm). Audited: no conversion bug, clock 'ref', roles right.
+  - **Best per-frame pose on the board**: lead PA22 34 mm vs fit B 47, follow 43 vs 44; best lead pelvis (47 vs 67).
+  - The follow's pelvis is 93 mm off, almost all depth: she is placed 89 mm too far, partly because her body comes
+    out about 2 % too large.
+  - **It jitters**: root-relative joint acceleration is about 5x fit B's (13 vs 2.4 mm/frame^2, lead), because every
+    frame is solved alone.
+  - Variants: the mask prompt helps the lead (box only: 36 mm); mask scale 0/1 vs 0/255 and one shape per dancer
+    change < 0.5 mm. SAM-Body4D (occlusion completion + smoothing, SAM 3 bypassed with our masks) added nothing.
+  - **Use it inside MAMMA_MONO** as a per-frame 3D pose prior: MAMMA supplies the temporal smoothness, the floor and
+    the statures that SAM 3D Body lacks. That combination is the best candidate for "MAMMA or better" from one phone.
+  - The first attempt hit HTTP 403 ($0.04): Hugging Face access was still pending. Listing a gated repo's files
+    succeeds without access; only a download (HEAD) proves it.
 
 **Gap filling** (`cand_kimodo.py`, Kimodo-SOMA-RP-v1.2, open weights, no text encoder; $0.67): one held-out second
 (59-60 s) of the 8-phone fit, keyframes on both sides, 5 samples, medians.
@@ -480,5 +490,5 @@ so did the Viggle import (re-imported; PA22 108 -> 109 / 84 -> 84 mm, since its 
 `candidates.frame_to_ref` now does the conversion, and `score()` records a clock check per role and flags raw-clock
 candidates in the leaderboard.
 
-**Cost.** $3.83 of the $25 so far (ledger $91.37 of the $112.54 cap, with the SAM 3D Body and comparison pods still running). $1.36 of it was lost to uploads timing out
+**Cost.** $4.54 of the $25 for the whole round, comparison renders included (ledger $92.08 of the $112.54 cap). $1.36 of it was lost to uploads timing out
 on the home uplink: the runner bundles 330 MB of wheels even for jobs that need none.

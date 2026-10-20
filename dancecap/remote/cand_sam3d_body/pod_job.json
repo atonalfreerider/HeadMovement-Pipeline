@@ -1,0 +1,67 @@
+{
+ "schema": "dancecap.pod_job/1",
+ "name": "cand_sam3d_body",
+ "take": "larissa_kadu_38",
+ "max_minutes": 25,
+ "needs": [],
+ "inputs": [
+  "dancecap/work/larissa_kadu_38/mono4d/sam3d_body/input/"
+ ],
+ "exclude": [
+  "dancecap/work/runpod/pywheels",
+  "dancecap/work/runpod/wheelhouse",
+  "mamma-turing"
+ ],
+ "secrets": {
+  "HF_TOKEN": "C:/Users/johnb/Desktop/sam3d-body-key-hf.txt"
+ },
+ "env": {
+  "S3DB_ROOT": "/workspace/s3db_cand",
+  "S3DB_COMMIT": "b5c765a0d89d789985e186d396315e7590887b94",
+  "S3DB_HF_REPO": "facebook/sam-3d-body-dinov3",
+  "S3DB_HF_REV": "11aaa346c7204874a1cbafe3d39a979080b2c55a",
+  "DINOV3_COMMIT": "5aa7e93ab42ae3526291f6b4e3fcd22637e03326",
+  "MHR_COMMIT": "877cba5ee61a5f77d1457bf4de93a66695132bd9",
+  "MHR_ASSETS_RELEASE": "v1.0.1",
+  "TORCH_HOME": "/workspace/s3db_cand/torch_home",
+  "HF_HOME": "/workspace/s3db_cand/hf_home",
+  "UV_LINK_MODE": "copy",
+  "TQDM_DISABLE": "1",
+  "HF_HUB_DISABLE_PROGRESS_BARS": "1"
+ },
+ "commands": [
+  {
+   "name": "install",
+   "timeout_min": 10,
+   "cmd": "bash remote/cand_sam3d_body/install.sh"
+  },
+  {
+   "name": "infer",
+   "timeout_min": 8,
+   "cmd": "/workspace/s3db_cand/venv/bin/python remote/cand_sam3d_body/sam3db_pod.py infer --input work/larissa_kadu_38/mono4d/sam3d_body/input --out work/larissa_kadu_38/mono4d/sam3d_body/pod_out --variants mask255,mask01,nomask"
+  },
+  {
+   "name": "convert",
+   "timeout_min": 7,
+   "cmd": "/workspace/s3db_cand/venv/bin/python remote/cand_sam3d_body/sam3db_pod.py convert --input work/larissa_kadu_38/mono4d/sam3d_body/input --out work/larissa_kadu_38/mono4d/sam3d_body/pod_out --variants mask255,mask01,nomask --single-identity mask255 --force-stub"
+  }
+ ],
+ "outputs": [
+  "dancecap/work/larissa_kadu_38/mono4d/sam3d_body/pod_out/"
+ ],
+ "verify": [
+  "dancecap/work/larissa_kadu_38/mono4d/sam3d_body/pod_out/sam3db_pod.json",
+  "dancecap/work/larissa_kadu_38/mono4d/sam3d_body/pod_out/mhr_mask255.npz",
+  "dancecap/work/larissa_kadu_38/mono4d/sam3d_body/pod_out/mhr_mask01.npz",
+  "dancecap/work/larissa_kadu_38/mono4d/sam3d_body/pod_out/mhr_nomask.npz",
+  "dancecap/work/larissa_kadu_38/mono4d/sam3d_body/pod_out/smplx_mask255.npz",
+  "dancecap/work/larissa_kadu_38/mono4d/sam3d_body/pod_out/smplx_mask01.npz",
+  "dancecap/work/larissa_kadu_38/mono4d/sam3d_body/pod_out/smplx_nomask.npz"
+ ],
+ "after_download": [
+  "python -m dancecap.mono4d.cand_sam3d_body import --session <sid>"
+ ],
+ "notes": [
+  "SAM 3D Body (SAM License, gated HF checkpoint downloaded on the pod with the owner's HF token) on the 120 canonical frames of phone 06, 58-62 s, each dancer prompted with OUR SAM 2.1 mask + its box and our K; variants mask255 / mask01 / nomask; official MHR->SMPL-X converter (pytorch) on the pod. Checkpoints stay on the pod; the dancers' frames go to our own pod only (owner consent 2026-10-19); the bundle holds a trimmed SMPL-X neutral model (owner's licence) for the fit."
+ ]
+}

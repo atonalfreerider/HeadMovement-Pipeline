@@ -1,0 +1,76 @@
+{
+ "schema": "dancecap.pod_job/1",
+ "name": "cand_sam3d_body4d",
+ "take": "larissa_kadu_38",
+ "max_minutes": 42,
+ "needs": [],
+ "inputs": [
+  "dancecap/work/larissa_kadu_38/mono4d/sam3d_body/input/"
+ ],
+ "exclude": [
+  "dancecap/work/runpod/pywheels",
+  "dancecap/work/runpod/wheelhouse",
+  "mamma-turing"
+ ],
+ "secrets": {
+  "HF_TOKEN": "C:/Users/johnb/Desktop/sam3d-body-key-hf.txt"
+ },
+ "env": {
+  "S3DB_ROOT": "/workspace/s3db_cand",
+  "S3DB_COMMIT": "b5c765a0d89d789985e186d396315e7590887b94",
+  "S3DB_HF_REPO": "facebook/sam-3d-body-dinov3",
+  "S3DB_HF_REV": "11aaa346c7204874a1cbafe3d39a979080b2c55a",
+  "DINOV3_COMMIT": "5aa7e93ab42ae3526291f6b4e3fcd22637e03326",
+  "MHR_COMMIT": "877cba5ee61a5f77d1457bf4de93a66695132bd9",
+  "MHR_ASSETS_RELEASE": "v1.0.1",
+  "TORCH_HOME": "/workspace/s3db_cand/torch_home",
+  "HF_HOME": "/workspace/s3db_cand/hf_home",
+  "UV_LINK_MODE": "copy",
+  "TQDM_DISABLE": "1",
+  "HF_HUB_DISABLE_PROGRESS_BARS": "1",
+  "B4D_COMMIT": "21af1020979ef32ddf6be3597ef59a68bad2f1bf",
+  "VAS_MASK_REV": "7a79fa0",
+  "VAS_RGB_REV": "428c072",
+  "DA2_REV": "cbbb86a"
+ },
+ "commands": [
+  {
+   "name": "install_b4d",
+   "timeout_min": 12,
+   "cmd": "bash remote/cand_sam3d_body/install_body4d.sh"
+  },
+  {
+   "name": "b4d_nocomp",
+   "timeout_min": 6,
+   "optional": true,
+   "cmd": "/workspace/s3db_cand/venv/bin/python remote/cand_sam3d_body/body4d_pod.py run --input work/larissa_kadu_38/mono4d/sam3d_body/input --out work/larissa_kadu_38/mono4d/sam3d_body/pod_out --body4d-root /workspace/s3db_cand/sam-body4d --ckpt-root /workspace/s3db_cand/ckpt --work /workspace/s3db_cand/b4d_work/nocomp --tag body4d_nocomp --no-completion"
+  },
+  {
+   "name": "b4d_comp",
+   "timeout_min": 18,
+   "optional": true,
+   "cmd": "/workspace/s3db_cand/venv/bin/python remote/cand_sam3d_body/body4d_pod.py run --input work/larissa_kadu_38/mono4d/sam3d_body/input --out work/larissa_kadu_38/mono4d/sam3d_body/pod_out --body4d-root /workspace/s3db_cand/sam-body4d --ckpt-root /workspace/s3db_cand/ckpt --work /workspace/s3db_cand/b4d_work/comp --tag body4d"
+  },
+  {
+   "name": "convert_b4d",
+   "timeout_min": 6,
+   "cmd": "/workspace/s3db_cand/venv/bin/python remote/cand_sam3d_body/sam3db_pod.py convert --input work/larissa_kadu_38/mono4d/sam3d_body/input --out work/larissa_kadu_38/mono4d/sam3d_body/pod_out --variants body4d,body4d_nocomp --force-stub"
+  }
+ ],
+ "outputs": [
+  "dancecap/work/larissa_kadu_38/mono4d/sam3d_body/pod_out/"
+ ],
+ "verify": [
+  "dancecap/work/larissa_kadu_38/mono4d/sam3d_body/pod_out/body4d_pod.json",
+  "dancecap/work/larissa_kadu_38/mono4d/sam3d_body/pod_out/mhr_body4d.npz",
+  "dancecap/work/larissa_kadu_38/mono4d/sam3d_body/pod_out/smplx_body4d.npz",
+  "dancecap/work/larissa_kadu_38/mono4d/sam3d_body/pod_out/mhr_body4d_nocomp.npz",
+  "dancecap/work/larissa_kadu_38/mono4d/sam3d_body/pod_out/smplx_body4d_nocomp.npz"
+ ],
+ "after_download": [
+  "python -m dancecap.mono4d.cand_sam3d_body import --session <sid>"
+ ],
+ "notes": [
+  "SAM-Body4D (gaomingqi/sam-body4d, MIT) with SAM 3 BYPASSED: our SAM 2.1 lead/follow masks as its masklets, our K as cam_int, its own OfflineApp.on_4d_generation (fork of 3DB with Kalman/EMA temporal smoothing and frozen per-identity shape; Diffusion-VAS amodal + RGB completion of occluded frames in variant body4d). Public checkpoints (Diffusion-VAS, Depth-Anything-V2-L) and the gated 3DB checkpoint are downloaded on the pod and never leave it."
+ ]
+}
