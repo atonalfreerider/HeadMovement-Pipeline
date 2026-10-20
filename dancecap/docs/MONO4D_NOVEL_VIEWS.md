@@ -460,7 +460,18 @@ masked phone-06 crops, posed with the reference SMPL-X, rendered into held-out p
   and push subdivided vertices out to the Gaussian surface for the clothes silhouette; long hair stays with the strand
   pipeline. About a day of glue code.
 
-**Hair** (DiffLocks): pending.
+**Hair** (`cand_difflocks.py`, DiffLocks fcc7374, MPI non-commercial licence; $0.53, two A40 runs): strand hair
+(80K-124K strands) for the follow from one face crop, run on 12 crops (phones 06 and 02, the owner's portrait;
+raw, black and grey backgrounds). Sheet: `work/larissa_kadu_38/mono4d/difflocks/contact_sheet.jpg`.
+- **Length is about half of hers.** Her tip drop below the crown is 0.52 m; DiffLocks gives p95 0.31-0.36 m at
+  best (the portrait), 0.12-0.17 m on phone 02. Its crop is 2.8x the face, so it never sees hair below the shoulders.
+- Colour and texture follow the crop: blurred 70-px phone faces give curls or frizz, black backgrounds give blond or
+  white hair. Only the portrait and one grey-background phone-06 crop look plausible. 9 of 12 have a centre part
+  (hers is on her left).
+- Run 1 grew 3 cm hair on the "Dream" print of her T-shirt: DiffLocks keeps the largest MediaPipe face at
+  confidence 0.1. Run 2 picks the detection nearest her fitted face.
+- **Not adopted.** The current Unity v2 groom (160 guides, hair cards) is closer to her real hair. DiffLocks could at
+  most give a shape prior near the scalp (1-2 days of work, little gain).
 
 **Harness clock fix.** The reference fit and `load_tracks` use the sync-corrected clock (phone 06: frames.json t
 -30.04 ms). A candidate saved on raw frame times is matched one frame late: a perfect pose then still scores PA22 +7.5 /
@@ -469,5 +480,5 @@ so did the Viggle import (re-imported; PA22 108 -> 109 / 84 -> 84 mm, since its 
 `candidates.frame_to_ref` now does the conversion, and `score()` records a clock check per role and flags raw-clock
 candidates in the leaderboard.
 
-**Cost.** About $2.9 of the $25 so far (ledger $90.45 of the $112.54 cap). $1.36 of it was lost to uploads timing out
+**Cost.** $3.83 of the $25 so far (ledger $91.37 of the $112.54 cap, with the SAM 3D Body and comparison pods still running). $1.36 of it was lost to uploads timing out
 on the home uplink: the runner bundles 330 MB of wheels even for jobs that need none.

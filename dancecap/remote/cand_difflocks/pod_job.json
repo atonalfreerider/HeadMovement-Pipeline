@@ -1,0 +1,88 @@
+{
+ "schema": "dancecap.pod_job/1",
+ "name": "cand_difflocks",
+ "take": "larissa_kadu_38",
+ "max_minutes": 75,
+ "needs": [],
+ "inputs": [
+  {
+   "local": "dancecap/work/difflocks_ckpt/scalp_v9_40k_06730000_ema.pth",
+   "pod": "models/difflocks/checkpoints/difflocks_diffusion/scalp_v9_40k_06730000_ema.pth"
+  },
+  {
+   "local": "models/difflocks/checkpoints/strand_vae/strand_codec.pt",
+   "pod": "models/difflocks/checkpoints/strand_vae/strand_codec.pt"
+  },
+  {
+   "local": "models/difflocks/checkpoints/strand_vae/hyperparams.json",
+   "pod": "models/difflocks/checkpoints/strand_vae/hyperparams.json"
+  },
+  {
+   "local": "models/difflocks/checkpoints/rgb2material/rgb2material.pt",
+   "pod": "models/difflocks/checkpoints/rgb2material/rgb2material.pt"
+  },
+  {
+   "local": "models/difflocks/checkpoints/rgb2material/hyperparams.json",
+   "pod": "models/difflocks/checkpoints/rgb2material/hyperparams.json"
+  },
+  "dancecap/work/larissa_kadu_38/mono4d/difflocks/input/"
+ ],
+ "exclude": [
+  "dancecap/work/runpod/pywheels",
+  "dancecap/work/runpod/wheelhouse",
+  "mamma-turing"
+ ],
+ "env": {
+  "DIFFLOCKS_COMMIT": "fcc73747dc60320c30228b6711000a53fc0c9d84",
+  "DINOV2_COMMIT": "7764ea0f912e53c92e82eb78a2a1631e92725fc8",
+  "FLASH_ATTN_WHEEL_URL": "https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.5cxx11abiFALSE-cp311-cp311-linux_x86_64.whl",
+  "DIFFLOCKS_CKPT_DIR": "/workspace/HeadMovement/models/difflocks/checkpoints",
+  "TORCH_HOME": "/workspace/difflocks_cand/torch_home",
+  "K_DIFFUSION_USE_COMPILE": "0",
+  "PYTHONUNBUFFERED": "1"
+ },
+ "commands": [
+  {
+   "name": "install",
+   "timeout_min": 22,
+   "cmd": "bash remote/cand_difflocks/install.sh"
+  },
+  {
+   "name": "infer",
+   "timeout_min": 30,
+   "cmd": "/workspace/difflocks_cand/venv/bin/python remote/cand_difflocks/difflocks_pod.py --inputs work/larissa_kadu_38/mono4d/difflocks/input/inputs.json --out work/larissa_kadu_38/mono4d/difflocks/pod_out --repo /workspace/difflocks_cand/difflocks --ckpt-dir /workspace/HeadMovement/models/difflocks/checkpoints"
+  },
+  {
+   "name": "render",
+   "timeout_min": 15,
+   "optional": true,
+   "cmd": "python -m dancecap.mono4d.cand_difflocks render --dir work/larissa_kadu_38/mono4d/difflocks/pod_out --mesh /workspace/difflocks_cand/difflocks/data_loader/difflocks_bodydata/smplx_base.ply"
+  },
+  {
+   "name": "blender",
+   "timeout_min": 14,
+   "optional": true,
+   "cmd": "bash remote/cand_difflocks/blender_export.sh work/larissa_kadu_38/mono4d/difflocks/pod_out"
+  },
+  {
+   "name": "cleanup",
+   "timeout_min": 2,
+   "optional": true,
+   "cmd": "rm -rf /workspace/HeadMovement/models/difflocks/checkpoints /workspace/difflocks_cand/difflocks/checkpoints /workspace/difflocks_cand/tmp /workspace/upload/bundle_*.tar.gz && echo '[cleanup] licensed checkpoints and the bundle deleted from the pod' && ls -la /workspace/HeadMovement/models 2>&1 | head -5"
+  }
+ ],
+ "outputs": [
+  "dancecap/work/larissa_kadu_38/mono4d/difflocks/pod_out/"
+ ],
+ "verify": [
+  "dancecap/work/larissa_kadu_38/mono4d/difflocks/pod_out/infer.json"
+ ],
+ "after_download": [
+  "python -m dancecap.mono4d.cand_difflocks import"
+ ],
+ "notes": [
+  "DiffLocks code + checkpoints: MPI non-commercial research licence (difflocks.is.tue.mpg.de); checkpoints only on our pod for the run and in work/, never in a repo or a shared bundle; DINOv2 weights Apache-2.0; outputs of the dancer stay in work/ (research use, consented demo)",
+  "inputs: the stripped model_ema checkpoint (2.43 GB of the 9.7 GB training file), strand VAE, rgb2material, head crops of the follower + 2-3 real frames / masks per moment for the overlays",
+  "NATTEN: exact pure-PyTorch na2d_qk/na2d_av (no NATTEN binary wheels exist for torch 2.5 on PyPI; the shi-labs wheel server's certificate had expired)"
+ ]
+}
