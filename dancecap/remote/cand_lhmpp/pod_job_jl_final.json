@@ -1,0 +1,57 @@
+{
+ "schema": "dancecap.pod_job/1",
+ "name": "jl_lhmpp_final",
+ "take": "john_lula",
+ "max_minutes": 50.0,
+ "needs": [],
+ "inputs": [
+  "dancecap/work/john_lula/realism/lhmpp/input/"
+ ],
+ "exclude": [
+  "dancecap/work/runpod/pywheels",
+  "dancecap/work/runpod/wheelhouse",
+  "mamma-turing"
+ ],
+ "env": {
+  "LHMPP_COMMIT": "906b5d9fb967ab42efb92f6fa55bf22cac86b653",
+  "LHMPP_ROOT": "/workspace/lhmpp_cand/LHM-plusplus",
+  "LHMPP_VENV": "/workspace/lhmpp_cand/venv",
+  "LHMPP_MODEL": "LHMPP-700M-PixelShuffle",
+  "TORCH_HOME": "/workspace/lhmpp_cand/torch_home",
+  "HF_HOME": "/workspace/lhmpp_cand/hf_home"
+ },
+ "commands": [
+  {
+   "name": "install",
+   "timeout_min": 35,
+   "cmd": "bash remote/cand_lhmpp/install.sh"
+  },
+  {
+   "name": "render",
+   "timeout_min": 40,
+   "cmd": "/workspace/lhmpp_cand/venv/bin/python remote/cand_lhmpp/lhmpp_render_pod.py --input work/john_lula/realism/lhmpp/input --out work/john_lula/realism/lhmpp/pod_out --renders work/john_lula/realism/renders"
+  }
+ ],
+ "outputs": [
+  "dancecap/work/john_lula/realism/lhmpp/pod_out/",
+  "dancecap/work/john_lula/realism/renders/front/",
+  "dancecap/work/john_lula/realism/renders/phone_hi/",
+  "dancecap/work/john_lula/realism/renders/phone/",
+  "dancecap/work/john_lula/realism/renders/orbit/"
+ ],
+ "verify": [
+  "dancecap/work/john_lula/realism/lhmpp/pod_out/lhmpp_render_pod.json",
+  "dancecap/work/john_lula/realism/lhmpp/pod_out/gs/lead_cano.ply",
+  "dancecap/work/john_lula/realism/lhmpp/pod_out/gs/follow_cano.ply",
+  "dancecap/work/john_lula/realism/renders/front/02642.png",
+  "dancecap/work/john_lula/realism/renders/phone_hi/02642.png",
+  "dancecap/work/john_lula/realism/renders/phone/02642.png",
+  "dancecap/work/john_lula/realism/renders/orbit/00749.png"
+ ],
+ "after_download": [
+  "python -m dancecap.mono4d.jl_realism_render import --session <sid>"
+ ],
+ "notes": [
+  "LHM++ (LHMPP-700M-PixelShuffle, CC BY-NC 4.0 weights) avatars of John and Lula (take john_lula) from the preview's lhmpp_video8_photofull crops (John: whole visible photo mask first + 8 video crops; Lula: 8 video crops + photo crop), shape ref, posed with LHM++'s own animation by the MAMMA + SAM 3D Body fit (refined, audit-patched) for the whole dance: tutorial front 1920x1080, the phone path 538x960 + 1080x1920, a 25 s orbit 1080x1080; weights stay on the pod; crops go to our own pod only (owner consent 2026-10-19)"
+ ]
+}

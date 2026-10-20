@@ -3,6 +3,11 @@
 
     sam3db_pod.py infer   --input <dir> --out <dir> --variants mask255,mask01,nomask [--limit N]
     sam3db_pod.py convert --input <dir> --out <dir> --variants mask255,mask01,nomask [--single-identity mask255]
+    whole takes (john_lula, dancecap.mono4d.jl_sam3db):
+    sam3db_pod.py infer   --input <dir> --out <dir> --variants mask255 --chunk 200 --frames-dir <take frames/01>
+                          --masks-npz <take people/masks_01.npz> [--reserve-min 20]     (chunked, resumable)
+    sam3db_pod.py merge   --input <dir> --out <dir> --variants mask255 --chunk 200
+    sam3db_pod.py convert --input <dir> --out <dir> --variants mask255 --force-stub    (vertices read from the chunks)
 
 infer    SAM 3D Body (facebookresearch/sam-3d-body, SAM License) on the window's canonical frames. Each dancer is
          prompted separately with OUR SAM 2.1 mask (input/masks/mask_{i:04d}_{01|02}.png) and the tight box of that
@@ -69,6 +74,8 @@ def _cfg_get(cfg, path: str, default=None):
 
 
 def infer(a) -> None:
+    if getattr(a, "chunk", 0):
+        return infer_chunked(a)
     os.environ["MOMENTUM_ENABLED"] = "0"  # any value: the 3DB MHR head uses the TorchScript assets/mhr_model.pt
     import cv2
     import torch
@@ -168,6 +175,230 @@ def infer(a) -> None:
                        "peak_gb": round(torch.cuda.max_memory_allocated() / 2 ** 30, 2), "first_frame_log": first_log}
         log(f"{var}: {F} frames in {dt:.0f} s, valid {report[var]['valid']}, peak {report[var]['peak_gb']} GB")
         update_report(out, "variants", report)
+
+
+# ---------------------------------------------------------------------------------------------------- infer, whole takes
+# (dancecap.mono4d.jl_sam3db, john_lula: all 2643 frames of one phone). Same model, prompts and outputs as `infer`, but:
+#   frames from --frames-dir (the take's own frames/<cam>/, not a copy), masks from --masks-npz (people/masks_01.npz:
+#   PNG bytes per frame and dancer under meta["mask_npz_key"].format(i=, who=meta["role_who"][role])), each dancer only
+#   where meta's mask_boxes[role] is set (prep decides which masks are usable); rows in chunks of --chunk frames, each
+#   saved as <out>/chunks/mhr_<var>_<c>.npz (uncompressed, WITH pred_vertices) the moment it is done, existing chunks
+#   skipped (resume); stops before a chunk when the pod's kill switch (/workspace/.dancecap_kill_at) is less than
+#   --reserve-min minutes away, so `merge` + `convert` + the download still fit. `merge` writes mhr_<var>.npz WITHOUT
+#   the vertices (they stay in the chunks: ~1.2 GB for 2643 frames x 2 dancers); `convert` reads them from the chunks.
+
+
+def _load_estimator(out: Path):
+    """The checkpoint load + key check of `infer` (same checks, same report entry) -> SAM3DBodyEstimator."""
+    import torch
+    sys.path.insert(0, str(ROOT / "sam-3d-body"))
+    from sam_3d_body import SAM3DBodyEstimator, load_sam_3d_body
+    ck = ROOT / "ckpt" / "sam-3d-body-dinov3"
+    t0 = time.time()
+    model, cfg = load_sam_3d_body(str(ck / "model.ckpt"), device="cuda", mhr_path=str(ck / "assets" / "mhr_model.pt"))
+    load_s = time.time() - t0
+    sd = torch.load(str(ck / "model.ckpt"), map_location="cpu", weights_only=False)
+    sd = sd.get("state_dict", sd)
+    mk, sk = set(model.state_dict()), set(sd)
+    missing, unexpected = sorted(mk - sk), sorted(sk - mk)
+    group = lambda ks: {g: sum(1 for k in ks if k.startswith(g + ".") or k == g)  # noqa: E731
+                        for g in sorted({".".join(k.split(".")[:2]) for k in ks})}
+    keys = {"model_keys": len(mk), "ckpt_keys": len(sk), "matched": len(mk & sk), "missing": len(missing),
+            "unexpected": len(unexpected), "missing_groups": group(missing), "unexpected_groups": group(unexpected)}
+    del sd
+    bad = [k for k in missing if k.startswith("backbone.") and k not in TRAIN_ONLY_KEYS]
+    cfg_info = {k: str(_cfg_get(cfg, k)) for k in (
+        "MODEL.BACKBONE.TYPE", "MODEL.BACKBONE.NAME", "MODEL.IMAGE_SIZE", "MODEL.DECODER.CONDITION_TYPE",
+        "MODEL.DECODER.USE_INTRIN_CENTER", "MODEL.PROMPT_ENCODER.MASK_EMBED_TYPE", "MODEL.PROMPT_ENCODER.MASK_PROMPT",
+        "MODEL.MHR_HEAD.MHR_MODEL_PATH")}
+    log(f"model loaded in {load_s:.0f} s; keys {keys}; cfg {cfg_info}")
+    update_report(out, "model", {"load_s": round(load_s, 1), "keys": keys, "cfg": cfg_info,
+                                 "gpu": torch.cuda.get_device_name(0), "torch": torch.__version__,
+                                 "cuda": torch.version.cuda, "momentum_enabled_env": os.environ["MOMENTUM_ENABLED"],
+                                 "cpus": os.cpu_count()})
+    if bad:
+        raise SystemExit(f"checkpoint does not cover the network: {len(bad)} missing keys, e.g. {bad[:5]}")
+    est = SAM3DBodyEstimator(sam_3d_body_model=model, model_cfg=cfg)
+    np.save(out / "mhr_faces.npy", np.asarray(est.faces, np.int64))
+    return est
+
+
+def _chunk_path(out: Path, var: str, c: int) -> Path:
+    return out / "chunks" / f"mhr_{var}_{c:03d}.npz"
+
+
+def _kill_at() -> float | None:
+    try:
+        return float(Path("/workspace/.dancecap_kill_at").read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def infer_chunked(a) -> None:
+    os.environ["MOMENTUM_ENABLED"] = "0"
+    import cv2
+    import torch
+    inp, out = Path(a.input).resolve(), Path(a.output).resolve()
+    (out / "chunks").mkdir(parents=True, exist_ok=True)
+    meta = json.loads((inp / "meta.json").read_text())
+    rows = meta["frames"][: a.limit or None]
+    frames_dir = Path(a.frames_dir).resolve() if a.frames_dir else inp / "frames"
+    mz = np.load(a.masks_npz) if a.masks_npz else None
+    key_fmt, who = meta.get("mask_npz_key", "m_{i}_{who}"), meta.get("role_who", {})
+    N = int(a.chunk)
+    n_chunks = (len(rows) + N - 1) // N
+    est = None
+    report = {}
+    for var in a.variants.split(","):
+        t_var = time.time()
+        done_now, skipped, stopped = 0, 0, None
+        for c in range(n_chunks):
+            p = _chunk_path(out, var, c)
+            if p.exists():
+                skipped += 1
+                continue
+            ka = _kill_at()
+            if ka is not None and ka - time.time() < 60 * a.reserve_min:
+                stopped = f"stopped before chunk {c}/{n_chunks}: {(ka - time.time()) / 60:.1f} min to the kill switch"
+                log(stopped)
+                break
+            if est is None:
+                est = _load_estimator(out)
+                torch.cuda.reset_peak_memory_stats()
+            t1 = time.time()
+            part = rows[c * N:(c + 1) * N]
+            F = len(part)
+            store = {r: {k: [None] * F for k in MHR_KEYS} for r in ROLES}
+            valid = {r: np.zeros(F, bool) for r in ROLES}
+            prompts, mismatch = 0, []
+            for k, row in enumerate(part):
+                use = [r for r in ROLES if row["mask_boxes"].get(r)]
+                if not use:
+                    continue
+                img = cv2.imread(str(frames_dir / row["file"]))
+                if img is None:
+                    raise SystemExit(f"cannot read frame {frames_dir / row['file']}")
+                img = img[:, :, ::-1].copy()                       # RGB, as the estimator expects
+                masks = None
+                if var != "nomask":
+                    scale = 255 if var == "mask255" else 1
+                    ms = []
+                    for r in use:
+                        if mz is not None:
+                            m = cv2.imdecode(np.frombuffer(mz[key_fmt.format(i=row["i"], who=who[r])].tobytes(), np.uint8),
+                                             cv2.IMREAD_GRAYSCALE)
+                        else:
+                            m = cv2.imread(str(inp / "masks" / f"mask_{row['i']:04d}_{meta['role_pid'][r]}.png"),
+                                           cv2.IMREAD_GRAYSCALE)
+                        if m is None or m.shape != img.shape[:2]:
+                            raise SystemExit(f"mask of frame {row['i']} {r}: {None if m is None else m.shape} vs "
+                                             f"image {img.shape[:2]}")
+                        ms.append((m > 127).astype(np.uint8) * scale)
+                    masks = np.stack(ms).astype(np.uint8)
+                boxes = np.array([row["mask_boxes"][r] for r in use], np.float32)
+                cam_int = torch.tensor(np.array(row["K"], np.float32)[None])
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    res = est.process_one_image(img, bboxes=boxes, masks=masks, cam_int=cam_int, inference_type="full")
+                prompts += len(use)
+                if len(res) != len(use):
+                    mismatch.append(int(row["i"]))
+                    log(f"{var} frame {row['i']}: {len(res)} outputs for {len(use)} prompts")
+                    continue
+                for r, o in zip(use, res):
+                    for key in MHR_KEYS:
+                        store[r][key][k] = np.asarray(o[key], np.float32)
+                    valid[r][k] = True
+            arrays = {"frame_i": np.array([r["i"] for r in part]), "t": np.array([r["t"] for r in part]),
+                      "K": np.array([r["K"] for r in part], np.float32)}
+            for r in ROLES:
+                arrays[f"{r}_valid"] = valid[r]
+                for key in MHR_KEYS:
+                    ref = next((x for x in store[r][key] if x is not None), None)
+                    if ref is not None:
+                        arrays[f"{r}_{key}"] = np.stack([x if x is not None else np.full_like(ref, np.nan)
+                                                         for x in store[r][key]])
+            tmp = p.with_name(p.stem + ".tmp.npz")
+            np.savez(tmp, **arrays)
+            os.replace(tmp, p)
+            done_now += 1
+            dt = time.time() - t1
+            log(f"{var}: chunk {c + 1}/{n_chunks} ({F} frames, {prompts} prompts) in {dt:.0f} s = "
+                f"{dt / max(prompts, 1):.3f} s per person-frame; valid {[int(valid[r].sum()) for r in ROLES]}"
+                + (f"; {len(mismatch)} frames with an output-count mismatch" if mismatch else ""))
+        have = sum(_chunk_path(out, var, c).exists() for c in range(n_chunks))
+        report[var] = {"seconds": round(time.time() - t_var, 1), "chunks": n_chunks, "chunk_frames": N,
+                       "chunks_done_now": done_now, "chunks_reused": skipped, "chunks_present": have,
+                       "stopped_early": stopped,
+                       "peak_gb": round(torch.cuda.max_memory_allocated() / 2 ** 30, 2) if est is not None else None}
+        log(f"{var}: {report[var]}")
+        rp = out / "sam3db_pod.json"
+        prev = json.loads(rp.read_text()).get("variants", {}) if rp.exists() else {}
+        if var in prev and report[var]["chunks_done_now"] == 0:   # a resume that found everything done: keep the run
+            report[var] = {**prev[var], "resumed_noop": report[var]}
+        update_report(out, "variants", {**prev, **report})
+        if stopped:
+            break
+
+
+def merge(a) -> None:
+    """chunks -> mhr_<var>.npz on all rows of meta.json (compressed, no pred_vertices); a row of a missing chunk is
+    invalid for both dancers and listed in the report."""
+    inp, out = Path(a.input).resolve(), Path(a.output).resolve()
+    meta = json.loads((inp / "meta.json").read_text())
+    rows = meta["frames"][: a.limit or None]
+    F = len(rows)
+    N = int(a.chunk)
+    n_chunks = (F + N - 1) // N
+    rep = {}
+    for var in a.variants.split(","):
+        arrays = {"frame_i": np.array([r["i"] for r in rows]), "t": np.array([r["t"] for r in rows]),
+                  "K": np.array([r["K"] for r in rows], np.float32)}
+        for r in ROLES:
+            arrays[f"{r}_valid"] = np.zeros(F, bool)
+        missing = []
+        for c in range(n_chunks):
+            p = _chunk_path(out, var, c)
+            s, e = c * N, min(F, (c + 1) * N)
+            if not p.exists():
+                missing.append(c)
+                continue
+            z = np.load(p)
+            if list(z["frame_i"]) != [rows[k]["i"] for k in range(s, e)]:
+                raise SystemExit(f"{p.name}: frame indices differ from meta.json rows {s}..{e - 1}")
+            for k in z.files:
+                if k in ("frame_i", "t", "K") or k.endswith("_pred_vertices"):
+                    continue
+                if k not in arrays:
+                    arrays[k] = (np.zeros(F, bool) if z[k].dtype == bool else
+                                 np.full((F,) + z[k].shape[1:], np.nan, np.float32))
+                arrays[k][s:e] = z[k]
+        np.savez_compressed(out / f"mhr_{var}.npz", **arrays)
+        rep[var] = {"rows": F, "chunks": n_chunks, "missing_chunks": missing,
+                    "rows_not_inferred": int(sum(min(F, (c + 1) * N) - c * N for c in missing)),
+                    "valid": {r: int(arrays[f"{r}_valid"].sum()) for r in ROLES},
+                    "prompted": {r: int(sum(1 for row in rows if row["mask_boxes"].get(r))) for r in ROLES}}
+        log(f"merge {var}: {rep[var]}")
+    update_report(out, "merge", rep)
+
+
+def _vertices_from_chunks(out: Path, var: str, frame_i: np.ndarray) -> dict:
+    """{role: (F, V, 3) float32} pred_vertices of the chunks on the rows of frame_i (NaN where a row has no output)."""
+    files = sorted((out / "chunks").glob(f"mhr_{var}_[0-9][0-9][0-9].npz"))
+    if not files:
+        raise SystemExit(f"no pred_vertices: neither in mhr_{var}.npz nor in {out / 'chunks'}")
+    pos = {int(f): k for k, f in enumerate(np.asarray(frame_i))}
+    res = {}
+    for p in files:
+        z = np.load(p)
+        idx = np.array([pos[int(f)] for f in z["frame_i"]], int)
+        for r in ROLES:
+            k = f"{r}_pred_vertices"
+            if k in z.files:
+                if r not in res:
+                    res[r] = np.full((len(pos),) + z[k].shape[1:], np.nan, np.float32)
+                res[r][idx] = z[k]
+    return res
 
 
 # ---------------------------------------------------------------------------------------------------- convert
@@ -299,6 +530,9 @@ def convert(a) -> None:
             return
         t1 = time.time()
         z = np.load(p)
+        if not any(f"{r}_pred_vertices" in z.files for r in ROLES):   # infer_chunked + merge: vertices in the chunks
+            z = {**{k: z[k] for k in z.files}, **{f"{r}_pred_vertices": v for r, v in
+                                                  _vertices_from_chunks(out, var, z["frame_i"]).items()}}
         res_arrays = {"frame_i": z["frame_i"], "t": z["t"]}
         info = {}
         if not one_id:  # the documented SAM3D path: all persons and frames in one call, own identity per frame
@@ -310,7 +544,7 @@ def convert(a) -> None:
                     where.append((r, int(k)))
             res = conv.convert_sam3d_output_to_smpl(sam3d_outputs=lst, return_smpl_parameters=True,
                                                     return_smpl_vertices=False, return_fitting_errors=True,
-                                                    batch_size=256)
+                                                    batch_size=a.batch_size)
             groups = {r: [n for n, (rr, _) in enumerate(where) if rr == r] for r in ROLES}
             params_all, err_all, tgt_all = res.result_parameters, np.asarray(res.result_errors), target_of(lst)
         for r in ROLES:
@@ -322,7 +556,7 @@ def convert(a) -> None:
                 mv = np.stack([100.0 * (d["pred_vertices"] + d["pred_cam_t"][None]) for d in lst])
                 res = conv.convert_mhr2smpl(mhr_vertices=torch.from_numpy(mv).float(), single_identity=True,
                                             is_tracking=False, return_smpl_parameters=True, return_fitting_errors=True,
-                                            batch_size=256)
+                                            batch_size=a.batch_size)
                 params, err, tgt = res.result_parameters, np.asarray(res.result_errors), target_of(lst)
             else:
                 idx = torch.tensor(groups[r], device=params_all["betas"].device)
@@ -373,19 +607,29 @@ def convert(a) -> None:
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("infer", "convert"):
+    for name in ("infer", "convert", "merge"):
         s = sub.add_parser(name)
         s.add_argument("--input", required=True)
         s.add_argument("--out", dest="output", required=True)
         s.add_argument("--variants", default="mask255,mask01,nomask")
-        if name == "infer":
+        if name in ("infer", "merge"):
             s.add_argument("--limit", type=int, default=0)
-        else:
+            s.add_argument("--chunk", type=int, default=0, help="rows per chunk file (infer_chunked; 0 = the window "
+                                                                 "mode of the larissa_kadu_38 runs)")
+        if name == "infer":
+            s.add_argument("--frames-dir", default="", help="default <input>/frames")
+            s.add_argument("--masks-npz", default="", help="masks as PNG bytes in one npz (default <input>/masks/*.png)")
+            s.add_argument("--reserve-min", type=float, default=20.0,
+                           help="stop before a chunk when the kill switch is nearer than this")
+        elif name == "convert":
             s.add_argument("--single-identity", default="")
             s.add_argument("--mhr-root", default="")
             s.add_argument("--force-stub", action="store_true")
+            s.add_argument("--batch-size", type=int, default=256)
     a = ap.parse_args(argv)
-    {"infer": infer, "convert": convert}[a.cmd](a)
+    if a.cmd == "merge" and not a.chunk:
+        raise SystemExit("merge needs --chunk (the infer --chunk value)")
+    {"infer": infer, "convert": convert, "merge": merge}[a.cmd](a)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,77 @@
+{
+ "schema": "dancecap.pod_job/1",
+ "name": "jl_refit_jlx1158",
+ "take": "john_lula",
+ "max_minutes": 49.0,
+ "needs": [
+  "mamma"
+ ],
+ "inputs": [
+  "dancecap/work/john_lula/realism/refit/chunks/john_lula_jlx1158/mamma/prepare.json",
+  "dancecap/work/john_lula/realism/refit/chunks/john_lula_jlx1158/mamma/ma3d_config.yaml",
+  "dancecap/work/john_lula/realism/refit/chunks/john_lula_jlx1158/mamma/ma3d_config_3db.yaml",
+  "dancecap/work/john_lula/realism/refit/chunks/john_lula_jlx1158/mamma/mono_init.npz",
+  "dancecap/work/john_lula/realism/refit/chunks/john_lula_jlx1158/mamma/stature.json",
+  "dancecap/work/john_lula/realism/refit/chunks/john_lula_jlx1158/mamma/prior_3db.npz",
+  "dancecap/work/john_lula/realism/refit/chunks/john_lula_jlx1158/mamma/ma_2d/john_lula_jlx1158_c1/",
+  "dancecap/work/john_lula/realism/refit/chunks/john_lula_jlx1158/mamma/ma_cap/john_lula_jlx1158_c1/",
+  "dancecap/work/john_lula_jlshape/mamma_pin_betas.json"
+ ],
+ "env": {
+  "DANCECAP_POD": "1",
+  "PYOPENGL_PLATFORM": "egl",
+  "MAMMA_MONO": "1",
+  "MAMMA_MONO_INIT": "/workspace/HeadMovement/dancecap/work/john_lula/realism/refit/chunks/john_lula_jlx1158/mamma/mono_init.npz",
+  "MAMMA_FREEZE_BETAS": "1",
+  "MAMMA_INIT_BETAS": "/workspace/HeadMovement/dancecap/work/john_lula_jlshape/mamma_pin_betas.json",
+  "MAMMA_POSE_PRIOR": "/workspace/HeadMovement/dancecap/work/john_lula/realism/refit/chunks/john_lula_jlx1158/mamma/prior_3db.npz"
+ },
+ "cwd": "dancecap",
+ "exclude": [
+  "dancecap/work/runpod/pywheels",
+  "mamma/data/body_models/smplx_locked_head/smplx/SMPLX_MALE.npz",
+  "mamma/data/body_models/smplx_locked_head/smplx/SMPLX_FEMALE.npz"
+ ],
+ "setup": [
+  "for g in MALE FEMALE; do ln -sf SMPLX_NEUTRAL.npz /workspace/HeadMovement/mamma/data/body_models/smplx_locked_head/smplx/SMPLX_$g.npz; done; nvidia-smi --query-gpu=name,memory.total --format=csv"
+ ],
+ "commands": [
+  {
+   "name": "fit",
+   "cmd": "python -m dancecap mamma fit john_lula/realism/refit/chunks/john_lula_jlx1158 --tag c1",
+   "timeout_min": 24.0
+  },
+  {
+   "name": "select",
+   "cmd": "python -m dancecap mamma select john_lula/realism/refit/chunks/john_lula_jlx1158 --no-qa",
+   "timeout_min": 5
+  },
+  {
+   "name": "refine",
+   "cmd": "python -m dancecap.pose_refine john_lula/realism/refit/chunks/john_lula_jlx1158 --src smplx --dst smplx_rf2_noslip --mode refine --root-hz 5.0 --rot-hz 8.0 --w-floor 1.0 --floor-mm 5.0 --w-feet 1.0 --w-slip 0.0 --slip-max-v 0.15 --w-anchor 1.0 --anchor-mm 10.0 --iters 400 --device cuda",
+   "timeout_min": 12,
+   "optional": true
+  }
+ ],
+ "outputs": [
+  "dancecap/work/john_lula/realism/refit/chunks/john_lula_jlx1158/mamma/fits/",
+  "dancecap/work/john_lula/realism/refit/chunks/john_lula_jlx1158/mamma/logs/",
+  "dancecap/work/john_lula/realism/refit/chunks/john_lula_jlx1158/mamma/select.json",
+  "dancecap/work/john_lula/realism/refit/chunks/john_lula_jlx1158/mamma/report.json",
+  "dancecap/work/john_lula/realism/refit/chunks/john_lula_jlx1158/smplx/",
+  "dancecap/work/john_lula/realism/refit/chunks/john_lula_jlx1158/smplx_rf2_noslip/"
+ ],
+ "verify": [
+  "dancecap/work/john_lula/realism/refit/chunks/john_lula_jlx1158/mamma/fits/c1/fit.json",
+  "dancecap/work/john_lula/realism/refit/chunks/john_lula_jlx1158/smplx/lead.npz",
+  "dancecap/work/john_lula/realism/refit/chunks/john_lula_jlx1158/smplx/follow.npz"
+ ],
+ "after_download": [
+  "python -m dancecap.mono4d.jl_refit stitch (after every chunk is home)"
+ ],
+ "notes": [
+  "john_lula realism stage 2: chunk jlx1158 (k 1158..1518, 361 grid frames) of the one-camera MAMMA fit (MAMMA_MONO=1, J3b's inputs, betas pinned from jlshape) + SAM 3D Body pose prior (MAMMA_POSE_PRIOR, pose_prior_loss weight 0.5 in all four stages, prior also the start); ONE fit on this pod",
+  "then mamma select (fits/c1 -> smplx/) and pose_refine smplx -> smplx_rf2_noslip (J3b chunk recipe)",
+  "likeness-derived inputs only (landmarks, cameras, joints); no frames leave the PC"
+ ]
+}

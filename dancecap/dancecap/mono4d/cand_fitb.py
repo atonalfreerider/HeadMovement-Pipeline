@@ -38,6 +38,9 @@ per-frame 3D pose PRIOR inside MAMMA_MONO (mamma-turing utils/mono.py pose_prior
     job-3db    dancecap/remote/cand_fitb/pod_job_3db.json: a smoke fit (2 iterations a stage), then the weights in parallel
     import-3db fits/<tag> -> candidates mamma_mono06_3db (w 2, pre-registered) / _w05 / _w8
     python -m dancecap.mono4d.cand_fitb prior-3db|configs-3db|job-3db|import-3db [--session SID]
+prior_interp (john_lula, dancecap.mono4d.jl_sam3db prior): the same prior when the source frames are NOT the fit grid (29.994
+fps frames vs the 30 Hz lattice): smoothed on the source frames, interpolated to each grid instant, and the starting pose
+(global_orient / body_pose, which mono.py copies for EVERY grid frame) filled across the instants without a prior.
 """
 from __future__ import annotations
 
@@ -491,6 +494,79 @@ def prior_3db(src: Path = PRIOR_SRC, smooth: float = PRIOR_SMOOTH) -> dict:
                 "time": "fit grid instants (reference seconds); each takes the 3DB frame within 5 ms"})
     log(f"prior-3db -> {PRIOR_NPZ}: {json.dumps(rep)}")
     return rep
+
+
+def _nlerp_rotvec(aa0: np.ndarray, aa1: np.ndarray, w: np.ndarray) -> np.ndarray:
+    """(T, ..., 3) axis-angle pairs -> the normalised quaternion blend (1 - w) q0 + w q1 (q1 flipped into q0's hemisphere);
+    w (T,) in [0, 1]. Neighbouring frames 33 ms apart differ by a few degrees, where nlerp equals slerp to < 0.01 deg."""
+    from scipy.spatial.transform import Rotation
+    aa0, aa1 = np.asarray(aa0, float), np.asarray(aa1, float)
+    shp = aa0.shape
+    q0 = Rotation.from_rotvec(aa0.reshape(-1, 3)).as_quat().reshape(shp[0], -1, 4)
+    q1 = Rotation.from_rotvec(aa1.reshape(-1, 3)).as_quat().reshape(shp[0], -1, 4)
+    q1 = q1 * np.where((q0 * q1).sum(-1, keepdims=True) < 0, -1.0, 1.0)
+    w = np.asarray(w, float).reshape(-1, 1, 1)
+    q = (1 - w) * q0 + w * q1
+    q /= np.maximum(np.linalg.norm(q, axis=-1, keepdims=True), 1e-12)
+    return Rotation.from_quat(q.reshape(-1, 4)).as_rotvec().reshape(shp)
+
+
+def prior_interp(Jc: np.ndarray, gcam: np.ndarray, body: np.ndarray, R: np.ndarray, tv: np.ndarray, t_src: np.ndarray,
+                 valid: np.ndarray, conf_src: np.ndarray, tg: np.ndarray, smooth: float = PRIOR_SMOOTH,
+                 dt_max: float = PRIOR_DT_MAX) -> dict:
+    """ONE dancer's SAM 3D Body on a source-frame lattice that is NOT the fit grid (john_lula: frames at 29.994 fps, the
+    fit on the 30 Hz lattice k / 30, up to 16.7 ms apart; prior_3db's nearest-frame-within-5-ms rule would keep only a
+    third of the grid). Same quantities as prior_3db (world frame via the phone's track at each source frame, root-
+    relative joints and rotations smoothed over time with a Gaussian of `smooth` source frames reading only valid frames),
+    but smoothed on the SOURCE frames, then interpolated to each grid instant between its two bracketing source frames
+    (joints + pelvis linear, rotations nlerp, conf = the smaller of the two). A grid instant with only one valid
+    bracketing frame takes it when it is within dt_max; else no prior there (conf 0, joints NaN), and its
+    global_orient / body_pose (the fit's starting pose, used for every grid frame) are blended from the nearest
+    instants that have one.
+    Jc (F, 22, 3) camera frame, gcam (F, 3) camera-frame global orientation, body (F, 63), R / tv (F, ...) the track at
+    the source frames (x_cam = R X + t), t_src (F,) increasing, valid (F,) bool, conf_src (F,) in [0, 1]."""
+    from . import candidates as C
+    t_src, tg = np.asarray(t_src, float), np.asarray(tg, float)
+    valid = np.asarray(valid, bool) & np.isfinite(Jc).all((1, 2))
+    F, T = len(t_src), len(tg)
+    Jw = C.to_world(np.nan_to_num(np.asarray(Jc, float)), R, tv)
+    gw = orient_to_world(np.nan_to_num(np.asarray(gcam, float)), R)
+    rr = smooth_series(Jw - Jw[:, :1], smooth, valid)
+    go = smooth_rotvec(gw, smooth, valid)
+    bp = smooth_rotvec(np.nan_to_num(np.asarray(body, float)).reshape(F, 21, 3), smooth, valid)
+    a = np.clip(np.searchsorted(t_src, tg, side="right") - 1, 0, F - 2)
+    b = a + 1
+    w = np.clip((tg - t_src[a]) / np.maximum(t_src[b] - t_src[a], 1e-9), 0.0, 1.0)
+    both = valid[a] & valid[b]
+    one_a = valid[a] & ~valid[b] & (np.abs(tg - t_src[a]) <= dt_max)
+    one_b = valid[b] & ~valid[a] & (np.abs(tg - t_src[b]) <= dt_max)
+    w = np.where(one_a, 0.0, np.where(one_b, 1.0, w))
+    ok = both | one_a | one_b
+    lerp = lambda X: (1 - w).reshape((-1,) + (1,) * (X.ndim - 1)) * X[a] + w.reshape((-1,) + (1,) * (X.ndim - 1)) * X[b]  # noqa: E731
+    joints = np.where(ok[:, None, None], lerp(rr) + lerp(Jw[:, :1]), np.nan)
+    conf_src = np.where(valid, np.asarray(conf_src, float), 0.0)
+    conf = np.where(both, np.minimum(conf_src[a], conf_src[b]), np.where(one_a, conf_src[a], np.where(one_b, conf_src[b], 0.0)))
+    go_g = _nlerp_rotvec(go[a], go[b], w)
+    bp_g = _nlerp_rotvec(bp[a], bp[b], w)
+    # mamma-turing mono.py copies global_orient / body_pose of EVERY grid frame as the starting pose (prior_init), conf or
+    # not: a grid instant without a prior takes the blend of the nearest prior instants before and after (ends: the nearest)
+    filled = np.zeros(T, bool)
+    if ok.any() and not ok.all():
+        ko = np.flatnonzero(ok)
+        for i in np.flatnonzero(~ok):
+            j1 = int(np.searchsorted(ko, i))
+            lo, hi = (ko[j1 - 1] if j1 > 0 else None), (ko[j1] if j1 < len(ko) else None)
+            if lo is None or hi is None:
+                go_g[i], bp_g[i] = (go_g[hi], bp_g[hi]) if lo is None else (go_g[lo], bp_g[lo])
+            else:
+                ww = np.array([(tg[i] - tg[lo]) / max(tg[hi] - tg[lo], 1e-9)])
+                go_g[i] = _nlerp_rotvec(go_g[lo][None], go_g[hi][None], ww)[0]
+                bp_g[i] = _nlerp_rotvec(bp_g[lo][None], bp_g[hi][None], ww)[0]
+            filled[i] = True
+    return {"joints": joints, "conf": np.where(ok, conf, 0.0), "global_orient": go_g, "body_pose": bp_g.reshape(T, 63),
+            "ok": ok, "init_filled": filled, "frame_a": a, "frame_w": w,
+            "dt_nearest_ms": 1e3 * np.minimum(np.abs(tg - t_src[a]), np.abs(tg - t_src[b])),
+            "world_joints_src": Jw, "world_orient_src": gw}
 
 
 def configs_3db() -> dict:

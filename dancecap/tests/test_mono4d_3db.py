@@ -195,3 +195,42 @@ def test_accel_rr_mm():
     s = C.score_arrays(10 + t, J, "world", 10 + t, J, (10, 11))
     assert s["accel_err"]["median"] == pytest.approx(0.0) and s["accel_rr"]["n"] == T - 2
     assert s["accel_rr"]["median"] == pytest.approx(s["accel_rr_ref"]["median"])
+
+
+# ------------------------------------------------------------------------------------------------ prior_interp (john_lula)
+
+
+def test_prior_interp_resamples_29_994_fps_frames_onto_the_30_hz_lattice():
+    from scipy.spatial.transform import Rotation
+    rng = np.random.default_rng(5)
+    Fs = 90
+    ts = np.arange(Fs) * 500 / 14997                       # john_lula's frame clock (29.994 fps)
+    tg = np.arange(88) / 30.0                              # the fit lattice k / 30 (drifts up to 16.7 ms off the frames)
+    base = _skeleton(T=1, seed=6)[0] - [0.0, 0.9, 0.0]
+    Jw = base[None] + 0.05 * np.sin(ts)[:, None, None] * rng.normal(size=(1, 22, 3)) + [0.0, 0.9, 3.0]
+    Jw[:, :, 0] += 0.5 * ts[:, None]                       # the body moves (pelvis kept, not smoothed)
+    R = np.repeat(Rotation.from_rotvec([0.0, 0.3, 0.0]).as_matrix()[None], Fs, 0)
+    tv = np.repeat(np.array([[0.1, -0.2, 0.5]]), Fs, 0)
+    Jc = np.einsum("fij,fnj->fni", R, Jw) + tv[:, None]    # x_cam = R X + t
+    gcam = np.tile([0.1, 0.2, 0.3], (Fs, 1))
+    body = np.tile(np.linspace(-0.2, 0.2, 63), (Fs, 1))
+    valid = np.ones(Fs, bool)
+    valid[40] = False                                      # one frame without a prior
+    g = F.prior_interp(Jc, gcam, body, R, tv, ts, valid, np.full(Fs, 0.8), tg, smooth=0.0)
+    lin = np.stack([np.stack([np.interp(tg, ts, Jw[:, j, c]) for c in range(3)], -1) for j in range(22)], 1)
+    ok = g["ok"]
+    near40 = np.abs(tg - ts[40]) < 1 / 29.994             # grid instants bracketed by frame 40
+    assert not ok[near40 & (np.minimum(np.abs(tg - ts[39]), np.abs(tg - ts[41])) > F.PRIOR_DT_MAX)].any()
+    assert ok[~near40].all() and ok.sum() >= len(tg) - 2
+    assert np.allclose(g["joints"][ok & ~near40], lin[ok & ~near40], atol=1e-9)
+    assert np.allclose(g["conf"][ok], 0.8) and (g["conf"][~ok] == 0).all() and np.isnan(g["joints"][~ok]).all()
+    assert g["dt_nearest_ms"].max() <= 1e3 / 29.994 / 2 + 1e-6
+    gw = Rotation.from_matrix(R[0].T @ Rotation.from_rotvec(gcam[0]).as_matrix()).as_rotvec()
+    assert np.allclose(g["global_orient"][ok], gw, atol=1e-9)        # constant orientation survives nlerp
+    assert np.allclose(g["body_pose"][ok], body[0], atol=1e-9)
+    # every grid frame carries a starting pose (mono.py prior_init copies them all): the gaps are filled
+    assert (~ok).any() and g["init_filled"].sum() == (~ok).sum()
+    assert np.allclose(g["global_orient"], gw, atol=1e-9) and np.allclose(g["body_pose"], body[0], atol=1e-9)
+    # smoothing on the source frames leaves a constant pose alone and keeps NaN-free output where ok
+    g2 = F.prior_interp(Jc, gcam, body, R, tv, ts, valid, np.full(Fs, 0.8), tg, smooth=1.5)
+    assert np.isfinite(g2["joints"][g2["ok"]]).all() and np.allclose(g2["body_pose"][g2["ok"]], body[0], atol=1e-9)

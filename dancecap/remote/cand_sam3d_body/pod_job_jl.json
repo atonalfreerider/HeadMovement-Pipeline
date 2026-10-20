@@ -1,0 +1,73 @@
+{
+ "schema": "dancecap.pod_job/1",
+ "name": "jl_sam3d_body",
+ "take": "john_lula",
+ "max_minutes": 75,
+ "needs": [],
+ "inputs": [
+  "dancecap/work/john_lula/realism/sam3db/input/",
+  "dancecap/work/john_lula/frames/01/",
+  "dancecap/work/john_lula/people/masks_01.npz"
+ ],
+ "exclude": [
+  "dancecap/work/runpod/pywheels",
+  "dancecap/work/runpod/wheelhouse",
+  "mamma-turing"
+ ],
+ "secrets": {
+  "HF_TOKEN": "C:/Users/johnb/Desktop/sam3d-body-key-hf.txt"
+ },
+ "env": {
+  "S3DB_ROOT": "/workspace/s3db_cand",
+  "S3DB_COMMIT": "b5c765a0d89d789985e186d396315e7590887b94",
+  "S3DB_HF_REPO": "facebook/sam-3d-body-dinov3",
+  "S3DB_HF_REV": "11aaa346c7204874a1cbafe3d39a979080b2c55a",
+  "DINOV3_COMMIT": "5aa7e93ab42ae3526291f6b4e3fcd22637e03326",
+  "MHR_COMMIT": "877cba5ee61a5f77d1457bf4de93a66695132bd9",
+  "MHR_ASSETS_RELEASE": "v1.0.1",
+  "TORCH_HOME": "/workspace/s3db_cand/torch_home",
+  "HF_HOME": "/workspace/s3db_cand/hf_home",
+  "UV_LINK_MODE": "copy",
+  "TQDM_DISABLE": "1",
+  "HF_HUB_DISABLE_PROGRESS_BARS": "1"
+ },
+ "commands": [
+  {
+   "name": "install",
+   "timeout_min": 10,
+   "cmd": "bash remote/cand_sam3d_body/install.sh"
+  },
+  {
+   "name": "infer",
+   "timeout_min": 50,
+   "optional": true,
+   "cmd": "/workspace/s3db_cand/venv/bin/python remote/cand_sam3d_body/sam3db_pod.py infer --input work/john_lula/realism/sam3db/input --out work/john_lula/realism/sam3db/pod_out --variants mask255 --chunk 200 --frames-dir work/john_lula/frames/01 --masks-npz work/john_lula/people/masks_01.npz --reserve-min 30"
+  },
+  {
+   "name": "merge",
+   "timeout_min": 5,
+   "cmd": "/workspace/s3db_cand/venv/bin/python remote/cand_sam3d_body/sam3db_pod.py merge --input work/john_lula/realism/sam3db/input --out work/john_lula/realism/sam3db/pod_out --variants mask255 --chunk 200"
+  },
+  {
+   "name": "convert",
+   "timeout_min": 35,
+   "cmd": "/workspace/s3db_cand/venv/bin/python remote/cand_sam3d_body/sam3db_pod.py convert --input work/john_lula/realism/sam3db/input --out work/john_lula/realism/sam3db/pod_out --variants mask255 --force-stub && mkdir -p /workspace/s3db_cand/chunks_done && mv work/john_lula/realism/sam3db/pod_out/chunks /workspace/s3db_cand/chunks_done/jl_$(date +%s)"
+  }
+ ],
+ "outputs": [
+  "dancecap/work/john_lula/realism/sam3db/pod_out/"
+ ],
+ "verify": [
+  "dancecap/work/john_lula/realism/sam3db/pod_out/sam3db_pod.json",
+  "dancecap/work/john_lula/realism/sam3db/pod_out/mhr_mask255.npz",
+  "dancecap/work/john_lula/realism/sam3db/pod_out/smplx_mask255.npz"
+ ],
+ "after_download": [
+  "python -m dancecap.mono4d.jl_sam3db import --session <sid>",
+  "python -m dancecap.mono4d.jl_sam3db qa",
+  "python -m dancecap.mono4d.jl_sam3db prior"
+ ],
+ "notes": [
+  "SAM 3D Body (SAM License, gated HF checkpoint downloaded on the pod with the owner's HF token) on ALL 2643 frames of john_lula's one phone (538x960), each dancer prompted with OUR SAM 2.1 mask (0/255) + its tight box and the per-frame K of cameras/01.npz; official MHR->SMPL-X converter (pytorch, --force-stub) on the pod. Checkpoints stay on the pod; the dancers' frames go to our own pod only (owner consent 2026-10-19); the bundle holds a trimmed SMPL-X neutral model (owner's licence)."
+ ]
+}

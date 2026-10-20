@@ -43,6 +43,7 @@ transposed for the portrait video):
     body4d         completion ON                                       -> candidate "sam3d_body4d"
     body4d_nocomp  completion OFF (temporal smoothing + frozen shape)    -> candidate "sam3d_body4d_nocomp"
     python -m dancecap.mono4d.cand_sam3d_body import [--session SID]   # roles, save candidates, QA sheet
+The whole-take run of the same recipe (john_lula, all 2643 frames, chunked + resumable pod side): mono4d/jl_sam3db.py.
 """
 from __future__ import annotations
 
