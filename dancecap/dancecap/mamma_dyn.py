@@ -1209,8 +1209,9 @@ def fit(take_name: str, tag: str, frames: tuple[int, int] | None = None) -> dict
     s = prep["sets"][tag]
     grid = np.asarray(prep["grid"]["t"], float)
     run_tag = tag if frames is None else f"{tag}_f{frames[0]}-{frames[1]}"
-    run_dir, stats = run_ma3d(work, s["seq"], [f"cam{c}" for c in s["cams"]], root / prep["config"], tag=run_tag,
-                              frames=frames)
+    # a set may name its own ma3d config (mono4d.cand_fitb's prior variants: same inputs, other loss weights)
+    run_dir, stats = run_ma3d(work, s["seq"], [f"cam{c}" for c in s["cams"]], root / s.get("config", prep["config"]),
+                              tag=run_tag, frames=frames)
     out = root / "fits" / run_tag
     if out.exists():
         shutil.rmtree(out)
@@ -1225,7 +1226,7 @@ def fit(take_name: str, tag: str, frames: tuple[int, int] | None = None) -> dict
     rep = {"tag": tag, "run_tag": run_tag, "cams": s["cams"], "frames": list(frames) if frames else None,
            "partial": frames is not None, "world_frame": prep["world_frame"], "ma_3d": stats, "smplx": summary,
            "residuals": resid, "eval_seq": ev["seq"], "host": "pod" if env.is_pod() else "local",
-           "finished": time.strftime("%Y-%m-%dT%H:%M:%S")}
+           "config": s.get("config", prep["config"]), "finished": time.strftime("%Y-%m-%dT%H:%M:%S")}
     (out / "fit.json").write_text(json.dumps(rep, indent=1, default=str))
     print(f"[mamma] fit {run_tag}: " + ", ".join(f"{r} median {v['median_reproj_px']:.1f} px" for r, v in summary.items())
           + f" -> {out}")

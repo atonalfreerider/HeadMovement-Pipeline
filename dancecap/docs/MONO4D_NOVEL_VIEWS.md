@@ -391,6 +391,9 @@ The Jev vendor watch now also reads the five tools' own pages (`python -m dancec
 - **Role assignment:** each predicted track is projected into the phone against our lead/follow boxes.
 - **Metrics:** PA-MPJPE (22 joints, and the 14 that every rig defines), root-relative MPJPE and metric pelvis error
   for world/camera candidates, and limb-direction error.
+- **Jitter** (`accel_rr`, added with the SAM 3D Body prior): root-relative joint acceleration in mm/frame^2, the mean
+  over the 21 joints below the pelvis, with the reference's own on the same frames (`accel_rr_ref`) and the error of
+  the acceleration against the reference (`accel_err`).
 - **Leaderboard:** `python -m dancecap.mono4d leaderboard larissa_kadu_38`. It includes the multi-view floor: the
   7-phone held-out chunk agrees with the 8-phone reference to 4-10 mm on these metrics. That is a consistency
   floor, not ground truth, since the reference is built from the same chunks.
@@ -401,17 +404,22 @@ All runs used phone 06 of larissa_kadu_38, 58-62 s. Each pose candidate was scor
 by an independent auditor (joint order, left/right, bone lengths, time shift, roles, re-score). Every pod was created
 and deleted by the farm runner. Licensed weights stayed on the pods; outputs stay in git-ignored `work/`.
 
-**Pose, one camera** (medians, mm; lead / follow; PA22 = PA-MPJPE on 22 joints; pelvis = world position):
+**Pose, one camera** (medians, mm; lead / follow; PA22 = PA-MPJPE on 22 joints; pelvis = world position; jitter =
+root-relative joint acceleration in mm/frame^2, mean over the 21 joints below the pelvis, median over frames - the
+reference's own is 2.8 / 4.7):
 
-| candidate | PA22 | root-rel | pelvis | limb (deg) | cost | note |
-|---|---|---|---|---|---|---|
-| multi-view floor (7 phones) | 4 / 8 | 5 / 10 | 7 / 8 | 1 / 2 | - | consistency floor |
-| **SAM 3D Body**, our masks + K | **34 / 43** | **44 / 50** | **47** / 93 | **8 / 9** | $1.18 | best per-frame pose; 5x the jitter |
-| **fit B** `mamma_mono06` (our MAMMA_MONO) | 47 / 44 | 63 / 55 | 67 / 48 | 13 / 9 | $1.38 | the bar; free shape from the statures |
-| CloseApp (refining fit B) | 48 / 44 | 64 / 54 | 62 / 56 | 12 / 9 | $0.23 | changes the pose by < 1 mm |
-| Multi-HMR 2, our mask identities | 63 / 61 | 81 / 77 | 254 / 72 | 13 / 13 | $0.10 | follow missing in ~20 % of frames |
-| Multi-HMR 2, its own tracker ids | 73 / 81 | 91 / 94 | 297 / 231 | 17 / 17 | (same run) | swaps the dancers on 28 % of frames |
-| Viggle JST-2 (10.3) | 109 / 84 | - | - | 21 / 17 | $0.40 | free frame, 14 joints |
+| candidate | PA22 | root-rel | pelvis | limb (deg) | jitter | cost | note |
+|---|---|---|---|---|---|---|---|
+| multi-view floor (7 phones) | 4 / 8 | 5 / 10 | 7 / 8 | 1 / 2 | 2.9 / 4.8 | - | consistency floor |
+| **fit B + SAM 3D Body prior** `mamma_mono06_3db` (w 2, pre-registered) | **31 / 36** | **43 / 45** | 51 / 55 | **7 / 7** | 3.9 / 6.1 | $1.35 | best one-camera pose; fit B's smoothness |
+| the same, w 0.5 `mamma_mono06_3db_w05` | **31 / 36** | 44 / **44** | **44** / 54 | 7 / 8 | 3.4 / 6.4 | (same run) | keeps fit B's front/back order |
+| **SAM 3D Body**, our masks + K | 34 / 43 | 44 / 50 | 47 / 93 | 8 / 9 | 23 / 22 | $1.18 | best per-frame network; jitters |
+| SAM 3D Body smoothed over time (control) | 33 / 40 | 44 / 48 | 47 / 93 | 8 / 8 | 4.8 / 5.7 | - | the prior on its own |
+| **fit B** `mamma_mono06` (our MAMMA_MONO) | 47 / 44 | 63 / 55 | 67 / 48 | 13 / 9 | 3.6 / 7.5 | $1.38 | the old bar; free shape from the statures |
+| CloseApp (refining fit B) | 48 / 44 | 64 / 54 | 62 / 56 | 12 / 9 | 3.1 / 5.7 | $0.23 | changes the pose by < 1 mm |
+| Multi-HMR 2, our mask identities | 63 / 61 | 81 / 77 | 254 / 72 | 13 / 13 | 38 / 43 | $0.10 | follow missing in ~20 % of frames |
+| Multi-HMR 2, its own tracker ids | 73 / 81 | 91 / 94 | 297 / 231 | 17 / 17 | 45 / 36 | (same run) | swaps the dancers on 28 % of frames |
+| Viggle JST-2 (10.3) | 109 / 84 | - | - | 21 / 17 | 10 / 10 | $0.40 | free frame, 14 joints |
 
 - **fit B** (`cand_fitb.py`): MAMMA ma_3d with MAMMA_MONO=1 on phone 06 alone, betas free and held to the owner's
   statures. Its world metrics are optimistic for a true one-phone take: it uses phone 06's camera track and sync from
@@ -430,14 +438,58 @@ and deleted by the farm runner. Licensed weights stayed on the pods; outputs sta
   - **Best per-frame pose on the board**: lead PA22 34 mm vs fit B 47, follow 43 vs 44; best lead pelvis (47 vs 67).
   - The follow's pelvis is 93 mm off, almost all depth: she is placed 89 mm too far, partly because her body comes
     out about 2 % too large.
-  - **It jitters**: root-relative joint acceleration is about 5x fit B's (13 vs 2.4 mm/frame^2, lead), because every
-    frame is solved alone.
+  - **It jitters**: root-relative joint acceleration is about 6x fit B's (23 vs 3.6 mm/frame^2, lead, the harness's
+    jitter column), because every frame is solved alone.
   - Variants: the mask prompt helps the lead (box only: 36 mm); mask scale 0/1 vs 0/255 and one shape per dancer
     change < 0.5 mm. SAM-Body4D (occlusion completion + smoothing, SAM 3 bypassed with our masks) added nothing.
   - **Use it inside MAMMA_MONO** as a per-frame 3D pose prior: MAMMA supplies the temporal smoothness, the floor and
-    the statures that SAM 3D Body lacks. That combination is the best candidate for "MAMMA or better" from one phone.
+    the statures that SAM 3D Body lacks. Done: see the next item.
   - The first attempt hit HTTP 403 ($0.04): Hugging Face access was still pending. Listing a gated repo's files
     succeeds without access; only a download (HEAD) proves it.
+- **fit B + SAM 3D Body prior** (`cand_fitb.py` variant `3db`; mamma-turing 58ff98a, `pose_prior_loss` in
+  `optimization/utils/mono.py`, env `MAMMA_POSE_PRIOR`; $1.35, one A100 pod, 45 min):
+  - **What runs:** fit B unchanged (same phone-06 inputs, ankle-ray start, floor, statures and temporal terms) plus a
+    per-frame 3D pose prior in all four MAMMA stages. The prior is SAM 3D Body's own SMPL-X (candidate `sam3d_body`),
+    moved from phone 06's camera to the world with phone 06's track on the sync-corrected clock, put on the fit grid,
+    and smoothed over time (Gaussian, 1.5 frames).
+  - **The loss:** Geman-McClure (10 cm scale) on the 21 root-relative body joints below the pelvis. The prior is
+    rescaled per frame to the current body (no gradient through the scale) but not rotated, so it also pulls the
+    facing: 3DB's torso orientation error is 5.8 / 5.3 deg against fit B's 9.2 / 6.2. Each frame is weighted by the
+    dancer's visible mask area (3DB's lead error goes from 31 to 51-63 mm when the lead is partly hidden). The prior's
+    body pose and world orientation also replace the heading search as the starting pose.
+  - **Pose:** PA22 31 / 36 mm against fit B's 47 / 44. That is better than either input: 3DB scores 34 / 43, and 3DB
+    smoothed (the control row) 33 / 40. Root-relative error is 43-44 / 44-45 against 63 / 55, limbs 7 / 7-8 deg
+    against 13 / 9.
+  - **Smoothness:** jitter stays at fit B's level (w 2: 3.9 / 6.1; w 0.5: 3.4 / 6.4; fit B 3.6 / 7.5), a sixth of
+    3DB's. The acceleration error against the reference is 3.2 / 5.0 at w 2, 2.8 / 4.7 at w 0.5 and 3.0 / 5.0 for
+    fit B.
+  - **Placement:** the lead's pelvis improves (51 / 44 mm vs 67), the follow's gets a little worse (55 / 54 vs 48).
+    3DB's 89 mm depth error for the follow does not come through: the translation still comes from fit B's ankle rays
+    and floor.
+  - **Couple order:** which dancer is nearer the camera agrees with the reference on 97.5 % of frames at w 0.5, the
+    same as fit B on this measure; w 2 drops to 91 %. The depth gap between the two is better than fit B's (median
+    error 49 / 64 mm vs 90).
+  - **Cost of the prior:** the 2D residual rises slightly, from 3.9 / 4.1 px to 4.4 / 4.4 (w 0.5) and 4.8 / 4.6 px (w 2).
+  - **Weights:** 0.5 and 2 tie on pose; 0.5 is better on placement, couple order and the lead's jitter. Use **w 0.5**
+    as the default. It was picked after seeing the reference, so confirm it on another window. The w 8 run was stopped
+    (see the lesson below).
+  - **Audit** (`cand_fitb audit-3db`, `work/larissa_kadu_38_mono06/mamma/audit_3db.json`):
+    - The clock check says 'ref'.
+    - Swapping left and right scores 243-301 mm root-relative (43-45 as saved); swapping the roles about 300 mm.
+    - PA22 over time shifts of -2..+2 frames is lowest at 0. For the w 0.5 follow, shift -1 is 0.5 mm lower; fit B
+      shows the same.
+    - Limb lengths are 0.97-1.03 of the reference's, and an own Procrustes re-score equals the harness.
+    - The prior: forward kinematics of 3DB's converted parameters reproduce its joints to 0.04 mm, the world
+      orientation reproduces the world joints to 0.04 mm, and MAMMA's camera at each grid instant equals the track's
+      at the 3DB frame (0.5 mm).
+  - **Pod lesson:** the three weights ran side by side on one A100 (`DANCECAP_GPU_SHARED=1`). Stages 1-3 ran at
+    ~2.5 s per iteration each, 3x fit B alone, so nothing was gained. The SDF stage ran at 65-70 s per iteration
+    (fit B alone: ~10). The w 8 fit could not finish inside the command timeout, so it was killed by hand on the pod
+    and the other two finished with 2 minutes to spare. Run MAMMA fits one after another, or on separate pods.
+  - **Verdict: yes.** From one phone, MAMMA_MONO with the SAM 3D Body prior is the best pose on the board. It beats
+    fit B on every pose metric for both dancers at fit B's smoothness. Still open: the follow's pelvis (54 vs 48 mm)
+    and the gap to the multi-view floor (4 / 8 mm). As for fit B, its world metrics are optimistic for a true
+    one-phone take, since the camera track and sync come from the 8-phone SfM.
 
 **Gap filling** (`cand_kimodo.py`, Kimodo-SOMA-RP-v1.2, open weights, no text encoder; $0.67): one held-out second
 (59-60 s) of the 8-phone fit, keyframes on both sides, 5 samples, medians.
@@ -491,4 +543,5 @@ so did the Viggle import (re-imported; PA22 108 -> 109 / 84 -> 84 mm, since its 
 candidates in the leaderboard.
 
 **Cost.** $4.54 of the $25 for the whole round, comparison renders included (ledger $92.08 of the $112.54 cap). $1.36 of it was lost to uploads timing out
-on the home uplink: the runner bundles 330 MB of wheels even for jobs that need none.
+on the home uplink: the runner bundles 330 MB of wheels even for jobs that need none. The SAM 3D Body prior run added
+$1.35 (a 136 MB bundle, uploaded in under a minute).

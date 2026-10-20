@@ -1,0 +1,74 @@
+{
+ "schema": "dancecap.pod_job/1",
+ "name": "cand_fitb_3db",
+ "take": "larissa_kadu_38_mono06",
+ "max_minutes": 55,
+ "needs": [
+  "mamma"
+ ],
+ "inputs": [
+  "dancecap/work/larissa_kadu_38_mono06/mamma/prepare.json",
+  "dancecap/work/larissa_kadu_38_mono06/mamma/mono_init.npz",
+  "dancecap/work/larissa_kadu_38_mono06/mamma/stature.json",
+  "dancecap/work/larissa_kadu_38_mono06/mamma/prior_3db.npz",
+  "dancecap/work/larissa_kadu_38_mono06/mamma/ma3d_config_3db_w05.yaml",
+  "dancecap/work/larissa_kadu_38_mono06/mamma/ma3d_config_3db.yaml",
+  "dancecap/work/larissa_kadu_38_mono06/mamma/ma3d_config_3db_w8.yaml",
+  "dancecap/work/larissa_kadu_38_mono06/mamma/ma3d_config_3db_smoke.yaml",
+  "dancecap/work/larissa_kadu_38_mono06/mamma/ma_2d/larissa_kadu_38_mono06_m06/",
+  "dancecap/work/larissa_kadu_38_mono06/mamma/ma_cap/larissa_kadu_38_mono06_m06/"
+ ],
+ "env": {
+  "DANCECAP_POD": "1",
+  "PYOPENGL_PLATFORM": "egl",
+  "MAMMA_MONO": "1",
+  "MAMMA_MONO_INIT": "/workspace/HeadMovement/dancecap/work/larissa_kadu_38_mono06/mamma/mono_init.npz",
+  "MAMMA_STATURE": "/workspace/HeadMovement/dancecap/work/larissa_kadu_38_mono06/mamma/stature.json",
+  "MAMMA_POSE_PRIOR": "/workspace/HeadMovement/dancecap/work/larissa_kadu_38_mono06/mamma/prior_3db.npz",
+  "DANCECAP_GPU_SHARED": "1"
+ },
+ "cwd": "dancecap",
+ "exclude": [
+  "dancecap/work/runpod/pywheels",
+  "mamma/data/body_models/smplx_locked_head/smplx/SMPLX_MALE.npz",
+  "mamma/data/body_models/smplx_locked_head/smplx/SMPLX_FEMALE.npz"
+ ],
+ "setup": [
+  "for g in MALE FEMALE; do ln -sf SMPLX_NEUTRAL.npz /workspace/HeadMovement/mamma/data/body_models/smplx_locked_head/smplx/SMPLX_$g.npz; done; nvidia-smi --query-gpu=name,memory.total --format=csv"
+ ],
+ "commands": [
+  {
+   "name": "fit_smoke",
+   "cmd": "python -m dancecap mamma fit larissa_kadu_38_mono06 --tag 3db_smoke",
+   "timeout_min": 10
+  },
+  {
+   "name": "fit_3db_parallel",
+   "cmd": "mkdir -p /workspace/HeadMovement/dancecap/work/larissa_kadu_38_mono06/mamma/logs; for t in 3db_w05 3db 3db_w8; do (python -m dancecap mamma fit larissa_kadu_38_mono06 --tag $t > /workspace/HeadMovement/dancecap/work/larissa_kadu_38_mono06/mamma/logs/fit_$t.out 2>&1; echo $? > /workspace/HeadMovement/dancecap/work/larissa_kadu_38_mono06/mamma/logs/fit_$t.rc) & sleep 20; done; wait; bad=0; for t in 3db_w05 3db 3db_w8; do rc=$(cat /workspace/HeadMovement/dancecap/work/larissa_kadu_38_mono06/mamma/logs/fit_$t.rc 2>/dev/null); echo \"[3db] fit $t rc=$rc\"; tail -n 4 /workspace/HeadMovement/dancecap/work/larissa_kadu_38_mono06/mamma/logs/fit_$t.out; [ \"$rc\" = 0 ] || bad=1; done; exit $bad",
+   "timeout_min": 42
+  }
+ ],
+ "outputs": [
+  "dancecap/work/larissa_kadu_38_mono06/mamma/fits/",
+  "dancecap/work/larissa_kadu_38_mono06/mamma/logs/"
+ ],
+ "verify": [
+  "dancecap/work/larissa_kadu_38_mono06/mamma/fits/3db_w05/fit.json",
+  "dancecap/work/larissa_kadu_38_mono06/mamma/fits/3db_w05/smplx/lead.npz",
+  "dancecap/work/larissa_kadu_38_mono06/mamma/fits/3db_w05/smplx/follow.npz",
+  "dancecap/work/larissa_kadu_38_mono06/mamma/fits/3db/fit.json",
+  "dancecap/work/larissa_kadu_38_mono06/mamma/fits/3db/smplx/lead.npz",
+  "dancecap/work/larissa_kadu_38_mono06/mamma/fits/3db/smplx/follow.npz",
+  "dancecap/work/larissa_kadu_38_mono06/mamma/fits/3db_w8/fit.json",
+  "dancecap/work/larissa_kadu_38_mono06/mamma/fits/3db_w8/smplx/lead.npz",
+  "dancecap/work/larissa_kadu_38_mono06/mamma/fits/3db_w8/smplx/follow.npz"
+ ],
+ "after_download": [
+  "python -m dancecap.mono4d.cand_fitb import-3db --session <sid>"
+ ],
+ "notes": [
+  "mono4d fit B + SAM 3D Body prior: MAMMA_MONO=1 single-camera ma_3d of phone 06, 58-62 s, with pose_prior_loss (mamma-turing utils/mono.py, MAMMA_POSE_PRIOR) at weights 3db_w05=0.5, 3db=2, 3db_w8=8; '3db' is pre-registered",
+  "the prior: SAM 3D Body's own per-frame SMPL-X (candidate sam3d_body) moved to the world with phone 06's track; no multi-view data enters except the camera track and sync, exactly as for fit B",
+  "3db_smoke: 2 iterations a stage, a crash check before the three 15-min fits"
+ ]
+}
