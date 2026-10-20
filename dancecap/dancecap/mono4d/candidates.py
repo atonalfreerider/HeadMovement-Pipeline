@@ -2,7 +2,9 @@
 Multi-HMR 2, CloseApp, Kimodo-smoothed fits, ... all scored the same way against the multi-phone reference fit.
 
 Contract, work/<take>/mono4d/cand/<name>/:
-    lead.npz, follow.npz   t (T,) reference seconds; joints (T, J, 3) with J >= 22 in SMPL / SMPL-X body order
+    lead.npz, follow.npz   t (T,) reference seconds = the input phone's frames.json t + its sync delta (frame_to_ref;
+                           the reference fit's and load_tracks' clock - raw frame times are ~1 frame off on a phone
+                           whose delta is ~-30 ms, and score() flags them); joints (T, J, 3) with J >= 22 in SMPL / SMPL-X body order
                            (0 pelvis ... 21 right wrist; NaN where a joint is not predicted); frame = "world" (metres,
                            CONTRACTS world frame) or "camera" (metres, OpenCV axes of the input phone)
     meta.json              {"name", "method", "input_cam", "frame", "source", "notes", "cost_usd", ...}
@@ -41,6 +43,49 @@ def cand_dir(take: str, name: str) -> Path:
     return PACKAGE_ROOT / "work" / take / "mono4d" / "cand" / name
 
 
+def frame_to_ref(take: str, cam: str, t: np.ndarray) -> np.ndarray:
+    """frames.json times of one phone -> reference seconds (t + that phone's sync/offsets.json delta), the clock of the
+    multi-phone fit and of mamma_dyn.load_tracks."""
+    from .. import mamma_dyn as md
+    return md.apply_offset(np.asarray(t, float), md.read_sync_offsets(PACKAGE_ROOT / "work" / take).get(cam))
+
+
+def clock_check(take: str, cam: str, t: np.ndarray, tol: float = 1e-3, ref_grid: np.ndarray | None = None) -> dict:
+    """Which clock a candidate's t is on: the fraction of its times within tol of the phone's raw frames.json times
+    and of the same times on the reference clock. 'raw' (a missed frame_to_ref) when the raw match clearly wins.
+    ref_grid (the reference fit's t): a candidate on that grid is in reference seconds by construction (fit B's
+    convention); if the phone's raw frames also happen to lie on it, the clock cannot be told ('ambiguous')."""
+    fj = PACKAGE_ROOT / "work" / take / "frames" / cam / "frames.json"
+    if not fj.exists() or not len(t):
+        return {"clock": "unknown"}
+    raw = np.sort([f["t"] for f in json.loads(fj.read_text())["frames"]])
+    if len(raw) < 2:
+        return {"clock": "unknown"}
+    try:
+        ref = np.sort(frame_to_ref(take, cam, raw))
+    except SystemExit as e:  # a stale sync/offsets.json: report it, never abort the scoring of a diagnostic
+        return {"clock": "unknown", "error": str(e)}
+    t = np.asarray(t, float)
+
+    def near(grid):
+        i = np.clip(np.searchsorted(grid, t), 1, len(grid) - 1)
+        return float(np.mean(np.minimum(np.abs(grid[i] - t), np.abs(grid[i - 1] - t)) <= tol))
+
+    m_raw, m_ref = near(raw), near(ref)
+    m_grid = near(np.sort(np.asarray(ref_grid, float))) if ref_grid is not None and len(ref_grid) > 1 else 0.0
+    shift = float(np.median(ref - raw))
+    per = float(np.median(np.diff(raw)))
+    if abs(shift) > 2 * tol and abs(shift - per * round(shift / per)) <= tol:
+        clock = "ambiguous"  # the delta is a whole number of frames: raw and reference times coincide
+    elif m_grid > 0.5:
+        clock = "ambiguous" if m_raw > 0.5 else "ref"
+    else:
+        clock = "raw" if (abs(shift) > 2 * tol and m_raw > 0.5 and m_raw > m_ref) else (
+            "ref" if m_ref > 0.5 else "other")
+    return {"clock": clock, "raw_match": round(m_raw, 3), "ref_match": round(m_ref, 3), "grid_match": round(m_grid, 3),
+            "sync_delta_ms": round(1e3 * shift, 2)}
+
+
 def to_world(joints_cam: np.ndarray, R: np.ndarray, t: np.ndarray) -> np.ndarray:
     """(T, J, 3) camera-frame points (x_cam = R X + t, per frame) -> world."""
     return np.einsum("fji,fnj->fni", R, joints_cam - t[:, None, :])
@@ -48,7 +93,8 @@ def to_world(joints_cam: np.ndarray, R: np.ndarray, t: np.ndarray) -> np.ndarray
 
 def assign_roles(tracks: dict, take: str, cam: str, K: np.ndarray, frame_t: np.ndarray) -> dict:
     """tracks {id: joints_cam (T, J, 3) on frame_t} -> {"lead": id, "follow": id}: each track's projected 2D joints
-    box against the lead / follow boxes of dancers/roles.json, mean IoU over frames, best assignment."""
+    box against the lead / follow boxes of dancers/roles.json, mean IoU over frames, best assignment. frame_t is the
+    phone's RAW frames.json clock (the clock of roles.json and the masks), not reference seconds."""
     from .holdout import box_iou
     roles = json.loads((PACKAGE_ROOT / "work" / take / "dancers" / "roles.json").read_text())["cams"][cam]["frames"]
     rt = np.array([f["t"] for f in roles])
@@ -137,6 +183,12 @@ def score(take: str, name: str, window: tuple[float, float], reference: Path | N
         z = np.load(p, allow_pickle=True)
         r = load_fit(ref, role)
         t, J, frame = np.asarray(z["t"], float), np.asarray(z["joints"], float), str(z["frame"])
+        if meta.get("input_cam"):  # flag (never silently fix) a candidate saved on the raw frame clock
+            ck = clock_check(take, meta["input_cam"], t, ref_grid=r["t"])
+            out.setdefault("clock", {})[role] = ck
+            if ck["clock"] == "raw":
+                print(f"[cand] WARNING {name}/{role}: t is on phone {meta['input_cam']}'s raw frames.json clock, not "
+                      f"reference seconds (sync delta {ck['sync_delta_ms']:+.1f} ms): save frame_to_ref(t)")
         if frame == "camera":  # through the input phone's track (per-frame R, t) into the world frame
             from .. import mamma_dyn as md
             tr = md.load_tracks(PACKAGE_ROOT / "work" / take, [meta["input_cam"]])[meta["input_cam"]]
@@ -157,9 +209,10 @@ def import_viggle(take: str, run_dir: Path, fps: float = 30.0) -> Path:
         J = np.full((len(times), 22, 3), np.nan)
         for j, n in idx.items():
             J[:, j] = P[:, n]
-        save(take, "viggle_jst2", role, tj["t"][0] + times, J, "free",
+        save(take, "viggle_jst2", role, frame_to_ref(take, "06", tj["t"][0] + times), J, "free",
              {"method": "Viggle JST-2 Motion 3D (API, Mixamo rig), one masked clip per dancer", "input_cam": "06",
-              "source": str(run_dir), "cost_usd": 0.40})
+              "source": str(Path(run_dir).resolve()), "cost_usd": 0.40,
+              "clock": "t = clip start (06.times.json, frames.json clock) + GLB time + phone 06's sync delta"})
     return cand_dir(take, "viggle_jst2")
 
 
@@ -185,12 +238,17 @@ def leaderboard(take: str, window: tuple[float, float], floor_tag: str | None = 
             rows.append((f"multi-view floor ({floor_tag}, 7 phones)", f))
     for d in sorted(p for p in root.iterdir() if p.is_dir()) if root.exists() else []:
         if (d / "lead.npz").exists() or (d / "follow.npz").exists():
-            rows.append((d.name, score(take, d.name, window)["roles"]))
+            s = score(take, d.name, window)
+            rows.append((d.name, (s["roles"], s.get("clock", {}))))
     fmt = lambda s: "-" if not s or s.get("median") is None else f"{s['median']:.0f}"  # noqa: E731
     lines = [f"# One-camera candidates, {take}, {window[0]:.1f}-{window[1]:.1f} s (medians; reference = 8-phone fit)", "",
              "| candidate | role | frames | PA-MPJPE 22 (mm) | PA-MPJPE 14 (mm) | root-rel (mm) | pelvis world (mm) | limb (deg) |",
              "|---|---|---|---|---|---|---|---|"]
     for name, roles in rows:
+        if isinstance(roles, tuple):  # (roles, clock flags) of a candidate
+            roles, clocks = roles
+            if any(c.get("clock") == "raw" for c in clocks.values()):
+                name += " (RAW CLOCK: ~1 frame off)"
         for role in ROLES:
             s = roles.get(role) or {}
             if not s.get("frames"):

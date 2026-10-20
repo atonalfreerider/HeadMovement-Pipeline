@@ -352,7 +352,10 @@ def run(take: str, cam: str, t0: float, t1: float, allow_upload: bool = False, f
                                                                 indent=1, default=str))
         names, times, P = glb_joints(glb_p.read_bytes(), fps=fps)
         fit = load_fit(ref, role)
-        rep["dancers"][role] = {"clip": info, "glb_nodes": len(names), "glb_seconds": float(times[-1] - times[0]),
-                                **score(names, times, P, info["t_first"], fit["t"], fit["joints"])}
+        from .candidates import frame_to_ref  # the clip's first frame on the reference fit's (sync-corrected) clock
+        t_ref = float(frame_to_ref(take, cam, info["t_first"]))
+        rep["dancers"][role] = {"clip": info, "t_first_ref": t_ref, "glb_nodes": len(names),
+                                "glb_seconds": float(times[-1] - times[0]),
+                                **score(names, times, P, t_ref, fit["t"], fit["joints"])}
     (out / "report.json").write_text(json.dumps(rep, indent=1, default=str))
     return rep

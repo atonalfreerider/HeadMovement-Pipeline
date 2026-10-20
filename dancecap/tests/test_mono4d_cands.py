@@ -137,3 +137,63 @@ def test_save_and_score_round_trip(tmp_path, monkeypatch):
     assert json.loads((C.cand_dir("tk", "perfect") / "meta.json").read_text())["method"] == "copy"
     with pytest.raises(ValueError):
         C.save("tk", "bad", "lead", t, np.zeros((T, 10, 3)), "world")
+
+
+def test_clock_check_flags_raw_frame_times(tmp_path, monkeypatch):
+    monkeypatch.setattr(C, "PACKAGE_ROOT", tmp_path)
+    monkeypatch.setattr(md, "read_sync_offsets", lambda work: {"06": {"delta": -0.03004, "rate": 0.0, "t_ref": 0.0}})
+    T = 12
+    raw = 20 + np.arange(T) / 30
+    fdir = tmp_path / "work" / "tk" / "frames" / "06"
+    fdir.mkdir(parents=True)
+    (fdir / "frames.json").write_text(json.dumps({"frames": [{"i": k, "t": float(x)} for k, x in enumerate(raw)]}))
+    ref_t = C.frame_to_ref("tk", "06", raw)
+    assert np.allclose(ref_t, raw - 0.03004)  # reference seconds = frame t + the phone's delta
+    assert C.clock_check("tk", "06", raw)["clock"] == "raw"
+    assert C.clock_check("tk", "06", ref_t)["clock"] == "ref"
+    # score() reports the clock per role; the leaderboard marks a raw-clock candidate
+    ref_dir = tmp_path / "work" / "tk" / "smplx"
+    ref_dir.mkdir(parents=True)
+    for role in C.ROLES:
+        J = np.zeros((T, 55, 3))
+        J[:, :22] = _ref_pose(T, seed=5)
+        np.savez(ref_dir / f"{role}.npz", t=ref_t, joints=J, quality=np.ones(T))
+        C.save("tk", "late", role, raw, J[:, :22], "free", {"input_cam": "06"})
+        C.save("tk", "good", role, ref_t, J[:, :22], "free", {"input_cam": "06"})
+    assert C.score("tk", "late", (19, 21))["clock"]["lead"]["clock"] == "raw"
+    assert C.score("tk", "good", (19, 21))["clock"]["follow"]["clock"] == "ref"
+    board = C.leaderboard("tk", (19, 21), floor_tag=None)
+    assert "| late (RAW CLOCK" in board and "| good |" in board
+
+
+def test_clock_check_edge_cases(tmp_path, monkeypatch):
+    monkeypatch.setattr(C, "PACKAGE_ROOT", tmp_path)
+    raw = 20 + np.arange(30) / 30
+    fdir = tmp_path / "work" / "tk" / "frames" / "06"
+    fdir.mkdir(parents=True)
+    (fdir / "frames.json").write_text(json.dumps({"frames": [{"t": float(x)} for x in raw]}))
+    # a delta of a whole frame: raw and reference times coincide, so the clock cannot be told apart
+    monkeypatch.setattr(md, "read_sync_offsets", lambda work: {"06": {"delta": -1 / 30}})
+    assert C.clock_check("tk", "06", raw[5:25])["clock"] == "ambiguous"
+
+    def stale(work):
+        raise SystemExit("stale offsets")
+    monkeypatch.setattr(md, "read_sync_offsets", stale)  # a diagnostic never aborts the scoring
+    assert C.clock_check("tk", "06", raw)["clock"] == "unknown"
+    (fdir / "frames.json").write_text(json.dumps({"frames": []}))
+    assert C.clock_check("tk", "06", raw)["clock"] == "unknown"
+
+
+def test_clock_check_reference_grid_is_not_flagged_raw(tmp_path, monkeypatch):
+    """A candidate on the reference fit's own grid is in reference seconds, even when the phone's raw frames happen to
+    lie within the tolerance of that grid (phones 02/03/07/09 of larissa_kadu_38 in some windows)."""
+    monkeypatch.setattr(C, "PACKAGE_ROOT", tmp_path)
+    monkeypatch.setattr(md, "read_sync_offsets", lambda work: {"03": {"delta": -0.0035}})
+    raw = 20 + np.arange(30) / 30
+    fdir = tmp_path / "work" / "tk" / "frames" / "03"
+    fdir.mkdir(parents=True)
+    (fdir / "frames.json").write_text(json.dumps({"frames": [{"t": float(x)} for x in raw]}))
+    grid = raw + 0.0005  # the multi-phone fit's lattice, 0.5 ms from this phone's raw frames
+    assert C.clock_check("tk", "03", grid)["clock"] == "raw"  # without the grid the coincidence looks like raw
+    assert C.clock_check("tk", "03", grid, ref_grid=grid)["clock"] == "ambiguous"
+    assert C.clock_check("tk", "03", raw, ref_grid=raw - 0.0035)["clock"] == "raw"  # a truly raw candidate still is
