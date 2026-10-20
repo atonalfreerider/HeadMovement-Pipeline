@@ -56,6 +56,49 @@ geometry) but better colour where both cover the dancer (PSNR 14.5 vs 13.5 dB, L
     (DANCECAP_RUNPOD_CAP=... python -m dancecap remote run --jobs <that json> --max-cost 3 --gpus ...)
     python -m dancecap.mono4d.cand_lhmpp score --dir <lhmpp dir>          # pod (or local without LPIPS)
     python -m dancecap.mono4d.cand_lhmpp import [--session SID]
+
+COMPARE MODE (2026-10-19, the owner's avatar-vs-moving-splats decision): every view of the appearance-comparison spec
+(work/<take>/mono4d/compare/views.json, dancecap.mono4d.appearance_compare spec) rendered by two LHM++ variants, both
+dancers posed by the reference SMPL-X with the SAME transfer as above (shape mode ref: betas[:10], trans = pelvis_ref -
+J0_rest) and rendered together (mutual occlusion: one gsplat rasterisation of both dancers' Gaussians):
+    lhmpp_1phone   the earlier best w8_ref (8 crops of phone 06, 58-62 s) with every crop DROPPED whose dancer mask has
+                   a white-patch risk (below), replaced by the next-best phone-06 frames under the same greedy rule
+    lhmpp_8phone   16 crops from all 8 phones, 2 per phone, same rules (global greedy: best frontal first, then quality x
+                   yaw spread, cap 2 per phone, 0.2 s apart per phone; area / sharpness normalised per phone); frames
+                   within 0.05 s of a spec real view of the same phone are not used (its real-view panels stay
+                   out-of-frame)
+    selection      _pick's base gate (vis >= 0.9, inside the image, not cut by the border) + no OCC_LIMITS exceeded;
+                   when the clean frames cannot fill the set at 0.2 s spacing the greedy continues at 0.1 s, then 2
+                   frames, and only then admits the least-bad flagged crops (marked relaxed; none were needed)
+    white-patch risk, from both reference bodies rasterised into the frame (avatar_raster, ~1 cm cells) and the SAM 2.1
+    masks:
+        white_frac     part of the dancer's projected body WITHOUT the hands (eroded 2 cells for fit error) that the
+                       dancer's own mask does not cover: it turns white in the crop (the partner's arm / hand / hair in
+                       front, a mask hole or miss); limit 1.5 % (06/959: 2 % already gave the visible patch on the
+                       lead's back; the shoulder bands of 06/896, 887, 905 were 3.6-9.2 %)
+        bad_hole_frac  enclosed holes of the dancer's mask on the visible body or under the partner's mask, relative
+                       to the mask area (legit gaps such as an arm on the hip are kept); limit 0.2 %
+        occ_model      part of the projected body behind the partner's body (> 3 cm nearer): reported only (hand
+                       holding alone exceeds 3 %); white_partner_frac, white_vis_frac: reported only
+    compare-prep   (local CPU, ~3 min) -> compare/lhmpp/input/ (the pod's only input, 19 MB): refs/<role>/<variant>/
+                   NN.png, refs.json (picks with their stats, dropped crops and why), cameras.json (every render: id,
+                   group, out path, pose key, K, R, tvec, W, H), poses.json (per pose key the reference SMPL-X
+                   parameters), real/ + masks/ (the 18 real views, for the score), prep.json; and compare/lhmpp/
+                   candidates.json (every dancer-frame of 58-62 s on all phones; --reuse-candidates skips the survey),
+                   refs_<role>_<variant>.jpg, dropped_<role>.jpg (the earlier w8 crops with the verdict)
+    compare-job    -> remote/cand_lhmpp/pod_job_compare.json (install.sh + lhmpp_compare_pod.py + compare-score)
+    compare-score  (pod, system python, LPIPS) masked metrics of the 18 real views -> compare/lhmpp/pod_out/metrics.json
+    compare-import (local) native close-up crops, renders/<variant>/manifest.json, review sheets, compare/lhmpp/report.json
+Renders: compare/renders/<variant>/<view_id>.png (RGBA, straight alpha, transparent background; real views at the
+phone's native size, turntable 1080 x 1080), role/<view_id>.png (R lead, G follow, B alpha; real views),
+clip_vr_seat/<j:04d>.png + clip_cam03/<j:04d>.png (j = clip index 0..104, grid k = clip.k[0] + j),
+closeup/<view_id>_<box>.png (native-pixel crop of the real-view render), closeup_zoom/<view_id>_<box>.png (the same
+box re-rendered at 512 px on the long side: more detail than the photo has).
+2026-10-19 compare run (session 20261019-182851-batch, RTX 4090 secure $0.89/h, 8.5 pod-min, $0.126; a first attempt
+found no stock and created no pod): 4 avatars x 160k Gaussians, 2 x 276 renders, 0 failures. Clean crops: phone 06 31 /
+28 of 86 / 109 base-gate dancer-frames (lead / follow); 6 of the 8 earlier lead crops and 7 of the 8 follow crops were
+dropped (min spacing fell to 0.1 s); the white patch on the lead's back is gone. Medians over 36 dancer-views of the
+18 real views (inside the real masks): 1phone PSNR 12.3 dB / SSIM 0.30 / LPIPS 0.188, 8phone 12.8 / 0.35 / 0.180.
 """
 from __future__ import annotations
 
@@ -712,6 +755,811 @@ def import_run(sid: str | None = None, pods: list[str] | None = None) -> dict:
     return report
 
 
+# ================================================================================================ compare mode
+
+
+CMP = WORK / "mono4d" / "compare"
+CMP_OUT = CMP / "lhmpp"
+CMP_INPUT = CMP_OUT / "input"
+CMP_POD_OUT = CMP_OUT / "pod_out"
+CMP_RENDERS = CMP / "renders"
+ALL_CAMS = ("01", "02", "03", "04", "05", "06", "07", "09")
+CMP_WINDOW = WINDOW                       # 58-62 s: the earlier w8 window (the spec's clip is 58.0-61.5 s inside it)
+CMP_VARIANTS = {
+    "lhmpp_1phone": {"cams": ("06",), "n": 8, "min_dt": 0.2, "per_cam": None, "seed": "w8", "avoid_view_s": None,
+                     "what": "LHM++ from 8 crops of ONE phone (06), 58-62 s: the earlier best w8_ref with the crops that "
+                             "risk white patches (partner occlusion / mask holes) replaced by the next-best phone-06 "
+                             "frames"},
+    "lhmpp_8phone": {"cams": ALL_CAMS, "n": 16, "min_dt": 0.2, "per_cam": 2, "seed": None, "avoid_view_s": 0.05,
+                     "what": "LHM++ from 16 crops of ALL 8 phones (2 per phone), 58-62 s, same selection rules: the "
+                             "upper bound of this method with the full rig"},
+}
+OCC_LIMITS = {"white_frac": 0.015, "bad_hole_frac": 0.002}  # occ_model (hand holding counts) is reported only
+OCC_CELL_M = 0.01                         # z-buffer cell ~ 1 cm at the nearer dancer
+OCC_ERODE_CELLS = 2                       # visible-body erosion before the mask test (fit error ~ 1-2 cm)
+ZOOM_PX = 512
+
+
+def _cmp_spec() -> dict:
+    p = CMP / "views.json"
+    if not p.exists():
+        raise SystemExit(f"{p} missing: run python -m dancecap.mono4d.appearance_compare spec first")
+    return json.loads(p.read_text())
+
+
+def _holes(m: np.ndarray, min_px: int) -> np.ndarray:
+    """Enclosed background components of a mask (they do not touch the image border), each >= min_px."""
+    n, lab, st, _ = cv2.connectedComponentsWithStats((~m).astype(np.uint8), connectivity=4)
+    H, W = m.shape
+    keep = np.zeros(n, bool)
+    for k in range(1, n):
+        x, y, w, h, a = st[k]
+        keep[k] = a >= min_px and x > 0 and y > 0 and x + w < W and y + h < H
+    return keep[lab]
+
+
+def _body_zbuffer(torch, V: np.ndarray, faces, K, R, t, s: float, Ws: int, Hs: int, hand_faces=None):
+    """Depth of one posed body (avatar_raster.rasterize, exact triangles) at scale s of the frame; inf = empty.
+    With hand_faces (bool per face) also the cells whose front face belongs to a hand."""
+    from ..avatar_raster import EMPTY_Z, rasterize
+    Xc = V @ np.asarray(R, float).T + np.asarray(t, float)
+    z = Xc[:, 2]
+    K = np.asarray(K, float)
+    zz = np.maximum(z, 1e-6)
+    u = ((K[0, 0] * Xc[:, 0] / zz + K[0, 2]) + 0.5) * s - 0.5
+    v = ((K[1, 1] * Xc[:, 1] / zz + K[1, 2]) + 0.5) * s - 0.5
+    px = torch.tensor(np.stack([u, v], 1), dtype=torch.float32)
+    zb, fid = rasterize(torch, px, torch.tensor(z, dtype=torch.float32), faces, Hs, Ws)
+    zb = zb.numpy().astype(np.float32)
+    zb[zb >= EMPTY_Z * 0.5] = np.inf
+    if hand_faces is None:
+        return zb
+    fid = fid.numpy()
+    return zb, (fid >= 0) & np.asarray(hand_faces)[np.maximum(fid, 0)]
+
+
+def hand_face_mask(faces: np.ndarray, lbs_weights: np.ndarray) -> np.ndarray:
+    """Faces whose dominant skinning joint is a wrist (20, 21) or a finger (25-54) of SMPL-X."""
+    lab = np.asarray(lbs_weights)[np.asarray(faces)].sum(1).argmax(1)
+    return (lab == 20) | (lab == 21) | (lab >= 25)
+
+
+def occlusion_stats(torch, cam: str, i: int, t: float, tr, bodies: dict, faces, masks: dict, Wimg: int,
+                    Himg: int, hand_faces=None) -> dict:
+    """White-patch risk of each dancer's crop in frame i of a phone (see the module doc, OCC_LIMITS)."""
+    posed = {r: bodies[r].at(t) for r in ROLES}
+    if any(p is None for p in posed.values()):
+        return {}
+    K, R, tv = tr.K[i], tr.R[i], tr.tvec[i]
+    zc = min(float(np.median(posed[r][0] @ np.asarray(R).T[:, 2] + tv[2])) for r in ROLES)
+    s = float(np.clip(zc / (float(K[0, 0]) * OCC_CELL_M), 0.1, 1.0))
+    Ws, Hs = int(math.ceil(Wimg * s)), int(math.ceil(Himg * s))
+    zh = {r: _body_zbuffer(torch, posed[r][0], faces, K, R, tv, s, Ws, Hs, hand_faces) for r in ROLES}
+    zb = {r: zh[r][0] for r in ROLES}
+    hand = {r: zh[r][1] for r in ROLES}
+    ms = {r: (cv2.resize(masks[r].astype(np.float32), (Ws, Hs), interpolation=cv2.INTER_AREA) > 0.5)
+          if masks.get(r) is not None else np.zeros((Hs, Ws), bool) for r in ROLES}
+    ker = np.ones((3, 3), np.uint8)
+    out = {}
+    for r in ROLES:
+        o = ROLES[1 - ROLES.index(r)]
+        zs, zo = zb[r], zb[o]
+        ps, po = np.isfinite(zs), np.isfinite(zo)
+        n_body = max(1, int(ps.sum()))
+        occl = ps & po & (zo < zs - 0.03)
+        vis = ps & ~(po & (zo < zs))
+        vis_er = cv2.erode(vis.astype(np.uint8), ker, iterations=OCC_ERODE_CELLS).astype(bool)
+        nv = max(1, int(vis_er.sum()))
+        # the dancer's whole projected body without the hands (hand holding is not a white patch that matters),
+        # eroded for fit error: where the own mask does not cover it the crop turns white - partner in front
+        # (arm / hand / hair across a shoulder), mask hole or mask miss
+        body = cv2.erode((ps & ~hand[r]).astype(np.uint8), ker, iterations=OCC_ERODE_CELLS).astype(bool)
+        nb_ = max(1, int(body.sum()))
+        white = body & ~ms[r]
+        m = masks.get(r)
+        rec = {"scale": round(s, 3), "occ_model": round(float(occl.sum() / n_body), 4),
+               "white_frac": round(float(white.sum() / nb_), 4),
+               "white_partner_frac": round(float((white & ms[o]).sum() / nb_), 4),
+               "white_vis_frac": round(float((vis_er & ~ms[r]).sum() / nv), 4), "body_cells": nb_}
+        if m is not None and m.any():
+            h = _holes(m, max(20, int(0.0005 * m.sum())))
+            hs = cv2.resize(h.astype(np.float32), (Ws, Hs), interpolation=cv2.INTER_AREA) > 0.25
+            bad = hs & (vis | ms[o])
+            rec["hole_frac"] = round(float(h.sum() / m.sum()), 5)
+            rec["bad_hole_frac"] = round(float(bad.sum() / max(1, ms[r].sum())), 5)
+        else:
+            rec["hole_frac"] = rec["bad_hole_frac"] = None
+        rec["drop"] = [k for k, lim in OCC_LIMITS.items() if rec.get(k) is not None and rec[k] > lim]
+        out[r] = rec
+    return out
+
+
+def _cmp_candidates(cam: str, fits: dict, bodies: dict, faces, tracks: dict, t_lo: float, t_hi: float,
+                    hand_faces=None) -> list[dict]:
+    """_candidates (same visibility / size / sharpness / yaw definitions) for any phone + occlusion_stats on every
+    frame that passes the base gate for at least one dancer. Phone 02 (59.94 fps) uses every 2nd frame."""
+    import torch
+    tr = tracks[cam]
+    fj = json.loads((WORK / "frames" / cam / "frames.json").read_text())
+    frames = fj["frames"]
+    Wimg, Himg = int(fj["width"]), int(fj["height"])
+    stride = 2 if float(fj.get("fps_median") or 30.0) > 45 else 1
+    rad = max(3, int(round(0.015 * Himg)))
+    ker = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * rad + 1, 2 * rad + 1))
+    rows = []
+    for i in range(0, len(frames), stride):
+        t = float(tr.t[i])
+        if not (t_lo <= t <= t_hi) or not bool(tr.ok[i]):
+            continue
+        masks = {r: _mask(cam, i, r) for r in ROLES}
+        img, occ, frame_rows = None, None, []
+        for role in ROLES:
+            d = fits[role]
+            m = masks[role]
+            if t < d["t"][0] or t > d["t"][-1] or m is None or m.sum() < 2000:
+                continue
+            p = interp_params(d, t)
+            J = p["joints"][list(range(22)) + [15]]
+            uv, z = project(J, tr.K[i], tr.R[i], tr.tvec[i])
+            md_ = cv2.dilate(m.astype(np.uint8), ker) > 0
+            u, v = np.round(uv[:, 0]).astype(int), np.round(uv[:, 1]).astype(int)
+            inside = (u >= 0) & (u < Wimg) & (v >= 0) & (v < Himg) & (z > 0)
+            hit = np.zeros(len(u), bool)
+            hit[inside] = md_[v[inside], u[inside]]
+            ys, xs = np.nonzero(m)
+            border = xs.min() <= 3 or ys.min() <= 3 or xs.max() >= Wimg - 4 or ys.max() >= Himg - 4
+            if img is None:
+                img = cv2.imread(str(WORK / "frames" / cam / frames[i]["file"]), cv2.IMREAD_GRAYSCALE)
+            crop = img[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+            sharp = float(cv2.Laplacian(cv2.resize(crop, None, fx=0.5, fy=0.5), cv2.CV_32F).var())
+            frame_rows.append({"cam": cam, "role": role, "i": i, "t": round(t, 4), "vis": float(hit.mean()),
+                               "inimg": float(inside.mean()), "area": int(m.sum()),
+                               "box": [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())],
+                               "border": bool(border), "sharp": sharp,
+                               "yaw_deg": round(body_yaw_deg(np.asarray(p["global_orient"]), p["joints"][0], tr.R[i],
+                                                             tr.tvec[i]), 1), "W": Wimg, "H": Himg})
+        if any(r["vis"] >= 0.9 and r["inimg"] == 1.0 and not r["border"] for r in frame_rows):
+            occ = occlusion_stats(torch, cam, i, t, tr, bodies, faces, masks, Wimg, Himg, hand_faces)
+        for r in frame_rows:
+            r["occ"] = (occ or {}).get(r["role"])
+            rows.append(r)
+    return rows
+
+
+def _base_ok(r: dict) -> bool:
+    return r["vis"] >= 0.9 and r["inimg"] == 1.0 and not r["border"]
+
+
+def _occ_drop(o: dict | None) -> list[str]:
+    """The OCC_LIMITS a crop exceeds (re-evaluated from the stored values, so a limit change needs no new survey)."""
+    return [k for k, lim in OCC_LIMITS.items() if o and o.get(k) is not None and o[k] > lim]
+
+
+def _occ_ok(r: dict) -> bool:
+    return r.get("occ") is not None and not _occ_drop(r["occ"])
+
+
+def _occ_badness(r: dict) -> float:
+    o = r.get("occ") or {}
+    return max([float(o.get(k) or 0) / lim for k, lim in OCC_LIMITS.items()] + [0.0]) if o else 99.0
+
+
+def _set_q(rows: list[dict]) -> None:
+    """_pick's quality, with area and sharpness normalised PER PHONE (phones differ 5x in pixel count)."""
+    for cam in {r["cam"] for r in rows}:
+        rr = [r for r in rows if r["cam"] == cam]
+        a_med = float(np.median([r["area"] for r in rr]))
+        s_med = float(np.median([r["sharp"] for r in rr]))
+        for r in rr:
+            r["q"] = r["vis"] ** 2 * min(1.0, r["area"] / a_med) * min(1.0, r["sharp"] / s_med) ** 0.5
+
+
+def _greedy(ok: list[dict], n: int, min_dt: float, seed: list[dict], per_cam: int | None) -> list[dict]:
+    """_pick's rule generalised: best near-frontal first (unless seeded), then maximise q x (yaw distance to the picked
+    set / 180 + 0.15); per phone at least min_dt apart and at most per_cam picks."""
+    picked = list(seed)
+
+    def allowed(r):
+        if any(r["cam"] == p["cam"] and abs(r["t"] - p["t"]) < min_dt for p in picked):
+            return False
+        return not (per_cam and sum(p["cam"] == r["cam"] for p in picked) >= per_cam)
+
+    if not picked:
+        front = [r for r in ok if abs(r["yaw_deg"]) <= 40] or ok
+        if not front:
+            return []
+        picked.append(max(front, key=lambda r: r["q"]))
+    while len(picked) < n:
+        best, best_s = None, -1.0
+        for r in ok:
+            if not allowed(r):
+                continue
+            dy = min(abs((r["yaw_deg"] - p["yaw_deg"] + 180) % 360 - 180) for p in picked)
+            s = r["q"] * (dy / 180.0 + 0.15)
+            if s > best_s:
+                best, best_s = r, s
+        if best is None:
+            break
+        picked.append(best)
+    return picked
+
+
+def _select_variant(name: str, rows_all: list[dict], role: str, spec: dict) -> dict:
+    """One variant's crops of one dancer: base gate (_pick's: vis >= 0.9, inside the image, not cut by the border) +
+    no OCC_LIMITS exceeded, then _greedy. When the clean candidates cannot fill the set at min_dt, the greedy continues
+    with min_dt / 2 and then 2 frames; only then the least-bad base candidates are admitted, 4 at a time (flagged
+    relaxed)."""
+    cfg = CMP_VARIANTS[name]
+    rows = [r for r in rows_all if r["role"] == role and r["cam"] in cfg["cams"]]
+    avoid = []
+    if cfg["avoid_view_s"]:
+        views = [(v["cam"], float(v["t"])) for v in spec["real_views"]]
+        avoid = [r for r in rows if any(r["cam"] == c and abs(r["t"] - tv) < cfg["avoid_view_s"] for c, tv in views)]
+        rows = [r for r in rows if r not in avoid]
+    base = [r for r in rows if _base_ok(r)]
+    ok = [r for r in base if _occ_ok(r)]
+    _set_q(base)
+    seed, kept, dropped = [], [], []
+    if cfg["seed"] == "w8":
+        prev = json.loads((INPUT / "refs.json").read_text())[role]["w8"]["frames"]
+        by_i = {r["i"]: r for r in rows if r["cam"] == "06"}
+        for k, f in enumerate(prev):
+            r = by_i.get(int(f["i"]))
+            if r is not None and r in ok:
+                seed.append(r)
+                kept.append(r["i"])
+            else:
+                why = ["not a candidate"] if r is None else (["base gate"] if not _base_ok(r) else
+                                                             _occ_drop(r.get("occ")) or ["no occlusion stats"])
+                dropped.append({"slot": k, "i": int(f["i"]), "t": f["t"], "yaw_deg": f["yaw_deg"], "why": why,
+                                "occ": None if r is None else r.get("occ")})
+        if seed and dropped and dropped[0]["slot"] == 0:  # the frontal 00 went: choose a new frontal start first
+            cand = [r for r in ok if abs(r["yaw_deg"]) <= 40 and r not in seed and
+                    all(abs(r["t"] - p["t"]) >= cfg["min_dt"] for p in seed)]
+            if cand:
+                seed.insert(0, max(cand, key=lambda r: r["q"]))
+    picks = _greedy(ok, cfg["n"], cfg["min_dt"], seed, cfg["per_cam"])
+    min_dt_used = cfg["min_dt"]
+    for dt in (cfg["min_dt"] / 2, 2.0 / 30):  # short: clean frames closer in time before any flagged crop
+        if len(picks) >= cfg["n"]:
+            break
+        picks = _greedy(ok, cfg["n"], dt, picks, cfg["per_cam"])
+        min_dt_used = dt
+    pool = sorted([r for r in base if r not in ok], key=_occ_badness)
+    relaxed = []
+    while len(picks) < cfg["n"] and pool:
+        short = None if not cfg["per_cam"] else             {c for c in cfg["cams"] if sum(p["cam"] == c for p in picks) < cfg["per_cam"]}
+        cand = [r for r in pool if short is None or r["cam"] in short]
+        if not cand:
+            break
+        for r in cand[:4]:
+            pool.remove(r)
+            relaxed.append(r)
+        picks = _greedy(ok + relaxed, cfg["n"], min_dt_used, picks, cfg["per_cam"])
+    return {"picks": picks, "dropped_seed": dropped, "seed_kept": kept, "min_dt_used": round(min_dt_used, 4),
+            "relaxed": [(r["cam"], r["i"]) for r in relaxed if r in picks],
+            "avoided_frames": len(avoid), "candidates": len(rows), "base_ok": len(base), "clean": len(ok)}
+
+
+def _pick_record(r: dict, slot: int, sel: dict) -> dict:
+    keep = ("cam", "i", "t", "yaw_deg", "vis", "inimg", "area", "sharp", "box", "W", "H", "occ")
+    rec = {"slot": slot, **{k: r.get(k) for k in keep}}
+    rec["relaxed"] = (r["cam"], r["i"]) in {tuple(x) for x in sel["relaxed"]}
+    rec["replacement"] = bool(sel["dropped_seed"]) and r["cam"] == "06" and r["i"] not in sel["seed_kept"]
+    rec["file"] = f"work/{TAKE}/frames/{r['cam']}/{int(r['i']):06d}.jpg"
+    return rec
+
+
+def compare_prep_refs(spec: dict, fits: dict, reuse: bool = False) -> dict:
+    from .. import mamma_dyn as md
+    from ..avatar_texture import load_bodies
+    cpath = CMP_OUT / "candidates.json"
+    if reuse and cpath.exists():
+        rows = json.loads(cpath.read_text())["rows"]
+    else:
+        import smplx
+        from ..avatar_texture import model_dir_for
+        import torch
+        t0 = time.time()
+        bodies, _ = load_bodies(WORK, head_fix=False)
+        d = fits["lead"]
+        sm = smplx.create(str(model_dir_for(d)), model_type="smplx", gender="neutral", ext="npz", use_pca=False,
+                          flat_hand_mean=True, num_betas=int(d.get("num_betas", 16)))
+        faces_np = np.asarray(sm.faces, np.int64)
+        faces = torch.tensor(faces_np)
+        hand_faces = hand_face_mask(faces_np, sm.lbs_weights.detach().numpy())
+        tracks = md.load_tracks(WORK, list(ALL_CAMS))
+        rows = []
+        for cam in ALL_CAMS:
+            t1 = time.time()
+            rr = _cmp_candidates(cam, fits, bodies, faces, tracks, *CMP_WINDOW, hand_faces=hand_faces)
+            rows += rr
+            nb = sum(_base_ok(r) for r in rr)
+            nc = sum(_base_ok(r) and _occ_ok(r) for r in rr)
+            log(f"phone {cam}: {len(rr)} dancer-frames, base gate {nb}, clean {nc} ({time.time() - t1:.0f} s)")
+        CMP_OUT.mkdir(parents=True, exist_ok=True)
+        cpath.write_text(json.dumps({"window": list(CMP_WINDOW), "limits": OCC_LIMITS, "cell_m": OCC_CELL_M,
+                                     "erode_cells": OCC_ERODE_CELLS, "seconds": round(time.time() - t0, 1),
+                                     "rows": rows}, default=float))
+    d = CMP_INPUT / "refs"
+    if d.exists():
+        shutil.rmtree(d)
+    out = {}
+    for name, cfg in CMP_VARIANTS.items():
+        out[name] = {"what": cfg["what"], "rules": {k: v for k, v in cfg.items() if k != "what"}}
+        for role in ROLES:
+            sel = _select_variant(name, rows, role, spec)
+            if sel["picks"]:  # NN = 00 is the most frontal crop (LHM++'s input convention of the first run)
+                f0 = min(range(len(sel["picks"])), key=lambda k: abs(sel["picks"][k]["yaw_deg"]))
+                sel["picks"].insert(0, sel["picks"].pop(f0))
+            sd = d / role / name
+            sd.mkdir(parents=True, exist_ok=True)
+            tiles, recs = [], []
+            for k, r in enumerate(sel["picks"]):
+                fjs = json.loads((WORK / "frames" / r["cam"] / "frames.json").read_text())["frames"]
+                img = cv2.imread(str(WORK / "frames" / r["cam"] / fjs[r["i"]]["file"]))[:, :, ::-1]
+                c = lhm_crop(img, _mask(r["cam"], r["i"], role))
+                u8 = (np.clip(c, 0, 1) * 255 + 0.5).astype(np.uint8)
+                cv2.imwrite(str(sd / f"{k:02d}.png"), u8[:, :, ::-1])
+                rec = _pick_record(r, k, sel)
+                recs.append(rec)
+                lab = f"{r['cam']}/{r['i']} {r['yaw_deg']:.0f}d" + (" R" if rec["relaxed"] else "") + \
+                      (" new" if rec["replacement"] else "")
+                tiles.append(_tile(np.ascontiguousarray(u8[:, :, ::-1]), (0, 0, u8.shape[1], u8.shape[0]), 280, lab))
+            sheet = np.concatenate(tiles, 1)
+            cv2.imwrite(str(CMP_OUT / f"refs_{role}_{name}.jpg"), sheet, [cv2.IMWRITE_JPEG_QUALITY, 90])
+            out[name][role] = {"n": len(recs), "frames": recs, **{k: sel[k] for k in
+                                                                  ("dropped_seed", "seed_kept", "relaxed", "min_dt_used",
+                                                                   "avoided_frames", "candidates", "base_ok", "clean")}}
+            used = ", ".join(f"{x['cam']}/{x['i']}" for x in recs)
+            log(f"{name} {role}: {len(recs)} crops ({used}); clean candidates {sel['clean']} of {sel['base_ok']}; "
+                f"dropped seeds {[x['i'] for x in sel['dropped_seed']]}; relaxed {sel['relaxed']}")
+    _dropped_sheet(out)
+    return out
+
+
+def _dropped_sheet(refs: dict) -> None:
+    """The earlier w8 crops of each dancer with the white-patch verdict (kept / dropped + why)."""
+    prev = json.loads((INPUT / "refs.json").read_text())
+    for role in ROLES:
+        dr = {x["slot"]: x for x in refs["lhmpp_1phone"][role]["dropped_seed"]}
+        tiles = []
+        for k, f in enumerate(prev[role]["w8"]["frames"]):
+            im = cv2.imread(str(INPUT / "refs" / role / "w8" / f"{k:02d}.png"))
+            if im is None:
+                continue
+            if k in dr:
+                o = dr[k].get("occ") or {}
+                lab = "DROP " + ",".join(dr[k]["why"] or [])
+                sub = f"white {o.get('white_frac')} occ {o.get('occ_model')} hole {o.get('bad_hole_frac')}"
+                im = cv2.copyMakeBorder(im[6:-6, 6:-6], 6, 6, 6, 6, cv2.BORDER_CONSTANT, value=(0, 0, 255))
+            else:
+                lab, sub = "kept", None
+            tiles.append(_tile(im, (0, 0, im.shape[1], im.shape[0]), 280, f"06/{f['i']} {lab}", sub))
+        if tiles:
+            cv2.imwrite(str(CMP_OUT / f"dropped_{role}.jpg"), np.concatenate(tiles, 1), [cv2.IMWRITE_JPEG_QUALITY, 90])
+
+
+def _zoom_K(K, box, px: int) -> tuple[list, int, int]:
+    """Camera of a box of a real view rendered at px on its long side (OpenCV pixel centres at integers)."""
+    K = np.asarray(K, float)
+    x0, y0, x1, y1 = [int(v) for v in box]
+    w, h = x1 - x0, y1 - y0
+    sc = px / max(w, h)
+    K2 = np.array([[K[0, 0] * sc, 0, (K[0, 2] - x0 + 0.5) * sc - 0.5],
+                   [0, K[1, 1] * sc, (K[1, 2] - y0 + 0.5) * sc - 0.5], [0, 0, 1.0]])
+    return K2.tolist(), int(round(w * sc)), int(round(h * sc))
+
+
+def compare_prep_views(spec: dict, fits: dict) -> tuple[list[dict], dict, dict]:
+    renders, keys = [], {}
+
+    def pose(key: str, t: float) -> str:
+        keys.setdefault(key, float(t))
+        return key
+
+    def cam(id_, group, out, key, K, R, tvec, W, H, **kw):
+        renders.append({"id": id_, "group": group, "out": out, "pose": key, "K": np.asarray(K, float).tolist(),
+                        "R": np.asarray(R, float).tolist(), "tvec": np.asarray(tvec, float).reshape(3).tolist(),
+                        "W": int(W), "H": int(H), **kw})
+
+    for d in ("real", "masks"):
+        if (CMP_INPUT / d).exists():
+            shutil.rmtree(CMP_INPUT / d)
+        (CMP_INPUT / d).mkdir(parents=True)
+    rv = {v["id"]: v for v in spec["real_views"]}
+    for v in spec["real_views"]:
+        k = pose(f"real_{v['id']}", v["t"])
+        cam(v["id"], "real", f"{v['id']}.png", k, v["K"], v["R"], v["tvec"], v["W"], v["H"], role_map=True,
+            cam=v["cam"], frame=int(v["frame"]), t=float(v["t"]), k1=float(v.get("k1", 0.0)))
+        shutil.copy2(PACKAGE_ROOT / v["file"], CMP_INPUT / "real" / f"{v['id']}.jpg")
+        for role in ROLES:
+            p = PACKAGE_ROOT / v["masks"][role]
+            if p.exists():
+                shutil.copy2(p, CMP_INPUT / "masks" / f"{v['id']}_{PID[role]}.png")
+    tt = spec["novel"]["turntable"]
+    k = pose(f"tt_{tt['instant']}", tt["t"])
+    for v in tt["views"]:
+        cam(v["id"], "turntable", f"{v['id']}.png", k, v["K"], v["R"], v["tvec"], v["W"], v["H"], t=float(tt["t"]),
+            azimuth_deg=v.get("azimuth_deg"))
+    vr, clip = spec["novel"]["vr_seat"], spec["clip"]
+    k0 = int(clip["k"][0])
+    for j, t in enumerate(clip["t"]):
+        k = pose(f"grid_{k0 + j}", t)
+        cam(f"clip_vr_seat/{j:04d}", "clip_vr_seat", f"clip_vr_seat/{j:04d}.png", k, vr["K"], vr["R"], vr["tvec"],
+            vr["W"], vr["H"], clip_index=j, grid_k=k0 + j, t=float(t))
+    c3 = clip["cam03"]
+    for j, fr in enumerate(c3["frames"]):
+        k = pose(f"c03_{int(fr['frame'])}", fr["t"])
+        cam(f"clip_cam03/{j:04d}", "clip_cam03", f"clip_cam03/{j:04d}.png", k, fr["K"], fr["R"], fr["tvec"], c3["W"],
+            c3["H"], clip_index=j, frame=int(fr["frame"]), t=float(fr["t"]))
+    for cu in spec["closeups"]:
+        for cc in cu["cams"].values():
+            v = rv[cc["view_id"]]
+            for bname, b in cc["boxes"].items():
+                K2, W2, H2 = _zoom_K(v["K"], b["box"], ZOOM_PX)
+                cam(f"{v['id']}_{bname}", "closeup_zoom", f"closeup_zoom/{v['id']}_{bname}.png", f"real_{v['id']}", K2,
+                    v["R"], v["tvec"], W2, H2, view_id=v["id"], box=[int(x) for x in b["box"]], box_name=bname,
+                    instant=cu["instant"], t=float(v["t"]))
+    poses = {}
+    for role in ROLES:
+        d = fits[role]
+        fr = []
+        for key, t in keys.items():
+            p = interp_params(d, t)
+            fr.append({"key": key, "t": t, "root_pose": p["global_orient"].tolist(), "body_pose": p["body_pose"].tolist(),
+                       "jaw_pose": p["jaw_pose"].tolist(), "leye_pose": p["leye_pose"].tolist(),
+                       "reye_pose": p["reye_pose"].tolist(), "lhand_pose": p["left_hand_pose"].tolist(),
+                       "rhand_pose": p["right_hand_pose"].tolist(), "transl": p["transl"].tolist(),
+                       "pelvis": p["joints"][0].tolist(), "joints22": p["joints"][:22].tolist()})
+        poses[role] = {"betas": np.asarray(d["betas"], float).reshape(-1).tolist(),
+                       "num_betas": int(d.get("num_betas", 16)), "flat_hand_mean": bool(d.get("flat_hand_mean", True)),
+                       "model": str(d.get("model", "")), "frames": fr}
+    return renders, poses, keys
+
+
+def compare_prep(reuse_candidates: bool = False) -> dict:
+    spec = _cmp_spec()
+    CMP_INPUT.mkdir(parents=True, exist_ok=True)
+    fits = {r: _load_fit(r) for r in ROLES}
+    refs = compare_prep_refs(spec, fits, reuse=reuse_candidates)
+    (CMP_INPUT / "refs.json").write_text(json.dumps(refs, indent=1, default=float))
+    renders, poses, keys = compare_prep_views(spec, fits)
+    (CMP_INPUT / "cameras.json").write_text(json.dumps({"take": TAKE, "spec": _ws(CMP / "views.json"),
+                                                        "spec_created": spec.get("created"),
+                                                        "variants": list(CMP_VARIANTS), "renders": renders}))
+    (CMP_INPUT / "poses.json").write_text(json.dumps(poses))
+    chk = check_transfer(poses)
+    groups = {}
+    for r in renders:
+        groups[r["group"]] = groups.get(r["group"], 0) + 1
+    info = {"renders": groups, "pose_keys": len(keys), "transfer_check": chk,
+            "refs": {v: {r: refs[v][r]["n"] for r in ROLES} for v in CMP_VARIANTS},
+            "bytes": int(sum(p.stat().st_size for p in CMP_INPUT.rglob("*") if p.is_file()))}
+    (CMP_INPUT / "prep.json").write_text(json.dumps(info, indent=1, default=str))
+    log(f"compare prep: {json.dumps(info, default=str)}")
+    return info
+
+
+def compare_job(max_minutes: float = 40) -> Path:
+    rel = lambda p: _ws(p)[len("dancecap/"):]  # noqa: E731 - cwd of the commands is dancecap/
+    outs = [_ws(CMP_POD_OUT) + "/"] + [_ws(CMP_RENDERS / v) + "/" for v in CMP_VARIANTS]
+    d = {"schema": "dancecap.pod_job/1", "name": "cmp_lhmpp", "take": TAKE, "max_minutes": max_minutes, "needs": [],
+         "inputs": [_ws(CMP_INPUT) + "/"],
+         "exclude": ["dancecap/work/runpod/pywheels", "dancecap/work/runpod/wheelhouse", "mamma-turing"],
+         "env": {"LHMPP_COMMIT": LHMPP_COMMIT, "LHMPP_ROOT": "/workspace/lhmpp_cand/LHM-plusplus",
+                 "LHMPP_VENV": "/workspace/lhmpp_cand/venv", "LHMPP_MODEL": MODEL_NAME,
+                 "TORCH_HOME": "/workspace/lhmpp_cand/torch_home", "HF_HOME": "/workspace/lhmpp_cand/hf_home"},
+         "commands": [
+             {"name": "install", "timeout_min": 35, "cmd": "bash remote/cand_lhmpp/install.sh"},
+             {"name": "render", "timeout_min": 20,
+              "cmd": f"/workspace/lhmpp_cand/venv/bin/python remote/cand_lhmpp/lhmpp_compare_pod.py --input "
+                     f"{rel(CMP_INPUT)} --out {rel(CMP_POD_OUT)} --renders {rel(CMP_RENDERS)} "
+                     f"--variants {','.join(CMP_VARIANTS)}"},
+             {"name": "score", "timeout_min": 8, "optional": True,
+              "cmd": "(python -m pip install -q --no-deps lpips==0.1.4 || echo 'lpips install failed: no LPIPS'); "
+                     "python -m dancecap.mono4d.cand_lhmpp compare-score"}],
+         "outputs": outs,
+         "verify": [_ws(CMP_POD_OUT / "lhmpp_compare_pod.json")] +
+                   [_ws(CMP_RENDERS / v / "i0_c03.png") for v in CMP_VARIANTS] +
+                   [_ws(CMP_RENDERS / v / "clip_vr_seat" / "0104.png") for v in CMP_VARIANTS],
+         "after_download": ["python -m dancecap.mono4d.cand_lhmpp compare-import --session <sid>"],
+         "notes": [f"LHM++ ({MODEL_NAME}, CC BY-NC 4.0 weights) avatars of both dancers from phone-06 crops "
+                   "(lhmpp_1phone) and from 2 crops of each of the 8 phones (lhmpp_8phone), posed with the reference "
+                   "SMPL-X and rendered into every view of mono4d/compare/views.json (both dancers together); weights "
+                   "stay on the pod; crops and frames go to our own pod only (owner consent 2026-10-19)"]}
+    JOB_DIR.mkdir(parents=True, exist_ok=True)
+    p = JOB_DIR / "pod_job_compare.json"
+    p.write_text(json.dumps(d, indent=1), newline="\n")
+    return p
+
+
+def _read_rgba(p: Path) -> tuple[np.ndarray, np.ndarray] | None:
+    im = cv2.imread(str(p), cv2.IMREAD_UNCHANGED)
+    if im is None or im.ndim != 3 or im.shape[2] != 4:
+        return None
+    a = im[:, :, 3].astype(np.float32) / 255.0
+    return im[:, :, 2::-1].astype(np.float32) / 255.0, a
+
+
+def compare_score(lpips_net: bool = True) -> dict:
+    """Masked metrics of each variant on the 18 real views (score_dir's definitions: crop = the dancer's real-mask
+    bbox + 10 %, inside the mask, the render composited over black; *_both = real mask AND rendered dancer)."""
+    from ..dancer_splats.evaluate import _crop_scores
+    cams = json.loads((CMP_INPUT / "cameras.json").read_text())["renders"]
+    real = [c for c in cams if c["group"] == "real"]
+    variants = [v for v in CMP_VARIANTS if (CMP_RENDERS / v).exists()]
+    device, net = "cpu", None
+    if lpips_net:
+        try:
+            import torch
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            from ..dancer_splats.evaluate import _lpips
+            net = _lpips(device)
+        except Exception as e:  # noqa: BLE001
+            log(f"LPIPS unavailable: {e}")
+    rows = []
+    for c in real:
+        gt = _read_rgb(CMP_INPUT / "real" / f"{c['id']}.jpg")
+        for var in variants:
+            ra = _read_rgba(CMP_RENDERS / var / f"{c['id']}.png")
+            rid = cv2.imread(str(CMP_RENDERS / var / "role" / f"{c['id']}.png"), cv2.IMREAD_COLOR)
+            if ra is None or gt is None:
+                continue
+            rgb = ra[0] * ra[1][..., None]
+            rw = None if rid is None else rid[:, :, ::-1].astype(np.float32) / 255.0
+            for role in ROLES:
+                m = cv2.imread(str(CMP_INPUT / "masks" / f"{c['id']}_{PID[role]}.png"), cv2.IMREAD_GRAYSCALE)
+                if m is None or (m > 127).sum() < 50:
+                    continue
+                m = m > 127
+                x0, y0, x1, y1 = _crop_box(m)
+                s = _crop_scores(rgb[y0:y1, x0:x1], gt[y0:y1, x0:x1], m[y0:y1, x0:x1], net, device)
+                row = {"view": c["id"], "cam": c["cam"], "t": round(c["t"], 4), "role": role, "variant": var,
+                       "crop": [int(x0), int(y0), int(x1), int(y1)],
+                       **{k: (None if s.get(k) is None else float(s[k])) for k in s}}
+                if rw is not None:
+                    own = rw[:, :, ROLES.index(role)] > 0.5
+                    u = (own | m).sum()
+                    row["iou"] = float((own & m).sum() / u) if u else None
+                    row["coverage"] = float((own & m).sum() / m.sum())
+                    sb = (own & m)[y0:y1, x0:x1]
+                    s2 = _crop_scores(rgb[y0:y1, x0:x1], gt[y0:y1, x0:x1], sb, net, device)
+                    row.update({f"{k}_both": float(s2[k]) for k in ("psnr", "ssim", "lpips", "psnr_cc")
+                                if s2.get(k) is not None})
+                rows.append(row)
+    keys = ("psnr", "ssim", "lpips", "psnr_cc", "ssim_cc", "lpips_cc", "iou", "coverage", "psnr_both", "ssim_both",
+            "lpips_both", "psnr_cc_both")
+    summ = {}
+    for var in variants:
+        summ[var] = {}
+        groups = [("all", lambda r: True)] + [(ro, lambda r, ro=ro: r["role"] == ro) for ro in ROLES] + \
+            [(f"cam{c}", lambda r, c=c: r["cam"] == c) for c in ("03", "02", "06")]
+        for g, sel in groups:
+            rr = [r for r in rows if r["variant"] == var and sel(r)]
+            summ[var][g] = {"n": len(rr), **{k: (round(float(np.median([r[k] for r in rr if r.get(k) is not None])), 4)
+                                                 if any(r.get(k) is not None for r in rr) else None) for k in keys}}
+    out = {"metrics": "score_dir's: dancecap.dancer_splats.evaluate._crop_scores on the dancer's real-mask bbox + 10 %, "
+                      "inside the real mask (render composited over black: pixels it misses count as black); *_cc after "
+                      "a least-squares colour fit; *_both = real mask AND rendered dancer; iou / coverage of the "
+                      "rendered role (> 0.5) vs the real mask. Real frames are not undistorted (k1 of phone 02 = "
+                      "0.0139: <= ~7 px at the corners)", "lpips": net is not None, "device": device,
+           "variants": variants, "rows": rows, "summary": summ}
+    CMP_POD_OUT.mkdir(parents=True, exist_ok=True)
+    (CMP_POD_OUT / "metrics.json").write_text(json.dumps(out, indent=1, default=float))
+    log(json.dumps(summ, default=float)[:3000])
+    return out
+
+
+def _session_meta_cmp(sid: str | None) -> dict:
+    root = PACKAGE_ROOT / "work" / "runpod" / "sessions"
+    if sid is None:
+        cands = sorted((p for p in root.glob("*") if (p / "result.json").exists()
+                        and '"cmp_lhmpp"' in (p / "result.json").read_text(errors="ignore")),
+                       key=lambda p: p.stat().st_mtime)
+        if not cands:
+            return {}
+        sid = cands[-1].name
+    p = root / sid / "result.json"
+    if not p.exists():
+        return {"session": sid}
+    r = json.loads(p.read_text())
+    pod = r.get("pod") or {}
+    job_ = (r.get("jobs") or {}).get("cmp_lhmpp") or {}
+    led = _ledger_rows([pod.get("id")]) if pod.get("id") else []
+    steps = {x["step"]: x["seconds"] for x in r.get("timings", []) if "step" in x}
+    return {"session": sid, "pod_id": pod.get("id"), "gpu": pod.get("gpu"),
+            "cloud": (led[0].get("cloud") if led else None) or pod.get("cloud"),
+            "cost_per_hr": pod.get("cost_per_hr"), "cost_usd": pod.get("ledger_cost"),
+            "pod_minutes": round((pod.get("lifetime_s") or 0) / 60, 1), "job_status": job_.get("status"),
+            "commands": job_.get("commands"), "job_seconds": job_.get("seconds"), "download_mb": job_.get("download_mb"),
+            "steps_s": steps}
+
+
+def compare_import(sid: str | None = None, pods: list[str] | None = None) -> dict:
+    """Verify the pod's renders against cameras.json, cut the native close-up crops, write each variant's
+    manifest.json, review sheets and compare/lhmpp/report.json."""
+    spec = _cmp_spec()
+    cams = json.loads((CMP_INPUT / "cameras.json").read_text())["renders"]
+    refs = json.loads((CMP_INPUT / "refs.json").read_text())
+    pod = json.loads((CMP_POD_OUT / "lhmpp_compare_pod.json").read_text())
+    metrics = json.loads((CMP_POD_OUT / "metrics.json").read_text()) if (CMP_POD_OUT / "metrics.json").exists() else None
+    ses = _session_meta_cmp(sid)
+    poses = json.loads((CMP_INPUT / "poses.json").read_text())
+    pose_t = {fr["key"]: fr["t"] for fr in poses["lead"]["frames"]}
+    rv = {v["id"]: v for v in spec["real_views"]}
+    report = {"take": TAKE, "spec": _ws(CMP / "views.json"), "spec_created": spec.get("created"), "model": MODEL_NAME,
+              "commit": LHMPP_COMMIT, "licence": LICENCE, "session": ses, "pod": pod.get("summary"),
+              "transfer": pod.get("transfer"), "variants": {}}
+    for var, cfg in CMP_VARIANTS.items():
+        vdir = CMP_RENDERS / var
+        pv = pod.get("variants", {}).get(var, {})
+        files, missing, bad = {}, [], []
+        for c in cams:
+            p = vdir / c["out"]
+            if not p.exists():
+                missing.append(c["out"])
+                continue
+            im = cv2.imread(str(p), cv2.IMREAD_UNCHANGED)
+            if im is None or im.shape[:2] != (c["H"], c["W"]) or im.ndim != 3 or im.shape[2] != 4:
+                bad.append(c["out"])
+            files.setdefault(c["group"], []).append(c)
+        # native-pixel close-up crops of the real-view renders (the photo's own pixels for the side-by-side)
+        cdir = vdir / "closeup"
+        cdir.mkdir(parents=True, exist_ok=True)
+        closeups = []
+        for cu in spec["closeups"]:
+            for cc in cu["cams"].values():
+                src = vdir / f"{cc['view_id']}.png"
+                im = cv2.imread(str(src), cv2.IMREAD_UNCHANGED)
+                for bname, b in cc["boxes"].items():
+                    x0, y0, x1, y1 = [int(x) for x in b["box"]]
+                    name = f"{cc['view_id']}_{bname}"
+                    if im is not None:
+                        cv2.imwrite(str(cdir / f"{name}.png"), im[y0:y1, x0:x1])
+                    closeups.append({"id": name, "instant": cu["instant"], "view_id": cc["view_id"], "box": bname,
+                                     "box_px": [x0, y0, x1, y1], "native": f"closeup/{name}.png",
+                                     "zoom": f"closeup_zoom/{name}.png",
+                                     "best_face_cam": cu["best_cam"], "best_hair_cam": cu["best_cam_hair"]})
+        # what this variant saw, per real view
+        inputs = {r: refs[var][r]["frames"] for r in ROLES}
+        seen = {}
+        for vid, v in rv.items():
+            same = [(r, f) for r in ROLES for f in inputs[r] if f["cam"] == v["cam"]]
+            exact = sorted({r for r, f in same if int(f["i"]) == int(v["frame"])})
+            near = min((abs(float(f["t"]) - float(v["t"])) for _, f in same), default=None)
+            seen[vid] = {"phone_used": bool(same), "exact_frame_input_for": exact,
+                         "nearest_input_frame_same_phone_s": None if near is None else round(near, 3)}
+        groups = {g: len(x) for g, x in files.items()}
+        man = {"schema": "dancecap.mono4d.appearance_compare.renders/1", "method": var, "renderer": "lhmpp",
+               "what": cfg["what"], "take": TAKE, "spec": _ws(CMP / "views.json"), "spec_created": spec.get("created"),
+               "model": f"LHM++ {MODEL_NAME} @ {LHMPP_COMMIT[:7]} (weights CC BY-NC 4.0)",
+               "pose": "reference SMPL-X work/larissa_kadu_38/smplx/{lead,follow}.npz, per-joint slerp at each view's "
+                       "time; LHM++ shape mode ref (betas[:10]), trans = pelvis_ref - J0_rest(betas[:10]); both dancers "
+                       "in one rasterisation (mutual occlusion)",
+               "render": {**pod.get("render_settings", {}), "format": "RGBA PNG, straight alpha, transparent background",
+                          "sizes": "real views at the phone's native size (02/06 1080 x 1920, 03 480 x 848); turntable "
+                                   "and VR seat 1080 x 1080; closeup_zoom 512 px on the long side", "distortion":
+                          "pinhole (the real phone's k1 ignored: <= ~7 px at the corners of phone 02)"},
+               "inputs": {"rules": refs[var]["rules"], "limits": OCC_LIMITS,
+                          **{r: {"n": refs[var][r]["n"], "frames": [{k: f.get(k) for k in
+                                                                     ("slot", "cam", "i", "t", "yaw_deg", "vis",
+                                                                      "occ", "relaxed", "replacement", "file")}
+                                                                    for f in refs[var][r]["frames"]],
+                                 "dropped_seed": refs[var][r].get("dropped_seed")} for r in ROLES}},
+               "avatar": {r: {k: pv.get(r, {}).get(k) for k in ("gaussians", "n_refs", "infer_s", "rest_height_m",
+                                                                 "fk_vs_ref_joints_mm", "gauss_to_own_mesh_mm",
+                                                                 "gauss_to_ref_mesh_mm", "opacity_median",
+                                                                 "scale_median_mm", "peak_gpu_gb", "error")}
+                          | {"cano_ply": _ws(CMP_POD_OUT / "gs" / f"{r}_{var}_cano.ply")} for r in ROLES},
+               "scene_ply": _ws(CMP_POD_OUT / "gs" / pv["scene_ply"]) if pv.get("scene_ply") else None,
+               "files": {
+                   "real": [{"id": c["id"], "file": c["out"], "role": f"role/{c['id']}.png", "cam": c["cam"],
+                             "frame": c["frame"], "t": pose_t[c["pose"]], "seen_by_this": seen[c["id"]]}
+                            for c in files.get("real", [])],
+                   "turntable": [{"id": c["id"], "file": c["out"], "t": pose_t[c["pose"]],
+                                  "azimuth_deg": c.get("azimuth_deg")} for c in files.get("turntable", [])],
+                   "clip_vr_seat": {"dir": "clip_vr_seat", "n": groups.get("clip_vr_seat", 0),
+                                    "frames": [{"j": c["clip_index"], "grid_k": c["grid_k"], "t": c["t"]}
+                                               for c in files.get("clip_vr_seat", [])]},
+                   "clip_cam03": {"dir": "clip_cam03", "n": groups.get("clip_cam03", 0),
+                                  "frames": [{"j": c["clip_index"], "frame": c["frame"], "t": c["t"]}
+                                             for c in files.get("clip_cam03", [])]},
+                   "closeups": closeups,
+                   "instant_clip_index": {x["id"]: int(x["k"]) - int(spec["clip"]["k"][0]) for x in spec["instants"]}},
+               "counts": groups, "missing": missing, "bad_size_or_not_rgba": bad,
+               "pod": {k: ses.get(k) for k in ("session", "gpu", "pod_minutes", "cost_usd", "cost_per_hr")},
+               "metrics_summary": None if metrics is None else metrics["summary"].get(var),
+               "caveats": ["phone 06 is lhmpp_1phone's input phone; 02 / 06 / 03 views of lhmpp_8phone are other frames "
+                           "of input phones (no input within 0.05 s of a real view)" if var == "lhmpp_8phone" else
+                           "phone 06 is the input phone: real views on 06 can be exact input frames (seen_by_this)",
+                           "naked-body pose: hair and loose clothes follow the SMPL-X skinning field of LHM++ (no "
+                           "dynamics); the fit's hands are rigid (MAMMA)"]}
+        (vdir / "manifest.json").write_text(json.dumps(man, indent=1, default=float))
+        report["variants"][var] = {"counts": groups, "missing": len(missing), "bad": len(bad),
+                                   "gaussians": {r: pv.get(r, {}).get("gaussians") for r in ROLES},
+                                   "manifest": _ws(vdir / "manifest.json"),
+                                   "metrics": None if metrics is None else metrics["summary"].get(var)}
+        log(f"{var}: {groups}; missing {len(missing)}, bad {len(bad)}")
+    report["sheets"] = [str(p) for p in _cmp_sheets(spec, cams)]
+    if pods:
+        rows = _ledger_rows(pods)
+        report["pods"] = rows
+        report["cost_usd_all_attempts"] = round(sum(float(x.get("cost") or 0) for x in rows), 4)
+    report["summary"] = {v: report["variants"][v] for v in CMP_VARIANTS} | {"session": ses}
+    (CMP_OUT / "report.json").write_text(json.dumps(report, indent=1, default=float))
+    log(f"report -> {CMP_OUT / 'report.json'}")
+    return report
+
+
+def _on_grey(rgba_path: Path, box=None, grey: int = 128) -> np.ndarray | None:
+    im = cv2.imread(str(rgba_path), cv2.IMREAD_UNCHANGED)
+    if im is None:
+        return None
+    if box is not None:
+        x0, y0, x1, y1 = box
+        im = im[y0:y1, x0:x1]
+    a = im[:, :, 3:4].astype(np.float32) / 255.0
+    return (im[:, :, :3] * a + grey * (1 - a) + 0.5).astype(np.uint8)
+
+
+def _cmp_sheets(spec: dict, cams: list[dict], h: int = 360) -> list[Path]:
+    """Quick-look sheets (the compose step builds the real side-by-sides): real | 1phone | 8phone per real view; the
+    turntable; the VR seat at the six instants; the close-ups (real native | 1phone zoom | 8phone zoom)."""
+    out = []
+    variants = [v for v in CMP_VARIANTS if (CMP_RENDERS / v).exists()]
+    rows = []
+    for v in spec["real_views"]:
+        gt = cv2.imread(str(CMP_INPUT / "real" / f"{v['id']}.jpg"))
+        tiles = [_tile(gt, v["crop"], h, f"real {v['id']} t={v['t']:.2f}")]
+        for var in variants:
+            im = _on_grey(CMP_RENDERS / var / f"{v['id']}.png")
+            if im is not None:
+                tiles.append(_tile(im, v["crop"], h, var))
+        rows.append(np.concatenate([np.pad(t, ((0, 0), (0, 4), (0, 0)), constant_values=255) for t in tiles], 1))
+    for k in range(0, len(rows), 6):
+        part = rows[k:k + 6]
+        W = max(r.shape[1] for r in part)
+        part = [np.pad(r, ((0, 4), (0, W - r.shape[1]), (0, 0)), constant_values=255) for r in part]
+        p = CMP_OUT / f"sheet_real_{k // 6}.jpg"
+        cv2.imwrite(str(p), np.concatenate(part, 0), [cv2.IMWRITE_JPEG_QUALITY, 88])
+        out.append(p)
+    for var in variants:
+        tt = [_on_grey(CMP_RENDERS / var / f"{v['id']}.png") for v in spec["novel"]["turntable"]["views"]]
+        tt = [cv2.resize(t, (300, 300), interpolation=cv2.INTER_AREA) for t in tt if t is not None]
+        if tt:
+            grid = np.concatenate([np.concatenate(tt[i:i + 6], 1) for i in range(0, len(tt) - len(tt) % 6, 6)], 0)
+            p = CMP_OUT / f"sheet_turntable_{var}.jpg"
+            cv2.imwrite(str(p), grid, [cv2.IMWRITE_JPEG_QUALITY, 88])
+            out.append(p)
+        k0 = int(spec["clip"]["k"][0])
+        vr = [_on_grey(CMP_RENDERS / var / "clip_vr_seat" / f"{int(x['k']) - k0:04d}.png") for x in spec["instants"]]
+        vr = [cv2.resize(t, (360, 360), interpolation=cv2.INTER_AREA) for t in vr if t is not None]
+        if vr:
+            p = CMP_OUT / f"sheet_vr_seat_{var}.jpg"
+            cv2.imwrite(str(p), np.concatenate(vr, 1), [cv2.IMWRITE_JPEG_QUALITY, 88])
+            out.append(p)
+    rows = []
+    for cu in spec["closeups"]:
+        for cc in cu["cams"].values():
+            gt = cv2.imread(str(CMP_INPUT / "real" / f"{cc['view_id']}.jpg"))
+            tiles = []
+            for bname, b in cc["boxes"].items():
+                tiles.append(_tile(gt, b["box"], 200, f"{cc['view_id']} {bname}"))
+                for var in variants:
+                    im = _on_grey(CMP_RENDERS / var / "closeup_zoom" / f"{cc['view_id']}_{bname}.png")
+                    if im is not None:
+                        tiles.append(_tile(im, (0, 0, im.shape[1], im.shape[0]), 200, var.replace("lhmpp_", "")))
+            rows.append(np.concatenate([np.pad(t, ((0, 0), (0, 3), (0, 0)), constant_values=255) for t in tiles], 1))
+    if rows:
+        W = max(r.shape[1] for r in rows)
+        rows = [np.pad(r, ((0, 3), (0, W - r.shape[1]), (0, 0)), constant_values=255) for r in rows]
+        p = CMP_OUT / "sheet_closeups.jpg"
+        cv2.imwrite(str(p), np.concatenate(rows, 0), [cv2.IMWRITE_JPEG_QUALITY, 88])
+        out.append(p)
+    return out
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="python -m dancecap.mono4d.cand_lhmpp")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -726,6 +1574,15 @@ def main(argv=None) -> int:
     p = sub.add_parser("import")
     p.add_argument("--session", default=None)
     p.add_argument("--pods", default="", help="comma-separated pod ids of every attempt (costs from the ledger)")
+    p = sub.add_parser("compare-prep")
+    p.add_argument("--reuse-candidates", action="store_true")
+    p = sub.add_parser("compare-job")
+    p.add_argument("--max-minutes", type=float, default=40)
+    p = sub.add_parser("compare-score")
+    p.add_argument("--no-lpips", action="store_true")
+    p = sub.add_parser("compare-import")
+    p.add_argument("--session", default=None)
+    p.add_argument("--pods", default="", help="comma-separated pod ids of every attempt (costs from the ledger)")
     a = ap.parse_args(argv)
     if a.cmd == "prep":
         print(json.dumps(prep(baseline=not a.no_baseline, reuse_refs=a.reuse_refs), indent=1, default=str))
@@ -738,6 +1595,15 @@ def main(argv=None) -> int:
         score_dir(d, lpips_net=not a.no_lpips)
     elif a.cmd == "import":
         print(json.dumps(import_run(a.session, [x for x in a.pods.split(",") if x])["summary"], indent=1, default=float))
+    elif a.cmd == "compare-prep":
+        print(json.dumps(compare_prep(reuse_candidates=a.reuse_candidates), indent=1, default=str))
+    elif a.cmd == "compare-job":
+        print(compare_job(a.max_minutes))
+    elif a.cmd == "compare-score":
+        compare_score(lpips_net=not a.no_lpips)
+    elif a.cmd == "compare-import":
+        print(json.dumps(compare_import(a.session, [x for x in a.pods.split(",") if x])["summary"], indent=1,
+                         default=float))
     return 0
 
 

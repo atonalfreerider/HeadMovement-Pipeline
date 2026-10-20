@@ -1,0 +1,35 @@
+{
+ "schema": "dancecap.pod_job/1",
+ "name": "cmp_lpips",
+ "take": "larissa_kadu_38",
+ "max_minutes": 8,
+ "needs": [],
+ "inputs": [
+  "dancecap/work/larissa_kadu_38/mono4d/compare/lpips_all/input/"
+ ],
+ "exclude": [
+  "dancecap/work/runpod/pywheels",
+  "dancecap/work/runpod/wheelhouse",
+  "mamma-turing"
+ ],
+ "env": {},
+ "commands": [
+  {
+   "name": "score",
+   "timeout_min": 7,
+   "cmd": "python -m pip install -q --no-deps lpips==0.1.4 && python -m dancecap.mono4d.appearance_lpips score"
+  }
+ ],
+ "outputs": [
+  "dancecap/work/larissa_kadu_38/mono4d/compare/lpips_all/pod_out/"
+ ],
+ "verify": [
+  "dancecap/work/larissa_kadu_38/mono4d/compare/lpips_all/pod_out/lpips_all.json"
+ ],
+ "after_download": [
+  "python -m dancecap.mono4d.appearance_lpips import"
+ ],
+ "notes": [
+  "LPIPS (lpips 0.1.4, AlexNet) of all six appearance methods on the 18 real views of mono4d/compare, same crops, masks and function as metrics.json (dancer_splats.evaluate._crop_scores); renders cropped to the dancers; likeness data goes to our own pod only (owner consent 2026-10-19)"
+ ]
+}

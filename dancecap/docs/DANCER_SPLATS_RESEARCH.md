@@ -585,8 +585,9 @@ The SMPL-X model and the code travel in the runner's usual bundle.
 **Phase 2 (real renderer).** Candidate: **ninjamode/Unity-VR-Gaussian-Splatting**.
 - MIT, forked from aras-p's UnityGaussianSplatting. URP with Render Graph; Unity 6000.3 or later (we use
   6000.6.3f1, URP 17.6); D3D12, Vulkan or Metal.
-- Quest Pro / Quest 3 support: about 72 fps up to around 400k Gaussians with tuned settings; AMD FFX sort
-  (*reported* by search results; to verify).
+- Quest Pro / Quest 3 support: "72 fps stable until around 400k Gaussians" and the AMD FFX sort are from the
+  retired codebase (the repo's `old` branch / tag `1.0`, static scenes). v0.4.0 gives no fps figures and sorts with
+  DeviceRadixSort. Corrected 2026-10-19; see [APPEARANCE_DECISION.md](APPEARANCE_DECISION.md) 6.1-6.2.
 - Alternatives: Prempi1364's Quest 3 multiview fork (MIT, but **Built-in pipeline only**, so it does not fit our
   URP project); SplatBridge (1.0.4, 2026-09, by Stray Cats; licence not checked; Quest 3 experimental).
 - Add a **skinned-splat compute pass**:
@@ -599,7 +600,9 @@ The SMPL-X model and the code travel in the runner's usual bundle.
   per-frame sequence.
 
 **Headset feasibility (information for the user, not a plan).**
-- Two dancers at about 170k Gaussians is under the reported Quest budget of about 400k.
+- Two dancers at about 170k Gaussians is under the old codebase's 400k figure. That figure does not transfer
+  (static scenes, old sort), and fill, not count, sets the cost. LHM++ makes 2 x 160k large Gaussians. Corrected
+  2026-10-19; see [APPEARANCE_DECISION.md](APPEARANCE_DECISION.md) 6.2 (Quest confidence low).
 - SqueezeMe shows 3 skinned Gaussian avatars with correctives at 72 fps on Quest 3.
 - So a Quest splat layer is technically plausible. The 2026-10-05 decision (headset = textured skinned avatars,
   hair cards with the tip bloom) stands until the user revisits it.

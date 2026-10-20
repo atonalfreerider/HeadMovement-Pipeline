@@ -492,3 +492,7 @@ candidates in the leaderboard.
 
 **Cost.** $4.54 of the $25 for the whole round, comparison renders included (ledger $92.08 of the $112.54 cap). $1.36 of it was lost to uploads timing out
 on the home uplink: the runner bundles 330 MB of wheels even for jobs that need none.
+
+**Appearance decision (2026-10-19): [APPEARANCE_DECISION.md](APPEARANCE_DECISION.md).** Avatar vs moving splats vs hybrid, six methods side by side (sheets and clips in `work/larissa_kadu_38/mono4d/compare/`), with Jev and photo metrics.
+Recommended: skinned LHM++ splats posed by the MAMMA fit for the PC tutorial videos; on Quest 3 the same splats only after a device test reaches 72 fps.
+The baked hybrid mesh proposed above was built and measured: no realism gain over the current avatar, so it is not recommended for the headset.

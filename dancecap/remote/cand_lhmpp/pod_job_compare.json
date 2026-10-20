@@ -1,0 +1,59 @@
+{
+ "schema": "dancecap.pod_job/1",
+ "name": "cmp_lhmpp",
+ "take": "larissa_kadu_38",
+ "max_minutes": 40,
+ "needs": [],
+ "inputs": [
+  "dancecap/work/larissa_kadu_38/mono4d/compare/lhmpp/input/"
+ ],
+ "exclude": [
+  "dancecap/work/runpod/pywheels",
+  "dancecap/work/runpod/wheelhouse",
+  "mamma-turing"
+ ],
+ "env": {
+  "LHMPP_COMMIT": "906b5d9fb967ab42efb92f6fa55bf22cac86b653",
+  "LHMPP_ROOT": "/workspace/lhmpp_cand/LHM-plusplus",
+  "LHMPP_VENV": "/workspace/lhmpp_cand/venv",
+  "LHMPP_MODEL": "LHMPP-700M-PixelShuffle",
+  "TORCH_HOME": "/workspace/lhmpp_cand/torch_home",
+  "HF_HOME": "/workspace/lhmpp_cand/hf_home"
+ },
+ "commands": [
+  {
+   "name": "install",
+   "timeout_min": 35,
+   "cmd": "bash remote/cand_lhmpp/install.sh"
+  },
+  {
+   "name": "render",
+   "timeout_min": 20,
+   "cmd": "/workspace/lhmpp_cand/venv/bin/python remote/cand_lhmpp/lhmpp_compare_pod.py --input work/larissa_kadu_38/mono4d/compare/lhmpp/input --out work/larissa_kadu_38/mono4d/compare/lhmpp/pod_out --renders work/larissa_kadu_38/mono4d/compare/renders --variants lhmpp_1phone,lhmpp_8phone"
+  },
+  {
+   "name": "score",
+   "timeout_min": 8,
+   "optional": true,
+   "cmd": "(python -m pip install -q --no-deps lpips==0.1.4 || echo 'lpips install failed: no LPIPS'); python -m dancecap.mono4d.cand_lhmpp compare-score"
+  }
+ ],
+ "outputs": [
+  "dancecap/work/larissa_kadu_38/mono4d/compare/lhmpp/pod_out/",
+  "dancecap/work/larissa_kadu_38/mono4d/compare/renders/lhmpp_1phone/",
+  "dancecap/work/larissa_kadu_38/mono4d/compare/renders/lhmpp_8phone/"
+ ],
+ "verify": [
+  "dancecap/work/larissa_kadu_38/mono4d/compare/lhmpp/pod_out/lhmpp_compare_pod.json",
+  "dancecap/work/larissa_kadu_38/mono4d/compare/renders/lhmpp_1phone/i0_c03.png",
+  "dancecap/work/larissa_kadu_38/mono4d/compare/renders/lhmpp_8phone/i0_c03.png",
+  "dancecap/work/larissa_kadu_38/mono4d/compare/renders/lhmpp_1phone/clip_vr_seat/0104.png",
+  "dancecap/work/larissa_kadu_38/mono4d/compare/renders/lhmpp_8phone/clip_vr_seat/0104.png"
+ ],
+ "after_download": [
+  "python -m dancecap.mono4d.cand_lhmpp compare-import --session <sid>"
+ ],
+ "notes": [
+  "LHM++ (LHMPP-700M-PixelShuffle, CC BY-NC 4.0 weights) avatars of both dancers from phone-06 crops (lhmpp_1phone) and from 2 crops of each of the 8 phones (lhmpp_8phone), posed with the reference SMPL-X and rendered into every view of mono4d/compare/views.json (both dancers together); weights stay on the pod; crops and frames go to our own pod only (owner consent 2026-10-19)"
+ ]
+}
