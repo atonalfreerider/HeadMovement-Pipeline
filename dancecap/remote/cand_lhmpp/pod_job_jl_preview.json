@@ -1,0 +1,62 @@
+{
+ "schema": "dancecap.pod_job/1",
+ "name": "jl_lhmpp_preview",
+ "take": "john_lula",
+ "max_minutes": 12.0,
+ "needs": [],
+ "inputs": [
+  "dancecap/work/john_lula/lhmpp_preview/input/"
+ ],
+ "exclude": [
+  "dancecap/work/runpod/pywheels",
+  "dancecap/work/runpod/wheelhouse",
+  "mamma-turing"
+ ],
+ "env": {
+  "LHMPP_COMMIT": "906b5d9fb967ab42efb92f6fa55bf22cac86b653",
+  "LHMPP_ROOT": "/workspace/lhmpp_cand/LHM-plusplus",
+  "LHMPP_VENV": "/workspace/lhmpp_cand/venv",
+  "LHMPP_MODEL": "LHMPP-700M-PixelShuffle",
+  "TORCH_HOME": "/workspace/lhmpp_cand/torch_home",
+  "HF_HOME": "/workspace/lhmpp_cand/hf_home"
+ },
+ "commands": [
+  {
+   "name": "install",
+   "timeout_min": 35,
+   "cmd": "bash remote/cand_lhmpp/install.sh"
+  },
+  {
+   "name": "render",
+   "timeout_min": 20,
+   "cmd": "/workspace/lhmpp_cand/venv/bin/python remote/cand_lhmpp/lhmpp_compare_pod.py --input work/john_lula/lhmpp_preview/input --out work/john_lula/lhmpp_preview/pod_out --renders work/john_lula/lhmpp_preview/renders --variants lhmpp_video8,lhmpp_video8_photo,lhmpp_video8_photofull"
+  },
+  {
+   "name": "score",
+   "timeout_min": 6,
+   "optional": true,
+   "cmd": "(python -m pip install -q --no-deps lpips==0.1.4 || echo 'lpips install failed: no LPIPS'); python -m dancecap.mono4d.jl_lhmpp_preview score"
+  }
+ ],
+ "outputs": [
+  "dancecap/work/john_lula/lhmpp_preview/pod_out/",
+  "dancecap/work/john_lula/lhmpp_preview/renders/lhmpp_video8/",
+  "dancecap/work/john_lula/lhmpp_preview/renders/lhmpp_video8_photo/",
+  "dancecap/work/john_lula/lhmpp_preview/renders/lhmpp_video8_photofull/"
+ ],
+ "verify": [
+  "dancecap/work/john_lula/lhmpp_preview/pod_out/lhmpp_compare_pod.json",
+  "dancecap/work/john_lula/lhmpp_preview/renders/lhmpp_video8/turntable/tt00.png",
+  "dancecap/work/john_lula/lhmpp_preview/renders/lhmpp_video8_photo/turntable/tt00.png",
+  "dancecap/work/john_lula/lhmpp_preview/renders/lhmpp_video8_photofull/turntable/tt00.png",
+  "dancecap/work/john_lula/lhmpp_preview/renders/lhmpp_video8/clip_vr_seat/0119.png",
+  "dancecap/work/john_lula/lhmpp_preview/renders/lhmpp_video8_photo/clip_vr_seat/0119.png",
+  "dancecap/work/john_lula/lhmpp_preview/renders/lhmpp_video8_photofull/clip_vr_seat/0119.png"
+ ],
+ "after_download": [
+  "python -m dancecap.mono4d.jl_lhmpp_preview import --session <sid>"
+ ],
+ "notes": [
+  "LHM++ (LHMPP-700M-PixelShuffle, CC BY-NC 4.0 weights) avatars of John and Lula (take john_lula) from 8 crops of the one phone video (lhmpp_video8), those + the photo crop (lhmpp_video8_photo; diagnostic lhmpp_video8_photofull with John's whole occluded photo mask), posed with the john_lula MAMMA fit and rendered into held-out phone frames, a turntable and two 4 s clips (both dancers together); weights stay on the pod; crops and frames go to our own pod only (owner consent 2026-10-19)"
+ ]
+}
