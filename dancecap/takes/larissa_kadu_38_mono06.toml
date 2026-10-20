@@ -1,0 +1,34 @@
+# DERIVED one-camera take (mono4d track "fitb", 2026-10-19; dancecap.mono4d.cand_fitb): phone 06 of larissa_kadu_38 ALONE over
+# 58.0-62.0 s (reference seconds), fitted by MAMMA's single-camera mode (MAMMA_MONO=1) as the yardstick ("fit B") every one-camera
+# candidate must beat. Nothing here is decoded or measured again: work/larissa_kadu_38_mono06/ links / copies larissa_kadu_38's
+# frames/06, dancers/06, roles.json, cameras/06.npz (+ world_from_sfm.json) and mamma/ma_2d_native/06.* (python -m
+# dancecap.mono4d.cand_fitb derive). cameras/06.npz's t is put on larissa_kadu_38's sync-corrected reference clock (its measured
+# video offset for 06, -30.04 ms, applied once in the copy; t_raw kept) so the grid instants match the 8-phone fit's exactly;
+# hence 'mamma prepare --no-sync' and no sync/offsets.json here.
+name = "larissa_kadu_38_mono06"
+source_dir = "../../dances/Larissa-Kadu-demo"
+alignment = "../../prototype/larissa_kadu/alignment_studio.json"
+exclude = ["08"]
+window = [58.0, 62.0]
+keyframe_span = [58.0, 62.0]
+keyframe_step = 4.0
+
+[derived]
+from = "larissa_kadu_38"
+cams = ["06"]
+purpose = "mono4d fit B: one-camera MAMMA baseline"
+
+# same dancer facts as larissa_kadu_38.toml (the statures are the owner's; the stature loss of the shape pass uses stature + sole)
+[dancers.lead]
+name = "Kadu"
+pid = 1
+stature_m = 1.727
+description = "black t-shirt, jeans, shaved head"
+shoe_sole_m = 0.025
+
+[dancers.follow]
+name = "Larissa"
+pid = 2
+stature_m = 1.651
+description = "long red hair, white crop top, light ripped jeans, white sneakers"
+shoe_sole_m = 0.025
