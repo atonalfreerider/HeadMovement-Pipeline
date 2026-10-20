@@ -1,0 +1,53 @@
+{
+ "schema": "dancecap.pod_job/1",
+ "name": "cand_lhmpp",
+ "take": "larissa_kadu_38",
+ "max_minutes": 60.0,
+ "needs": [],
+ "inputs": [
+  "dancecap/work/larissa_kadu_38/mono4d/lhmpp/input/"
+ ],
+ "exclude": [
+  "dancecap/work/runpod/pywheels",
+  "dancecap/work/runpod/wheelhouse",
+  "mamma-turing"
+ ],
+ "env": {
+  "LHMPP_COMMIT": "906b5d9fb967ab42efb92f6fa55bf22cac86b653",
+  "LHMPP_ROOT": "/workspace/lhmpp_cand/LHM-plusplus",
+  "LHMPP_VENV": "/workspace/lhmpp_cand/venv",
+  "LHMPP_MODEL": "LHMPP-700M-PixelShuffle",
+  "TORCH_HOME": "/workspace/lhmpp_cand/torch_home",
+  "HF_HOME": "/workspace/lhmpp_cand/hf_home"
+ },
+ "commands": [
+  {
+   "name": "install",
+   "timeout_min": 35,
+   "cmd": "bash remote/cand_lhmpp/install.sh"
+  },
+  {
+   "name": "infer",
+   "timeout_min": 15,
+   "cmd": "/workspace/lhmpp_cand/venv/bin/python remote/cand_lhmpp/lhmpp_pod.py --input work/larissa_kadu_38/mono4d/lhmpp/input --out work/larissa_kadu_38/mono4d/lhmpp/pod_out"
+  },
+  {
+   "name": "score",
+   "timeout_min": 8,
+   "cmd": "(python -m pip install -q --no-deps lpips==0.1.4 || echo 'lpips install failed: no LPIPS'); python -m dancecap.mono4d.cand_lhmpp score --dir work/larissa_kadu_38/mono4d/lhmpp"
+  }
+ ],
+ "outputs": [
+  "dancecap/work/larissa_kadu_38/mono4d/lhmpp/pod_out/"
+ ],
+ "verify": [
+  "dancecap/work/larissa_kadu_38/mono4d/lhmpp/pod_out/lhmpp_pod.json",
+  "dancecap/work/larissa_kadu_38/mono4d/lhmpp/pod_out/metrics.json"
+ ],
+ "after_download": [
+  "python -m dancecap.mono4d.cand_lhmpp import --session <sid>"
+ ],
+ "notes": [
+  "LHM++ (LHMPP-700M-PixelShuffle, CC BY-NC 4.0 weights from ModelScope Damo_XR_Lab; prior files from HF 3DAIGC/LHMPP-Prior) builds one Gaussian avatar per dancer from phone-06 crops, animated with the 8-phone reference SMPL-X poses and rendered into held-out phones 01/03/05; weights stay on the pod; the dancers' crops and the held-out frames go to our own pod only (owner consent 2026-10-19)"
+ ]
+}

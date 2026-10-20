@@ -1,0 +1,48 @@
+{
+ "schema": "dancecap.pod_job/1",
+ "name": "cand_multihmr2",
+ "take": "larissa_kadu_38",
+ "max_minutes": 35,
+ "needs": [],
+ "inputs": [
+  "dancecap/work/larissa_kadu_38/mono4d/multihmr2/input/"
+ ],
+ "exclude": [
+  "dancecap/work/runpod/pywheels",
+  "dancecap/work/runpod/wheelhouse",
+  "mamma-turing"
+ ],
+ "env": {
+  "MHMR2_COMMIT": "f066532d096034700e5ba8b7b1ca655729d3ea6e",
+  "DINOV3_COMMIT": "6876159a11b4df116f30f667f8c9888617df0751",
+  "MHMR2_ROOT": "/workspace/mhmr2_cand",
+  "TORCH_HOME": "/workspace/mhmr2_cand/torch_home",
+  "ANNY_CACHE_DIR": "/workspace/mhmr2_cand/anny_cache"
+ },
+ "commands": [
+  {
+   "name": "install",
+   "timeout_min": 22,
+   "cmd": "bash remote/cand_multihmr2/install.sh"
+  },
+  {
+   "name": "infer",
+   "timeout_min": 12,
+   "cmd": "python remote/cand_multihmr2/mhmr2_pod.py --input work/larissa_kadu_38/mono4d/multihmr2/input --out work/larissa_kadu_38/mono4d/multihmr2/pod_out"
+  }
+ ],
+ "outputs": [
+  "dancecap/work/larissa_kadu_38/mono4d/multihmr2/pod_out/"
+ ],
+ "verify": [
+  "dancecap/work/larissa_kadu_38/mono4d/multihmr2/pod_out/mhmr2_pod.json",
+  "dancecap/work/larissa_kadu_38/mono4d/multihmr2/pod_out/multihmr2_ourK.npz",
+  "dancecap/work/larissa_kadu_38/mono4d/multihmr2/pod_out/multihmr2_predK.npz"
+ ],
+ "after_download": [
+  "python -m dancecap.mono4d.cand_multihmr2 import --session <sid>"
+ ],
+ "notes": [
+  "Multi-HMR 2.b (NAVER non-commercial) on the 120 canonical frames of phone 06, 58-62 s; decoder run with our K (ourK) and with its predicted K (predK); Anny -> SMPL-X topology (anny2smplx, non-commercial) + SMPL-X J_regressor on the pod. Checkpoint and Anny data stay on the pod; uploads the dancers' frames (owner consent 2026-10-19) to our own pod only"
+ ]
+}

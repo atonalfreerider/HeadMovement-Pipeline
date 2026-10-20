@@ -300,7 +300,7 @@ Method:
 | Tool | What it is | Role for us | Verdict |
 |---|---|---|---|
 | **World Labs Atlas beta** (Marble 2 API) | Hosted IMAGE tasks on posed RGBD views (images2PosedRGBD, atlasGenerate, atlasMasked, atlasChisel, text-to-image, splats2Mesh). 1280x720 generation grid; no video, temporal or human task. Its own best-practices page says people and dynamic objects are not yet a strength. Paid users own outputs (ToS 3.3) and can revoke the training licence. | Single-image camera + depth estimation (measured: very good); room views. Not the dancers. | **Use for cameras/depth only**: 10.2 |
-| **Viggle JST-2** (API) | Commercial cloud service: one person's video -> skeletal animation (GLB/FBX on a 65-joint Mixamo rig with fingers, plus MetaHuman rigs), $0.05 per source second; image -> Gaussian-splat character (.vsplat). | A one-person articulation prior. | **Measured: 84-108 mm PA-MPJPE**: 10.3 |
+| **Viggle JST-2** (API) | Commercial cloud service: one person's video -> skeletal animation (GLB/FBX on a 65-joint Mixamo rig with fingers, plus MetaHuman rigs), $0.05 per source second; image -> Gaussian-splat character (.vsplat). | A one-person articulation prior. | **Measured: 84-109 mm PA-MPJPE**: 10.3 |
 | **NVIDIA Kimodo** | Motion DIFFUSION model (text + kinematic constraints -> motion) on SOMA / G1 / SMPL-X skeletons. Code Apache-2.0; SOMA weights NVIDIA Open Model License. The SMPL-X weights are gated, under an R&D licence that forbids "generating works for sale or distribution". No video input. | In-betweening / gap filling, lesson variations. Not pose estimation. | Pod test (10.6); open SOMA weights only (owner's choice) |
 | **Dense4D** (arXiv 2610.22325, 2026-10-15) | Feed-forward, template-free dense 4D correspondence of body, clothing and hair from monocular frames (VGGT-Omega backbone, about 974M parameters). | The best match to "clothes, hair" from one phone: measuring clothed-surface and hair motion. | **Code not released** ("coming soon"); likely non-commercial; it does not take person masks as input, which matters in a close embrace |
 | **Unity Learned Motion Matching** (AiKodex, $20) | Locomotion-only, single-character runtime controller; pinned to a 2023 pre-release Sentis; reviews report it broken on current Sentis; no custom-data training path. | None. Our viewer already replays the captured fits at 72 fps on Quest 3. | **Do not buy** |
@@ -352,7 +352,7 @@ report under `work/larissa_kadu_38/mono4d/atlas/06_60000/`.
 - **Input:** one fixed crop per dancer, with the partner's SAM mask inpainted away. A flat grey fill would leave a
   body-shaped silhouette that a tracker can still follow.
 - **Scoring:** the 65-joint Mixamo GLB, read by our own numpy GLB reader, on the 14 joints both rigs define.
-- **Result:** PA-MPJPE median **108 mm (lead) / 84 mm (follow)** (p95 142 / 136); limb-direction error **21 / 17
+- **Result:** PA-MPJPE median **109 mm (lead) / 84 mm (follow)** (p95 142 / 133; re-scored on the reference clock, 10.6); limb-direction error **21 / 17
   degrees**.
   - Time-aligned: the best shift is 0 to +1 frame.
   - Hands are worst (about 150 mm): the arms wrap the inpainted partner.
@@ -395,6 +395,79 @@ The Jev vendor watch now also reads the five tools' own pages (`python -m dancec
   7-phone held-out chunk agrees with the 8-phone reference to 4-10 mm on these metrics. That is a consistency
   floor, not ground truth, since the reference is built from the same chunks.
 
-### 10.6 Pod tests (Runpod, $25 cap for the round)
+### 10.6 Pod tests (Runpod, $25 cap for the round), measured
 
-Pending: written when the workflow `monocular-candidates-pod-tests` returns.
+All runs used phone 06 of larissa_kadu_38, 58-62 s. Each pose candidate was scored by the harness (10.5), then checked
+by an independent auditor (joint order, left/right, bone lengths, time shift, roles, re-score). Every pod was created
+and deleted by the farm runner. Licensed weights stayed on the pods; outputs stay in git-ignored `work/`.
+
+**Pose, one camera** (medians, mm; lead / follow; PA22 = PA-MPJPE on 22 joints; pelvis = world position):
+
+| candidate | PA22 | root-rel | pelvis | limb (deg) | cost | note |
+|---|---|---|---|---|---|---|
+| multi-view floor (7 phones) | 4 / 8 | 5 / 10 | 7 / 8 | 1 / 2 | - | consistency floor |
+| **fit B** `mamma_mono06` (our MAMMA_MONO) | 47 / 44 | 63 / 55 | 67 / 48 | 13 / 9 | $1.38 | the bar; free shape from the statures |
+| CloseApp (refining fit B) | 48 / 44 | 64 / 54 | 62 / 56 | 12 / 9 | $0.23 | changes the pose by < 1 mm |
+| Multi-HMR 2, our mask identities | 63 / 61 | 81 / 77 | 254 / 72 | 13 / 13 | $0.10 | follow missing in ~20 % of frames |
+| Multi-HMR 2, its own tracker ids | 73 / 81 | 91 / 94 | 297 / 231 | 17 / 17 | (same run) | swaps the dancers on 28 % of frames |
+| Viggle JST-2 (10.3) | 109 / 84 | - | - | 21 / 17 | $0.40 | free frame, 14 joints |
+
+- **fit B** (`cand_fitb.py`): MAMMA ma_3d with MAMMA_MONO=1 on phone 06 alone, betas free and held to the owner's
+  statures. Its world metrics are optimistic for a true one-phone take: it uses phone 06's camera track and sync from
+  the 8-phone SfM. PA-MPJPE is not affected.
+- **CloseApp** (`cand_closeapp.py`, commit 516ed6f, MIT): the release demo config. Its proxemics prior cannot run as
+  released (an undefined variable; batch shape mismatch), and the penetration weight is 0. Initialised from fit B,
+  because there is no HMR2 init. Penetration depth 42 mm vs fit B 45 mm (reference 31 mm); hand-contact recall 0.74
+  vs 0.73. Its 3D-Gaussian avatars are coarse (hair a blob). **Not adopted**; its SDF penetration term may be worth
+  porting into MAMMA_MONO.
+- **Multi-HMR 2** (`cand_multihmr2.py`, NAVER non-commercial): our focal passed to the decoder (its own predicted
+  focal is 19 % short, which puts the dancers 0.7-0.9 m too close). Front/back ordering of the couple agrees with the
+  reference on 88 % of frames, against 99 % for fit B. **Not adopted**, not even as a placement prior.
+- **SAM 3D Body** (`remote/cand_sam3d_body/`): **running**. The first pod attempt hit HTTP 403 ($0.04): the
+  owner's Hugging Face access to `facebook/sam-3d-body-dinov3` was not yet approved. Meta approved the request at
+  17:22 the same day. The job prompts the model with our SAM 2.1 masks and our K, and converts MHR -> SMPL-X with
+  Meta's official converter. Note: listing a gated repo's files succeeds without access; only a download (HEAD)
+  proves access.
+
+**Gap filling** (`cand_kimodo.py`, Kimodo-SOMA-RP-v1.2, open weights, no text encoder; $0.67): one held-out second
+(59-60 s) of the 8-phone fit, keyframes on both sides, 5 samples, medians.
+- Follow (a 189-degree turn inside the gap): PA-MPJPE **43 mm** vs 69-72 mm for SLERP / linear / cubic; the turn goes the
+  right way in 3 of 5 samples (SLERP turns the wrong way).
+- Lead: ties SLERP on PA-MPJPE (43 vs 40) and is 10 mm worse than cubic on world MPJPE.
+- **Head: 58-67 mm vs 22-26 mm for cubic**, and it lifts the follow's head during the turn (about 70 mm in the median sample, up to 98 mm). Head motion
+  is this project's focus, so Kimodo is **not a drop-in in-betweener**. Next: head/hand end-effector constraints,
+  heading constraints at the boundaries, keyframes from fit B instead of the reference.
+
+**Appearance** (`cand_lhmpp.py`, LHM++ 700M; code Apache-2.0, weights CC BY-NC 4.0; $0.32): an avatar per dancer from 8
+masked phone-06 crops, posed with the reference SMPL-X, rendered into held-out phones 01 / 03 / 05 at 10 times
+(60 dancer-views, inside the real masks, native 480-px phones):
+
+| variant | PSNR dB | SSIM | LPIPS | silhouette coverage |
+|---|---|---|---|---|
+| LHM++, 8 crops from 58-62 s, reference shape | **12.6** | **0.228** | 0.203 | **0.86** |
+| LHM++, 16 crops from the whole take | 11.8-11.9 | 0.21-0.22 | 0.20-0.21 | 0.86-0.90 |
+| current baked texture on naked SMPL-X (8 phones, saw 01/03/05) | 11.2 | 0.202 | 0.216 | 0.75 |
+
+- From ONE phone it beats the 8-phone bake on every whole-mask metric, mostly through clothes and hair geometry
+  (follow: 10.9 dB vs 8.7 dB). Where both renders cover the dancer, the bake is still sharper (LPIPS 0.126 vs 0.149).
+- In the contact sheet (`work/larissa_kadu_38/mono4d/lhmpp/contact_sheet.jpg`) the jeans, crop top, t-shirt and red
+  hair read correctly. Hair is skinned rigidly (it does not swing), and the partner's occluding arm leaves white
+  patches that the avatar copies.
+- Raw PSNR is dominated by exposure differences between phones: colour-corrected PSNR is about 4 dB higher for every
+  method.
+- **Most promising result of the round for "natural appearance, clothes, hair".** Quest path (Gaussians are ruled out
+  on the Quest): render the canonical Gaussians from about 48 virtual cameras, bake onto the existing SMPL-X UV atlas,
+  and push subdivided vertices out to the Gaussian surface for the clothes silhouette; long hair stays with the strand
+  pipeline. About a day of glue code.
+
+**Hair** (DiffLocks): pending.
+
+**Harness clock fix.** The reference fit and `load_tracks` use the sync-corrected clock (phone 06: frames.json t
+-30.04 ms). A candidate saved on raw frame times is matched one frame late: a perfect pose then still scores PA22 +7.5 /
++10 mm and root-relative +15 / +18 mm. Multi-HMR 2 had this bug (fixed by its auditor; follow pelvis 86 -> 72 mm), and
+so did the Viggle import (re-imported; PA22 108 -> 109 / 84 -> 84 mm, since its motion is smooth).
+`candidates.frame_to_ref` now does the conversion, and `score()` records a clock check per role and flags raw-clock
+candidates in the leaderboard.
+
+**Cost.** About $2.9 of the $25 so far (ledger $90.45 of the $112.54 cap). $1.36 of it was lost to uploads timing out
+on the home uplink: the runner bundles 330 MB of wheels even for jobs that need none.

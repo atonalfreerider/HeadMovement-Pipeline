@@ -1,0 +1,67 @@
+{
+ "schema": "dancecap.pod_job/1",
+ "name": "cand_fitb",
+ "take": "larissa_kadu_38_mono06",
+ "max_minutes": 40,
+ "needs": [
+  "mamma"
+ ],
+ "inputs": [
+  "dancecap/work/larissa_kadu_38_mono06/mamma/prepare.json",
+  "dancecap/work/larissa_kadu_38_mono06/mamma/ma3d_config.yaml",
+  "dancecap/work/larissa_kadu_38_mono06/mamma/mono_init.npz",
+  "dancecap/work/larissa_kadu_38_mono06/mamma/stature.json",
+  "dancecap/work/larissa_kadu_38_mono06/mamma/pin_betas_ref.json",
+  "dancecap/work/larissa_kadu_38_mono06/mamma/ma_2d/larissa_kadu_38_mono06_m06/",
+  "dancecap/work/larissa_kadu_38_mono06/mamma/ma_2d/larissa_kadu_38_mono06_p06/",
+  "dancecap/work/larissa_kadu_38_mono06/mamma/ma_cap/larissa_kadu_38_mono06_m06/",
+  "dancecap/work/larissa_kadu_38_mono06/mamma/ma_cap/larissa_kadu_38_mono06_p06/"
+ ],
+ "env": {
+  "DANCECAP_POD": "1",
+  "PYOPENGL_PLATFORM": "egl",
+  "MAMMA_MONO": "1",
+  "MAMMA_MONO_INIT": "/workspace/HeadMovement/dancecap/work/larissa_kadu_38_mono06/mamma/mono_init.npz",
+  "MAMMA_STATURE": "/workspace/HeadMovement/dancecap/work/larissa_kadu_38_mono06/mamma/stature.json"
+ },
+ "cwd": "dancecap",
+ "exclude": [
+  "dancecap/work/runpod/pywheels",
+  "mamma/data/body_models/smplx_locked_head/smplx/SMPLX_MALE.npz",
+  "mamma/data/body_models/smplx_locked_head/smplx/SMPLX_FEMALE.npz"
+ ],
+ "setup": [
+  "for g in MALE FEMALE; do ln -sf SMPLX_NEUTRAL.npz /workspace/HeadMovement/mamma/data/body_models/smplx_locked_head/smplx/SMPLX_$g.npz; done; nvidia-smi --query-gpu=name,memory.total --format=csv"
+ ],
+ "commands": [
+  {
+   "name": "fit_m06",
+   "cmd": "python -m dancecap mamma fit larissa_kadu_38_mono06 --tag m06",
+   "timeout_min": 20
+  },
+  {
+   "name": "fit_p06",
+   "cmd": "unset MAMMA_STATURE; export MAMMA_FREEZE_BETAS=1 MAMMA_INIT_BETAS=/workspace/HeadMovement/dancecap/work/larissa_kadu_38_mono06/mamma/pin_betas_ref.json; python -m dancecap mamma fit larissa_kadu_38_mono06 --tag p06",
+   "timeout_min": 15,
+   "optional": true
+  }
+ ],
+ "outputs": [
+  "dancecap/work/larissa_kadu_38_mono06/mamma/fits/",
+  "dancecap/work/larissa_kadu_38_mono06/mamma/logs/"
+ ],
+ "verify": [
+  "dancecap/work/larissa_kadu_38_mono06/mamma/fits/m06/fit.json",
+  "dancecap/work/larissa_kadu_38_mono06/mamma/fits/m06/smplx/lead.npz",
+  "dancecap/work/larissa_kadu_38_mono06/mamma/fits/m06/smplx/follow.npz"
+ ],
+ "after_download": [
+  "python -m dancecap.mono4d.cand_fitb import --tag m06 --name mamma_mono06 --session <sid>",
+  "python -m dancecap.mono4d.cand_fitb import --tag p06 --name mamma_mono06_pinbetas --session <sid>"
+ ],
+ "notes": [
+  "mono4d fit B: MAMMA_MONO=1 single-camera ma_3d of phone 06, 58-62 s (120 grid frames)",
+  "m06: free betas held to the owner's statures (MAMMA_STATURE: stature + 2.5 cm sole) - the honest one-camera fit",
+  "p06 (optional): betas pinned to the 8-phone fit's (LEAKS shape from the multi-view fit) - diagnostic only"
+ ]
+}

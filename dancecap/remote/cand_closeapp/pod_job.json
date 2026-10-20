@@ -1,0 +1,53 @@
+{
+ "schema": "dancecap.pod_job/1",
+ "name": "cand_closeapp",
+ "take": "larissa_kadu_38",
+ "max_minutes": 46,
+ "needs": [],
+ "inputs": [
+  "dancecap/work/larissa_kadu_38/mono4d/closeapp/input/",
+  {
+   "local": "models/smpl/nochumpy_closeapp/",
+   "pod": "models/smpl/nochumpy_closeapp/"
+  }
+ ],
+ "exclude": [
+  "dancecap/work/runpod/pywheels",
+  "dancecap/work/runpod/wheelhouse",
+  "mamma-turing"
+ ],
+ "env": {
+  "CLOSEAPP_ROOT": "/workspace/closeapp_cand",
+  "CLOSEAPP_COMMIT": "516ed6f8f8bd7bf5a358ce762e51845227d8aa85",
+  "DGR_COMMIT": "59f5f77e3ddbac3ed9db93ec2cfe99ed6c5d121d",
+  "SDF_COMMIT": "8016aef2e8cd56f1b9d5481ddc0036543ad984c7",
+  "ISECT_COMMIT": "85b30177821a1527e3fe62fcf8ce65262d7c1879",
+  "CLOSEAPP_DATA_ID": "1kTMD6t-GSJ4tHnC2R19RD7dyMWMXwqsv",
+  "CLOSEAPP_DATA_BYTES": "228421916"
+ },
+ "commands": [
+  {
+   "name": "install",
+   "timeout_min": 20,
+   "cmd": "bash remote/cand_closeapp/install.sh"
+  },
+  {
+   "name": "run",
+   "timeout_min": 25,
+   "cmd": "python remote/cand_closeapp/closeapp_pod.py run --input work/larissa_kadu_38/mono4d/closeapp/input --smpl /workspace/HeadMovement/models/smpl/nochumpy_closeapp --out work/larissa_kadu_38/mono4d/closeapp/pod_out --variants closeapp,closeapp_noapp"
+  }
+ ],
+ "outputs": [
+  "dancecap/work/larissa_kadu_38/mono4d/closeapp/pod_out/"
+ ],
+ "verify": [
+  "dancecap/work/larissa_kadu_38/mono4d/closeapp/pod_out/closeapp_pod.json",
+  "dancecap/work/larissa_kadu_38/mono4d/closeapp/pod_out/closeapp_out.npz"
+ ],
+ "after_download": [
+  "python -m dancecap.mono4d.cand_closeapp import --session <sid>"
+ ],
+ "notes": [
+  "CloseApp (MIT code) @ 516ed6f on the 120 canonical frames of phone 06, 58-62 s, our masks / COCO-17 keypoints / focal, init = fit B converted to SMPL; variants closeapp, closeapp_noapp. The bundle holds the owner's SMPL / SMPLify model files (plain-numpy copies): our own pod only, deleted with it. data.zip (Google Drive, 228 MB) is fetched on the pod; nothing licensed comes back."
+ ]
+}

@@ -1,0 +1,50 @@
+{
+ "schema": "dancecap.pod_job/1",
+ "name": "cand_kimodo",
+ "take": "larissa_kadu_38",
+ "max_minutes": 30,
+ "needs": [],
+ "inputs": [
+  "dancecap/work/larissa_kadu_38/mono4d/kimodo/input/gapfill_inputs.npz",
+  "dancecap/work/larissa_kadu_38/mono4d/kimodo/input/prep.json"
+ ],
+ "exclude": [
+  "dancecap/work/runpod/pywheels",
+  "dancecap/work/runpod/wheelhouse",
+  "mamma-turing"
+ ],
+ "env": {
+  "KIMODO_COMMIT": "e1c219c99b4b94ba48be1fb6a1cbc64ecee4c954",
+  "KIMODO_HF": "nvidia/Kimodo-SOMA-RP-v1.2",
+  "KIMODO_HF_REV": "0e3c89024d896064b6851201373f7834784a386b",
+  "CHECKPOINT_DIR": "/workspace/kimodo_cand/ckpt",
+  "LOCAL_CACHE": "true",
+  "NVIDIA_TF32_OVERRIDE": "0",
+  "TOKENIZERS_PARALLELISM": "false"
+ },
+ "commands": [
+  {
+   "name": "install",
+   "timeout_min": 18,
+   "cmd": "bash remote/cand_kimodo/install.sh"
+  },
+  {
+   "name": "gapfill",
+   "timeout_min": 8,
+   "cmd": "/workspace/kimodo_cand/venv/bin/python remote/cand_kimodo/kimodo_gapfill_pod.py --inputs work/larissa_kadu_38/mono4d/kimodo/input/gapfill_inputs.npz --out work/larissa_kadu_38/mono4d/kimodo/pod_out --samples 5 --seed 0"
+  }
+ ],
+ "outputs": [
+  "dancecap/work/larissa_kadu_38/mono4d/kimodo/pod_out/"
+ ],
+ "verify": [
+  "dancecap/work/larissa_kadu_38/mono4d/kimodo/pod_out/gapfill.json"
+ ],
+ "after_download": [
+  "python -m dancecap.mono4d.cand_kimodo score",
+  "python -m dancecap.mono4d.cand_kimodo render"
+ ],
+ "notes": [
+  "Kimodo constraint-only gap fill (no text encoder, no Llama); weights Kimodo-SOMA-RP-v1.2 (NVIDIA Open Model License) downloaded on the pod at a pinned revision; uploads only joint arrays of the reference fit (no frames, no video)"
+ ]
+}
