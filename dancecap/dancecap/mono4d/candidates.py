@@ -146,11 +146,35 @@ def _limb_err(A: np.ndarray, B: np.ndarray, js: list[int]) -> list[float]:
     return out
 
 
+def accel_rr_mm(t: np.ndarray, J: np.ndarray, joints: list[int] = J22[1:]) -> np.ndarray:
+    """Jitter per frame: the mean over the 21 body joints below the pelvis of |second difference| of the ROOT-RELATIVE
+    joints, mm per frame^2 (frames k-1, k, k+1 consecutive: both steps within 25 % of the median step). (T,), NaN where
+    undefined."""
+    t = np.asarray(t, float)
+    X = np.asarray(J, float)[:, joints] - np.asarray(J, float)[:, :1]
+    out = np.full(len(t), np.nan)
+    if len(t) < 3:
+        return out
+    dt = np.diff(t)
+    step = float(np.median(dt))
+    ok = (np.abs(dt[:-1] - step) <= 0.25 * step) & (np.abs(dt[1:] - step) <= 0.25 * step)
+    a = 1e3 * np.linalg.norm(X[2:] - 2 * X[1:-1] + X[:-2], axis=-1)
+    n = np.isfinite(a).sum(-1)
+    m = np.where(n > 0, np.nansum(a, axis=-1) / np.maximum(n, 1), np.nan)  # joints a rig does not define (NaN) are skipped
+    out[1:-1] = np.where(ok, m, np.nan)
+    return out
+
+
 def score_arrays(t: np.ndarray, J: np.ndarray, frame: str, ref_t: np.ndarray, ref_J: np.ndarray,
                  window: tuple[float, float]) -> dict:
     ir, it = match_times(ref_t, t)
     keep = (ref_t[ir] >= window[0]) & (ref_t[ir] <= window[1])
     ir, it = ir[keep], it[keep]
+    # jitter: root-relative joint acceleration of the candidate and of the reference on the same instants, and the error of
+    # the candidate's acceleration (mean over joints of |a_cand - a_ref|, mm/frame^2)
+    acc, acc_ref, acc_err = accel_rr_mm(t[it], J[it]), accel_rr_mm(ref_t[ir], ref_J[ir]), np.full(len(it), np.nan)
+    if len(it) >= 3:  # the root-relative difference (its pelvis row is 0): its second difference is a_cand - a_ref
+        acc_err = accel_rr_mm(t[it], (J[it][:, J22] - J[it][:, :1]) - (ref_J[ir][:, J22] - ref_J[ir][:, :1]))
     rows = {"pa22": [], "pa14": [], "rr": [], "pelvis": [], "limb": []}
     for a, b in zip(it, ir):
         A, B = J[a], ref_J[b]
@@ -167,7 +191,8 @@ def score_arrays(t: np.ndarray, J: np.ndarray, frame: str, ref_t: np.ndarray, re
         if len(ok) >= 10:
             rows["limb"] += _limb_err(procrustes(A[ok], B[ok]), B[ok], ok)
     return {"frames": int(len(ir)), "pa22_mm": summary(rows["pa22"]), "pa14_mm": summary(rows["pa14"]),
-            "rr_mm": summary(rows["rr"]), "pelvis_mm": summary(rows["pelvis"]), "limb_deg": summary(rows["limb"])}
+            "rr_mm": summary(rows["rr"]), "pelvis_mm": summary(rows["pelvis"]), "limb_deg": summary(rows["limb"]),
+            "accel_rr": summary(acc), "accel_rr_ref": summary(acc_ref), "accel_err": summary(acc_err)}
 
 
 def score(take: str, name: str, window: tuple[float, float], reference: Path | None = None) -> dict:
@@ -242,8 +267,10 @@ def leaderboard(take: str, window: tuple[float, float], floor_tag: str | None = 
             rows.append((d.name, (s["roles"], s.get("clock", {}))))
     fmt = lambda s: "-" if not s or s.get("median") is None else f"{s['median']:.0f}"  # noqa: E731
     lines = [f"# One-camera candidates, {take}, {window[0]:.1f}-{window[1]:.1f} s (medians; reference = 8-phone fit)", "",
-             "| candidate | role | frames | PA-MPJPE 22 (mm) | PA-MPJPE 14 (mm) | root-rel (mm) | pelvis world (mm) | limb (deg) |",
-             "|---|---|---|---|---|---|---|---|"]
+             "jitter = root-relative joint acceleration, mm/frame^2 (the reference's own on the same frames in brackets)", "",
+             "| candidate | role | frames | PA-MPJPE 22 (mm) | PA-MPJPE 14 (mm) | root-rel (mm) | pelvis world (mm) | limb (deg) "
+             "| jitter |",
+             "|---|---|---|---|---|---|---|---|---|"]
     for name, roles in rows:
         if isinstance(roles, tuple):  # (roles, clock flags) of a candidate
             roles, clocks = roles
@@ -253,8 +280,11 @@ def leaderboard(take: str, window: tuple[float, float], floor_tag: str | None = 
             s = roles.get(role) or {}
             if not s.get("frames"):
                 continue
+            acc = s.get("accel_rr") or {}
+            jit = "-" if acc.get("median") is None else (
+                f"{acc['median']:.1f} ({(s.get('accel_rr_ref') or {}).get('median') or float('nan'):.1f})")
             lines.append(f"| {name} | {role} | {s['frames']} | {fmt(s['pa22_mm'])} | {fmt(s['pa14_mm'])} | {fmt(s['rr_mm'])} | "
-                         f"{fmt(s['pelvis_mm'])} | {fmt(s['limb_deg'])} |")
+                         f"{fmt(s['pelvis_mm'])} | {fmt(s['limb_deg'])} | {jit} |")
     text = "\n".join(lines) + "\n"
     if root.exists():
         (root / "leaderboard.md").write_text(text)

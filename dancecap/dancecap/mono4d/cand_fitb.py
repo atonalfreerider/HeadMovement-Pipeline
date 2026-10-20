@@ -24,12 +24,28 @@ optimization/utils/mono.py) applied to one phone of the 8-phone take, WITHOUT to
     import     fits/<tag>/smplx/{lead,follow}.npz -> candidate (frame 'world', joints = smplx joints[:, :22]) + meta
 
     python -m dancecap.mono4d.cand_fitb derive|check|mono-init|pin|job|import [--tag m06 --name mamma_mono06 --session SID]
+
+Variant "3db" (2026-10-19): fit B + SAM 3D Body (cand_sam3d_body, candidate sam3d_body = pod_out/smplx_mask255.npz) as a
+per-frame 3D pose PRIOR inside MAMMA_MONO (mamma-turing utils/mono.py pose_prior_loss, env MAMMA_POSE_PRIOR):
+    prior-3db  mamma/prior_3db.npz: SAM 3D Body's SMPL-X body joints and global orientation moved from phone 06's camera
+               frame to the world with that phone's track (mamma_dyn.load_tracks, the sync-corrected clock; SAM 3D Body's
+               frame times through candidates.frame_to_ref), put on the fit grid (nearest frame, <= 5 ms), the
+               root-relative joints and the rotations smoothed over time (Gaussian, PRIOR_SMOOTH frames: per-frame 3DB
+               jitters ~6x the reference); conf per frame = the dancer's visible mask area against its median (an occluded
+               dancer is where 3DB errs most); body pose + world orientation also seed the fit (instead of the heading search)
+    configs-3db  mamma/ma3d_config_<tag>.yaml = fit B's config + pose_prior_loss (weight w) in all four stages, and sets
+               <tag> in prepare.json (fit B's m06 inputs, own config; mamma_dyn.fit reads a set's "config")
+    job-3db    dancecap/remote/cand_fitb/pod_job_3db.json: a smoke fit (2 iterations a stage), then the weights in parallel
+    import-3db fits/<tag> -> candidates mamma_mono06_3db (w 2, pre-registered) / _w05 / _w8
+    python -m dancecap.mono4d.cand_fitb prior-3db|configs-3db|job-3db|import-3db [--session SID]
 """
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import shutil
+import subprocess
 import time
 import tomllib
 from pathlib import Path
@@ -49,6 +65,18 @@ JOB_DIR = PACKAGE_ROOT / "remote" / "cand_fitb"
 POD_WS = "/workspace/HeadMovement"
 SCORE_MIN = 0.35
 ROLES = ("lead", "follow")
+# variant 3db: SAM 3D Body as a per-frame 3D pose prior
+PRIOR_SRC = REF_WORK / "mono4d" / "sam3d_body" / "pod_out" / "smplx_mask255.npz"   # = candidate sam3d_body
+PRIOR_META = REF_WORK / "mono4d" / "sam3d_body" / "input" / "meta.json"
+PRIOR_NPZ = WORK / "mamma" / "prior_3db.npz"
+PRIOR_SMOOTH = 1.5        # frames: Gaussian sigma over the prior's root-relative joints and rotations
+PRIOR_DT_MAX = 5e-3       # s: a grid instant takes the 3DB frame nearest to it within this (else no prior there)
+PRIOR_SIGMA_M = 0.10      # Geman-McClure scale of pose_prior_loss (mamma-turing utils/mono.py)
+PRIOR_RUNS = ("first_run", "second_run", "third_run", "fourth_run")
+PRIOR_VARIANTS = {"3db_w05": (0.5, "mamma_mono06_3db_w05"), "3db": (2.0, "mamma_mono06_3db"),   # tag: (weight, candidate)
+                  "3db_w8": (8.0, "mamma_mono06_3db_w8")}                                     # "3db" = pre-registered
+PRIOR_SMOKE = "3db_smoke"
+LR_PAIRS = ((1, 2), (4, 5), (7, 8), (10, 11), (13, 14), (16, 17), (18, 19), (20, 21))       # SMPL-X body left / right
 
 
 def log(msg: str) -> None:
@@ -301,8 +329,8 @@ def import_fit(tag: str, name: str, sid: str | None = None, extra: dict | None =
     m = {"method": "MAMMA ma_3d single-camera mode (MAMMA_MONO=1, mamma-turing utils/mono.py) on phone 06 alone",
          "input_cam": CAM, "source": str(d), "licence": "MAMMA (research code, mamma-turing local branch); SMPL-X locked-head (non-commercial)",
          "version": "mamma-turing 52df222 (turing-dynamic-cams + single-camera mode); dancecap mamma_dyn MA3D_MONO_OVERRIDES",
-         "shape": ("free betas held to the owner's statures (MAMMA_STATURE)" if tag == "m06" else
-                   "betas PINNED to the 8-phone fit's (MAMMA_FREEZE_BETAS): LEAKS shape from the multi-view fit"),
+         "shape": ("betas PINNED to the 8-phone fit's (MAMMA_FREEZE_BETAS): LEAKS shape from the multi-view fit"
+                   if tag == "p06" else "free betas held to the owner's statures (MAMMA_STATURE)"),
          "inputs": "the 8-phone fit's own phone-06 inputs: ma_2d 512 landmarks (SAM masks), camera track 06 (metric world from "
                    "the multi-phone SfM), pelvis start from ankle rays (jl_mono) on COCO-17 people/06.npz",
          "ma_3d": {k: fj["ma_3d"].get(k) for k in ("seconds", "gpu_used_peak_mib", "returncode", "torch_peak")},
@@ -316,14 +344,361 @@ def import_fit(tag: str, name: str, sid: str | None = None, extra: dict | None =
     return cand_dir(REF, name)
 
 
+# ------------------------------------------------------------------------------------------------ variant 3db: SAM 3D Body prior
+
+
+def mask_conf(mask_px: np.ndarray, lo: float = 0.5, hi: float = 0.95, floor: float = 0.25) -> np.ndarray:
+    """(F,) visible mask pixels of one dancer -> prior confidence: 1 from hi x its median area up, falling linearly to floor
+    at lo x (larissa_kadu_38, lead: 3DB's per-frame PA-MPJPE is 31 mm at >= 0.9 x the median area, 51-63 mm below)."""
+    rel = np.asarray(mask_px, float) / max(float(np.median(mask_px)), 1.0)
+    return np.clip(floor + (1.0 - floor) * (rel - lo) / (hi - lo), floor, 1.0)
+
+
+def grid_index(t_src: np.ndarray, t_grid: np.ndarray, tol: float = PRIOR_DT_MAX) -> tuple[np.ndarray, np.ndarray]:
+    """For each grid instant the nearest source sample and whether it is within tol seconds."""
+    from ..mamma_dyn import nearest_index
+    t_src, t_grid = np.asarray(t_src, float), np.asarray(t_grid, float)
+    k = nearest_index(t_src, t_grid)
+    return k, np.abs(t_src[k] - t_grid) <= tol
+
+
+def _gauss_weights(T: int, sigma: float, valid: np.ndarray) -> np.ndarray:
+    i = np.arange(T)
+    W = np.exp(-0.5 * ((i[:, None] - i[None, :]) / max(sigma, 1e-6)) ** 2) * np.asarray(valid, float)[None]
+    return W / np.maximum(W.sum(1, keepdims=True), 1e-12)
+
+
+def smooth_series(X: np.ndarray, sigma: float, valid: np.ndarray) -> np.ndarray:
+    """Normalised Gaussian convolution over axis 0 that only reads the valid samples (sigma in samples; <= 0: a copy)."""
+    X = np.asarray(X, float)
+    if sigma <= 0:
+        return X.copy()
+    W = _gauss_weights(len(X), sigma, valid)
+    return np.einsum("ij,j...->i...", W, np.nan_to_num(X))
+
+
+def smooth_rotvec(aa: np.ndarray, sigma: float, valid: np.ndarray) -> np.ndarray:
+    """(T, ..., 3) axis-angle -> the same, smoothed over time: per element the normalised Gaussian-weighted sum of the valid
+    frames' quaternions (each flipped into the hemisphere of the frame's own), so a 360-degree wrap never averages to
+    nonsense. Invalid frames come out as the weighted mean of their valid neighbours."""
+    from scipy.spatial.transform import Rotation
+    aa = np.asarray(aa, float)
+    T, shp = aa.shape[0], aa.shape[1:-1]
+    q = Rotation.from_rotvec(aa.reshape(-1, 3)).as_quat().reshape(T, -1, 4)        # (T, N, 4)
+    if sigma <= 0:
+        return aa.copy()
+    W = _gauss_weights(T, sigma, valid)
+    out = np.empty_like(q)
+    for i in range(T):
+        sgn = np.sign((q * q[i][None]).sum(-1, keepdims=True))
+        sgn[sgn == 0] = 1.0
+        s = np.einsum("j,jnk->nk", W[i], q * sgn)
+        out[i] = s / np.maximum(np.linalg.norm(s, axis=-1, keepdims=True), 1e-12)
+    return Rotation.from_quat(out.reshape(-1, 4)).as_rotvec().reshape(T, *shp, 3)
+
+
+def orient_to_world(go_cam: np.ndarray, R: np.ndarray) -> np.ndarray:
+    """Global orientation (F, 3) axis-angle in the camera frame (x_cam = R X + t) -> world: R^T R(go)."""
+    from scipy.spatial.transform import Rotation
+    M = Rotation.from_rotvec(np.asarray(go_cam, float)).as_matrix()
+    return Rotation.from_matrix(np.einsum("fji,fjk->fik", R, M)).as_rotvec()
+
+
+def _fk_joints(betas, go, bp, transl) -> np.ndarray:
+    """SMPL-X 2020 neutral (10 betas, flat hands) body joints (F, 22, 3) of SAM 3D Body's converted parameters."""
+    import torch
+    import smplx
+    from ..take import WORKSPACE
+    m = smplx.SMPLX(model_path=str(WORKSPACE / "smplx" / "SMPLX_NEUTRAL.npz"), gender="neutral", num_betas=10,
+                    use_pca=False, flat_hand_mean=True, batch_size=len(go))
+    f = lambda x: torch.as_tensor(np.asarray(x, np.float32))  # noqa: E731
+    with torch.no_grad():
+        return m(betas=f(betas), global_orient=f(go), body_pose=f(bp), transl=f(transl)).joints[:, :22].numpy().astype(float)
+
+
+def prior_3db(src: Path = PRIOR_SRC, smooth: float = PRIOR_SMOOTH) -> dict:
+    """SAM 3D Body (camera frame, per frame) -> mamma/prior_3db.npz on the fit grid, world frame (see the module doc)."""
+    from .. import mamma_dyn as md
+    from . import candidates as C
+    from .holdout import load_fit
+    z = np.load(src, allow_pickle=True)
+    rows = json.loads(PRIOR_META.read_text())["frames"]
+    fi = np.asarray(z["frame_i"], int)
+    if [r["i"] for r in rows] != fi.tolist():
+        raise SystemExit(f"{src}: frame indices differ from {PRIOR_META}")
+    t_ref = C.frame_to_ref(REF, CAM, np.asarray(z["t"], float))   # 3DB rows carry phone 06's raw frames.json times
+    tr = md.load_tracks(REF_WORK, [CAM])[CAM]                      # sync-corrected clock (sync/offsets.json)
+    clock_err = float(np.abs(tr.t[fi] - t_ref).max())
+    if clock_err > 1e-6:
+        raise SystemExit(f"3DB frame times on the reference clock differ from the track's by {clock_err:.2e} s")
+    prep = json.loads((WORK / "mamma" / "prepare.json").read_text())
+    tg = np.asarray(prep["grid"]["t"], float)
+    k, ok = grid_index(t_ref, tg)
+    T = len(tg)
+    R, tv = tr.R[fi], tr.tvec[fi]
+    joints, conf = np.full((T, 2, 22, 3), np.nan), np.zeros((T, 2))
+    go, bp = np.zeros((T, 2, 3)), np.zeros((T, 2, 63))
+    checks = {}
+    for b, role in enumerate(ROLES):
+        Jc = np.asarray(z[f"{role}_joints"], float)[:, :22]
+        Jw = C.to_world(Jc, R, tv)
+        gcam = np.asarray(z[f"{role}_smplx_global_orient"], float)
+        gw = orient_to_world(gcam, R)
+        body = np.asarray(z[f"{role}_smplx_body_pose"], float)
+        # the converter's parameters must reproduce its joints (camera frame), and the world orientation the world joints
+        betas, transl = np.asarray(z[f"{role}_smplx_betas"], float), np.asarray(z[f"{role}_smplx_transl"], float)
+        fk_cam = _fk_joints(betas, gcam, body, transl)
+        fk_w = _fk_joints(betas, gw, body, np.zeros_like(transl))
+        checks[role] = {"fk_vs_joints_camera_mm_max": round(1e3 * float(np.abs(fk_cam - Jc).max()), 3),
+                        "fk_world_orient_vs_world_joints_rr_mm_max": round(1e3 * float(np.abs(
+                            (fk_w - fk_w[:, :1]) - (Jw - Jw[:, :1])).max()), 3)}
+        Jg = Jw[k]
+        rr = smooth_series(Jg - Jg[:, :1], smooth, ok)
+        joints[:, b] = np.where(ok[:, None, None], rr + Jg[:, :1], np.nan)
+        go[:, b] = smooth_rotvec(gw[k], smooth, ok)
+        bp[:, b] = smooth_rotvec(body[k].reshape(T, 21, 3), smooth, ok).reshape(T, 63)
+        conf[:, b] = np.where(ok, mask_conf(np.array([r["mask_px"][role] for r in rows], float))[k], 0.0)
+    # MAMMA's own camera of each grid frame (ma_cap, resampled to the grid instant) against the track's at the 3DB frame
+    seq = prep["sets"]["m06"]["seq"]
+    ce = np.load(WORK / "mamma" / "ma_cap" / seq / "gt" / f"cam{CAM}.npz")["cam_ext"]
+    checks["ma_cap_vs_track"] = {"R_max_abs_diff": float(np.abs(ce[ok, :3, :3] - tr.R[fi[k[ok]]]).max()),
+                                 "t_max_abs_diff_m": float(np.abs(ce[ok, :3, 3] - tr.tvec[fi[k[ok]]]).max())}
+    checks["clock_max_err_s"] = clock_err
+    checks["grid_dt_ms_max_used"] = round(1e3 * float(np.abs(t_ref[k[ok]] - tg[ok]).max()), 3)
+    np.savez_compressed(PRIOR_NPZ, joints=joints.astype(np.float32), conf=conf.astype(np.float32),
+                        global_orient=go.astype(np.float32), body_pose=bp.astype(np.float32), sigma_m=PRIOR_SIGMA_M,
+                        rotate=False, scale=True, t=tg, frame_i=np.where(ok, fi[k], -1), smooth_frames=smooth,
+                        source=str(src))
+    # diagnostic only (never an input): the prior itself against the 8-phone fit
+    diag = {}
+    for b, role in enumerate(ROLES):
+        ref = load_fit(REF_WORK / "smplx", role)
+        s = C.score_arrays(tg[ok], joints[ok, b], "world", ref["t"], ref["joints"], WINDOW)
+        diag[role] = {m: round(s[m]["median"], 1) for m in ("pa22_mm", "rr_mm", "pelvis_mm", "limb_deg", "accel_rr",
+                                                            "accel_rr_ref")}
+    rep = {"T": T, "frames_with_prior": int(ok.sum()), "missing_grid_frames": np.flatnonzero(~ok).tolist(),
+           "source": str(src), "smooth_frames": smooth, "sigma_m": PRIOR_SIGMA_M,
+           "conf_mean": {r: round(float(conf[ok, b].mean()), 3) for b, r in enumerate(ROLES)},
+           "conf_below_0.5": {r: int((conf[ok, b] < 0.5).sum()) for b, r in enumerate(ROLES)},
+           "checks": checks, "prior_vs_reference (diagnostic only)": diag}
+    (WORK / "mamma" / "prior_3db.json").write_text(json.dumps(rep, indent=1))
+    # the control: the prior on its own (3DB smoothed over time, nothing from MAMMA) as a candidate of its own
+    for b, role in enumerate(ROLES):
+        C.save(REF, "sam3d_body_smooth", role, tg[ok], joints[ok, b], "world",
+               {"method": f"SAM 3D Body (candidate sam3d_body) in the world frame, root-relative joints smoothed over time "
+                          f"(Gaussian sigma {smooth:g} frames): the prior of mamma_mono06_3db on its own (a control)",
+                "input_cam": CAM, "source": str(PRIOR_NPZ), "cost_usd": 0.0,
+                "time": "fit grid instants (reference seconds); each takes the 3DB frame within 5 ms"})
+    log(f"prior-3db -> {PRIOR_NPZ}: {json.dumps(rep)}")
+    return rep
+
+
+def configs_3db() -> dict:
+    """mamma/ma3d_config_<tag>.yaml (fit B's config + pose_prior_loss) and sets <tag> in prepare.json."""
+    import yaml
+    root = WORK / "mamma"
+    prep = json.loads((root / "prepare.json").read_text())
+    base_name = prep["config"]
+    base = yaml.safe_load((root / base_name).read_text())
+    todo = {**{t: w for t, (w, _) in PRIOR_VARIANTS.items()}, PRIOR_SMOKE: PRIOR_VARIANTS["3db"][0]}
+    for tag, w in todo.items():
+        cfg = copy.deepcopy(base)
+        for run in PRIOR_RUNS:
+            cfg["optim"][run]["losses"]["pose_prior_loss"] = {"weight": float(w)}
+            if tag == PRIOR_SMOKE:
+                cfg["optim"][run]["num_iters"] = 2
+        fn = f"ma3d_config_{tag}.yaml"
+        (root / fn).write_text(f"# dancecap mono4d.cand_fitb: {base_name} + pose_prior_loss weight {w:g} in "
+                               f"{', '.join(PRIOR_RUNS)}{' (SMOKE: 2 iterations a stage)' if tag == PRIOR_SMOKE else ''} "
+                               "(generated, do not edit)\n" + yaml.safe_dump(cfg, sort_keys=False), newline="\n")
+        prep["sets"][tag] = {**{k: v for k, v in prep["sets"]["m06"].items() if k != "config"}, "config": fn,
+                             "pose_prior": {"weight": float(w), "npz": PRIOR_NPZ.name,
+                                            "candidate": PRIOR_VARIANTS.get(tag, (None, None))[1]}}
+    (root / "prepare.json").write_text(json.dumps(prep, indent=1))
+    log(f"configs-3db: sets {list(todo)} -> {root}")
+    return {t: prep["sets"][t]["config"] for t in todo}
+
+
+def job_3db(max_minutes: float = 55) -> Path:
+    w = f"dancecap/work/{TAKE}"
+    pw = f"{POD_WS}/{w}"
+    prep = json.loads((WORK / "mamma" / "prepare.json").read_text())
+    seq = prep["sets"]["m06"]["seq"]
+    tags = list(PRIOR_VARIANTS)
+    if any(prep["sets"].get(t, {}).get("seq") != seq for t in tags + [PRIOR_SMOKE]):
+        raise SystemExit("run configs-3db first")
+    fit = f"python -m dancecap mamma fit {TAKE} --tag"
+    lg = f"{pw}/mamma/logs"
+    # the three weights share the GPU (fit B peaked at 1.5 GiB on an 80 GB card). Measured in session
+    # 20261019-193207-batch: no gain (stages 1-3 at 3x fit B's time per iteration, the SDF stage at 6-7x), and the
+    # slowest weight missed the timeout - for a rerun, run the fits one after another or on separate pods
+    par = (f"mkdir -p {lg}; for t in {' '.join(tags)}; do ({fit} $t > {lg}/fit_$t.out 2>&1; echo $? > {lg}/fit_$t.rc) & "
+           f"sleep 20; done; wait; bad=0; for t in {' '.join(tags)}; do rc=$(cat {lg}/fit_$t.rc 2>/dev/null); "
+           f"echo \"[3db] fit $t rc=$rc\"; tail -n 4 {lg}/fit_$t.out; [ \"$rc\" = 0 ] || bad=1; done; exit $bad")
+    d = {"schema": "dancecap.pod_job/1", "name": "cand_fitb_3db", "take": TAKE, "max_minutes": max_minutes, "needs": ["mamma"],
+         "inputs": [f"{w}/mamma/prepare.json", f"{w}/mamma/mono_init.npz", f"{w}/mamma/stature.json",
+                    f"{w}/mamma/{PRIOR_NPZ.name}"]
+                   + [f"{w}/mamma/{prep['sets'][t]['config']}" for t in tags + [PRIOR_SMOKE]]
+                   + [f"{w}/mamma/ma_2d/{seq}/", f"{w}/mamma/ma_cap/{seq}/"],
+         "env": {"DANCECAP_POD": "1", "PYOPENGL_PLATFORM": "egl", "MAMMA_MONO": "1",
+                 "MAMMA_MONO_INIT": f"{pw}/mamma/mono_init.npz", "MAMMA_STATURE": f"{pw}/mamma/stature.json",
+                 "MAMMA_POSE_PRIOR": f"{pw}/mamma/{PRIOR_NPZ.name}",
+                 "DANCECAP_GPU_SHARED": "1"},  # side by side on the pod GPU (dancecap.gpu.exclusive would serialise them)
+         "cwd": "dancecap",
+         "exclude": ["dancecap/work/runpod/pywheels",
+                     "mamma/data/body_models/smplx_locked_head/smplx/SMPLX_MALE.npz",
+                     "mamma/data/body_models/smplx_locked_head/smplx/SMPLX_FEMALE.npz"],
+         "setup": ["for g in MALE FEMALE; do ln -sf SMPLX_NEUTRAL.npz "
+                   f"{POD_WS}/mamma/data/body_models/smplx_locked_head/smplx/SMPLX_$g.npz; done; "
+                   "nvidia-smi --query-gpu=name,memory.total --format=csv"],
+         "commands": [{"name": "fit_smoke", "cmd": f"{fit} {PRIOR_SMOKE}", "timeout_min": 10},
+                      {"name": "fit_3db_parallel", "cmd": par, "timeout_min": 42}],
+         "outputs": [f"{w}/mamma/fits/", f"{w}/mamma/logs/"],
+         "verify": [f"{w}/mamma/fits/{t}/{f}" for t in tags for f in ("fit.json", "smplx/lead.npz", "smplx/follow.npz")],
+         "after_download": ["python -m dancecap.mono4d.cand_fitb import-3db --session <sid>"],
+         "notes": ["mono4d fit B + SAM 3D Body prior: MAMMA_MONO=1 single-camera ma_3d of phone 06, 58-62 s, with "
+                   "pose_prior_loss (mamma-turing utils/mono.py, MAMMA_POSE_PRIOR) at weights "
+                   + ", ".join(f"{t}={w:g}" for t, (w, _) in PRIOR_VARIANTS.items()) + "; '3db' is pre-registered",
+                   "the prior: SAM 3D Body's own per-frame SMPL-X (candidate sam3d_body) moved to the world with phone "
+                   "06's track; no multi-view data enters except the camera track and sync, exactly as for fit B",
+                   f"{PRIOR_SMOKE}: 2 iterations a stage, a crash check before the three 15-min fits"]}
+    JOB_DIR.mkdir(parents=True, exist_ok=True)
+    p = JOB_DIR / "pod_job_3db.json"
+    p.write_text(json.dumps(d, indent=1), newline="\n")
+    log(f"pod job -> {p}")
+    return p
+
+
+def _mamma_version() -> str:
+    from .. import env
+    root = env.mamma_root()
+    try:
+        h = subprocess.run(["git", "-C", str(root), "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
+        dirty = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--", "optimization"], capture_output=True,
+                               text=True).stdout.strip()
+        return f"mamma-turing {h}{' + uncommitted changes' if dirty else ''} (turing-dynamic-cams)"
+    except OSError:
+        return "mamma-turing (version unknown)"
+
+
+def import_3db(sid: str | None = None, score: bool = True) -> dict:
+    from .candidates import score as cscore
+    prior = json.loads((WORK / "mamma" / "prior_3db.json").read_text())
+    out = {}
+    for tag, (w, name) in PRIOR_VARIANTS.items():
+        d = WORK / "mamma" / "fits" / tag
+        if not (d / "fit.json").exists():
+            log(f"{tag}: no fit ({d}) - {name} not imported")
+            out[name] = {"missing": str(d)}
+            continue
+        extra = {"method": f"MAMMA ma_3d single-camera mode (MAMMA_MONO=1) on phone 06 alone + SAM 3D Body as a per-frame 3D "
+                           f"pose prior (pose_prior_loss weight {w:g} in all four stages; prior also the starting pose)",
+                 "version": _mamma_version() + "; dancecap mamma_dyn MA3D_MONO_OVERRIDES + cand_fitb configs-3db",
+                 "variant": tag, "prior_weight": w, "pre_registered": tag == "3db",
+                 "prior": {"source": prior["source"], "smooth_frames": prior["smooth_frames"], "sigma_m": prior["sigma_m"],
+                           "loss": "Geman-McClure on root-relative world joints (21 below the pelvis), per-frame scale of "
+                                   "the prior fitted without gradient, no rotation alignment; conf = visible mask area",
+                           "frames_with_prior": prior["frames_with_prior"], "checks": prior["checks"]},
+                 "inputs": "fit B's inputs (ma_2d 512 landmarks of phone 06, camera track 06, ankle-ray pelvis start, the "
+                           "owner's statures) + SAM 3D Body's per-frame SMPL-X of phone 06 (our masks + K)",
+                 "run_note": "session 20261019-193207-batch: the three weights ran side by side on one A100; its SDF "
+                             "stage ran at ~65-70 s/iteration, so 3db_w8 (which could not finish inside the command "
+                             "timeout) was killed by hand on the pod: fit_3db_parallel rc 1 is that kill; 3db and "
+                             "3db_w05 finished with rc 0. Cost and minutes are the whole session (both weights)"}
+        import_fit(tag, name, sid, extra)
+        out[name] = cscore(REF, name, WINDOW)["roles"] if score else {}
+    (WORK / "mamma" / "import_3db.json").write_text(json.dumps(out, indent=1, default=str))
+    return out
+
+
+def audit_3db(names: list[str] | None = None) -> dict:
+    """Independent checks of the 3db candidates (and the prior, fit B, sam3d_body for comparison): left/right and role
+    swaps must score far worse than the candidate as saved; PA-MPJPE over time shifts of -2..+2 frames must be lowest at 0;
+    limb lengths against the reference; the clock check; a re-score with an own Procrustes."""
+    from . import candidates as C
+    from .holdout import load_fit, match_times
+    names = names or ["mamma_mono06", "sam3d_body"] + [n for _, n in PRIOR_VARIANTS.values()]
+    refs = {r: load_fit(REF_WORK / "smplx", r) for r in ROLES}
+    swap = list(range(22))
+    for a, b in LR_PAIRS:
+        swap[a], swap[b] = b, a
+    limbs = [(1, 4), (4, 7), (2, 5), (5, 8), (16, 18), (18, 20), (17, 19), (19, 21)]
+
+    def pa(A, B):
+        A, B = A - A.mean(0), B - B.mean(0)
+        U, S, Vt = np.linalg.svd(A.T @ B)
+        dd = np.sign(np.linalg.det(U @ Vt))
+        Rm = U @ np.diag([1, 1, dd]) @ Vt
+        s = (S * [1, 1, dd]).sum() / (A ** 2).sum()
+        return 1e3 * np.linalg.norm(s * A @ Rm - B, axis=-1).mean()
+
+    def world(name, role):
+        d = C.cand_dir(REF, name)
+        z = np.load(d / f"{role}.npz", allow_pickle=True)
+        t, J = np.asarray(z["t"], float), np.asarray(z["joints"], float)[:, :22]
+        if str(z["frame"]) == "camera":
+            from .. import mamma_dyn as md
+            tr = md.load_tracks(REF_WORK, [CAM])[CAM]
+            kk = np.array([int(np.argmin(np.abs(tr.t - x))) for x in t])
+            J = C.to_world(J, tr.R[kk], tr.tvec[kk])
+        return t, J
+
+    out = {}
+    for name in names:
+        if not (C.cand_dir(REF, name) / "lead.npz").exists():
+            continue
+        res = {}
+        for role in ROLES:
+            t, J = world(name, role)
+            ref = refs[role]
+            other = refs["follow" if role == "lead" else "lead"]
+            win = (t >= WINDOW[0] - 0.02) & (t <= WINDOW[1] + 0.02)
+            t, J = t[win], J[win]
+            ir, it = match_times(ref["t"], t)
+            R = ref["joints"][ir][:, :22]
+            A = J[it]
+            rr = lambda X, Y: float(np.median(1e3 * np.linalg.norm((X - X[:, :1]) - (Y - Y[:, :1]), axis=-1).mean(-1)))  # noqa: E731
+            shifts = {}
+            for sh in (-2, -1, 0, 1, 2):
+                i2, t2 = match_times(ref["t"], t + sh / 30.0)
+                shifts[sh] = round(float(np.median([pa(J[b], ref["joints"][a][:22]) for a, b in zip(i2, t2)])), 1)
+            io, ito = match_times(other["t"], t)
+            ratio = [float(np.median(np.linalg.norm(A[:, c] - A[:, p], axis=-1) / np.linalg.norm(R[:, c] - R[:, p], axis=-1)))
+                     for p, c in limbs]
+            res[role] = {"frames": int(len(it)), "clock": C.clock_check(REF, CAM, t, ref_grid=ref["t"]).get("clock"),
+                         "pa22_own_mm": round(float(np.median([pa(a, b) for a, b in zip(A, R)])), 1),
+                         "rr_mm": round(rr(A, R), 1), "rr_lr_swapped_mm": round(rr(A[:, swap], R), 1),
+                         "rr_vs_partner_mm": round(rr(J[ito], other["joints"][io][:, :22]), 1),
+                         "pa22_by_shift_frames": shifts, "best_shift_frames": min(shifts, key=shifts.get),
+                         "limb_length_ratio_median": round(float(np.median(ratio)), 3),
+                         "limb_length_ratio_range": [round(min(ratio), 3), round(max(ratio), 3)]}
+        out[name] = res
+    p = WORK / "mamma" / "audit_3db.json"
+    p.write_text(json.dumps(out, indent=1))
+    log(f"audit -> {p}")
+    return out
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="python -m dancecap.mono4d.cand_fitb", description=__doc__.split("\n")[0])
-    ap.add_argument("cmd", choices=("derive", "prepare-cmd", "check", "mono-init", "pin", "job", "import"))
+    ap.add_argument("cmd", choices=("derive", "prepare-cmd", "check", "mono-init", "pin", "job", "import",
+                                    "prior-3db", "configs-3db", "job-3db", "import-3db", "audit-3db"))
     ap.add_argument("--tag", default="m06")
     ap.add_argument("--name", default="mamma_mono06")
     ap.add_argument("--session")
+    ap.add_argument("--smooth", type=float, default=PRIOR_SMOOTH, help="prior-3db: Gaussian sigma (frames)")
     a = ap.parse_args(argv)
-    if a.cmd == "derive":
+    if a.cmd == "prior-3db":
+        prior_3db(smooth=a.smooth)
+    elif a.cmd == "configs-3db":
+        print(json.dumps(configs_3db(), indent=1))
+    elif a.cmd == "job-3db":
+        print(job_3db())
+    elif a.cmd == "import-3db":
+        print(json.dumps(import_3db(a.session), indent=1, default=str))
+    elif a.cmd == "audit-3db":
+        print(json.dumps(audit_3db(), indent=1))
+    elif a.cmd == "derive":
         derive()
     elif a.cmd == "prepare-cmd":
         print(prepare_cmd())
