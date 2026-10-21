@@ -19,6 +19,13 @@ StreamingAssets/<capture>/splats/<role>.json      JSON header: everything else (
 ```
 `<role>` is `lead` or `follow`. The `.json` names its `.splatav` (`"data"`) and carries its byte size and SHA-256.
 
+**Named sets (Quest only, 2026-10-21).** A capture may also carry compact sets of the same avatars in sub-folders,
+`splats/<set>/<role>.splatav + <role>.json` (e.g. `splats/quest_25k/`), written by `dancecap/mono4d/quest_distill.py`
+(section 10). They are complete files of THIS format (same version, record, skeleton, canonical pose, hair binding), only
+fewer Gaussians; the JSON adds a `quest_distill` block. The viewer reads them only when its Quest tier names the set
+(`quest_settings.json` `"splat_set"`, `-hmsplatset`; `SplatAvatarData.JsonPath(capture, role, set, out fromSet)`, falling
+back to `splats/<role>.json`); the PC and the full files never change.
+
 ## 2. Coordinates
 
 - Units: metres.
@@ -251,3 +258,31 @@ on every run, `79527210...`), from the unbound export `lhmpp/follow.splatav` and
   under her hair); inside her own torso capsules (r 8 cm about the spine) max 1,108 vs 45 rigid: hair the guides press
   onto her back, hidden inside the opaque body.
 
+
+## 10. Quest sets: distilled compact avatars (2026-10-21, `work/quest_distill/`)
+
+`python -m dancecap.mono4d.quest_distill prepare` (local: the full avatars of the recap and John & Lula + 32 poses per dancer
+sampled from `smplx_<role>.bin`, local rotations only) -> pod job `work/quest_distill/pod_job.json` (gsplat 1.5.3) -> `import`
+(writes `head-movement/Assets/StreamingAssets/<capture>/splats/quest_<N/1000>k/<role>.{splatav,json}`, git-ignored; the full
+`splats/<role>.*` are never touched). Why: on a Quest 3 the splat dancers are fill bound (head-movement `docs/SPLAT_DANCERS.md`
+"Quest": 2 x 160k = 5 fps at the floor edge), and thinning by opacity keeps the large Gaussians and loses arms and faces.
+
+- **Teacher** = the full file, canonical (zero) pose and posed by its own 4-joint LBS (section 4, pelvis at its rest joint,
+  quaternion blend). Renders: 512 x 512, random backgrounds, 100 canonical views (fibonacci sphere, 1.2-3.4 m body views, head and
+  upper-body close-ups) + 6 views for each of 24 training poses; 8 poses and 32 views held out.
+- **Student** = N Gaussians drawn without replacement with p ~ opacity x sqrt(sigma_mid sigma_max) x (1 + 4 x colour detail),
+  attributes copied, scales widened to the neighbour spacing; Adam on means / log scales / rotations / colours / opacity logits,
+  4000 steps of 4 views: 0.8 L1 + 0.2 (1 - SSIM) + 0.5 alpha L1 + 0.02 x fill (the Quest renderer's fragment count relative to the
+  teacher's: per Gaussian 8 min(ln(alpha / (1/255)), 4) sqrt(det Sigma_2D) px^2, net.kleinbeck.gaussians' opacity-aware quad) +
+  0.05 x max-scale penalty (sigma above 12 / 16 / 20 mm for 40k / 25k / 15k); dead Gaussians (opacity < 0.02) relocated every 300
+  steps for the first 70 %.
+- **Skinning / hair transferred**: joints + weights = the top 4 of the inverse-distance blend of the 6 nearest teacher Gaussians'
+  weights (re-done every 250 steps and at the end); `hair` = the nearest teacher Gaussian's; a hair Gaussian whose nearest teacher
+  Gaussian is bound takes its `strand` / `segment` and gets `local_offset` / `local_rotation` recomputed from its own centre and
+  rotation in the rest segment frame (section 6). The JSON is the teacher's with `count`, `data_*`, `hair_count`, `stats`,
+  `hair.binding_info.bound` updated and a `quest_distill` block (teacher SHA-256, steps, caps, scores, the thinned baseline).
+- **Scores** (held-out views vs the teacher, dancer crop over grey; LPIPS alex): quest_25k 41.6-44.9 dB, LPIPS 0.010-0.017, 5-7 %
+  of the teacher's fragments; quest_15k 39.4-43.5 dB, 0.012-0.026; quest_40k 42.8-45.7 dB, 0.008-0.013. The viewer's load-time
+  thinning at the same counts: 17.6-24.8 dB, LPIPS 0.24-0.38 (all numbers in head-movement `docs/SPLAT_DANCERS.md` "Quest";
+  `pod_out/distill_report.json`). Bound hair Gaussians (recap follow): 1057 / 636 / 379 of 3070 / 1860 / 1110 hair.
+- Pod session `20261021-022537-batch`: A40, 1002 s of fitting for 12 sets, pod lifetime 20 min, $0.20.
