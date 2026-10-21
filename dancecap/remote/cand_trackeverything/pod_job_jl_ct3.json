@@ -1,0 +1,38 @@
+{
+ "schema": "dancecap.pod_job/1",
+ "name": "jl_trackeverything_stage0_ct3",
+ "take": "john_lula",
+ "max_minutes": 20,
+ "needs": [],
+ "inputs": [
+  "dancecap/work/john_lula/realism/trackeverything/input/"
+ ],
+ "exclude": [
+  "dancecap/work/runpod/pywheels",
+  "dancecap/work/runpod/wheelhouse",
+  "mamma-turing"
+ ],
+ "env": {
+  "TQDM_DISABLE": "1"
+ },
+ "commands": [
+  {
+   "name": "ct3",
+   "timeout_min": 14,
+   "cmd": "python remote/cand_trackeverything/ct3_pod.py --input work/john_lula/realism/trackeverything/input --out work/john_lula/realism/trackeverything/pod_out"
+  }
+ ],
+ "outputs": [
+  "dancecap/work/john_lula/realism/trackeverything/pod_out/"
+ ],
+ "verify": [
+  "dancecap/work/john_lula/realism/trackeverything/pod_out/ct3_pod.json"
+ ],
+ "after_download": [
+  "python -m dancecap.mono4d.jl_trackeverything analyze",
+  "python -m dancecap.mono4d.jl_trackeverything sheets"
+ ],
+ "notes": [
+  "TrackEverything test, STAGE 0 (the katefgroup/TrackEverything HF gate is not accepted on the pods' token): CoTracker3 offline (co-tracker @ 82e02e8, public facebook/cotracker3 scaled_offline.pth) on john_lula frames 450-674 (15.00-22.47 s) with RTMW foot queries re-seeded every 4 frames + 64 torso queries per dancer at 16.3 / 18.7 / 20.4 s; arms 384x512 squash, native 536x960 cut at the zoom switch (frame 543), native uncut. Likeness frames go to our own pod only (owner consent 2026-10-19); outputs are track arrays only."
+ ]
+}
