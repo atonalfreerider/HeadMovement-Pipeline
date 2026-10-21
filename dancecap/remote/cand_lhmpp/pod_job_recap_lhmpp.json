@@ -1,0 +1,51 @@
+{
+ "schema": "dancecap.pod_job/1",
+ "name": "recap_lhmpp",
+ "take": "larissa_kadu_recap",
+ "max_minutes": 40.0,
+ "needs": [],
+ "inputs": [
+  "dancecap/work/larissa_kadu_recap/lhmpp/input/"
+ ],
+ "exclude": [
+  "dancecap/work/runpod/pywheels",
+  "dancecap/work/runpod/wheelhouse",
+  "mamma-turing"
+ ],
+ "env": {
+  "LHMPP_COMMIT": "906b5d9fb967ab42efb92f6fa55bf22cac86b653",
+  "LHMPP_ROOT": "/workspace/lhmpp_cand/LHM-plusplus",
+  "LHMPP_VENV": "/workspace/lhmpp_cand/venv",
+  "LHMPP_MODEL": "LHMPP-700M-PixelShuffle",
+  "TORCH_HOME": "/workspace/lhmpp_cand/torch_home",
+  "HF_HOME": "/workspace/lhmpp_cand/hf_home"
+ },
+ "commands": [
+  {
+   "name": "install",
+   "timeout_min": 25,
+   "cmd": "bash remote/cand_lhmpp/install.sh"
+  },
+  {
+   "name": "build",
+   "timeout_min": 25,
+   "cmd": "/workspace/lhmpp_cand/venv/bin/python remote/cand_lhmpp/recap_lhmpp_pod.py --input work/larissa_kadu_recap/lhmpp/input --out work/larissa_kadu_recap/lhmpp/pod_out --renders work/larissa_kadu_recap/lhmpp/renders"
+  }
+ ],
+ "outputs": [
+  "dancecap/work/larissa_kadu_recap/lhmpp/pod_out/",
+  "dancecap/work/larissa_kadu_recap/lhmpp/renders/"
+ ],
+ "verify": [
+  "dancecap/work/larissa_kadu_recap/lhmpp/pod_out/recap_lhmpp_pod.json",
+  "dancecap/work/larissa_kadu_recap/lhmpp/pod_out/export/lead_export.npz",
+  "dancecap/work/larissa_kadu_recap/lhmpp/pod_out/export/follow_export.npz",
+  "dancecap/work/larissa_kadu_recap/lhmpp/pod_out/a2.json"
+ ],
+ "after_download": [
+  "python -m dancecap.mono4d.recap_splatav import --session <sid>"
+ ],
+ "notes": [
+  "LHM++ (LHMPP-700M-PixelShuffle @ 906b5d9, CC BY-NC 4.0 weights) avatars of Kadu (lead) and Larissa (follow) in their class-recap clothes from 12 crops each of 5-6 recap phones, shape ref (recap fit betas[:10]); export of the canonical zero-pose Gaussians + LHM++'s own LBS weights (SPLAT_AVATAR_FORMAT.md), the A2 check (LHM++ animation vs our plain LBS) on phones 01 / 06, and a 10 s preview on phones 01 / 06; weights stay on the pod; crops go to our own pod only (owner consent 2026-10-19)"
+ ]
+}

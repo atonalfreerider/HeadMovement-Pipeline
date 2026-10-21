@@ -236,3 +236,43 @@ vertical recording. when avatars are in view, we need to set to 75% transparency
   the free time is not enough, body / feet / path / timing zooms (then the axis ones, then the first body zooms) hand their call to a phone with the arrow
   (`zoom_to_phone`); the physics views never do. Shots stay 3-6.8 s and end at the speech's pauses; the bad stretches and the teachers-in-frame crops of D2 are
   unchanged. Export the clips after a plan change: `python -m dancecap.recap_pov clips` (then `camera_video --install-only` when the editor owns the capture folder).
+
+## The film with the LHM++ splat dancers (2026-10-20)
+
+Owner: "I need the larissa kadu recap to look LHM++ quality with swinging hair". The same direction, captions, soundtrack and recorder; the
+dancers are the skinned LHM++ Gaussian avatars (`Assets/StreamingAssets/06_LarissaKaduRecap/splats/`, SPLAT_AVATAR_FORMAT.md) with the
+follower's hair on the Unity hair simulation (head-movement `docs/SPLAT_DANCERS.md`). Record it with the viewer toggle on for the editor
+session (Play mode: `unity command hm_splatdancers --action on`, leave Play mode, then `unity command hm_film --action record --aspect
+vertical --capture 06_LarissaKaduRecap`; the editor must run on D3D12: `-force-d3d12`). The splats are opaque (the direction's
+`avatar_opacity` 0.25 is not applied to them); what showed THROUGH the 75 %-transparent avatars is drawn over the splats instead
+(`hm_splatdancers --action skeleton --mode physics`, the default): in the physics view the load-coloured skeleton, the spine beads, the
+balance axes and the COM spheres; in every view the hand-contact lights; seen from above the floor craft (the leader's T). Elsewhere the
+skeleton lines are off while the splats show (clean photoreal bodies); on the phones' video nothing changed. Renders (git-ignored, likeness
+data): `head-movement/Recordings/06_LarissaKaduRecap_vertical_2026-10-20.mp4` and `..._horizontal_2026-10-20.mp4` (both PASS, A/V 0.0 ms);
+the avatar film `06_LarissaKaduRecap_vertical_2026-10-11b.mp4` is unchanged. Review material: `work/larissa_kadu_recap/splat_film/`.
+
+Fixes after the review of those two films (2026-10-21, `work/larissa_kadu_recap/film/splats_fix/`; the 10-20 films are kept):
+- the splats fade into and out of the phone's video at the five flights with the avatars' factor (before: both bodies for 9 frames,
+  then gone on one frame; back at full opacity on the way out); the caption backing (0.85, it also covers the speaker tag) and the
+  chapter card backing (0.9) are darker while splats show; frames stay in film order in the recording (two neighbouring frames
+  were swapped 6-7 times per splat film - the Movie Recorder's readback callbacks on D3D12, not the phone video);
+- the recorder's AAC track has a burst at film 56.876 s (NOTES_R10): with the splat dancers on, `hm_film record` now replaces it
+  after its checks with `python -m dancecap.film_audiofix <name>.mp4 --mix film/audio/<direction>_mix.wav --start <s>` (video
+  stream copied, the mix as AAC 192k padded to the video length, verified: video md5, A/V sync in up to 30 windows, loudness vs
+  the mix, true peak, no burst; the recorder's file kept as `<name>_rawaudio.mp4`; a section in the .report.md, "audio_fix" in
+  the .report.json). It can be run by hand on any recording (rerunning reads the kept raw file). On a copy of the 10-20 vertical
+  film: -16.0 LUFS, true peak -1.3 dBTP, 0.0 ms in 30 windows, the raw track's burst found at 56.860-56.900 s (peak 199.6).
+- re-record both films the same way (splat dancers on in Play mode, then `unity command hm_film --action record --aspect vertical
+  --capture 06_LarissaKaduRecap` and the same with `--aspect horizontal`; defaults `--readback auto --audiofix auto`); a full film
+  now renders at about 16 frames/s (about 12 min).
+
+Final splat films (re-recorded 2026-10-20 22:00-22:15 local with these fixes, splat dancers + swinging hair on, D3D12, nothing else
+running): `head-movement/Recordings/06_LarissaKaduRecap_vertical_2026-10-20_final.mp4` and `..._horizontal_2026-10-20_final.mp4`
+(renamed from the recorder's `_2026-10-20_2`; reports, audiofix json/log and the recorder's raw file `..._final_rawaudio.mp4` beside
+them; the first 10-20 versions and the 10-11 avatar films are kept). Both: 11032 frames = 367.733 s x 30, 1080x1920 / 1920x1080,
+ordered readback (at most 1 frame pending, 0 timeouts), about 28 frames/s (6.5 min each). Checked independently
+(`work/larissa_kadu_recap/film/splats_final/`, `tools/verify_film.py`): recorded track and final track 0.0 ms against the mix at 14
+points; final track -16.0 LUFS / -1.3 dBTP like the mix, no 10 ms block departs from the mix by more than 0.12 (the raw track's
+burst at 56.88 s is gone); every frame of the 45 phone shots (5964 frames) in film order against the avatar film (0 flagged) while
+the same test finds the 10-20 splat films' swaps (vertical 7 pairs, horizontal 9 pairs); the five flights cross-dissolve and the
+captions have the dark backing (sheets in `splats_final/sheets/`).
