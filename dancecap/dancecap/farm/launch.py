@@ -333,7 +333,19 @@ def plan_launch(dance: str, a, pol: Wt.Policy, backend) -> dict:
             "note": "estimates use A100 minutes x slowdown (RTX 4090 measured 2026-10-08: 900 frames fit in 16.1 min vs 39 min modelled on an A100)"}
 
 
+def _monitor_up(a, what: str) -> None:
+    """The dashboard (the defrag view) runs whenever the farm works (owner 2026-10-21). Never fatal."""
+    if getattr(a, "dry_run", False):
+        return
+    try:
+        from ..pipeline import monitor
+        monitor.ensure_running(f"farm {what} {a.dance}")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def cmd_launch(a) -> int:
+    _monitor_up(a, "launch")
     dance = a.dance
     backend = backend_for(dance)
     base = Wt.Policy.load(dance)
@@ -409,6 +421,7 @@ def cmd_up(a) -> int:
     """plan -> queue (code + world + inputs uploaded, hash-diffed) -> launch -> watcher. --dry-run changes nothing and prints the
     plan, the queue and the launch estimate."""
     from . import cli
+    _monitor_up(a, "up")
     dance = a.dance
     backend = backend_for(dance)
     base = Wt.Policy.load(dance)

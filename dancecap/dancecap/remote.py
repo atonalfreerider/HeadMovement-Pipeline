@@ -21,6 +21,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -43,6 +44,21 @@ DEFAULT_CAP = 106.7  # J3b 2026-10-11: spent 78.60 + (balance 36.18 - 8) = 106.7
 GPU_PREFERENCE = ["NVIDIA A100-SXM4-80GB", "NVIDIA A100 80GB PCIe", "NVIDIA H100 80GB HBM3", "NVIDIA H100 NVL",
                   "NVIDIA H100 PCIe"]
 CLOUDS = ["COMMUNITY", "SECURE"]  # community is cheaper; secure when no community host with a public IP is free
+# GPUs by memory, fastest first for this workload (owner 2026-10-21: speed over cost). Measured: a 4090 fits MAMMA 2.4x faster
+# than an A100 (farm drill). Blackwell cards (RTX 5090, RTX PRO) are left out: the bootstrap's torch 2.5.1 / cu124 has no
+# sm_120 kernels. A job declares "min_vram_gb" to get this wider list instead of the 80 GB GPU_PREFERENCE.
+GPU_LADDER = [("NVIDIA GeForce RTX 4090", 24), ("NVIDIA L40S", 48), ("NVIDIA RTX 6000 Ada Generation", 48), ("NVIDIA L40", 48),
+              ("NVIDIA A100-SXM4-80GB", 80), ("NVIDIA A100 80GB PCIe", 80), ("NVIDIA H100 PCIe", 80),
+              ("NVIDIA H100 80GB HBM3", 80), ("NVIDIA A40", 48), ("NVIDIA RTX A6000", 48), ("NVIDIA GeForce RTX 3090", 24)]
+
+
+def gpus_for(min_vram: list) -> list[str] | None:
+    """The GPU list for a batch whose every job declares min_vram_gb (the largest wins); None = GPU_PREFERENCE."""
+    vals = [float(v) for v in min_vram if v is not None]
+    if not min_vram or len(vals) != len(min_vram):
+        return None
+    need = max(vals)
+    return [g for g, gb in GPU_LADDER if gb >= need] or None
 DEFAULT_IMAGE = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
 
 
@@ -135,6 +151,46 @@ def balance_cap(max_age: float = BALANCE_TTL_S) -> float | None:
             return None
     _balance_memo.update(ts=now, cap=c)
     return c
+
+
+CAP_IN_USE = PACKAGE_ROOT / "work" / "runpod" / "cap_in_use.json"
+CAP_IN_USE_FRESH_S = 3 * 24 * 3600
+
+
+def record_cap_in_use(sid: str | None = None) -> None:
+    """`remote run` writes the cap it enforces (DANCECAP_RUNPOD_CAP of the workflow that started it), so a process started
+    without that environment (the monitor) can SHOW the same cap. Display only: cap() and every budget gate still read the
+    environment / the balance. Never fatal."""
+    try:
+        env = os.environ.get("DANCECAP_RUNPOD_CAP", "").strip()
+        src = "env" if env and env.lower() != "balance" else ("balance" if balance_cap() is not None else "default")
+        CAP_IN_USE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = CAP_IN_USE.with_name(f"{CAP_IN_USE.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps({"cap": cap(), "source": src, "ts": time.time(), "sid": sid, "pid": os.getpid()}))
+        os.replace(tmp, CAP_IN_USE)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def effective_cap(now: float | None = None) -> dict:
+    """{cap, source}: DANCECAP_RUNPOD_CAP of this process, else an explicit cap the last runner recorded (< 3 days old), else
+    the balance cap, else DEFAULT_CAP. For display (the monitor, progress_eta.budget); the runners' own gate is cap()."""
+    env = os.environ.get("DANCECAP_RUNPOD_CAP", "").strip()
+    if env and env.lower() != "balance":
+        return {"cap": cap(), "source": "DANCECAP_RUNPOD_CAP"}
+    now = time.time() if now is None else now
+    try:
+        d = json.loads(CAP_IN_USE.read_text())
+        # a runner that follows the balance recorded a value that is stale by now: read the balance instead
+        if float(d.get("cap") or 0) > 0 and now - float(d.get("ts") or 0) < CAP_IN_USE_FRESH_S and d.get("source") != "balance":
+            return {"cap": float(d["cap"]), "source": f"the last pod runner ({d.get('source')}, session {d.get('sid')})",
+                    "ts": d.get("ts")}
+    except (OSError, ValueError, TypeError):
+        pass
+    c = balance_cap()
+    if c is not None:
+        return {"cap": c, "source": f"the Runpod balance (spent + balance - ${BALANCE_RESERVE:.0f})"}
+    return {"cap": float(DEFAULT_CAP), "source": "remote.DEFAULT_CAP"}
 
 
 def ledger() -> list[dict]:
@@ -378,6 +434,99 @@ def _pod_ssh(pod_json: dict) -> tuple[str, int]:
     return host, int(port)
 
 
+# ---------------------------------------------------------------------------
+# broken hosts (2026-10-21): community host 60.249.37.148 failed with "CUDA unknown error" 6 times out of 6 in the
+# 2026-10-19..21 round, each try costing 3-11 min of wall time before the next one. Every new pod now gets a CUDA check
+# (nvidia-smi + one torch matmul) before anything is uploaded; a failing host is denied for a day (for good after 3
+# failures without a success), and a pod landing on a denied host is deleted at once.
+# ---------------------------------------------------------------------------
+
+BAD_HOSTS = PACKAGE_ROOT / "work" / "runpod" / "bad_hosts.json"
+KNOWN_BAD_HOSTS = {"60.249.37.148": {"fails": 6, "ok": 0, "reason": "CUDA unknown error, 6 of 6 sessions 2026-10-19..21 "
+                                                                   "(docs/PIPELINE_EFFICIENCY.md)"}}
+BAD_HOST_DENY_S = 24 * 3600
+PREFLIGHT_TIMEOUT_S = 150
+PREFLIGHT_CMD = ("nvidia-smi -L >/dev/null 2>&1 || { echo PREFLIGHT_NVSMI_FAIL; exit 3; }; "
+                 "if python -c 'import torch' 2>/dev/null; then python -c \"import torch; assert torch.cuda.is_available(), "
+                 "'cuda not available'; x = torch.randn(512, 512, device='cuda'); v = float((x @ x).sum()); "
+                 "print('PREFLIGHT_CUDA_OK', torch.cuda.get_device_name(0))\" || { echo PREFLIGHT_CUDA_FAIL; exit 4; }; fi; "
+                 "echo PREFLIGHT_OK")
+
+
+def bad_hosts() -> dict:
+    """{host: {fails, ok, last, deny_until, reason}} = the seed above merged with work/runpod/bad_hosts.json."""
+    out = {h: dict(v) for h, v in KNOWN_BAD_HOSTS.items()}
+    try:
+        d = json.loads(BAD_HOSTS.read_text())
+        for h, v in (d.get("hosts") or {}).items():
+            if isinstance(v, dict):
+                out[h] = {**out.get(h, {}), **v}
+    except (OSError, ValueError):
+        pass
+    return out
+
+
+def host_denied(host: str | None, now: float | None = None) -> str | None:
+    """Why `host` is denied now, or None."""
+    if not host:
+        return None
+    now = time.time() if now is None else now
+    v = bad_hosts().get(str(host))
+    if not v:
+        return None
+    if float(v.get("deny_until") or 0) > now:
+        return f"failed the CUDA check {v.get('fails', 1)} time(s), last {v.get('reason') or ''}".strip()
+    if int(v.get("fails") or 0) >= 3 and int(v.get("ok") or 0) == 0:
+        return f"{v.get('fails')} failures and no success: {v.get('reason') or 'broken host'}"
+    return None
+
+
+def note_host(host: str | None, ok: bool, reason: str = "") -> None:
+    """Count a CUDA check result for a host (the deny list learns). Never fatal."""
+    if not host:
+        return
+    try:
+        with ledger_lock():
+            try:
+                d = json.loads(BAD_HOSTS.read_text())
+            except (OSError, ValueError):
+                d = {}
+            hosts = d.setdefault("hosts", {})
+            v = hosts.setdefault(str(host), {"fails": 0, "ok": 0})
+            now = time.time()
+            if ok:
+                v["ok"] = int(v.get("ok") or 0) + 1
+                v.pop("deny_until", None)
+            else:
+                v["fails"] = int(v.get("fails") or 0) + 1
+                v["deny_until"] = now + BAD_HOST_DENY_S
+                v["reason"] = reason[:200]
+            v["last"] = now
+            BAD_HOSTS.parent.mkdir(parents=True, exist_ok=True)
+            tmp = BAD_HOSTS.with_name(f"{BAD_HOSTS.name}.{os.getpid()}.tmp")
+            tmp.write_text(json.dumps(d, indent=1))
+            os.replace(tmp, BAD_HOSTS)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def preflight(p: "Pod") -> tuple[bool, str]:
+    """(ok, detail): nvidia-smi and one CUDA matmul with the image's torch, before anything is uploaded. An ssh problem is
+    reported as ok=None-like (True, 'unchecked') so a slow sshd never condemns a host."""
+    try:
+        out = p.output(PREFLIGHT_CMD, timeout=PREFLIGHT_TIMEOUT_S)
+        lines = out.strip().splitlines() or ["ok"]
+        return True, next((x for x in lines if x.startswith("PREFLIGHT_CUDA_OK")), lines[-1])[:160]
+    except subprocess.TimeoutExpired:
+        return False, "CUDA check timed out"
+    except RuntimeError as e:
+        msg = str(e)
+        # Pod.output's message quotes the command (which names the PREFLIGHT_ markers): only the exit code tells
+        if re.search(r"pod command failed \((3|4)\)", msg):
+            return False, ("nvidia-smi failed" if "failed (3)" in msg else "CUDA failed") + ": " + msg[-160:]
+        return True, f"unchecked: {msg[-120:]}"
+
+
 @contextlib.contextmanager
 def pod_session(name: str, max_minutes: float, gpus: list[str] | None = None, image: str = DEFAULT_IMAGE,
                 disk_gb: int = 80, clouds: list[str] | None = None, start_timeout_min: float = 6,
@@ -426,29 +575,54 @@ def pod_session(name: str, max_minutes: float, gpus: list[str] | None = None, im
               f"for the container")
         try:
             pod = _wait_running(pod_id, start_timeout_min * 60)
+            why_bad = None
+            if pod:
+                host, port = _pod_ssh(pod)
+                denied = host_denied(host)
+                if denied:
+                    why_bad = f"host {host} is on the broken-host list ({denied})"
+                else:
+                    p = Pod(pod_id, name, gpu, cost, host, port)
+                    for _ in range(30):  # sshd answers before keys are installed
+                        try:
+                            if p.run("true", check=False, timeout=40) == 0:
+                                break
+                        except TimeoutError:
+                            pass
+                        time.sleep(5)
+                    ok, detail = preflight(p)
+                    if detail.startswith("unchecked") or not ok:
+                        print(f"[runpod] CUDA check on {host}: {detail}")
+                    if ok:
+                        if not detail.startswith("unchecked"):
+                            note_host(host, True)
+                            print(f"[runpod] CUDA check ok on {host}: {detail}")
+                    else:
+                        note_host(host, False, detail)
+                        why_bad = f"host {host} failed the CUDA check: {detail}"
         except BaseException:  # Ctrl-C / crash while waiting: never leave the pod behind
             _delete(pod_id, reason="interrupted while starting")
             raise
-        if pod:
+        if pod and not why_bad:
             break
+        if why_bad:
+            last_err = RuntimeError(why_bad)
+            print(f"[runpod] {why_bad}: deleting {pod_id} and trying the next option")
+            _delete(pod_id, reason=why_bad[:120])
+            pod = None
+            attempts += 1
+            if attempts >= max_start_attempts + 1:  # one extra try for a broken host
+                break
+            continue
         last_err = RuntimeError(f"{gpu} ({cloud}) not reachable over direct ssh in {start_timeout_min:.0f} min")
         _delete(pod_id, reason="not reachable over direct ssh")
         attempts += 1
         if attempts >= max_start_attempts:  # don't walk the whole GPU list paying for start-ups
             break
     if not pod:
-        raise RuntimeError(f"no 80 GB GPU pod could be started: {last_err}")
+        raise RuntimeError(f"no GPU pod could be started: {last_err}")
 
     try:
-        host, port = _pod_ssh(pod)
-        p = Pod(pod_id, name, gpu, cost, host, port)
-        for _ in range(30):  # sshd answers before keys are installed
-            try:
-                if p.run("true", check=False, timeout=40) == 0:
-                    break
-            except TimeoutError:
-                pass
-            time.sleep(5)
         # on-pod kill switch: Runpod injects a pod-scoped RUNPOD_API_KEY and runpodctl into pods. ssh sessions do
         # not always inherit the container environment, so take the two variables from PID 1.
         p.killswitch = arm_killswitch(p, max_minutes)

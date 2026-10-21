@@ -90,6 +90,12 @@ def _cmd_remote_jobs(a):
                                               "build_s")}, indent=1))
         print(json.dumps(rj.estimate_minutes(jobs, man["bytes"]), indent=1))
         return
+    if getattr(a, "parallel", False) and a.action == "run" and not a.session:
+        # independent job groups on separate pods at the same time (owner 2026-10-21: speed over cost)
+        res = rj.run_parallel(jobs, label="batch", max_cost=a.max_cost, gpus=a.gpus.split(",") if a.gpus else None,
+                              force=a.force, dry_run=a.dry_run, max_minutes=a.max_minutes, max_pods=a.max_pods)
+        print(json.dumps(res, indent=1, default=str))
+        return
     res = rj.run_session(jobs, sid=a.session, label=a.action if a.action == "validate" else "batch",
                          max_cost=a.max_cost, gpus=a.gpus.split(",") if a.gpus else None, force=a.force,
                          dry_run=a.dry_run, max_minutes=a.max_minutes)
@@ -522,6 +528,10 @@ def main(argv=None):
     sp.add_argument("--gpus", help="comma-separated Runpod GPU ids to try (default remote.GPU_PREFERENCE)")
     sp.add_argument("--force", action="store_true", help="re-run jobs already done in this session")
     sp.add_argument("--dry-run", action="store_true", help="build the bundle + estimate, no pod")
+    sp.add_argument("--parallel", action="store_true",
+                    help="run: independent jobs (no `after` link) on separate pods at the same time, one session each "
+                         "(--max-cost applies per session)")
+    sp.add_argument("--max-pods", type=int, default=6, help="--parallel: at most this many pods at once")
     sp.add_argument("--frames", type=int, default=180, help="validate: synthetic MAMMA grid frames")
     sp.set_defaults(fn=cmd_remote)
     sp = sub.add_parser("cameras", help="static-room SfM (ALIKED+LightGlue, COLMAP) + per-frame pose/zoom of every camera")

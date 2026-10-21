@@ -8,6 +8,8 @@ import { toast, errorText, openDialog, dialogOpen, closeAllDialogs } from "./com
 
 const VIEWS = {
   farm: "./views/farm.js",
+  analysis: "./views/analysis.js",
+  snapshots: "./views/snapshots.js",
   dashboard: "./views/dashboard.js",
   wizard: "./views/wizard.js",
   take: "./views/take.js",
@@ -27,6 +29,8 @@ export function parseRoute(hash) {
   if (!parts.length) return { name: "farm" };
   const [a, b, c, d] = parts;
   if (a === "farm") return { name: "farm", dance: b || null };
+  if (a === "analysis" && b) return { name: "analysis", run: b };
+  if (a === "snapshots") return { name: "snapshots", run: b || null };
   if (a === "legacy") return { name: "dashboard" };
   if (a === "new") return { name: "wizard" };
   if (a === "take" && b) {
@@ -42,7 +46,9 @@ export function parseRoute(hash) {
   return { name: "notfound" };
 }
 
-const routeKey = (r) => `${r.name}|${r.take || ""}|${r.sid || ""}`;
+const routeKey = (r) => `${r.name}|${r.take || ""}|${r.sid || ""}|${r.run || ""}`;
+// views that poll their own data and use the full width (no takes sidebar, no /api/state poll)
+const SELF_POLLING = new Set(["farm", "analysis", "snapshots"]);
 
 // ------------------------------------------------------------------------------------------------ app object
 
@@ -113,13 +119,13 @@ function renderTop() {
 
 function renderNav() {
   const r = app.route || {};
-  const active = { farm: "farm", dashboard: "legacy", take: "legacy", videos: "legacy", wizard: "legacy", runpod: "legacy",
+  const active = { farm: "farm", analysis: "farm", snapshots: "farm", dashboard: "legacy", take: "legacy", videos: "legacy", wizard: "legacy", runpod: "legacy",
     session: "legacy", runs: "legacy", logs: "legacy", settings: "settings" }[r.name];
   for (const a of el.nav.querySelectorAll("a")) a.classList.toggle("active", a.dataset.nav === active);
 }
 
 function renderAlerts() {
-  if (app.route && app.route.name === "farm") { el.alerts.hidden = true; return; }   // the farm view shows its own alerts
+  if (app.route && SELF_POLLING.has(app.route.name)) { el.alerts.hidden = true; return; }   // the farm view shows its own alerts
   const al = (app.state && app.state.alerts || []).filter((a) => !dismissed.has(a.id));
   if (!al.length) { el.alerts.hidden = true; replace(el.alerts); return; }
   el.alerts.hidden = false;
@@ -188,7 +194,7 @@ function reloadButton() {
 function renderStatus() {
   const st = app.state;
   const expired = !!staleReason;
-  if (app.route && app.route.name === "farm") {
+  if (app.route && SELF_POLLING.has(app.route.name)) {
     const m = app._mon || {};
     const updated = m.static_rev && loadedStaticRev && m.static_rev !== loadedStaticRev;
     replace(el.status, ...(farmStatus || []), h("span", { class: "sb-spacer" }),
@@ -274,7 +280,7 @@ let inflight = false;
 let timer = null;
 let lastViewError = null;
 async function tick(force) {
-  if (app.route && app.route.name === "farm") { renderStatus(); return; }   // the farm view polls /api/farm itself
+  if (app.route && SELF_POLLING.has(app.route.name)) { renderStatus(); return; }   // the farm view polls /api/farm itself
   if (inflight && !force) return;
   inflight = true;
   try {
@@ -340,10 +346,10 @@ app.render = async function render() {
   const route = parseRoute(location.hash);
   const key = routeKey(route);
   app.route = route;
-  document.body.classList.toggle("farm-mode", route.name === "farm");
+  document.body.classList.toggle("farm-mode", SELF_POLLING.has(route.name));
   renderNav();
   renderSidebar();
-  if (route.name !== "farm" && !app.state && !inflight) tick(true);   // older tools need the aggregated /api/state
+  if (!SELF_POLLING.has(route.name) && !app.state && !inflight) tick(true);   // older tools need the aggregated /api/state
   if (app._view && app._viewKey === key && app._view.route) {
     app._view.route(route);
     return;

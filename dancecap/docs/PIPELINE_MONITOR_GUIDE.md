@@ -41,6 +41,60 @@ Command line: `python -m dancecap.pipeline monitor --launch [--dance larissa_kad
 synthetic demo state: `python -m dancecap.pipeline farm-demo [--scenario mostly_partial|midrun|done|empty]` (open it with
 `#/farm/farm_demo`); clear the old jobs again: `python -m dancecap.pipeline archive-legacy`.
 
+## 0.1 Analyses, pod sessions and snapshots (2026-10-21)
+
+Owner, 2026-10-21: a dashboard with the status of uploads, analyses, cost and time ETAs, kept running whenever anything is
+analysed, with snapshots at progress points. What was added:
+
+- **Analyses and pod sessions** (the strip at the top of the Farm page, GET /api/activity, every 3 s):
+  - every analysis run (`python -m dancecap.pipeline analyze`, below): its steps as small squares, done / total, the
+    end-to-end ETA (p50, p90 and the finish time), the pod cost so far and expected, and which steps wait for an agent;
+  - **every** pod session running now, from any entry point (`dancecap remote run`, an analysis, an agent): the phase,
+    the **upload** (MB sent / total, MB/s, time left, the number of streams and a rate sparkline), the session ETA and cost
+    (so far, expected, worst case at the kill switch). Before this the remote-runner sessions were only under Older tools;
+  - the pod sessions of the last 24 h, with their real outcome (a job "skipped: bootstrap feature failed" is now a failed
+    session, not a green ok; a session whose runner died while its pod is open is "runner gone");
+  - the budget: spent / cap / left / account balance. The cap shown is the one the pod runners use: without
+    DANCECAP_RUNPOD_CAP it follows the Runpod balance (ledger spend + balance - $2, since 2026-10-21); a runner started
+    with an explicit DANCECAP_RUNPOD_CAP records that cap in `work/runpod/cap_in_use.json` and it is shown instead; the spent figure is `remote.spent()` exactly (ledger rows
+    left open past their kill switch no longer accrue forever: the monitor showed $530 spent where the ledger said $101).
+  - The Farm page opens on the dance being analysed (when it has a farm), not on the one last viewed in this browser.
+- **One analysis** (`#/analysis/<run>`): KPIs (steps, elapsed, ETA with the finish time, pod cost, critical path), the
+  **analysis map** (one row per step, one square per pod x 2 minutes of the plan: green done, blue running and filled as far
+  as it got, amber hatched = needs an agent, grey pending, red failed), the run's pod sessions with their uploads and
+  phases, the take's coverage map (the farm's defrag squares) when it has one, the events and the snapshots.
+- **Snapshots** (`#/snapshots`, `#/snapshots/<run>`): PNG + static HTML in `work/pipeline/snapshots/<run>/` with an
+  `index.json`. Taken by a detached background process (never in the way of the work) at: the analysis start, each step's
+  end, the driver's end, each `analysis step` mark, a 15-min heartbeat while steps run; and in every pod session (tagged to
+  an analysis or not): upload done, bootstrap done / failed, each job's end, the session end. A static page (no script)
+  rendered by headless Edge in 2-3 s; a text card (PIL) when Edge fails. Also: `python -m dancecap.pipeline analysis snap RUN`.
+- **Always running**: `dancecap remote run`, `dancecap.pipeline run`, `dancecap.pipeline analyze` and `dancecap.farm up /
+  launch` start the monitor server themselves (headless, no window, no console; about 1.5 s when it is not running, 15 ms
+  when it is) and leave a lease (`work/monitor/leases/<pid>.json`). The server no longer quits after 20 idle minutes while a
+  lease's process lives, a pod is open in the ledger, or an analysis step runs. Open the window any time with the launcher.
+
+### `python -m dancecap.pipeline analyze <folder|video>`
+
+```
+python -m dancecap.pipeline analyze C:\Users\johnb\Videos\Zouk\john-lula\john_lula_jnj.mp4 --take john_lula --dry-run
+python -m dancecap.pipeline analyze <folder> --take NAME --yes [--room-known] [--no-realism] [--detach]
+python -m dancecap.pipeline analysis list | show RUN | resume RUN | snap RUN | cancel RUN
+python -m dancecap.pipeline analysis step RUN STEP start|done|fail|skip [--note TEXT] [--session SID]
+```
+
+- One video = the monocular route; a folder of 2+ videos = the multi-view route (an audio file in the folder is the
+  soundtrack). It probes the videos, reuses the take when it exists with the same videos, or creates it (a new take needs
+  `--lead NAME:STATURE --follow NAME:STATURE --level --category [--consent-cloud]` or `--spec FILE.json`).
+- It prints the plan: every step with where it runs (every heavy step on Runpod; this PC only for the intake, the audio
+  clocks, the Unity export and the film), how many pods side by side, p50 / p90 minutes and dollars from the measured 2026-10
+  runs, the end-to-end time on the critical path and the total pod cost. `--dry-run` stops there.
+- Without `--dry-run` it runs the steps that have a generic executor today: the intake, the **upload of the source videos to
+  the Runpod volume at t = 0** (a CPU gateway pod this run creates and deletes; 6 resumable streams; needs `--yes`) and the
+  audio clocks. The other steps are marked **needs an agent** (they need take-specific code today; PIPELINE_EFFICIENCY.md
+  5 rank 1): an agent drives such a step with `DANCECAP_ANALYSIS=<run> DANCECAP_ANALYSIS_STEP=<step>` set on its
+  `remote run` sessions (the dashboard shows them under the step, as running) and marks it with `analysis step ... done`,
+  which restarts the driver for the next steps.
+
 ---
 
 The Pipeline Monitor is one window for the whole capture pipeline:
@@ -68,7 +122,8 @@ What happens:
   an Edge app window. It takes about 2-5 s.
 - A second double-click only opens another window on the same server.
 - **Closing the window never stops anything.** Runs, pod sessions and the narration tool are separate processes.
-- The server quits by itself after 20 minutes without a window open. The next double-click starts it again.
+- The server quits by itself after 20 minutes without a window open, unless work is running (a leased runner process,
+  an open pod, a running analysis step: section 0.1). Every pod runner and analysis starts it by itself (headless).
 - Settings > Restart / Quit restarts or stops the server (runs keep going).
 - If the window says "This window must reload", press **Reload** (the server was restarted).
 

@@ -1538,6 +1538,55 @@ def create_app(m: Monitor):
                                  _int_arg(request.args, "max_bytes", 65536, 1024, 1 << 20),
                                  tail=request.args.get("tail") == "1"))
 
+    # ------------------------------------------------------------------ analyses, live sessions, snapshots (2026-10-21)
+    from .. import activity as activity_mod, analyze as analyze_mod, snapshots as snaps_mod
+
+    @app.get("/api/activity")
+    def activity_get():
+        """Analysis runs, live pod sessions (upload, phase, ETA, cost), recent sessions, budget: the Farm page's
+        'Analyses and pod sessions' strip."""
+        return ok(m.cached("activity", 2.0, lambda: activity_mod.bundle(rp=runpod_summary())))
+
+    @app.get("/api/analyses")
+    def analyses_list():
+        now = time.time()
+        return ok([{"run": d["run"], "take": d.get("take"), "status": d.get("status"), "created": d.get("created"),
+                    "route": (d.get("input") or {}).get("route"), "live": analyze_mod.live(d, now)}
+                   for d in analyze_mod.list_runs(30)])
+
+    @app.get("/api/analyses/<run>")
+    def analysis_get(run):
+        if not analyze_mod.RUN_RE.match(run or ""):
+            raise ApiError(404, "not_found", "no such analysis run")
+        d = m.cached(f"analysis:{run}", 2.0, lambda: activity_mod.analysis_detail(run))
+        if d is None:
+            raise ApiError(404, "not_found", "no such analysis run")
+        return ok(d)
+
+    @app.get("/api/snapshots")
+    def snapshots_list():
+        return ok(snaps_mod.list_runs(60))
+
+    @app.get("/api/snapshots/<run>")
+    def snapshots_index(run):
+        if not snaps_mod.RUN_RE.match(run or ""):
+            raise ApiError(404, "not_found", "no such run")
+        return ok(snaps_mod.index(run))
+
+    @app.get("/api/snapshots/<run>/<name>")
+    def snapshot_file(run, name):
+        if not snaps_mod.RUN_RE.match(run or "") or not re.fullmatch(r"\d{2,4}_[a-z0-9_]{1,40}\.(png|html)", name or ""):
+            raise ApiError(404, "not_found", "no such snapshot")
+        p = snaps_mod.snap_dir(run) / name
+        if not p.is_file():
+            raise ApiError(404, "not_found", "no such snapshot")
+        st = p.stat()
+        tag = f'"{st.st_mtime_ns:x}-{st.st_size:x}"'
+        if request.headers.get("If-None-Match") == tag:
+            return Response(status=304, headers={"ETag": tag})
+        return Response(p.read_bytes(), mimetype="image/png" if name.endswith(".png") else "text/html",
+                        headers={"ETag": tag, "Cache-Control": "private, max-age=3600"})
+
     # ------------------------------------------------------------------ farm (defrag map; docs/FARM.md section 7)
     from . import farm_routes
     farm_routes.register(app, m, ok, body, ApiError, runpod_summary)

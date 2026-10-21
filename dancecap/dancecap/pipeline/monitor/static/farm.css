@@ -151,3 +151,57 @@ body.farm-mode .view-farm { max-width: 1700px; }
 .fm-plan .fm-tbl { margin: 4px 0; }
 .fm-foot { margin-top: 14px; }
 .fm-topbud { font-size: 12px; font-variant-numeric: tabular-nums; }
+
+/* ---- analyses and pod sessions (2026-10-21): the strip above the map, the analysis view (#/analysis/<run>), snapshots */
+body.farm-mode .view-analysis, body.farm-mode .view-snapshots { max-width: 1700px; }
+.ac-card { padding: 10px 14px; margin-bottom: 12px; }
+.ac-row { padding: 7px 0; border-top: 1px solid var(--border); }
+.ac-row:first-of-type { border-top: 0; }
+.ac-row-top { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; }
+.ac-take { font-weight: 650; font-size: 15px; }
+.ac-live { margin-top: 6px; }
+.ac-sub { font-size: 12px; font-weight: 600; color: var(--text-2); margin: 4px 0; text-transform: uppercase; letter-spacing: .03em; }
+.ac-idle { margin: 4px 0; }
+.ac-recent { margin-top: 6px; }
+.ac-recent summary { cursor: pointer; color: var(--text-2); }
+.am-strip { display: inline-flex; gap: 2px; align-items: center; }
+.am-strip .am-b { width: 11px; height: 11px; }
+.am-kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin: 6px 0 12px; }
+@media (max-width: 1000px) { .am-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.am-kpi { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 9px 12px; min-width: 0; }
+.am-kl { font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-2); }
+.am-kv { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.am-ks { font-size: 12px; overflow-wrap: anywhere; }
+.am-card { padding: 12px 14px; margin-bottom: 12px; }
+.am-cardhead { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
+.am-cardhead h3 { font-size: 14px; }
+.am-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--text-2); margin-left: auto; }
+.am-lg { display: inline-flex; align-items: center; gap: 5px; }
+.am-row { display: grid; grid-template-columns: minmax(200px, 270px) 1fr minmax(160px, 240px); gap: 10px; padding: 6px 0; border-top: 1px solid var(--border); align-items: start; }
+.am-row:first-of-type { border-top: 0; }
+@media (max-width: 900px) { .am-row { grid-template-columns: 1fr; } }
+.am-nm { min-width: 0; }
+.am-st { text-align: right; font-size: 12.5px; min-width: 0; overflow-wrap: anywhere; }
+.am-sq { display: flex; flex-wrap: wrap; gap: 3px; min-width: 0; }
+.am-b { width: 14px; height: 14px; border-radius: 2px; display: inline-block; background: var(--f-none); border: 1px solid var(--f-none-edge); }
+.am-b.done { background: var(--f-complete); border-color: var(--f-complete-edge); }
+.am-b.run { background: var(--f-run); border-color: var(--f-run); }
+.am-b.left { background: transparent; border: 1.5px solid var(--f-run); animation: fm-pulse 1.6s ease-in-out infinite; }
+.am-b.wait { background: repeating-linear-gradient(135deg, var(--f-partial) 0 2px, var(--f-partial-bg) 2px 5px); border-color: var(--f-partial); }
+.am-b.fail { background: #cf222e; border-color: #a40e26; }
+.am-b.skip { background: var(--surface-3); border-color: var(--border); opacity: .6; }
+.am-cov .am-b { width: 10px; height: 10px; }
+.am-sess { padding: 7px 0; border-top: 1px solid var(--border); }
+.am-sess:first-of-type { border-top: 0; }
+.am-sess-top { display: flex; align-items: center; gap: 6px 10px; flex-wrap: wrap; }
+.am-up { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.am-up .fm-bar { width: 220px; }
+.am-spark { color: var(--f-run); }
+.am-thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.am-thumbs-big { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
+.am-thumb { text-align: left; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 6px; cursor: pointer; color: inherit; font: inherit; }
+.am-thumb:hover { border-color: var(--f-run); }
+.am-thumb img, .am-runlink img { width: 100%; height: auto; display: block; border-radius: 4px; border: 1px solid var(--border); margin-bottom: 4px; }
+.am-runlink { display: block; padding: 8px; color: inherit; text-decoration: none; }
+.am-noimg { height: 120px; display: flex; align-items: center; justify-content: center; color: var(--text-2); font-size: 12px; }
+.am-shot img { max-width: 100%; height: auto; border: 1px solid var(--border); border-radius: 4px; }

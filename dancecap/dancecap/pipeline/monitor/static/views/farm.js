@@ -5,6 +5,8 @@ import { Defrag, chunkColor } from "../components/defrag.js";
 import { openDialog, confirmDialog, typedConfirm, toast, errorText } from "../components/dialog.js";
 import { pill } from "../components/status.js";
 import * as api from "../api.js";
+import { strip as stepStrip, STATUS_TEXT } from "../components/stepmap.js";
+import { sessionRow } from "./analysis.js";
 
 const POLL_VISIBLE_MS = 2000, POLL_HIDDEN_MS = 10000;
 const STAGE_TEXT = { none: "nothing yet", front: "front only (cameras, 2D, sync; no 3D yet)", fit: "raw 3D fit", refined: "refined, awaiting stitch", analysed: "refined and analysed" };
@@ -40,7 +42,8 @@ function bar(frac, { running = true, title = null } = {}) {
 }
 
 function srcPill(src) {
-  return src === "fit_full" ? pill("fit_full", "info", "a dancecap.fit_full session (started outside the farm); the monitor only reads it")
+  return src === "runner" ? pill("pod runner", "info", "a `dancecap remote run` session: see Analyses and pod sessions above")
+    : src === "fit_full" ? pill("fit_full", "info", "a dancecap.fit_full session (started outside the farm); the monitor only reads it")
     : src === "other" ? pill("not ours", "warn", "billing on the account, not started by the farm or by fit_full")
       : pill("farm", "good", "started by the farm launcher");
 }
@@ -73,6 +76,7 @@ export default {
       h("div", { class: "fm-actions" }, bFill, bPull, bLog, bRestart, bStop, bPng));
     const subhead = h("div", { class: "fm-subhead" }, watcherEl, updatedEl);
     const alertsEl = h("div", { class: "fm-alerts" });
+    const actEl = h("section", { class: "card ac-card", "aria-live": "polite" });
     const heroEl = h("div", { class: "fm-hero" });
     const canvas = h("canvas", { class: "fm-canvas", tabindex: "0", role: "img",
       "aria-label": "Defrag map of the final result: one square per second, green complete, hatched amber partial, dark not done. Arrow keys move the selection." });
@@ -90,7 +94,7 @@ export default {
       volume: h("section", { class: "card fm-panel" }), world: h("section", { class: "card fm-panel" }),
       events: h("section", { class: "card fm-panel fm-wide" }),
     };
-    replace(root, head, subhead, alertsEl, heroEl, mapCard, tip,
+    replace(root, actEl, head, subhead, alertsEl, heroEl, mapCard, tip,
       h("div", { class: "fm-grid" }, panels.jobs, panels.pods, panels.queue, panels.budget, panels.volume, panels.world, panels.events),
       h("p", { class: "muted small fm-foot" }, "Older tools (takes, camera types, new capture): ", h("a", { href: "#/legacy" }, "open"),
         " · the old job lists were archived to work/pipeline/archive/ and are not shown here."));
@@ -536,11 +540,71 @@ export default {
     const onVis = () => { if (document.visibilityState === "visible") { poll(); schedule(); } };
     document.addEventListener("visibilitychange", onVis);
 
+    // ---- analyses and pod sessions (GET /api/activity): what runs now, above the map (owner 2026-10-21)
+    function renderAct(a) {
+      const now = a.now;
+      const b = a.budget || {};
+      const active = (a.analyses || []).filter((x) => ["running", "waiting", "planned"].includes(x.status));
+      const shown = active.length ? active.slice(0, 3) : (a.analyses || []).slice(0, 1);
+      const live = a.sessions_live || [];
+      const recent = a.sessions_recent || [];
+      const nOk = recent.filter((c) => c.state === "ok").length, nBad = recent.filter((c) => ["failed", "orphaned"].includes(c.state)).length;
+      replace(actEl,
+        h("div", { class: "fm-card-head" }, h("h3", null, "Analyses and pod sessions"),
+          h("span", { class: "spacer" }),
+          h("span", { class: ["small", b.level === "red" ? "crit-text" : b.level === "amber" ? "warn-text" : "muted"], title: `cap: ${a.cap_source || "?"}` },
+            b.spent != null ? `Runpod: ${fmtUSD(b.spent)} spent of ${fmtUSD(b.cap)} cap · ${fmtUSD(b.remaining)} left${a.balance != null ? ` · balance ${fmtUSD(a.balance)}` : ""}` : ""),
+          h("a", { class: "btn small ghost", href: "#/snapshots" }, "Snapshots")),
+        shown.length ? shown.map((x) => analysisRow(x, now)) : null,
+        live.length ? h("div", { class: "ac-live" }, h("div", { class: "ac-sub" }, `Pod sessions running now (${live.length})`), live.map((c) => sessionRow(c))) : null,
+        !active.length && !live.length ? h("p", { class: "muted small ac-idle" }, "Nothing is running now. Start an analysis with ",
+          h("code", null, "python -m dancecap.pipeline analyze <folder|video>"), "; every pod session and farm run also shows here.") : null,
+        recent.length ? h("details", { class: "ac-recent" }, h("summary", { class: "small" }, `Recent pod sessions (24 h): ${nOk} ok, ${nBad} failed or orphaned, ${recent.length - nOk - nBad} other`),
+          h("table", { class: "fm-tbl" }, h("thead", null, h("tr", null, ["session", "state", "jobs", "GPU", "upload", "cost", "problem"].map((x) => h("th", null, x)))),
+            h("tbody", null, recent.map((c) => h("tr", null,
+              h("td", { class: "mono small" }, h("a", { href: `#/runpod/session/${encodeURIComponent(c.sid)}` }, c.sid)),
+              h("td", null, pill(c.state === "orphaned" ? "runner gone" : c.state, { ok: "good", failed: "crit", orphaned: "crit", running: "info" }[c.state] || "neutral")),
+              h("td", { class: "small" }, (c.jobs || []).join(", ")),
+              h("td", { class: "small" }, GPU_SHORT(c.gpu)),
+              h("td", { class: "small num" }, c.upload && c.upload.total ? `${(c.upload.total / 1e6).toFixed(0)} MB${c.upload.mbps ? ` @ ${c.upload.mbps.toFixed(2)} MB/s` : ""}` : "–"),
+              h("td", { class: "num" }, c.cost_usd != null ? fmtUSD(c.cost_usd) : "–"),
+              h("td", { class: "small crit-text" }, c.jobs_bad ? Object.entries(c.jobs_bad).map(([k, v]) => `${k}: ${v}`).join("; ").slice(0, 120) : (c.error || "").slice(0, 120))))))) : null);
+    }
+
+    function analysisRow(x, now) {
+      const lv = x.live || {}, eta = lv.eta_s || {}, fin = lv.finish_at || {}, cost = lv.cost_usd || {};
+      const waiting = lv.waiting_agent || [], running = lv.running || [];
+      return h("div", { class: "ac-row" },
+        h("div", { class: "ac-row-top" },
+          h("a", { href: `#/analysis/${encodeURIComponent(x.run)}`, class: "ac-take" }, x.take),
+          pill(x.route === "mono" ? "one phone" : `${(x.facts || {}).n || "?"} phones`, "neutral"),
+          pill(x.status, { running: "info", waiting: "warn", done: "good", failed: "crit" }[x.status] || "neutral"),
+          stepStrip(x.steps), h("span", { class: "small" }, `${lv.done || 0}/${lv.total || 0} steps`),
+          h("span", { class: "spacer" }),
+          h("span", { class: "small", title: "end to end, critical path from now (plan p50 / p90 until a step reports, then live)" },
+            x.status === "cancelled" ? `cancelled ${fmtAgo(x.updated, now)}` : fin.p50 ? `ETA ${fmtDur(eta.p50)} (p90 ${fmtDur(eta.p90)}) · finish ~${fmtTime(fin.p50)}` : "nothing left to run"),
+          h("span", { class: "small" }, `cost ${fmtUSD(cost.so_far)} → ${fmtUSD(cost.p50)} (p90 ${fmtUSD(cost.p90)})`),
+          h("a", { class: "btn small", href: `#/analysis/${encodeURIComponent(x.run)}` }, "Open")),
+        running.length || waiting.length ? h("div", { class: "small" },
+          running.length ? h("span", null, "running: ", h("strong", null, running.join(", ")), "  ") : null,
+          waiting.length ? h("span", { class: "warn-text" }, `needs an agent: ${waiting.join(", ")}`) : null) : null);
+    }
+
+    async function pollAct() {
+      if (S.destroyed) return;
+      try { S.act = await api.get("/api/activity"); renderAct(S.act); } catch (e) { /* the farm poll reports connection problems */ }
+    }
+    const actTimer = setInterval(() => { if (document.visibilityState === "visible") pollAct(); }, 3000);
+    if (!route.dance) {   // the dance being analysed now wins over the one last viewed in this browser
+      await pollAct();
+      if (S.act && S.act.focus_dance) S.dance = S.act.focus_dance;
+    } else pollAct();
+
     await poll(true);
     schedule();
     return {
       route(r) { if (r.dance && r.dance !== S.dance) go(r.dance); },
-      destroy() { S.destroyed = true; clearTimeout(S.timer); document.removeEventListener("visibilitychange", onVis); map.destroy(); tip.remove(); app.setFarmStatus && app.setFarmStatus(null); },
+      destroy() { S.destroyed = true; clearTimeout(S.timer); clearInterval(actTimer); document.removeEventListener("visibilitychange", onVis); map.destroy(); tip.remove(); app.setFarmStatus && app.setFarmStatus(null); },
       refresh() { /* the view polls /api/farm itself */ },
     };
   },

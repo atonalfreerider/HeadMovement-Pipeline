@@ -51,9 +51,18 @@ def task_failures(text: str) -> dict:
 
 
 def _with_failures(out: dict, text: str) -> dict:
-    if (out.get("summary") or {}).get("state") not in ("running", "preparing", None):
+    sstate = (out.get("summary") or {}).get("state")
+    if sstate not in ("running", "preparing", None):
         out["progress"] = None  # ended: the last progress line of the log is not 'now' any more
         out["current"] = None
+    if sstate == "orphaned":
+        out["eta"] = None  # no runner: an ETA from its last phase ("pack ETA 5 h 59") is meaningless
+        out["warnings"] = ["the runner process of this session is gone while its pod is still open in the ledger: "
+                           "nothing will download its outputs; the pod bills until its kill switch (or delete it)"] + \
+            list(out.get("warnings") or [])
+    bad = (out.get("summary") or {}).get("jobs_bad") or {}
+    if sstate == "failed" and bad and not out.get("error_summary"):
+        out["error_summary"] = "; ".join(f"{k}: {v}" for k, v in list(bad.items())[:4])[:300]
     tf = task_failures(text)
     out["task_failures"] = tf
     if tf["failed"]:
@@ -190,12 +199,18 @@ def _session_summary(sid: str, d: Path, ledger: list[dict] | None) -> dict | Non
     jobs = st.get("jobs") or {}
     take = next((j.get("spec", {}).get("take") for j in jobs.values() if j.get("spec", {}).get("take")), None)
     now = time.time()
+    bad_jobs = {k: str(v.get("status") or "pending") for k, v in jobs.items() if str(v.get("status") or "") != "ok"}
+    runner_alive = runner_alive_of(d)
     if row is not None and not row.get("deleted_ts"):
-        state = "running"
+        # an open pod whose runner process is gone: nobody downloads its outputs or deletes it (its kill switch will)
+        state = "orphaned" if runner_alive is False and not finished else "running"
     elif finished:
-        state = "failed" if st.get("error") or any(str(j.get("status") or "").startswith("failed")
-                                                for j in jobs.values()) else (
-            "dry_run" if not pod else "ok")
+        if not pod and not st.get("error"):
+            state = "dry_run"
+        else:
+            # a job "skipped: bootstrap feature failed" or still "pending" in an ended session is NOT ok (2026-10-21:
+            # the dashboard probe's skipped job was shown as a green ok session)
+            state = "failed" if st.get("error") or bad_jobs else "ok"
     elif not pod and newest and now - newest < 300 and _is_newest(d):
         state = "preparing"  # bundling; no pod yet
     elif row is not None and row.get("deleted_ts"):
@@ -212,7 +227,25 @@ def _session_summary(sid: str, d: Path, ledger: list[dict] | None) -> dict | Non
             "ended": res_m if finished else None, "pod_id": pod.get("id"), "gpu": pod.get("gpu"),
             "cost_per_hr": pod.get("cost_per_hr"), "cost_usd": cost, "jobs": sorted(jobs),
             "jobs_status": {k: v.get("status") for k, v in jobs.items()}, "progress_level": "L0",
+            "jobs_bad": bad_jobs if finished or state not in ("running", "preparing") else {},
+            "runner_alive": runner_alive, "analysis": st.get("analysis"),
             "max_minutes": st.get("max_minutes"), "error": redact(st.get("error") or "") or None}
+
+
+def runner_alive_of(d: Path) -> bool | None:
+    """Whether the `remote run` process of a session dir is alive (runner.json {pid, started}); None when unknown."""
+    info = read_json(d / "runner.json", None)
+    if not isinstance(info, dict) or not info.get("pid"):
+        return None
+    try:
+        import psutil
+        pr = psutil.Process(int(info["pid"]))
+        # pids are reused: the runner wrote runner.json after it started, so its process must be older than that
+        return bool(pr.is_running() and pr.create_time() <= float(info.get("started") or 0) + 5.0)
+    except ImportError:
+        return None
+    except Exception:  # noqa: BLE001 - NoSuchProcess / AccessDenied
+        return False
 
 
 def _is_newest(d: Path) -> bool:
@@ -250,7 +283,7 @@ def active_sessions(take: str | None = None, recent: int = 8) -> list[dict]:
     out = []
     for n in names:
         s = session_summary(n, led)
-        if s and s["state"] in ("running", "preparing") and (not take or s.get("take") == take):
+        if s and s["state"] in ("running", "preparing", "orphaned") and (not take or s.get("take") == take):
             out.append(s)
     if open_ids - {s.get("pod_id") for s in out}:  # an open pod in an older session dir: look further
         for n in sorted((p.name for p in d.iterdir() if SID_RE.match(p.name)), reverse=True)[recent:]:

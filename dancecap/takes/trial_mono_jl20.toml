@@ -1,0 +1,52 @@
+# John + Lula x ? - registered by the Pipeline Monitor new-capture wizard on 2026-10-21.
+# The videos and the soundtrack are referenced in place (never copied); outputs go to work/<take>/ (git-ignored).
+# Capture type: single-view (1 camera(s) used).
+name = "trial_mono_jl20"
+source_dir = "../work/trial_src/trial_mono_jl20"
+# affine audio clocks (reference_time = slope * source_time + offset), written by the audio_sync stage
+alignment = "../work/trial_mono_jl20/clock/alignment.json"
+exclude = []
+# TRIAL (2026-10-21, analyze trial run 20261021-145414-trial_mono_jl20): a 20-s scratch cut of john_lula_jnj.mp4 (source frames
+# 1650..2249 = 55.011-75.015 s, re-encoded crf 14) in work/trial_src/ (git-ignored). Added by the trial agent: the window (the whole clip)
+# and the 30 Hz lattice the stages need (analyze's intake writes no window for one video).
+window = [0.0, 19.97]
+[timeline]
+anchor = 0.0
+hz = 30.0
+[ingest]
+max_fps = 30
+[stitch]
+mono = [[0.0, 19.97]]
+[export]
+smplx_dir = "smplx_rf2_noslip"   # trial: the refined fit, as john_lula
+floor_yaw_deg = 0.0
+
+# Dance metadata: data is siloed by level; the title is "Leader + Follower x Song".
+[dance]
+level = "professional"            # professional | intermediate | novice
+category = "jack_and_jill"      # demo | lesson | jack_and_jill
+song = "unknown"
+beats = "work/trial_mono_jl20/song/beats_heat.json"   # trial: heat_beats on the clip's own audio (75.005 BPM)
+
+[dancers.lead]
+name = "John"
+pid = 1
+stature_m = 1.803
+shoe_sole_m = 0.025
+
+[dancers.follow]
+name = "Lula"
+pid = 2
+stature_m = 1.702
+shoe_sole_m = 0.025
+
+# Consent per dancer as reported by the user (TMR_SOMA_PLAN G0): "?" = unknown. cloud_processing is
+# required before any Runpod stage; public_repo before anything leaves the PC.
+[consent]
+lead = { capture = "?", fit_3d = "?", ml_analysis = "?", cloud_processing = true, name_shown = "?", level_shown = "?", publication = "?", public_repo = "?", recorded = "2026-10-21" }
+follow = { capture = "?", fit_3d = "?", ml_analysis = "?", cloud_processing = true, name_shown = "?", level_shown = "?", publication = "?", public_repo = "?", recorded = "2026-10-21" }
+source_rights = "?"
+bystanders = "?"
+
+[cameras."01"]   # camera type (Pipeline Monitor / narration tool); this block is rewritten as a whole, comments typed inside it are not kept
+file = "trial_mono_jl20.mp4"

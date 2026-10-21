@@ -127,6 +127,15 @@ def main(argv: list[str] | None = None) -> int:
     if argv and argv[0] == "run":
         from .orchestrator import main as run_main
         return run_main(argv[1:])
+    if argv and argv[0] == "analyze":        # a folder of videos or one video -> the whole analysis (analyze.py)
+        from .analyze import cmd_analyze
+        return cmd_analyze(argv[1:])
+    if argv and argv[0] == "analysis":       # list / show / resume / snap / step of analysis runs
+        from .analyze import cmd_analysis
+        return cmd_analysis(argv[1:])
+    if argv and argv[0] == "snapshot":       # render one dashboard snapshot (started detached by snapshots.request)
+        from .snapshots import main as snap_main
+        return snap_main(argv[1:])
     if argv and argv[0] == "probe":
         from .probe import main as probe_main
         return probe_main(argv[1:])
@@ -185,6 +194,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("stage")
     p.add_argument("--decision")
     sub.add_parser("run", help="orchestrator (see python -m dancecap.pipeline run --help)")
+    sub.add_parser("analyze", help="a folder of videos or one video -> a completed analysis (python -m dancecap.pipeline "
+                                   "analyze <folder|video> [--take NAME] [--dry-run] [--yes])")
+    sub.add_parser("analysis", help="analysis runs: list | show RUN | resume RUN | snap RUN | step RUN STEP done")
+    sub.add_parser("snapshot", help="render one dashboard snapshot (python -m dancecap.pipeline snapshot RUN --event E)")
     sub.add_parser("probe", help="ffprobe + camera-type suggestion (python -m dancecap.pipeline probe <take>)")
     sub.add_parser("triggers", help="viewer triggers (python -m dancecap.pipeline triggers <take>)")
     sub.add_parser("audio-sync", help="audio clocks of the take's videos (python -m dancecap.pipeline audio-sync <take>)")

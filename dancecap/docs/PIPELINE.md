@@ -17,6 +17,12 @@ Status words used below:
 
 Data contracts stay in `dancecap/CONTRACTS.md`; this file only names the files.
 
+> **2026-10-21: one entry point.** `python -m dancecap.pipeline analyze <folder|video> [--take NAME] [--dry-run] [--yes]`
+> classifies the input (one video = the monocular route, a folder = multi-view), creates or reuses the take, plans the
+> CURRENT routes (the volume farm for multi-view, the mono4d route for one phone; not the S1/S2 registry route below) with
+> Runpod for every heavy step, prints cost and ETA, runs the generic steps and tracks the take-specific ones in the
+> Pipeline Monitor (docs/PIPELINE_MONITOR_GUIDE.md 0.1, docs/PIPELINE_EFFICIENCY.md 7b).
+
 Measured numbers come from larissa_kadu (6 s) and larissa_kadu_38 (38.4 s, 8 cameras). Sources are
 `work/runpod/sessions/*/state.json`, `work/runpod/ledger.json`, `work/larissa_kadu_38/front/front_pod.json`,
 `mamma/chunks*.json`, stage logs and reports. Anything not measured is labelled *estimate*.

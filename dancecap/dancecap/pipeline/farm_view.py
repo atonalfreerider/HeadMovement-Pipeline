@@ -362,21 +362,30 @@ def _jobs_and_queue(dance: str, chunks: list[dict], state: dict, live: dict, now
     return jobs, queue
 
 
+STALE_POD_S = 6 * 3600     # a farm pod of state.json older than this that Runpod no longer lists is history, not a pod
+
+
 def _pods(state: dict, live: dict, rp: dict | None, now: float) -> list[dict]:
     out, seen = [], set()
     if state.get(DEMO_FLAG):
         rp = None          # a demo dance never lists the account's real pods
+    listed = {p.get("id") for p in (rp or {}).get("pods") or []} if (rp or {}).get("connection") == "ok" else None
     for pid, p in (state.get("pods") or {}).items():
         if not isinstance(p, dict) or p.get("state") in ("deleted", "gone"):
             continue
         created = _ts(p.get("created_ts") or p.get("created") or p.get("first_seen"))
+        pstate = p.get("state") or "running"
+        if listed is not None and str(pid) not in listed and created and now - created > STALE_POD_S:
+            # 2026-10-21 review: "lost" 4090s at 247 h and a cpu pod "running" at 272 h ($141.64, a made-up figure) were
+            # shown as live pods; Runpod lists none of them. They are history: left out (the farm log keeps them).
+            continue
         price = _num(p.get("price_hr"), _num(p.get("cost_per_hr"), _num(p.get("price"))))
         cost = _num(p.get("cost_usd"), _num(p.get("spend")))
         cost = round(cost, 2) if cost is not None else None
-        if cost is None and price is not None and created:
+        if cost is None and price is not None and created and pstate in ("running", "starting"):
             cost = round(price * max(0.0, now - created) / 3600, 2)
         out.append({"id": str(pid), "name": p.get("name"), "gpu": p.get("gpu"), "price_hr": price,
-                    "state": p.get("state") or "running", "age_s": round(now - created) if created else None,
+                    "state": pstate, "age_s": round(now - created) if created else None,
                     "created_ts": created, "cost_usd": cost,
                     "chunks": p.get("chunks") or p.get("jobs") or ([p["chunk"]] if p.get("chunk") else []),
                     "source": "farm", "kind": p.get("role") or p.get("kind") or "gpu", "dc": p.get("dc"), "kill_at": _ts(p.get("kill_at")),
@@ -398,12 +407,17 @@ def _pods(state: dict, live: dict, rp: dict | None, now: float) -> list[dict]:
             continue
         if p.get("ledger") == "closed":
             continue
+        sess = p.get("session") or {}
+        runner = bool(sess.get("sid")) or str(p.get("name") or "").startswith("dancecap-batch")
         out.append({"id": p.get("id"), "name": p.get("name"), "gpu": p.get("gpu"), "price_hr": p.get("cost_per_hr"),
-                    "state": p.get("runtime_status") or p.get("status") or "running", "age_s": p.get("age_s"),
-                    "created_ts": p.get("created"), "cost_usd": p.get("cost_so_far_usd"), "chunks": [], "source": "other",
+                    "state": str(p.get("runtime_status") or p.get("status") or "running").lower(), "age_s": p.get("age_s"),
+                    "created_ts": p.get("created"), "cost_usd": p.get("cost_so_far_usd"),
+                    "chunks": [sess.get("take")] if sess.get("take") else [], "source": "runner" if runner else "other",
                     "kind": "gpu", "dc": None, "kill_at": (p.get("kill") or {}).get("at"), "stoppable": False,
-                    "flags": list(p.get("flags") or []), "note": "not started by this farm or by fit_full (read-only here)"})
-    order = {"farm": 0, "fit_full": 1, "other": 2}
+                    "flags": list(p.get("flags") or []), "session": sess.get("sid"),
+                    "note": (f"remote-runner session {sess['sid']} (see Analyses above / its session page)" if sess.get("sid")
+                             else "not started by this farm or by fit_full (read-only here)")})
+    order = {"farm": 0, "fit_full": 1, "runner": 2, "other": 3}
     out.sort(key=lambda p: (order.get(p["source"], 3), p.get("created_ts") or 0))
     return out
 

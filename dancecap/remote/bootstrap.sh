@@ -83,9 +83,19 @@ run_feature() {
   log "$f: done in ${dt}s"
 }
 
+APT_PKGS="libgl1 libegl1 libgles2 libglib2.0-0 libgomp1 libxrender1 pigz"
+# 2026-10-21: the image's deadsnakes PPA answered 503 and `apt-get update` stalled 860 s on one pod (minutes on others):
+# its Python is already installed and nothing here comes from it, so its source is dropped before the update, apt gives
+# up on a dead mirror after 20 s, and the update is skipped altogether when the packages are already there.
+APT_OPTS="-o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
+apt_base() {
+  dpkg -s $APT_PKGS >/dev/null 2>&1 && { log "apt: packages already installed"; return 0; }
+  rm -f /etc/apt/sources.list.d/*deadsnakes* 2>/dev/null || true
+  apt-get $APT_OPTS update -qq && apt-get $APT_OPTS install -y -qq --no-install-recommends $APT_PKGS > /dev/null
+}
+
 feature_base() {
-  (apt-get update -qq && apt-get install -y -qq --no-install-recommends libgl1 libegl1 libgles2 libglib2.0-0 \
-      libgomp1 libxrender1 pigz > /dev/null) || { log "apt failed"; return 1; }
+  apt_base || { log "apt failed"; return 1; }
   if ! "$PY" -c "import torch, sys; sys.exit(0 if torch.__version__.startswith('2.5.1') and torch.version.cuda == '12.4' else 1)" 2>/dev/null; then
     pipq torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu124 || return 1
   fi

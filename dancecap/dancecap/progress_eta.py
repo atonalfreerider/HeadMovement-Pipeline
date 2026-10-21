@@ -1927,6 +1927,14 @@ def snapshot(session_dir, now: float | None = None, at: float | None = None, rat
     if events is not None and at is not None:
         evs = [e for e in evs if e.get("ts") is not None and e["ts"] <= at]
     puller = P.read_json(d / "progress" / "puller.json") if at is None else None
+    if at is None:
+        # the striped uploader (remote_jobs, 2026-10-21) counts its own bytes: exact and live, where the puller's probe of a
+        # single .part file sees nothing (the stripes are .partN.i files)
+        up = P.read_json(d / "progress" / "upload.json")
+        if isinstance(up, dict) and up.get("sent") is not None and not up.get("done"):
+            puller = dict(puller or {})
+            if up["sent"] > (puller.get("upload_part_bytes") or 0):
+                puller["upload_part_bytes"] = up["sent"]
     ri = P.read_json(d / "runner.json") if at is None else None
     if runner_alive is None and ri and ri.get("pid"):
         runner_alive = pid_alive(ri["pid"])
@@ -2354,24 +2362,43 @@ def _ensure_live_poller() -> None:
 
 
 def _remote_cap() -> float:
-    """remote.cap() (DANCECAP_RUNPOD_CAP or remote.DEFAULT_CAP): the one definition of the budget cap."""
+    """The budget cap the pod runners use: remote.effective_cap() (DANCECAP_RUNPOD_CAP of this process, else the cap
+    the last `remote run` recorded in work/runpod/cap_in_use.json, else remote.DEFAULT_CAP). The monitor runs without
+    the workflows' environment; reading only DANCECAP_RUNPOD_CAP showed $106.70 while the runners used $112.54."""
     try:
         from . import remote
-        return float(remote.cap())
+        return float(remote.effective_cap()["cap"])
     except Exception:
         return float(os.environ.get("DANCECAP_RUNPOD_CAP", 30.0))
 
 
+OPEN_ROW_GRACE_MIN = 10.0   # = remote.OPEN_ROW_GRACE_MIN
+
+
+def row_end(r: dict, now: float) -> float:
+    """Where an OPEN ledger row stops accruing: remote._row_end (its kill switch at max_minutes + a grace, unless
+    `reconcile` saw the pod alive later). Kept in step with remote.py; a test checks both agree."""
+    limit = float(r["created_ts"]) + (float(r.get("max_minutes") or 0) + OPEN_ROW_GRACE_MIN) * 60
+    if not r.get("max_minutes") or now <= limit:
+        return now
+    return min(now, max(limit, float(r.get("alive_ts") or 0)))
+
+
 def spent_from_rows(rows: list, now: float | None = None) -> float:
-    """Exactly remote.spent(): closed rows' recorded cost, open rows price x lifetime so far."""
+    """Exactly remote.spent(): closed rows' recorded cost; open rows price x lifetime, up to their kill switch (+10 min)
+    unless Runpod still lists the pod. (Before 2026-10-21 open rows accrued forever here: six phantom rows from
+    2026-10-11 made the monitor show $530 spent where remote.spent() said $101.)"""
     now = time.time() if now is None else now
     total = 0.0
     for r in rows:
-        if r.get("deleted_ts") and r.get("cost") is not None:
-            total += float(r["cost"])
+        try:
+            if r.get("deleted_ts") and r.get("cost") is not None:
+                total += float(r["cost"])
+                continue
+            end = r.get("deleted_ts") or row_end(r, now)
+            total += float(r["cost_per_hr"]) * max(0.0, float(end) - float(r["created_ts"])) / 3600
+        except (KeyError, TypeError, ValueError):
             continue
-        end = r.get("deleted_ts") or now
-        total += r["cost_per_hr"] * max(0.0, end - r["created_ts"]) / 3600
     return total
 
 
@@ -2400,6 +2427,7 @@ def budget(now: float | None = None, rows: list | None = None, cap: float | None
     pods = []
     P50 = P90 = W = 0.0
     warnings = []
+    ghosts: list[str] = []
     for r in open_rows:
         price = r["cost_per_hr"]
         so_far = price * max(0.0, now - r["created_ts"]) / 3600
@@ -2414,11 +2442,10 @@ def budget(now: float | None = None, rows: list | None = None, cap: float | None
         else:
             p50 = p90 = w  # unknown remaining work: the kill switch bounds it
         phantom = None
-        if now > kill_at + 120:  # past its kill time: the pod must be gone; spent() keeps accruing a ghost
+        if now > kill_at + 120:  # past its kill time: the pod must be gone (spent() stops it at its kill switch)
             phantom = price * max(0.0, kill_at - r["created_ts"]) / 3600
-            warnings.append({"level": "amber", "msg": f"ledger row {r['pod_id']} is open past its kill time: spent() "
-                                                       f"over-counts ${so_far - phantom:.2f} (reconcile with remote "
-                                                       "cleanup)"})
+            so_far = price * max(0.0, row_end(r, now) - r["created_ts"]) / 3600
+            ghosts.append(r["pod_id"])
             p50 = p90 = w = 0.0
         if pods_listed is not None and r["pod_id"] not in pods_listed and now - r["created_ts"] > 120:
             phantom = phantom if phantom is not None else so_far
@@ -2431,6 +2458,11 @@ def budget(now: float | None = None, rows: list | None = None, cap: float | None
                      "kill_at": round(kill_at, 1), "session": (snap or {}).get("sid"), "phantom_cost": phantom})
         if snap and snap.get("kill") and snap["kill"].get("armed") is False:
             warnings.append({"level": "red", "msg": f"pod {r['pod_id']}: kill switch not armed"})
+    if ghosts:  # ONE line for all of them (six of these filled the whole alert bar of every monitor page)
+        warnings.append({"level": "info", "msg": f"{len(ghosts)} ledger row(s) open past their kill time "
+                                                 f"({', '.join(ghosts[:4])}{' ...' if len(ghosts) > 4 else ''}): counted "
+                                                 "up to their kill switch only; `python -m dancecap remote reconcile` "
+                                                 "closes them"})
     Q50 = sum(q.get("p50_cost", 0) for q in queued or [])
     Q90 = sum(q.get("p90_cost", 0) for q in queued or [])
     T50, T90, Wc = S + P50 + Q50, S + P90 + Q90, S + W + Q90
@@ -2447,7 +2479,7 @@ def budget(now: float | None = None, rows: list | None = None, cap: float | None
                                                  f"${cap:.2f} cap"})
     if any(w["level"] == "red" for w in warnings):
         level = "red"
-    elif level == "green" and warnings:
+    elif level == "green" and any(w["level"] != "info" for w in warnings):
         level = "amber"
     if account:
         rate = account.get("currentSpendPerHr")

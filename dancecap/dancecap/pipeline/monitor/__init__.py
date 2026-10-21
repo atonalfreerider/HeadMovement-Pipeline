@@ -150,6 +150,122 @@ def launch(take: str | None = None, view: str | None = None, replace: bool = Fal
     return 1
 
 
+# ------------------------------------------------------------------------------------------------ auto-start (2026-10-21)
+# The owner: the dashboard must be "maintained and running every time we analyze anything". Every entry point that
+# starts work (`dancecap remote run`, `dancecap.pipeline run`, `dancecap.pipeline analyze`, the farm launcher) calls
+# ensure_running(): a live server is reused; else one is started headless (no window, no console). The caller leaves a
+# LEASE (work/monitor/leases/<pid>.json): the server does not idle-exit while a lease's process lives, while a pod is
+# open in the ledger, or while an analysis runs (watchdog in serve()).
+
+LEASE_DIR = "leases"
+
+
+def _monitor_python() -> str:
+    """The interpreter for a headless server: DANCECAP_MONITOR_PYTHON, else the workspace venv the launcher uses
+    (it has flask + waitress), else this one."""
+    env = os.environ.get("DANCECAP_MONITOR_PYTHON")
+    if env and Path(env).exists():
+        return env
+    from ..paths import REAL_ROOT
+    for cand in (REAL_ROOT.parent / ".venv-nopo4d" / "Scripts" / "python.exe", REAL_ROOT.parent / ".venv-nopo4d" / "bin" / "python"):
+        if cand.exists():
+            return str(cand)
+    return sys.executable
+
+
+def write_lease(reason: str, pid: int | None = None) -> Path | None:
+    """work/monitor/leases/<pid>.json {pid, create_time, reason, ts}: keeps the server up while that process lives."""
+    try:
+        from ..util import write_json_atomic
+        pid = int(pid or os.getpid())
+        ct = None
+        try:
+            import psutil
+            ct = psutil.Process(pid).create_time()
+        except Exception:  # noqa: BLE001
+            pass
+        f = _paths().monitor_dir() / LEASE_DIR / f"{pid}.json"
+        write_json_atomic(f, {"pid": pid, "create_time": ct, "reason": str(reason)[:120], "ts": time.time()})
+        return f
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def live_leases(prune: bool = True) -> list[dict]:
+    """Leases whose process is alive (dead ones are removed when prune)."""
+    from ..util import pid_alive, read_json
+    d = _paths().monitor_dir() / LEASE_DIR
+    out = []
+    if not d.is_dir():
+        return out
+    for f in d.glob("*.json"):
+        info = read_json(f, None)
+        ok = isinstance(info, dict) and pid_alive(info.get("pid"), info.get("create_time"))
+        if ok:
+            out.append(info)
+        elif prune:
+            try:
+                f.unlink()
+            except OSError:
+                pass
+    return out
+
+
+def activity_hold(now: float | None = None) -> str | None:
+    """Why the server must not idle-exit now (None = it may): a live lease, an open ledger row inside its kill time, or a
+    running analysis. Cheap: a few small JSON reads."""
+    now = now or time.time()
+    leases = live_leases()
+    if leases:
+        return f"lease: {leases[0].get('reason')}"
+    try:
+        from ..util import read_json
+        rows = read_json(_paths().ledger_path(), []) or []
+        for r in rows if isinstance(rows, list) else []:
+            if not r.get("deleted_ts") and now < float(r.get("created_ts") or 0) + (float(r.get("max_minutes") or 0) + 16) * 60:
+                return f"pod {r.get('pod_id')} open"
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from .. import analyze
+        for d in analyze.active_runs():
+            if analyze.driver_alive(d) or any(s.get("status") == "running" for s in d.get("steps") or []):
+                return f"analysis {d.get('run')} is running"
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def ensure_running(reason: str, lease: bool = True, wait_s: float = 0.0) -> dict:
+    """Make sure a monitor server runs (headless; the window is the user's choice) and lease it for this process.
+    Never raises, never opens a window or a console, returns in milliseconds when a server is up. Skipped in tests
+    (another package root), on pods and with DANCECAP_NO_MONITOR=1."""
+    try:
+        from .. import paths as P
+        if (os.environ.get("DANCECAP_NO_MONITOR") == "1" or os.environ.get("DANCECAP_POD") == "1" or not P.is_real_root()
+                or os.environ.get("PYTEST_CURRENT_TEST")):
+            return {"state": "skipped"}
+        if lease:
+            write_lease(reason)
+        sj = _running_server()
+        if sj:
+            return {"state": "running", "port": sj.get("port"), "pid": sj.get("pid")}
+        flags = (CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP) if os.name == "nt" else 0
+        subprocess.Popen([_monitor_python(), "-m", "dancecap.pipeline", "monitor", "--serve"], cwd=str(P.REAL_ROOT),
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         creationflags=flags, close_fds=True)
+        _log("launcher", f"auto-start for {reason!r} (pid {os.getpid()})")
+        t0 = time.time()
+        while time.time() - t0 < wait_s:
+            sj = _running_server()
+            if sj:
+                return {"state": "started", "port": sj.get("port"), "pid": sj.get("pid")}
+            time.sleep(0.25)
+        return {"state": "starting"}
+    except Exception as e:  # noqa: BLE001 - the monitor never breaks the work it watches
+        return {"state": "error", "error": str(e)[:200]}
+
+
 class _Lock:
     """work/monitor/monitor.lock held for the process lifetime (msvcrt / fcntl); released by the OS on exit."""
 
@@ -246,6 +362,7 @@ def serve(port: int | None = None, replace: bool = False, idle_exit_min: float |
         last_pods = 0.0
         last_house = 0.0
         last_tick = time.time()
+        last_hold_check, last_hold = 0.0, None
         while True:
             time.sleep(1.0)
             now = time.time()
@@ -267,8 +384,19 @@ def serve(port: int | None = None, replace: bool = False, idle_exit_min: float |
                 print("[monitor] quit", flush=True)
                 os._exit(0)
             if idle > 0 and now - m.last_request > idle * 60:
-                print(f"[monitor] idle for {idle:g} min: exit (runs keep going)", flush=True)
-                os._exit(0)
+                if now - last_hold_check > 30:
+                    last_hold_check = now
+                    try:
+                        hold = activity_hold(now)
+                    except Exception as e:  # noqa: BLE001
+                        hold = None
+                        print(f"[monitor] activity check: {e}", flush=True)
+                    if hold and hold != last_hold:
+                        print(f"[monitor] idle, but staying up: {hold}", flush=True)
+                    last_hold = hold
+                if not last_hold:
+                    print(f"[monitor] idle for {idle:g} min and nothing is running: exit (runs keep going)", flush=True)
+                    os._exit(0)
             busy = bool(m.poller.pods)  # pods listed: poll every 30 s; else every 5 min
             if now - last_pods > (30 if busy else 300):
                 last_pods = now

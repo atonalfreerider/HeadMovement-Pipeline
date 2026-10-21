@@ -440,6 +440,16 @@ def test_budget_spent_matches_remote_spent(tmp_path, monkeypatch):
     lp.write_text(json.dumps(rows))
     monkeypatch.setattr(remote, "LEDGER", lp)
     assert E.spent_from_rows(rows) == pytest.approx(remote.spent(), abs=1e-3)
+    # an open row long past its kill switch: both stop it at max_minutes + 10 min (alive_ts keeps a listed pod accruing)
+    old = rows + [{"pod_id": "c", "cost_per_hr": 2.0, "created_ts": now - 10 * 3600, "max_minutes": 50},
+                  {"pod_id": "d", "cost_per_hr": 1.0, "created_ts": now - 4 * 3600, "max_minutes": 60,
+                   "alive_ts": now - 3600}]
+    lp.write_text(json.dumps(old))
+    assert E.spent_from_rows(old, now) == pytest.approx(remote.spent(), abs=1e-2)
+    assert E.spent_from_rows(old, now) == pytest.approx(1.25 + 1.39 * 0.5 + 2.0 + 3.0, abs=1e-2)
+    for r in old:
+        assert E.row_end(r, now) == pytest.approx(remote._row_end(r, now), abs=1e-6) if not r.get("deleted_ts") else True
+    lp.write_text(json.dumps(rows))
     b = E.budget(now=now, rows=rows, cap=30.0, snapshots=[])
     assert b["spent"] == pytest.approx(1.25 + 1.39 * 0.5, abs=1e-3)
     pod = b["open_pods"][0]
@@ -453,12 +463,16 @@ def test_budget_warnings_phantom_and_launch_gate():
             {"pod_id": "p1", "cost_per_hr": 1.5, "created_ts": now - 600, "max_minutes": 120},
             {"pod_id": "p2", "cost_per_hr": 1.5, "created_ts": now - 600, "max_minutes": 120}]
     b = E.budget(now=now, rows=rows, cap=12.0, reserve=2.0, snapshots=[])
-    assert any("past its kill time" in w["msg"] for w in b["warnings"])
+    assert any("past their kill time" in w["msg"] for w in b["warnings"])
+    assert sum("kill time" in w["msg"] for w in b["warnings"]) == 1          # one line, not one per ghost row
     ghost = next(p for p in b["open_pods"] if p["pod_id"] == "ghost")
     assert ghost["phantom_cost"] == pytest.approx(1.0 * 66 / 60, abs=1e-3)
-    assert b["level"] in ("amber", "red")
-    g = E.launch_gate(1.0, now=now, rows=rows, cap=12.0, snapshots=[])
-    # spent ~5.0 + 0.25 + 0.25, running worst 2 x 1.5 x (126 - 10) / 60 = 5.8 -> 12.3 > 12
+    # the ghost accrues only up to its kill switch + 10 min (remote._row_end), never the 5 h since it was created
+    assert b["spent"] == pytest.approx(1.0 * 70 / 60 + 0.25 + 0.25, abs=1e-3)
+    assert b["level"] == "green"          # a ghost row alone is an info line; it no longer turns every page red
+    assert E.budget(now=now, rows=rows, cap=8.0, reserve=2.0, snapshots=[])["level"] in ("amber", "red")
+    g = E.launch_gate(1.0, now=now, rows=rows, cap=8.0, snapshots=[])
+    # spent 1.167 + 0.25 + 0.25, running worst 2 x 1.5 x (126 - 10) / 60 = 5.8 -> 8.47 > 8
     assert not g["allowed"] and g["running_worst"] == pytest.approx(5.8, abs=0.01)
     assert E.launch_gate(0.1, now=now, rows=rows[1:], cap=12.0, snapshots=[])["allowed"]
     red = E.budget(now=now, rows=rows[1:], cap=3.0, snapshots=[])
@@ -735,7 +749,18 @@ def test_small_review_fixes():
     assert not E.gpu_command("physics") and not E.gpu_command("pose_quality") and not E.gpu_command(
         "hand_mano_worker.run")
     from dancecap import remote
-    assert E._remote_cap() == remote.cap()
+    # the displayed cap is the one the runners use: this process's DANCECAP_RUNPOD_CAP, else the last runner's record
+    assert E._remote_cap() == remote.effective_cap()["cap"]
+    import os
+    old_env = os.environ.get("DANCECAP_RUNPOD_CAP")
+    os.environ["DANCECAP_RUNPOD_CAP"] = "77.5"
+    try:
+        assert E._remote_cap() == remote.cap() == 77.5
+    finally:
+        if old_env is None:
+            os.environ.pop("DANCECAP_RUNPOD_CAP", None)
+        else:
+            os.environ["DANCECAP_RUNPOD_CAP"] = old_env
     sig = E.SessionModel(Path("x"), [], {}, 0.0, {"keys": {"k": {"n": 3, "p50": 1.0, "sigma": 0.05}}}, [])._hist(
         "k", 1.0)[2]
     assert sig >= E.HIST_SIGMA_FLOOR

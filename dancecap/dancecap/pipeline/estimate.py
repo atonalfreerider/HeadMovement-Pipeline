@@ -182,7 +182,7 @@ def cap() -> float:
     if paths.is_real_root():
         try:
             from .. import remote
-            return float(remote.cap())
+            return float(remote.effective_cap()["cap"])  # the cap the runners use (cap_in_use.json), not only this env
         except Exception:  # noqa: BLE001
             pass
     try:

@@ -103,6 +103,8 @@ class JobSpec:
     archives: list[tuple[str, str]] = field(default_factory=list)  # (local .tar[.gz], ws-relative dir to extract into)
     after: list[str] = field(default_factory=list)  # jobs that run first when they are in the same batch
     inputs_if_alone: list[tuple[str, str]] = field(default_factory=list)  # inputs used when no `after` job is in the batch
+    min_vram_gb: float | None = None         # optional: lets the runner try every GPU with this much memory (remote.gpus_for)
+    bundle_pywheels: bool | None = None      # None = by its bootstrap features (bundle_files); True/False forces it
 
     def fingerprint(self) -> str:
         d = asdict(self)
@@ -160,6 +162,8 @@ def _parse_v1(d: dict, source: str | None) -> JobSpec:
     archives = [(str(a["local"]), ws_rel(a["extract_to"]).rstrip("/") if a.get("extract_to") not in (None, "", ".")
                  else "") for a in d.get("archives", [])]
     return JobSpec(archives=archives, after=list(d.get("after", [])), inputs_if_alone=items("inputs_if_alone"),
+                   min_vram_gb=float(d["min_vram_gb"]) if d.get("min_vram_gb") is not None else None,
+                   bundle_pywheels=d.get("bundle_pywheels"),
                    name=d["name"], take=d["take"], max_minutes=mm,
                    commands=[_command(c, i, mm) for i, c in enumerate(d["commands"])],
                    outputs=[ws_rel(o) for o in d["outputs"]], inputs=inputs, needs=list(d.get("needs", [])),
@@ -362,7 +366,36 @@ def _excluded(arc: str, patterns) -> bool:
     return False
 
 
-def code_items() -> list[tuple[Path, str]]:
+BASE_FEATURES = {"base", "check"}   # what every session bootstraps; tool jobs (needs: []) use only these
+
+
+def wheel_policy(jobs: list[JobSpec] | None) -> dict:
+    """Which cached wheel dirs a batch uploads (slim bundles, 2026-10-21). The 330 MB pywheels dir went into EVERY bundle
+    and agents opted out job by job: at the measured home uplink (median 2.1 MB/s, p10 0.73 MB/s) that is 2.6-7.5 min of
+    billed upload per session, while a pod pulls the same wheels from PyPI in seconds.
+    - pywheels: only for batches with a bootstrap feature beyond base/check (their long installs keep the offline-first
+      cache: one host once stalled 20 min on PyPI), or a job with "bundle_pywheels": true. DANCECAP_BUNDLE_PYWHEELS=1/0
+      forces it on/off.
+    - wheelhouse (19 MB of compiled CUDA wheels): only when a feature beyond base/check is needed.
+    jobs=None (code_items() without a batch, the other modules' callers): everything, as before."""
+    if jobs is None:
+        return {"pywheels": True, "wheelhouse": True, "why": "no batch given (legacy default)"}
+    feats = {n for j in jobs for n in j.needs} - BASE_FEATURES
+    forced = os.environ.get("DANCECAP_BUNDLE_PYWHEELS")
+    asked = [j.name for j in jobs if j.bundle_pywheels]
+    refused = jobs and all(j.bundle_pywheels is False for j in jobs)
+    if forced in ("0", "1"):
+        pyw, why = forced == "1", f"DANCECAP_BUNDLE_PYWHEELS={forced}"
+    elif asked:
+        pyw, why = True, f"asked by {asked}"
+    elif refused:
+        pyw, why = False, "every job sets bundle_pywheels false"
+    else:
+        pyw, why = bool(feats), (f"features {sorted(feats)}" if feats else "base/check only: the pod uses PyPI")
+    return {"pywheels": pyw, "wheelhouse": bool(feats), "why": why}
+
+
+def code_items(jobs: list[JobSpec] | None = None) -> list[tuple[Path, str]]:
     items = [(PACKAGE_ROOT / "dancecap", "dancecap/dancecap"), (PACKAGE_ROOT / "takes", "dancecap/takes"),
              (PACKAGE_ROOT / "remote", "dancecap/remote"), (PACKAGE_ROOT / "CONTRACTS.md", "dancecap/CONTRACTS.md")]
     root = env.mamma_root()
@@ -370,9 +403,10 @@ def code_items() -> list[tuple[Path, str]]:
         if p.name in MAMMA_SKIP or p.name.startswith("."):
             continue
         items.append((p, f"mamma-turing/{p.name}"))
-    if WHEELHOUSE.exists():
+    pol = wheel_policy(jobs)
+    if pol["wheelhouse"] and WHEELHOUSE.exists():
         items.append((WHEELHOUSE, f"dancecap/work/runpod/wheelhouse/{WHEEL_KEY}"))
-    if PYWHEELS.exists() and any(PYWHEELS.iterdir()):
+    if pol["pywheels"] and PYWHEELS.exists() and any(PYWHEELS.iterdir()):
         items.append((PYWHEELS, "dancecap/work/runpod/pywheels/cp311-linux"))
     return items
 
@@ -451,7 +485,7 @@ def bundle_files(jobs: list[JobSpec], code: bool = True, models: bool | None = N
     """models=None: the body models go in only when some job needs a feature in MODEL_FEATURES."""
     items: list[tuple[Path | str, str]] = []
     if code:
-        items += code_items()
+        items += code_items(jobs)
     if models or (models is None and any(set(j.needs) & MODEL_FEATURES for j in jobs)):
         items += model_items()
     excl = set(DEFAULT_EXCLUDE)
@@ -749,7 +783,15 @@ def run_session(jobs: list[JobSpec], sid: str | None = None, label: str = "batch
     ses = Session(sid, label)
     ses.state.pop("error", None)  # a resumed session starts clean
     ses.state.pop("bootstrap_rc", None)
+    tag = analysis_tag()
+    if tag:
+        ses.state["analysis"] = tag   # the monitor groups this session under that analysis run (pipeline/analyze.py)
     ses.write_runner_info(label, [j.name for j in jobs])
+    if not dry_run:
+        _monitor_up(ses)
+        remote.record_cap_in_use(ses.sid)
+    if not gpus:
+        gpus = remote.gpus_for([j.min_vram_gb for j in jobs])   # None = remote.GPU_PREFERENCE (the 80 GB list)
     todo = []
     for j in jobs:
         fp = j.fingerprint()
@@ -805,6 +847,148 @@ def run_session(jobs: list[JobSpec], sid: str | None = None, label: str = "batch
     return _finish(ses, pod_info.get("id"))
 
 
+# ---------------------------------------------------------------------------------------------- monitor, snapshots, upload
+
+
+ANALYSIS_RUN_RE = re.compile(r"^[0-9]{8}-[0-9]{6}-[a-z0-9_]{1,48}$")
+
+
+def analysis_tag() -> dict | None:
+    """DANCECAP_ANALYSIS=<run id> (+ DANCECAP_ANALYSIS_STEP=<step>): set by `pipeline analyze` for the sessions it starts,
+    or by an agent driving a step of that analysis by hand."""
+    run = os.environ.get("DANCECAP_ANALYSIS")
+    if not run or not ANALYSIS_RUN_RE.match(run):
+        return None
+    step = os.environ.get("DANCECAP_ANALYSIS_STEP")
+    return {"run": run, "step": step if step and re.fullmatch(r"[a-z0-9_]{1,40}", step) else None}
+
+
+def _monitor_up(ses: Session) -> None:
+    """The dashboard runs whenever a pod session does (owner, 2026-10-21): start it headless if needed, leased to this
+    process. Never fatal."""
+    try:
+        from .pipeline import monitor
+        r = monitor.ensure_running(f"remote run {ses.sid}")
+        if r.get("state") in ("started", "starting"):
+            ses.log("monitor: started the Pipeline Monitor in the background (python -m dancecap.pipeline monitor "
+                    "--launch opens its window)")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def snapshot(ses: Session, event: str, label: str, final: bool = False) -> None:
+    """A dashboard snapshot at a progress point (work/pipeline/snapshots/<analysis run or sid>/): rendered by a detached
+    background process, never in this one's way. Never fatal."""
+    try:
+        from .pipeline import snapshots
+        tag = ses.state.get("analysis") or {}
+        if tag.get("run"):   # several sessions share an analysis's snapshot folder: say which one
+            label = f"{ses.sid[16:] or ses.sid}{' (' + tag['step'] + ')' if tag.get('step') else ''}: {label}"
+            event = f"{tag.get('step') or 'pod'}_{event}"
+        snapshots.request(tag.get("run") or ses.sid, event, label, sid=ses.sid, final=final)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def upload_streams(nbytes: int) -> int:
+    """Parallel ssh streams for a bundle upload: DANCECAP_UPLOAD_STREAMS (default 4) from 24 MB up, else 1 (plain scp).
+    On the shared home uplink each stream gets about the same share when one stream is slow (FARM.md: one stream
+    0.08-0.13 MB/s, four 0.42 MB/s; 2026-10-19..21: 5 single-stream uploads timed out)."""
+    try:
+        n = int(os.environ.get("DANCECAP_UPLOAD_STREAMS", "4"))
+    except ValueError:
+        n = 4
+    return max(1, min(n, 8)) if nbytes >= 24 << 20 else 1
+
+
+class UploadProgress:
+    """<session>/progress/upload.json {total, sent, streams, t0, ts, mbps, done, history[[t, sent]...]}: written by the
+    uploader itself (exact bytes; the monitor shows rate, ETA and a rate history), at most once a second."""
+
+    def __init__(self, sdir: Path, total: int, streams: int):
+        self.p = sdir / "progress" / "upload.json"
+        self.total, self.streams = int(total), streams
+        self.t0 = time.time()
+        self.last = 0.0
+        self.hist: list[list[float]] = [[round(self.t0, 1), 0]]
+        self.sent = 0
+        self._write(False)
+
+    def __call__(self, rel: str, done: int, size: int) -> None:
+        self.sent = done
+        now = time.time()
+        if now - self.last >= 1.0 or done >= size:
+            self.last = now
+            if not self.hist or now - self.hist[-1][0] >= 5 or done >= size:
+                self.hist.append([round(now, 1), done])
+                if len(self.hist) > 400:
+                    self.hist = self.hist[::2]
+            self._write(done >= size)
+
+    def _write(self, done: bool) -> None:
+        try:
+            el = max(1e-3, time.time() - self.t0)
+            obj = {"total": self.total, "sent": self.sent, "streams": self.streams, "t0": round(self.t0, 1),
+                   "ts": round(time.time(), 1), "mbps": round(self.sent / 1e6 / el, 3), "done": done, "history": self.hist}
+            self.p.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.p.with_name(f"upload.json.{os.getpid()}.tmp")
+            tmp.write_text(json.dumps(obj))
+            os.replace(tmp, self.p)
+        except OSError:
+            pass
+
+
+def striped_upload(pod, local: Path, remote_dir: str, streams: int, progress=None) -> dict:
+    """Upload `local` to <remote_dir>/<name> over `streams` parallel ssh connections, resumable per stripe and sha256-checked
+    before the atomic rename (farm.volume.Link.push_file: the volume uploader the farm uses since 2026-10-08)."""
+    from .farm import volume
+    return volume.Link(pod, root=remote_dir).push_file(Path(local), Path(local).name, progress=progress, streams=streams)
+
+
+def components(jobs: list[JobSpec]) -> list[list[JobSpec]]:
+    """Independent groups of a batch: jobs linked by `after` (either way) stay together (one pod); groups share nothing
+    and can run on separate pods at the same time (`remote run --parallel`)."""
+    names = [j.name for j in jobs]
+    parent = {n: n for n in names}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    for j in jobs:
+        for a in j.after:
+            if a in parent:
+                parent[find(a)] = find(j.name)
+    groups: dict[str, list[JobSpec]] = {}
+    for j in jobs:
+        groups.setdefault(find(j.name), []).append(j)
+    return [order_jobs(g) for g in groups.values()]
+
+
+def run_parallel(jobs: list[JobSpec], label: str = "batch", max_cost: float | None = None, gpus: list[str] | None = None,
+                 force: bool = False, dry_run: bool = False, max_minutes: float | None = None,
+                 clouds: list[str] | None = None, max_pods: int = 6) -> dict:
+    """Owner, 2026-10-21: speed over cost. Independent job groups (components) run as separate sessions on separate pods at
+    the same time instead of one after another on one pod; each session keeps every guard of run_session (budget cap,
+    max_cost per session, kill switch, always deleted). At most `max_pods` sessions at once."""
+    from concurrent.futures import ThreadPoolExecutor
+    groups = components(jobs)
+    if len(groups) == 1:
+        return {"sessions": [run_session(jobs, label=label, max_cost=max_cost, gpus=gpus, force=force, dry_run=dry_run,
+                                         max_minutes=max_minutes, clouds=clouds)]}
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+
+    def one(k_g):
+        k, g = k_g
+        time.sleep(3 * k)   # stagger the pod creates (runpodctl, ledger lock)
+        return run_session(g, sid=f"{stamp}-{label}-p{k + 1}", label=f"{label}-p{k + 1}", max_cost=max_cost, gpus=gpus,
+                           force=force, dry_run=dry_run, max_minutes=max_minutes, clouds=clouds)
+    with ThreadPoolExecutor(max_workers=max(1, min(max_pods, len(groups)))) as ex:
+        res = list(ex.map(one, enumerate(groups)))
+    return {"sessions": res, "groups": [[j.name for j in g] for g in groups]}
+
+
 def _start_puller(ses: Session, pod, todo: list[JobSpec], bundle: Path, man: dict):
     """L1 progress puller (dancecap.progress_pull): read-only probe over this pod's ssh every 15 s into
     <session>/progress/. Never fails the session: any import/start problem -> None. DANCECAP_PROGRESS_PULL=0 disables."""
@@ -828,17 +1012,23 @@ def _pod_steps(ses: Session, pod, todo: list[JobSpec], bundle: Path, man: dict, 
     rlog = ses.runner_log
     remote_b = f"{POD_UPLOAD}/{bundle.name}"
 
+    streams = upload_streams(man["bytes"])
+
     def upload():
         have = pod.output(f"mkdir -p {POD_UPLOAD}; [ -f {remote_b} ] && sha256sum {remote_b} | cut -d' ' -f1 || true")
         if have.strip() == man["sha256"]:
             ses.log("upload: pod already has this bundle")
+            return
+        if streams > 1:
+            striped_upload(pod, bundle, POD_UPLOAD, streams, UploadProgress(ses.dir, man["bytes"], streams))
             return
         pod.put(bundle, remote_b + ".part", timeout=max(600, man["bytes"] / 1e6 / 0.5))
         got = pod.output(f"sha256sum {remote_b}.part | cut -d' ' -f1").strip()
         if got != man["sha256"]:
             raise RuntimeError(f"upload sha256 mismatch {got} != {man['sha256']}")
         pod.output(f"mv {remote_b}.part {remote_b}")
-    ses.timed("upload", lambda: _retry(upload, what="upload"), mb=round(man["bytes"] / 1e6, 1))
+    ses.timed("upload", lambda: _retry(upload, what="upload"), mb=round(man["bytes"] / 1e6, 1), streams=streams)
+    snapshot(ses, "upload_done", f"upload of {man['bytes'] / 1e6:.0f} MB done")
 
     marker = f"{POD_WS}/.bundle_{man['key']}.ok"
     ses.timed("extract", lambda: pod.run(
@@ -865,6 +1055,8 @@ def _pod_steps(ses: Session, pod, todo: list[JobSpec], bundle: Path, man: dict, 
     except Exception:
         pass
     ses.state["bootstrap_rc"] = rc
+    snapshot(ses, "bootstrap_done" if rc == 0 else "bootstrap_failed", "bootstrap done" if rc == 0 else
+             f"bootstrap FAILED rc={rc}")
     ses.timed("wheels_back", lambda: _sync_wheels(pod, ses))
     if rc != 0:
         ses.log(f"bootstrap failed (rc={rc}); see {ses.dir / 'bootstrap.log'} - jobs will still be attempted "
@@ -1001,6 +1193,7 @@ def _run_job(ses: Session, pod, job: JobSpec, st: dict) -> None:
     st["seconds"] = round(time.time() - st["started"], 1)
     ses.log(f"{job.name}: {st['status']} ({st['seconds']:.0f}s)")
     ses.save()
+    snapshot(ses, f"job_{job.name}", f"{job.name}: {st['status']}")
 
 
 def _finish(ses: Session, pod_id: str | None) -> dict:
@@ -1022,6 +1215,10 @@ def _finish(ses: Session, pod_id: str | None) -> dict:
     res["remaining"] = round(remote.remaining(), 4)
     (ses.dir / "result.json").write_text(json.dumps(res, indent=1, default=str))
     ses.event("fail" if res.get("error") else "end", "session", msg=f"session ended: {res.get('error') or 'ok'}")
+    if pod_id:
+        bad = [k for k, v in res["jobs"].items() if v.get("status") != "ok"]
+        snapshot(ses, "session_end", "session ended: " + (res.get("error") or (f"not ok: {bad}" if bad else "ok"))[:120],
+                 final=True)
     try:  # refresh the ETA history (work/progress/rates.json; derived, rebuildable, never fatal)
         if pod_id:
             from . import progress_eta
