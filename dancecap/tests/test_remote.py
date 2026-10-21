@@ -56,7 +56,43 @@ def test_spent_counts_open_and_closed_rows(tmp_path, monkeypatch):
 def test_default_cap_is_106_7(monkeypatch):
     monkeypatch.delenv("DANCECAP_RUNPOD_CAP", raising=False)
     assert remote.DEFAULT_CAP == 106.7  # J3b 2026-10-11 (101.7 on 2026-10-09, 80 on 2026-10-07)
-    assert remote.cap() == 106.7
+    assert remote.cap() == 106.7         # only when the balance was never read (conftest turns the live read off)
+
+
+def test_cap_follows_the_runpod_balance(tmp_path, monkeypatch):
+    monkeypatch.setattr(remote, "LEDGER", tmp_path / "ledger.json")
+    monkeypatch.setattr(remote, "BALANCE_CAP", tmp_path / "balance_cap.json")
+    now = time.time()
+    (tmp_path / "ledger.json").write_text(json.dumps(
+        [{"pod_id": "a", "cost_per_hr": 3.6, "created_ts": now - 3600, "deleted_ts": now - 3000, "cost": 0.6}]))
+    calls = []
+
+    def fake_ctl(*args, **kw):
+        calls.append(args)
+        return {"clientBalance": 62.7, "spendLimit": 80}
+
+    monkeypatch.setattr(remote, "_ctl", fake_ctl)
+    monkeypatch.delenv("DANCECAP_RUNPOD_CAP", raising=False)
+    monkeypatch.delenv("DANCECAP_RUNPOD_BALANCE")
+    assert remote.cap() == round(0.6 + 62.7 - 2.0, 2)                  # spent + balance - reserve
+    assert abs(remote.remaining() - 60.7) < 0.01
+    assert len(calls) == 1                                              # memoised: one runpodctl call per minute
+    assert json.loads((tmp_path / "balance_cap.json").read_text())["cap"] == 61.3
+    monkeypatch.setenv("DANCECAP_RUNPOD_CAP", "balance")
+    assert remote.cap() == 61.3
+    monkeypatch.setenv("DANCECAP_RUNPOD_CAP", "20")                      # an explicit cap is honoured as given
+    assert remote.cap() == 20.0
+    monkeypatch.delenv("DANCECAP_RUNPOD_CAP")
+
+    def down(*args, **kw):
+        raise RuntimeError("runpodctl user failed (1)")
+
+    monkeypatch.setattr(remote, "_ctl", down)
+    monkeypatch.setattr(remote, "_balance_memo", {})
+    assert remote.cap() == 61.3                                         # Runpod unreachable: the last good read, not DEFAULT_CAP
+    (tmp_path / "balance_cap.json").unlink()
+    monkeypatch.setattr(remote, "_balance_memo", {})
+    assert remote.cap() == remote.DEFAULT_CAP
 
 
 def test_create_args_request_direct_ssh(monkeypatch):

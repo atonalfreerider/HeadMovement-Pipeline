@@ -4,8 +4,9 @@ Basic GPU work (YOLO, ma_2d inference, beats, Unity) stays local; anything that 
 2080 Ti for a long time runs on a rented 80 GB GPU here.
 
 Safety and cost rules (user decisions, 2026-10-06):
-- Spending cap (default $30, override with DANCECAP_RUNPOD_CAP) enforced from work/runpod/ledger.json BEFORE a pod
-  is created: remaining budget must cover cost_per_hour x max_minutes.
+- Spending cap enforced from work/runpod/ledger.json BEFORE a pod is created: remaining budget must cover
+  cost_per_hour x max_minutes. It follows the Runpod account (ledger spend + live balance - $2, owner 2026-10-21);
+  DANCECAP_RUNPOD_CAP=<dollars> overrides it.
 - Every pod gets two kill switches: an on-pod timer (`sleep N; runpodctl remove pod $RUNPOD_POD_ID`, using the
   pod-scoped key Runpod injects) and a local `finally:` delete. The ledger is updated on delete.
 - API key from RUNPOD_API_KEY or the file in DANCECAP_RUNPOD_KEY_FILE (default ~/Desktop/runpod-key.txt); it is
@@ -89,7 +90,51 @@ def _ctl_rc(*args: str, timeout: float = 900) -> tuple[int, dict | list | str]:
 # ---------------------------------------------------------------------------
 
 def cap() -> float:
-    return float(os.environ.get("DANCECAP_RUNPOD_CAP", DEFAULT_CAP))
+    """The spend cap every budget gate uses: DANCECAP_RUNPOD_CAP=<dollars> as given; unset (or "balance") it follows the Runpod
+    account (balance_cap()); DEFAULT_CAP only when the balance has never been read."""
+    env = os.environ.get("DANCECAP_RUNPOD_CAP", "").strip()
+    if env and env.lower() != "balance":
+        return float(env)
+    c = balance_cap()
+    return float(DEFAULT_CAP) if c is None else c
+
+
+BALANCE_RESERVE = 2.0   # = farm.pods.MIN_BALANCE_RESERVE: a pod is never cut off at a zero balance
+BALANCE_CAP = PACKAGE_ROOT / "work" / "runpod" / "balance_cap.json"
+BALANCE_TTL_S = 60.0
+_balance_memo: dict = {}
+
+
+def balance_cap(max_age: float = BALANCE_TTL_S) -> float | None:
+    """The cap that follows the account (owner 2026-10-21, after adding $50: "use the runpod amount to set the spending cap"):
+    ledger spend + the live clientBalance - BALANCE_RESERVE, so remaining() = balance - reserve at the read. Runpod is asked at
+    most every `max_age` s; the last good value is kept in work/runpod/balance_cap.json and used when Runpod can't be reached,
+    so an API hiccup never drops the cap under what is already spent (farm watchers read remaining()). None when it was never
+    read, or with DANCECAP_RUNPOD_BALANCE=off (the tests)."""
+    if os.environ.get("DANCECAP_RUNPOD_BALANCE", "").strip().lower() in ("off", "0", "no", "false"):
+        return None
+    now = time.time()
+    if _balance_memo and now - _balance_memo["ts"] < max_age:
+        return _balance_memo["cap"]
+    c = None
+    try:
+        me = _ctl("user", check=False, timeout=30)
+        if isinstance(me, dict) and me.get("clientBalance") is not None:
+            bal, sp = float(me["clientBalance"]), spent()
+            c = round(sp + bal - BALANCE_RESERVE, 2)
+            BALANCE_CAP.parent.mkdir(parents=True, exist_ok=True)
+            tmp = BALANCE_CAP.with_name(f"{BALANCE_CAP.name}.{os.getpid()}.tmp")
+            tmp.write_text(json.dumps({"cap": c, "balance": round(bal, 4), "spent": round(sp, 4), "ts": now}))
+            os.replace(tmp, BALANCE_CAP)
+    except Exception:  # noqa: BLE001 - no key, no runpodctl, timeout, ledger busy: fall back to the last good read
+        pass
+    if c is None:
+        try:
+            c = float(json.loads(BALANCE_CAP.read_text())["cap"])
+        except (OSError, ValueError, TypeError, KeyError):
+            return None
+    _balance_memo.update(ts=now, cap=c)
+    return c
 
 
 def ledger() -> list[dict]:
