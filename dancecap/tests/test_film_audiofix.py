@@ -9,7 +9,10 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from dancecap import film_audiofix as fa
+import sys  # noqa: E402
+from pathlib import Path as _Path  # noqa: E402
+sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))  # run from the workspace root too
+from dancecap import film_audiofix as fa  # noqa: E402
 
 needs_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None, reason="ffmpeg / ffprobe not on PATH")
 
