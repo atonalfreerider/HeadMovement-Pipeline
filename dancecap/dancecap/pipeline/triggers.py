@@ -13,7 +13,8 @@ moves export's clock), so the viewer can switch a visualisation on when, e.g., c
 
 Layer contract with the viewer (head-movement Assets/Tour/DanceLayers.cs, `Handles`): `layers` are the detailed
 visual elements of a trigger (counterbalance.axis, leader.floor_axis, ...); `viewer_layers` are the DanceLayers ids
-that draw them (counterbalance | traces | graph | neck | axis | floorcraft | balance), through the [viewer.map] table of
+that draw them (counterbalance | traces | graph | neck | axis | floorcraft | balance | moves | contacts |
+rhythm), through the [viewer.map] table of
 taxonomy/triggers.toml. Only ids in [viewer] layers are ever emitted, so a trigger never names a layer the viewer
 does not have. The export runs after demo_export (python -m dancecap.pipeline export, and the demo_export stage).
 """
@@ -43,7 +44,7 @@ DEFAULT_RULES = {
     },
     "viewer": {
         # DanceLayers.Handles (head-movement Assets/Tour/DanceLayers.cs)
-        "layers": ["counterbalance", "traces", "graph", "neck", "axis", "floorcraft", "balance"],
+        "layers": ["counterbalance", "traces", "graph", "neck", "axis", "floorcraft", "balance", "moves", "contacts", "rhythm"],
         "map": {"counterbalance.axis": "counterbalance", "counterbalance.pivot_ring": "counterbalance",
                 "leader.arc": "counterbalance", "follower.spiral": "traces", "follower.head_axis": "neck",
                 "leader.floor_axis": "axis", "leader.plant_ring": "floorcraft", "leader.rotation_arc": "floorcraft",

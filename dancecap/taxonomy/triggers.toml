@@ -11,7 +11,7 @@ fade_s = 0.2           # viewer cross-fade at the interval edges
 # The viewer's layer ids (head-movement Assets/Tour/DanceLayers.cs, Handles()): every trigger carries
 # viewer_layers = the ids below that draw its detailed layers (map). An id not listed here is never emitted.
 [viewer]
-layers = ["counterbalance", "traces", "graph", "neck", "axis", "floorcraft", "balance"]
+layers = ["counterbalance", "traces", "graph", "neck", "axis", "floorcraft", "balance", "moves", "contacts", "rhythm"]
 
 [viewer.map]
 "counterbalance.axis" = "counterbalance"
