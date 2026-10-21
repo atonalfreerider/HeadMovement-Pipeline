@@ -1,0 +1,52 @@
+{
+ "schema": "dancecap.pod_job/1",
+ "name": "jl_hair_proof_swing",
+ "take": "john_lula",
+ "max_minutes": 25,
+ "needs": [],
+ "inputs": [
+  "dancecap/work/john_lula/realism/v2/hair/input/",
+  "dancecap/work/john_lula/realism/v2/hair/bundle/"
+ ],
+ "exclude": [
+  "dancecap/work/runpod/pywheels",
+  "dancecap/work/runpod/wheelhouse",
+  "mamma-turing"
+ ],
+ "env": {
+  "LHMPP_COMMIT": "906b5d9fb967ab42efb92f6fa55bf22cac86b653",
+  "LHMPP_ROOT": "/workspace/lhmpp_cand/LHM-plusplus",
+  "LHMPP_VENV": "/workspace/lhmpp_cand/venv",
+  "LHMPP_MODEL": "LHMPP-700M-PixelShuffle",
+  "TORCH_HOME": "/workspace/lhmpp_cand/torch_home",
+  "HF_HOME": "/workspace/lhmpp_cand/hf_home"
+ },
+ "commands": [
+  {
+   "name": "install",
+   "timeout_min": 35,
+   "cmd": "bash remote/cand_lhmpp/install.sh"
+  },
+  {
+   "name": "render",
+   "timeout_min": 20,
+   "cmd": "/workspace/lhmpp_cand/venv/bin/python remote/cand_lhmpp/lhmpp_render_pod.py --input work/john_lula/realism/v2/hair/input --out work/john_lula/realism/v2/hair/pod_out_swing --renders work/john_lula/realism/v2/hair/renders --hair work/john_lula/realism/v2/hair/bundle --only orbit_swing,close_swing"
+  }
+ ],
+ "outputs": [
+  "dancecap/work/john_lula/realism/v2/hair/pod_out_swing/",
+  "dancecap/work/john_lula/realism/v2/hair/renders/orbit_swing/",
+  "dancecap/work/john_lula/realism/v2/hair/renders/close_swing/"
+ ],
+ "verify": [
+  "dancecap/work/john_lula/realism/v2/hair/pod_out_swing/lhmpp_render_pod.json",
+  "dancecap/work/john_lula/realism/v2/hair/renders/orbit_swing/00330.png",
+  "dancecap/work/john_lula/realism/v2/hair/renders/close_swing/00330.png"
+ ],
+ "after_download": [
+  "python -m dancecap.mono4d.splat_hair jl-proof import --session <sid>"
+ ],
+ "notes": [
+  "john_lula swinging-hair proof (splat_hair): the realism run's LHM++ avatars (same refs, same poses = the current best fit), orbit 9-20 s + a close-up of Lula, rigid vs swinging ponytail (free hair Gaussians on simulated strands); crops go to our own pod only (owner consent 2026-10-19)"
+ ]
+}

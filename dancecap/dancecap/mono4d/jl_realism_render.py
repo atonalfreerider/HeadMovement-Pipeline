@@ -548,8 +548,17 @@ def prep(fit_dir: Path = FIT_DIR) -> dict:
 
 
 # ================================================================================================ pod job
-def job(max_minutes: float = 50) -> Path:
+def job(max_minutes: float = 50, hair: Path | None = None) -> Path:
+    """hair: a splat_hair bundle dir (hair.json + <role>_hair.npz + <role>_tracks.npz, see `splat_hair render-tracks`):
+    the job then uploads it, passes --hair to the pod and is written as pod_job_jl_final_hair.json (name
+    jl_lhmpp_final_hair); its renders go to realism/v2/renders/swing/ and its pod report / canonical PLYs to
+    realism/v2/renders/pod_out_swing/ (unless --renders names another render dir), so the rigid run is never overwritten."""
     rel = lambda p: _ws(p)[len("dancecap/"):]  # noqa: E731 - cwd of the commands is dancecap/
+    ren_dir, pod_dir = RENDERS, POD_OUT
+    if hair is not None:
+        if Path(RENDERS).resolve() == (REAL / "renders").resolve():
+            ren_dir = REAL / "v2" / "renders" / "swing"
+        pod_dir = Path(ren_dir).parent / "pod_out_swing"
     groups = [g for p in PASSES for g in p]
     vj = json.loads((INPUT / "views.json").read_text())
     last = {g: f"{vj['groups'][g]['n'] - 1:05d}.png" for g in groups}
@@ -564,10 +573,10 @@ def job(max_minutes: float = 50) -> Path:
              {"name": "install", "timeout_min": 35, "cmd": "bash remote/cand_lhmpp/install.sh"},
              {"name": "render", "timeout_min": 40,
               "cmd": f"/workspace/lhmpp_cand/venv/bin/python remote/cand_lhmpp/lhmpp_render_pod.py --input "
-                     f"{rel(INPUT)} --out {rel(POD_OUT)} --renders {rel(RENDERS)}"}],
-         "outputs": [_ws(POD_OUT) + "/"] + [_ws(RENDERS / g) + "/" for g in groups],
-         "verify": [_ws(POD_OUT / "lhmpp_render_pod.json"), _ws(POD_OUT / "gs" / "lead_cano.ply"),
-                    _ws(POD_OUT / "gs" / "follow_cano.ply")] + [_ws(RENDERS / g / last[g]) for g in groups],
+                     f"{rel(INPUT)} --out {rel(pod_dir)} --renders {rel(ren_dir)}"}],
+         "outputs": [_ws(pod_dir) + "/"] + [_ws(ren_dir / g) + "/" for g in groups],
+         "verify": [_ws(pod_dir / "lhmpp_render_pod.json"), _ws(pod_dir / "gs" / "lead_cano.ply"),
+                    _ws(pod_dir / "gs" / "follow_cano.ply")] + [_ws(ren_dir / g / last[g]) for g in groups],
          "after_download": ["python -m dancecap.mono4d.jl_realism_render import --session <sid>"],
          "notes": ["LHM++ (LHMPP-700M-PixelShuffle, CC BY-NC 4.0 weights) avatars of John and Lula (take john_lula) from "
                    "the preview's lhmpp_video8_photofull crops (John: whole visible photo mask first + 8 video crops; "
@@ -575,9 +584,17 @@ def job(max_minutes: float = 50) -> Path:
                    "Body fit (refined, audit-patched) for the whole dance: tutorial front 1920x1080, the phone path "
                    "538x960 + 1080x1920, a 25 s orbit 1080x1080; weights stay on the pod; crops go to our own pod only "
                    "(owner consent 2026-10-19)"]}
-    JOB_PATH.write_text(json.dumps(d, indent=1), newline="\n")
-    log(f"job -> {JOB_PATH}")
-    return JOB_PATH
+    path = JOB_PATH
+    if hair is not None:
+        hair = Path(hair)
+        d["name"] = JOB_NAME + "_hair"
+        d["inputs"].append(_ws(hair) + "/")
+        d["commands"][1]["cmd"] += f" --hair {rel(hair)}"
+        d["notes"].append(f"swinging hair: dancecap.mono4d.splat_hair bundle {_ws(hair)} (groups in its hair.json)")
+        path = JOB_PATH.with_name(JOB_PATH.stem + "_hair.json")
+    path.write_text(json.dumps(d, indent=1), newline="\n")
+    log(f"job -> {path}")
+    return path
 
 
 # ================================================================================================ import
@@ -841,16 +858,25 @@ def main(argv=None) -> int:
     p.add_argument("--fit", default=str(FIT_DIR))
     p = sub.add_parser("job")
     p.add_argument("--max-minutes", type=float, default=50)
+    p.add_argument("--hair", default=None, help="splat_hair bundle dir: swinging hair for the groups in its hair.json")
+    p.add_argument("--renders", default=None, help="render dir (default realism/renders; another one keeps those)")
     p = sub.add_parser("import")
     p.add_argument("--session")
     p = sub.add_parser("videos")
     p.add_argument("--only", default="front,sbs,orbit")
+    p.add_argument("--renders", default=None, help="read renders from this dir (default realism/renders)")
+    p.add_argument("--videos", default=None, help="write videos to this dir (default realism/videos)")
     sub.add_parser("sheets")
     a = ap.parse_args(argv)
+    global RENDERS, VIDEOS
+    if getattr(a, "renders", None):
+        RENDERS = Path(a.renders).resolve()
+    if getattr(a, "videos", None):
+        VIDEOS = Path(a.videos).resolve()
     if a.cmd == "prep":
         prep(Path(a.fit))
     elif a.cmd == "job":
-        job(a.max_minutes)
+        job(a.max_minutes, Path(a.hair) if a.hair else None)
     elif a.cmd == "import":
         import_run(a.session)
     elif a.cmd == "videos":

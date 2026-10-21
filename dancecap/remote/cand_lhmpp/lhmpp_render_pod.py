@@ -78,8 +78,12 @@ def main() -> int:
     ap.add_argument("--reserve-min", type=float, default=5.0, help="minutes kept for pack + download overhead")
     ap.add_argument("--download-mbps", type=float, default=8.0, help="assumed download MB/s for the reserve")
     ap.add_argument("--only", default="", help="comma list of groups (debug)")
+    ap.add_argument("--hair", default="", help="swinging hair (dancecap.mono4d.splat_hair): a dir with hair.json + "
+                                               "<role>_hair.npz + <role>_tracks.npz; the groups listed in hair.json get "
+                                               "the free hair Gaussians on the simulated strands (default: off)")
     a = ap.parse_args()
     inp, out, ren = Path(a.input).resolve(), Path(a.out).resolve(), Path(a.renders).resolve()
+    hair_dir = Path(a.hair).resolve() if a.hair else None   # before the chdir to the LHM++ root
     out.mkdir(parents=True, exist_ok=True)
     report = {"model": a.model_name, "root": a.root, "timings": {}, "dancers": {}, "groups": {}, "errors": [],
               "stopped_early": None,
@@ -253,11 +257,42 @@ def main() -> int:
         save_report()
         return 3
 
+    # ------------------------------------------------------------------ swinging hair (optional, --hair)
+    hair = None
+    if a.hair:
+        try:
+            sh = _load_module("_splat_hair", str(Path(__file__).resolve().parents[2] / "dancecap" / "mono4d" / "splat_hair.py"))
+            hair = sh.PodHair(hair_dir)
+            for role in ROLES:
+                cg = A[role]["cano"]
+                rep_h = hair.attach(role, cg.xyz.detach().float().cpu().numpy(), cg.rotation.detach().float().cpu().numpy())
+                if rep_h is not None:
+                    A[role]["hair_core"] = torch.tensor(hair.core_indices(role), dtype=torch.long, device="cuda")
+                    log(f"hair {role}: {rep_h}")
+            report["hair"] = hair.report
+        except Exception as ex:  # noqa: BLE001
+            report["errors"].append(f"hair: {type(ex).__name__}: {ex}")
+            log(traceback.format_exc())
+            hair = None
+        save_report()
+        if hair is None:          # asked for swinging hair and could not set it up: render nothing rather than rigid
+            report["errors"].append("--hair given but the hair setup failed: nothing rendered")
+            save_report()
+            return 3
     n_l = A["lead"]["opacity"].shape[0]
     cols = torch.cat([A["lead"]["rgb"], A["follow"]["rgb"]]).contiguous()
     scl = torch.cat([A["lead"]["scale"], A["follow"]["scale"]]).contiguous()
     opa = torch.cat([A["lead"]["opacity"], A["follow"]["opacity"]]).contiguous()
     report["gaussians_total"] = int(opa.shape[0])
+    cols_h = cols
+    if hair is not None:          # the swinging groups: the body surface the free hair hid gets its neighbours' colour
+        for ri, role in enumerate(ROLES):
+            fl = hair.fill(role)
+            if fl is not None:
+                if cols_h is cols:
+                    cols_h = cols.clone()
+                cols_h[torch.tensor(fl[0] + (0 if ri == 0 else n_l), dtype=torch.long, device="cuda")] = \
+                    torch.tensor(fl[1], dtype=torch.float32, device="cuda")
 
     # ------------------------------------------------------------------ canonical turntables (front, left, back, right)
     try:
@@ -357,6 +392,21 @@ def main() -> int:
             for n, k in enumerate(kk):
                 means = torch.cat([xyz["lead"][n], xyz["follow"][n]])
                 quats = torch.cat([rot["lead"][n], rot["follow"][n]])
+                means_h = quats_h = None
+                if hair is not None and any(c[1] in hair.groups for c in by_key[int(k)]):
+                    means_h, quats_h = means.clone(), quats.clone()
+                    for ri, role in enumerate(ROLES):
+                        if not hair.has(role, int(k)):
+                            continue
+                        try:
+                            core = xyz[role][n][A[role]["hair_core"]].double().cpu().numpy()
+                            fidx, fm, fq = hair.pose(role, int(k), core)
+                            off = 0 if ri == 0 else n_l
+                            it = torch.tensor(fidx + off, dtype=torch.long, device="cuda")
+                            means_h[it] = torch.tensor(fm, dtype=torch.float32, device="cuda")
+                            quats_h[it] = torch.tensor(fq, dtype=torch.float32, device="cuda")
+                        except Exception as ex:  # noqa: BLE001
+                            report["errors"].append(f"hair pose {role} key {int(k)}: {type(ex).__name__}: {ex}")
                 if not scene_done and k == int(vj.get("scene_key", -1)):
                     try:
                         from core.structures.gaussian_model import GaussianModel
@@ -377,9 +427,11 @@ def main() -> int:
                         K = Km[j].clone()
                         K[0, 2] += 0.5
                         K[1, 2] += 0.5
+                        hm = hair is not None and g in hair.groups and means_h is not None
                         with torch.no_grad():
-                            img, alpha, _ = rasterization(means=means, quats=quats, scales=scl, opacities=opa,
-                                                          colors=cols, viewmats=vm[None], Ks=K[None], width=Wd,
+                            img, alpha, _ = rasterization(means=means_h if hm else means, quats=quats_h if hm else quats,
+                                                          scales=scl, opacities=opa,
+                                                          colors=cols_h if hm else cols, viewmats=vm[None], Ks=K[None], width=Wd,
                                                           height=Hd, near_plane=0.01, far_plane=100.0, eps2d=0.3,
                                                           render_mode="RGB", backgrounds=torch.zeros(1, 3, device="cuda"),
                                                           camera_model="pinhole", rasterize_mode="classic")
@@ -405,6 +457,8 @@ def main() -> int:
             break
     pool.shutdown(wait=True)
     report["written"] = {"files": written["files"], "mb": round(written["bytes"] / 1e6, 1)}
+    if hair is not None:
+        report["hair"] = hair.summary()
     report["peak_gpu_gb"] = round(torch.cuda.max_memory_allocated() / 2**30, 2)
     for g, gi in report["groups"].items():
         gi["files_on_disk"] = sum(1 for _ in (ren / g).glob("*.png"))
