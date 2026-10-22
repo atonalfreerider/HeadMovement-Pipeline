@@ -340,11 +340,14 @@ def test_slim_bundles_by_bootstrap_features(monkeypatch):
     fit = _job("fit", needs=["mamma"])
     assert rj.wheel_policy([tool]) == {"pywheels": False, "wheelhouse": False,
                                        "why": "base/check only: the pod uses PyPI"}
-    assert rj.wheel_policy([tool, fit])["pywheels"] and rj.wheel_policy([fit])["wheelhouse"]
+    # 2026-10-22: uv fetches every feature's wheels on the pod in seconds, so pywheels go up only when asked for
+    assert not rj.wheel_policy([tool, fit])["pywheels"] and rj.wheel_policy([fit])["wheelhouse"]
     assert rj.wheel_policy(None)["pywheels"]                       # other modules' callers: unchanged
     assert rj.wheel_policy([_job("x", bundle_pywheels=True)])["pywheels"]
+    monkeypatch.setenv("DANCECAP_BUNDLE_PYWHEELS", "1")
+    assert rj.wheel_policy([fit])["pywheels"]
     monkeypatch.setenv("DANCECAP_BUNDLE_PYWHEELS", "0")
-    assert not rj.wheel_policy([fit])["pywheels"]
+    assert not rj.wheel_policy([_job("x", bundle_pywheels=True)])["pywheels"]
     monkeypatch.delenv("DANCECAP_BUNDLE_PYWHEELS")
     arcs = [a for _, a in rj.code_items([tool])]
     assert not any("pywheels" in a or "wheelhouse" in a for a in arcs) and "dancecap/dancecap" in arcs
@@ -354,7 +357,8 @@ def test_components_split_independent_jobs():
     jobs = [_job("a"), _job("b", after=["a"]), _job("c"), _job("d", after=["zz"])]
     groups = sorted([[j.name for j in g] for g in rj.components(jobs)])
     assert groups == [["a", "b"], ["c"], ["d"]]
-    assert rj.upload_streams(10 << 20) == 1 and rj.upload_streams(300 << 20) == 4
+    # striped from 2 MB since 2026-10-22 (a 6.9 MB bundle took 30.8 s over one stream)
+    assert rj.upload_streams(1 << 20) == 1 and rj.upload_streams(10 << 20) == 4 and rj.upload_streams(300 << 20) == 4
 
 
 def test_gpu_ladder_and_broken_hosts(tmp_path, monkeypatch):

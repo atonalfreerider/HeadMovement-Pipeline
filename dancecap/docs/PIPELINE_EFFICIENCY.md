@@ -430,6 +430,145 @@ farm_view}.py`, `pipeline/monitor/`, `progress_eta.py`. Tests: `tests/test_runne
 
 ---
 
+## 7d. Round 3 (2026-10-22): ready pods
+
+Task: cut the remote runner's per-session overhead. In the trial run `20261021-202809-trial_mono_jl20` the SAM 3D Body
+session (`20261021-203248-batch`) spent **443 s** from pod ready to compute start (upload 24 s, bootstrap 143 s of which
+`base` 138 s, the tool install 264 s) and the analyses session (`20261021-205148-batch`) **361 s** (upload of 146 MB 68 s,
+bootstrap 285 s of which `base` 152 s and `open3d` 102 s), all one step after the other.
+
+"Pod ready" below = the CUDA check passed and the kill switch is armed (the moment `pod_session` hands the pod over);
+"compute start" = the first job command that is not a setup command (`SETUP_COMMANDS`: install, setup, weights, ...).
+Every session now records it: `state.json` `ready_to_compute_s` and a runner.log line `pod ready -> compute`.
+
+### 7d.1 What the candidates measured
+
+A probe session (`20261022-003300-batch`, one 4090, $0.075) timed each candidate on a fresh pod, cold caches:
+
+| Step | Seconds |
+|---|---|
+| `pip install uv` | 1.3 |
+| uv, ONE call: torch 2.5.1+cu124 + every `base`, `mamma` and `open3d` pin (the trial's pip: 138 + 24 + 102 s) | **11.2** |
+| uv, SAM 3D Body's venv in ONE call: Python 3.12, torch 2.8+cu126, all deps, pymomentum (the trial: 237 s) | **14.0** |
+| the same install again from the warm uv cache | 0.6 |
+| the three repos (sam-3d-body, MHR, dinov3) fetched by commit with `--depth 1`, side by side | 0.7 |
+| apt (EGL / GL / OpenMP libs, pigz) | 9.3 |
+| packing that venv as an env tar (3.75 GB) / unpacking it | 127 / 44 |
+
+What follows for the four candidates:
+- **A prebuilt container image**: not built. The environments it would hold install in 11-14 s with uv, which is less than
+  unpacking the same environment from a tar (44 s) and far less than pulling a multi-GB image onto a host that has not
+  cached it (FARM.md: an uncached image adds its pull time). It would also need a registry account and a build host (this
+  PC has no Docker by owner decision). With the bootstrap now running next to the upload (below) the environment is off the
+  critical path anyway.
+- **Environments and weights on a network volume**: the environments, no (same reason). The weights, yes, built as the
+  **volume route** on the existing `hm-farm` volume (EU-RO-1): it already holds the gated body models and the ma_2d
+  checkpoint's state_dict copy (`farm.volume.sync_models`). No volume was created in another data center: that is a standing
+  charge (~$0.07/GB-month) and the pods that miss EU-RO-1 still work (they get those files in a side bundle).
+- **Public weights fetched on the pod**: the ma_2d checkpoint and the SMPL-X / MAMMA body models are NOT public (the MAMMA
+  download needs an account login, the SMPL-X models a licence), so they cannot be fetched by the pod. SAM 2.1, YOLO and
+  the gated SAM 3D Body checkpoint (with the HF token secret) were already fetched on the pod; the 2.8 GB 3DB checkpoint came
+  down in 5-11 s.
+- **Warm pods with a job queue**: not built. With pod create to ready at 30-60 s and ready to compute now 1-2 min, a warm
+  pod would save about 1.5-3 min per session while billing every idle minute and needing an adopt/claim protocol and an
+  extendable kill switch. Left as a follow-up for chained analyze steps.
+
+### 7d.2 What changed
+
+- **Parallel boot** (`remote_jobs.start_boot` / `wait_boot`): one ssh call sends the boot kit (`dancecap/remote/`, 108 KB,
+  through stdin) and starts `bootstrap.sh` in the background the moment the pod is ready; the bundle uploads next to it.
+  Steps that need a bundle file (the cached CUDA wheels) wait for a marker the runner touches after the extract
+  (`DANCECAP_WAIT_BUNDLE`). The runner then waits only for what is left (`state.json` `boot`: total vs waited). If the start
+  fails, the bootstrap runs after the extract as before; a failed bootstrap is still retried once in the foreground.
+- **Setup commands at pod-ready** (`early_commands` / `start_early` / `wait_early`): the leading setup commands
+  (`install`, `setup`, ...; or `"early": true`) of a job that brings its own environment start right after the boot kit, with
+  their secrets pushed first, in a thread next to the upload. When the job reaches the command it follows its log to the
+  end; the command's `.done` marker makes the normal run a no-op (or runs it again if the early one failed).
+- **uv in `bootstrap.sh`**: every install tries uv first (pip is the fallback, `DANCECAP_NO_UV=1` forces pip); one
+  `prefetch` uv call installs every requested feature's pins at once (`PINS_<feature>`); apt runs in the background and only
+  the features that load GL / EGL / OpenMP libs wait for it (open3d, room, check); `apt-get update` reads only Ubuntu's own
+  lists (one update took ~90 s on a host whose image also lists NVIDIA's CUDA repo).
+- **Jobs with their own environment** (`"base": false`): no `base` / `check` bootstrap (SAM 3D Body's 143 s), and no
+  implied ffmpeg for a video input unless a command names ffmpeg / ffprobe (its venv's cv2 decodes; the static build's
+  GitHub download competed with the install). The SAM 3D Body job writers and `remote/cand_sam3d_body/pod_job*.json` set it.
+- **SAM 3D Body install** (`remote/cand_sam3d_body/install.sh`): one uv call (step-by-step as the fallback), the uv cache next
+  to the venv (hardlinks), the repos fetched by commit with `--depth 1` in the background, the four import checks side by side.
+- **The volume route** (`remote.with_volume` / `VOL_CLOUD`, `remote_jobs.volume_split` / `place_served`): bundle files the
+  farm volume holds (MAMMA locked-head and `smplx/` models, the ma_2d state_dict copy; >= 8 MB) leave the bundle. Each GPU
+  type (and every CPU flavor) is tried first in the volume's data center with the volume mounted at `/hmvol`; there the files
+  are linked after an on-pod sha256 check. Any other pod, or a file whose hash differs, gets them in a side bundle (uploaded
+  and extracted in place). `DANCECAP_RUNNER_VOLUME=0` turns it off.
+- **The ma_2d checkpoint** goes up as its 540 MB state_dict copy whenever a job lists the 1.6 GB file (`slim_input`; the copy's
+  json note says the tensors are identical, sizes are checked). The trial's agent-written front job uploaded the 1.6 GB file.
+- **Slim body models for the analyses** (`job_models`): a job whose commands are all analyses (timing, physics,
+  counterbalance, floorcraft, quality, stitch) and whose fits are neutral gets SMPLX_NEUTRAL only (`"models"` overrides).
+- **CPU pods** (`"cpu": true`, `remote run --cpu [--vcpu N]`, and automatically for analysis-only jobs unless the caller
+  passes GPUs or the job says `"cpu": false`): Secure-Cloud CPU pods through the REST API, the flavor and size picked from the
+  v2 catalog (`/v2/catalog/cpus`: at 16 vCPUs only EUR-IS-1 had stock, at 8 the cpu3 flavors were in EU-RO-1), the CPU torch
+  wheels, no CUDA extension, no CUDA check. GPU-only features (room, gsplat, dancers) are refused.
+- **Host RAM / vCPUs** (`"min_ram_gb"`, `"min_vcpu"`, and front_pod / front_full by kind: 24 vCPUs, 96 GB; two A100 PCIe
+  sessions with 9 vCPUs ended rc=137, the 28-vCPU ones passed): such a GPU pod is created through REST with `minRAMPerGPU` /
+  `minVCPUPerGPU`; every pod's record (`vcpuCount`, `memoryInGb`) is kept in `state.json` `pod.machine` and a host under the
+  minimums is deleted and the next option tried.
+- Smaller things: bundles are striped over 4 streams from 2 MB (a 6.9 MB bundle took 30.8 s over one), the pywheels dir goes
+  up only on request (uv fetches the wheels), no `wheels_back` without a CUDA-wheel feature or on a CPU pod, check.json and
+  timings.tsv come back in one round trip and the bootstrap log in the background.
+- The round-2 hand-off leftovers: `front_full` no longer apt-installs ffmpeg (it declares the `ffmpeg` feature: the static
+  8.1 build); `remote run --gpus` help names the ladder; the progress puller tails the MAMMA log of the take each
+  `mamma fit <take>` names, under the real job name; `face_pod` runs in Secure Cloud only; two marks seconds apart start
+  ONE run heartbeat (a spawn marker under the run lock) and the heartbeat / driver logs are opened with a true append handle
+  on Windows (`util.append_fd`: before, a child wrote at its inherited offset and overwrote other lines).
+- The `analyze` plan: session start-up 3.0 min p50 / 7.0 p90 (was 6.3 / 15) and 540 MB of checkpoint per fit lane (was 1600).
+- Tests: `tests/test_pod_start.py` (new); no test sees the real `remote run` processes of this PC any more (conftest: with
+  another worktree's two sessions running, `test_pipeline_orchestrator` waited on them for more than 20 min, each process
+  scan taking 3.5 s); `test_dashboard_round2`'s session ids follow today's date (its times were read on 2026-10-21's date and
+  failed from the next day on).
+
+### 7d.3 Measured live (2026-10-22, through `remote run`, every pod deleted)
+
+The jobs are the trial's (`work/trial_mono_jl20/jobs/pod_job_sam3db_r2.json` on 100 frames, `pod_job_analyses_r2.json`),
+written to the session directory only (`work/podstart_probe/`). The home uplink was slow and shared with another session's
+uploads during most of these runs (0.29-1.8 MB/s; the 2026-10-19..21 median was 2.1).
+
+| Session | Job, route | Pod | Bundle | Upload | Ready -> compute | Notes |
+|---|---|---|---|---|---|---|
+| trial `20261021-203248-batch` | SAM 3D Body | 4090 | 44 MB | 24 s | **443 s** | bootstrap 143 + install 264, in series |
+| `20261022-012506-batch` | SAM 3D Body, parallel boot | 4090 | 44 MB | 37 s | 154 s | install 88 s after the extract (52 s uv sharing the link with the checkpoint, 30 s of checks one by one) |
+| `20261022-013955-batch` | + install at pod-ready | 4090 | 44 MB | 152 s (0.29 MB/s) | 193 s | slow uplink and slow GitHub on that host (the uv Python download 75 s) |
+| `20261022-021723-batch` | all changes | 4090 | 44 MB | 93 s (0.47 MB/s) | **106 s** | install done on the pod in 37 s (venv 3, uv 17, imports 7, checkpoint 5 s): the upload is the whole wait |
+| trial `20261021-205148-batch` | analyses | 4090 | 146 MB | 68 s | **361 s** | bootstrap 285 s after the upload |
+| `20261022-014750-batch` | analyses, GPU, parallel boot | 4090 | 146 MB | 81 s | 121 s | bootstrap 118 s on the pod (apt ~90 s), 32 s of it after the upload |
+| `20261022-020607-batch` | analyses, CPU | cpu3c x16, EUR-IS-1 | 18 MB + 108 MB side | 32 + 76 s | 133 s | the catalog had no EU-RO-1 offer at that moment: the models came in the side bundle |
+| `20261022-021114-batch` | analyses, CPU, volume | cpu3c x8, EU-RO-1 | 18 MB | 45 s | **62 s** | models linked from the volume in 4 s; compute 50 s ($0.24/h) |
+| `20261022-022151-batch` | analyses, GPU, volume | 4090, EU-RO-1 | 37 MB | 82 s (0.45 MB/s) | **101 s** | models linked in 3 s; bootstrap 96 s on the pod, 5 s after the upload |
+
+- Both targets are met with all changes in: SAM 3D Body 106 s and the analyses 62 s (CPU) / 101 s (GPU) from pod ready to
+  compute start, against 443 s and 361 s, with the uplink at a quarter of its median. At the median uplink the uploads
+  above take a quarter of the time: about 25 s (SAM 3D Body) and 10-20 s (analyses).
+- Whole-session overhead (pod lifetime minus compute): 2.3-4.1 min over these 7 sessions (median 2.8), against 6.3 min p50 /
+  15 p90 in the 2026-10-19..21 round.
+- The analyses ran faster on 8 CPU vCPUs (50 s) than on the 4090 pods (70 s and 41 s on two hosts) at a quarter of the price.
+- Spend: 8 pods (the probe and 7 sessions; the first CPU attempt got none), $0.46 in all from their ledger rows; every
+  pod deleted and every row closed.
+- The first CPU attempt (`20261022-015929-batch`) asked for 16 vCPUs in every flavor blind and got "no longer any
+  instances" 8 times; the catalog read was added after it, plus two blind tries in the volume's data center when the
+  catalog lists none there (its per-data-center stock changed between 02:01, 02:06 and 02:08).
+
+### 7d.4 Still open
+
+- The bundle upload itself is now the wait: the code part (~5 MB compressed) and each job's own inputs go through the home
+  uplink every session. A content-addressed input cache on the volume (`src/` already holds the source videos) would take
+  the inputs off it for volume-route pods.
+- Pods outside EU-RO-1 still upload the body models and the checkpoint copy (side bundle). A relay through a CPU gateway
+  pod on the volume (pod to pod) would serve them in any data center; more volumes would too, at a standing charge.
+- Warm pods for chained analyze steps (above).
+- Agent-written job specs of tools with their own venv must say `"base": false` (the runner cannot tell from the commands);
+  the SAM 3D Body writers in the repo do.
+- `test_mono4d_atlas` fails when other test files import cv2 first (its `OPENCV_IO_ENABLE_OPENEXR` is set at import time);
+  it passes alone and on HEAD alone.
+
+---
+
 ## 8. Sources
 
 - Session records: `dancecap/work/runpod/sessions/*/result.json`, `state.json`, `runner.log`,

@@ -190,3 +190,27 @@ def fmt_min(s: float | None) -> str:
         return "-"
     m = s / 60
     return f"{m / 60:.1f} h" if m >= 90 else f"{m:.0f} min"
+
+
+def append_fd(path: Path) -> int:
+    """A file descriptor for a detached child's stdout that APPENDS on every write, whoever writes and whenever (close it
+    after Popen). Python's 'a' mode only seeks to the end in this process's C runtime: on Windows a child inherits a plain
+    handle that writes at its own offset, so two children started into one log overwrite each other's lines (heartbeat.log,
+    2026-10-21). There the handle is opened with FILE_APPEND_DATA and no FILE_WRITE_DATA, which makes every write go to
+    the end of the file. Elsewhere O_APPEND does the same."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if os.name != "nt":
+        return os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateFileW.restype = wintypes.HANDLE
+    k32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD,
+                                wintypes.DWORD, wintypes.HANDLE]
+    FILE_APPEND_DATA, SYNCHRONIZE, SHARE_ALL, OPEN_ALWAYS, NORMAL = 0x0004, 0x00100000, 0x7, 4, 0x80
+    h = k32.CreateFileW(str(path), FILE_APPEND_DATA | SYNCHRONIZE, SHARE_ALL, None, OPEN_ALWAYS, NORMAL, None)
+    if h in (None, wintypes.HANDLE(-1).value):
+        raise OSError(ctypes.get_last_error(), f"cannot open {path} for appending")
+    return msvcrt.open_osfhandle(h, os.O_WRONLY | os.O_APPEND)

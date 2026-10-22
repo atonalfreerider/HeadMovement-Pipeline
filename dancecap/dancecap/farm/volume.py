@@ -238,7 +238,7 @@ class Link:
         return sent
 
     def push_file(self, local: Path, rel: str, *, force: bool = False, progress=None, retries: int = 6,
-                  streams: int | None = None) -> dict:
+                  streams: int | None = None, stripe_min: int | None = None) -> dict:
         """Upload one file to <root>/<rel>, resumable and hash-diffed. Returns {rel, bytes, sent, seconds, skipped, streams}.
 
         Files of at least STRIPE_MIN bytes are striped over `streams` parallel ssh connections (default HM_PUSH_STREAMS=6):
@@ -254,7 +254,8 @@ class Link:
             st = self.state([rel], {rel: size}).get(rel)
             if st and st[0] == size and st[1] == digest:
                 return {"rel": rel, "bytes": size, "sent": 0, "seconds": 0.0, "skipped": True, "streams": 0}
-        n = max(1, int(streams if streams is not None else DEFAULT_STREAMS)) if size >= STRIPE_MIN else 1
+        smin = STRIPE_MIN if stripe_min is None else int(stripe_min)   # the runner stripes its bundles from 2 MB
+        n = max(1, int(streams if streams is not None else DEFAULT_STREAMS)) if size >= smin else 1
         seg = -(-size // n // CHUNK) * CHUNK if n > 1 else size
         ranges = [(i * seg, min(seg, size - i * seg)) for i in range(n) if i * seg < size] or [(0, 0)]
         n = len(ranges)

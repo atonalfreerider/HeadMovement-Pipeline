@@ -4,6 +4,7 @@
  "take": "john_lula",
  "max_minutes": 75,
  "needs": [],
+ "base": false,
  "inputs": [
   "dancecap/work/john_lula/realism/sam3db/input/",
   "dancecap/work/john_lula/frames/01/",
@@ -27,7 +28,7 @@
   "MHR_ASSETS_RELEASE": "v1.0.1",
   "TORCH_HOME": "/workspace/s3db_cand/torch_home",
   "HF_HOME": "/workspace/s3db_cand/hf_home",
-  "UV_LINK_MODE": "copy",
+  "UV_LINK_MODE": "hardlink",
   "TQDM_DISABLE": "1",
   "HF_HUB_DISABLE_PROGRESS_BARS": "1"
  },

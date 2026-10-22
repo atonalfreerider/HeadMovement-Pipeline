@@ -24,8 +24,6 @@ import os
 import shlex
 import subprocess
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 from .. import remote
@@ -43,7 +41,7 @@ GPU_PRIORITY = ["NVIDIA GeForce RTX 4090", "NVIDIA L4", "NVIDIA RTX A4500", "NVI
 # sm80+ only (A100 / A40 / A5000 / 4090 / L4 / H100 ...): torch 2.5.1+cu124 and the compiled wheels have no Blackwell
 # (sm120: RTX PRO 4500 / 6000, 5090, B200) kernels. >= 16 GB (ma_3d needs ~11 GB).
 MIN_BALANCE_RESERVE = 2.0   # user rule: never let the sum of worst cases exceed (balance - $2)
-REST = "https://rest.runpod.io/v1"
+REST = remote.REST
 START_TIMEOUT_MIN = 8.0
 
 
@@ -117,15 +115,10 @@ def gpu_offers(dc: str | None = None, priority: list[str] | None = None) -> list
 
 
 def _rest(method: str, path: str, body: dict | None = None, timeout: float = 60):
-    req = urllib.request.Request(f"{REST}{path}", method=method, data=json.dumps(body).encode() if body is not None else None,
-                                 headers={"Authorization": f"Bearer {remote._api_key()}", "Content-Type": "application/json",
-                                          "User-Agent": "dancecap-farm/1.0 (+curl-compatible)"})  # urllib's default UA gets a Cloudflare 1010
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            raw = r.read().decode()
-            return json.loads(raw) if raw else {}
-    except urllib.error.HTTPError as e:
-        raise PodError(f"{method} {path}: HTTP {e.code}: {e.read().decode()[:600]}") from None
+        return remote.rest(method, path, body, timeout=timeout)   # the runner's CPU pods use the same call
+    except remote.RestError as e:
+        raise PodError(str(e)) from None
 
 
 # ------------------------------------------------------------------------------------------------ create / attach / delete

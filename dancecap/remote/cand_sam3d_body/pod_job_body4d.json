@@ -4,6 +4,7 @@
  "take": "larissa_kadu_38",
  "max_minutes": 42,
  "needs": [],
+ "base": false,
  "inputs": [
   "dancecap/work/larissa_kadu_38/mono4d/sam3d_body/input/"
  ],
@@ -25,7 +26,7 @@
   "MHR_ASSETS_RELEASE": "v1.0.1",
   "TORCH_HOME": "/workspace/s3db_cand/torch_home",
   "HF_HOME": "/workspace/s3db_cand/hf_home",
-  "UV_LINK_MODE": "copy",
+  "UV_LINK_MODE": "hardlink",
   "TQDM_DISABLE": "1",
   "HF_HUB_DISABLE_PROGRESS_BARS": "1",
   "B4D_COMMIT": "21af1020979ef32ddf6be3597ef59a68bad2f1bf",

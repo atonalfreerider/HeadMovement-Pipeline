@@ -55,14 +55,16 @@ def test_mono_plan_is_what_is_built_plus_session_overhead():
         assert s["overhead_min"]["kind"] == "session"
         assert s["p50_min"] == pytest.approx(s["compute_min"]["p50"] + s["overhead_min"]["p50"], abs=0.11)
         assert s["overhead_min"]["p50"] >= A.SESSION_OVERHEAD_MIN["p50"] and s["p90_min"] > s["p50_min"]
-    # every fit session uploads the ma_2d checkpoint today (trial: 1636 MB in 600 s)
-    assert by["fits"]["overhead_min"]["p50"] == pytest.approx(6.3 + 1600 / 2.1 / 60, abs=0.11)
-    # SAM 3D Body for 600 frames on one 4090: about 8 min of compute + a session (the trial's good session: 14.3 min)
-    assert 12 < by["sam3d_body"]["p50_min"] < 17
+    # every fit session uploads the ma_2d checkpoint's 540 MB state_dict copy (the trial: the 1636 MB file in 600 s)
+    assert by["fits"]["overhead_min"]["p50"] == pytest.approx(A.SESSION_OVERHEAD_MIN["p50"] + A.MA2D_CKPT_MB / 2.1 / 60, abs=0.11)
+    # SAM 3D Body for 600 frames on one 4090: about 8 min of compute + a session (the trial's good session: 14.3 min, 7.4
+    # of it pod-ready to compute; 2026-10-22: 1.8 min, the session 3.7 min in all for 100 frames)
+    assert 10 < by["sam3d_body"]["p50_min"] < 13
     assert by["post"]["overhead_min"]["kind"] == "same_pod"          # one chunk: on the fit pod (trial: 2 s)
     assert "beats" in by["analyses"]["deps"]                          # timing reads the beat grid
     t = A.totals(list(by.values()))
-    assert 100 < t["wall_min"]["p50"] < 140 and t["wall_min"]["p90"] > 1.6 * t["wall_min"]["p50"]
+    # the 20-s trial: ~1.6 h p50 with the 2026-10-22 session start-up (2.0 h with round 2's 6.3-min sessions)
+    assert 80 < t["wall_min"]["p50"] < 120 and t["wall_min"]["p90"] > 1.6 * t["wall_min"]["p50"]
     assert t["critical"][:3] == ["intake", "upload", "people"]
     long = {s["id"]: s for s in A.route_plan("mono", {**TRIAL, "duration_s": 88.1, "frames": 2643}, {})}
     assert long["fits"]["lanes"] == 5 and long["post"]["overhead_min"]["kind"] == "session"
@@ -430,12 +432,14 @@ def test_parallel_lanes_share_the_uplink_and_run_in_rounds():
     min where the physical floor is 63), and 8 phones as 8 pods at once where `remote run --parallel` starts 6."""
     long = {s["id"]: s for s in A.route_plan("mono", {**TRIAL, "duration_s": 88.1, "frames": 2643}, {})}
     fits = long["fits"]
-    assert fits["lanes"] == 5 and fits["overhead_min"]["p50"] == pytest.approx(6.3 + 5 * 1600 / 2.1 / 60, abs=0.11)
-    assert fits["overhead_min"]["p90"] == pytest.approx(15.0 + 5 * 1600 / 0.73 / 60, abs=0.11)
+    assert fits["lanes"] == 5 and fits["overhead_min"]["p50"] == pytest.approx(A.SESSION_OVERHEAD_MIN["p50"] + 5 * A.MA2D_CKPT_MB / 2.1 / 60, abs=0.11)
+    assert fits["overhead_min"]["p90"] == pytest.approx(A.SESSION_OVERHEAD_MIN["p90"] + 5 * A.MA2D_CKPT_MB / 0.73 / 60, abs=0.11)
     one = {s["id"]: s for s in A.route_plan("mono", TRIAL, {})}["fits"]
-    assert one["lanes"] == 1 and one["overhead_min"]["p50"] == pytest.approx(6.3 + 1600 / 2.1 / 60, abs=0.11)
+    assert one["lanes"] == 1 and one["overhead_min"]["p50"] == pytest.approx(A.SESSION_OVERHEAD_MIN["p50"] + A.MA2D_CKPT_MB / 2.1 / 60, abs=0.11)
     t = A.totals(list(long.values()))
-    assert t["wall_min"]["p50"] > 240                                   # ~4.3 h for 88 s, not the 3.4 h quoted before
+    # ~3.3 h for 88 s: 5 fit lanes still push 5 x the 540 MB checkpoint copy through one uplink (4.3 h with the 1.6 GB
+    # file and the 6.3-min sessions of round 2)
+    assert t["wall_min"]["p50"] > 180
     multi = {s["id"]: s for s in A.route_plan("multi", {"n": 8, "duration_s": 60.0, "size_mb": 400.0, "fps": 30.0,
                                                          "frames": 1800}, {"room_known": True})}
     cam = multi["cameras"]

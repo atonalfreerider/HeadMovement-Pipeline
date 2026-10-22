@@ -180,13 +180,15 @@ def job(max_minutes: float = 25, limit: int = 0) -> Path:
     lim = f" --limit {limit}" if limit else ""
     root = "/workspace/s3db_cand"
     d = {"schema": "dancecap.pod_job/1", "name": "cand_sam3d_body", "take": TAKE, "max_minutes": max_minutes, "needs": [],
+         # its own uv venv (install.sh): no bootstrap base / check for the image python
+         "base": False,
          "inputs": [_ws(INPUT) + "/"],
          # no MAMMA code, body models or cached wheels: frames + masks + code only over the shared 2.5 MB/s uplink
          "exclude": ["dancecap/work/runpod/pywheels", "dancecap/work/runpod/wheelhouse", "mamma-turing"],
          "secrets": {"HF_TOKEN": "C:/Users/johnb/Desktop/sam3d-body-key-hf.txt"},
          "env": {"S3DB_ROOT": root, "S3DB_COMMIT": S3DB_COMMIT, "S3DB_HF_REPO": HF_REPO, "S3DB_HF_REV": HF_REV,
                  "DINOV3_COMMIT": DINOV3_COMMIT, "MHR_COMMIT": MHR_COMMIT, "MHR_ASSETS_RELEASE": MHR_ASSETS_RELEASE,
-                 "TORCH_HOME": f"{root}/torch_home", "HF_HOME": f"{root}/hf_home", "UV_LINK_MODE": "copy",
+                 "TORCH_HOME": f"{root}/torch_home", "HF_HOME": f"{root}/hf_home", "UV_LINK_MODE": "hardlink",
                  "TQDM_DISABLE": "1", "HF_HUB_DISABLE_PROGRESS_BARS": "1"},
          "commands": [
              {"name": "install", "timeout_min": 10, "cmd": "bash remote/cand_sam3d_body/install.sh"},
