@@ -66,7 +66,9 @@ MOGE_COMMIT = "07444410f1e33f402353b99d6ccd26bd31e469e8"       # cameras/single_
 UTILS3D_COMMIT = "3fab839f0be9931dac7c8488eb0e1600c236e183"
 MOGE = (f"python -m pip install -q --no-deps git+https://github.com/microsoft/MoGe.git@{MOGE_COMMIT} "
         f"git+https://github.com/EasternJournalist/utils3d.git@{UTILS3D_COMMIT} && {PIP} click trimesh matplotlib scipy")
-RTMW = f"{PIP} rtmlib onnxruntime-gpu==1.20.2 opencv-python==4.11.0.86"
+# rtmlib pulls opencv-contrib 5 over the pinned 4.11 (people_mono / NOTES_J3a): put 4.11 back
+RTMW = (f"{PIP} rtmlib onnxruntime-gpu==1.20.2 && (python -m pip uninstall -y -q opencv-contrib-python || true) && "
+        "python -m pip install -q --force-reinstall --no-deps opencv-python==4.11.0.86")
 # onnxruntime-gpu finds CUDA / cuDNN in torch's nvidia wheels (NOTES_J3a.md 7)
 NV_LIBS = ("export LD_LIBRARY_PATH=$(python -c \"import glob, site; print(':'.join(glob.glob(site.getsitepackages()[0] + "
            "'/nvidia/*/lib')))\"):${LD_LIBRARY_PATH:-}")
@@ -102,7 +104,7 @@ class Ctx:
         self.timings: dict = {}
 
     def ws(self, p: Path) -> str:
-        return Path(p).resolve().relative_to(WORKSPACE.resolve()).as_posix()
+        return ws_rel(p)
 
     def video_input(self) -> dict:
         return {"local": str(self.video.resolve()), "pod": self.video_pod}
@@ -171,6 +173,15 @@ class Ctx:
             log(f"remote: attempt {attempt} failed for pod reasons ({why['msg'][:200]}); a new session for {len(left)} job(s)")
             todo = left
         raise RuntimeError("unreachable")
+
+
+def ws_rel(p: Path) -> str:
+    """Workspace-relative posix path WITHOUT resolving links (a worktree reaches work/ through a junction: resolve() would leave
+    the workspace)."""
+    r = Path(os.path.relpath(os.path.abspath(p), os.path.abspath(WORKSPACE))).as_posix()
+    if r.startswith(".."):
+        raise ValueError(f"{p} is outside the workspace {WORKSPACE}")
+    return r
 
 
 def session_max_cost(max_minutes: float, per_hr: float = 1.8) -> float:
@@ -627,8 +638,12 @@ def analyses_job(ctx: Ctx) -> Path:
     w = ctx.ws(ctx.work)
     return ctx.write_job({
         "name": f"{ctx.take}_analyses"[:60], "max_minutes": 40, "needs": [], "min_vram_gb": 24,
-        "inputs": [f"{w}/smplx/", f"{w}/smplx_rf2_noslip/", f"{w}/song/", f"{w}/clock/alignment.json"],
+        # base + open3d (implied by physics) is the whole environment; physics / counterbalance read the MAMMA locked-head
+        # neutral model (physics_body.MAMMA_LOCKED_HEAD), which a job without the mamma feature does not get by default
+        "inputs": [f"{w}/smplx/", f"{w}/smplx_rf2_noslip/", f"{w}/song/", f"{w}/clock/alignment.json",
+                   "mamma/data/body_models/smplx_locked_head/smplx/SMPLX_NEUTRAL.npz", "smplx/SMPLX_NEUTRAL.npz"],
         "exclude": EXCLUDE + GENDER_EXCLUDE + ["mamma/data/weights/ma_2d/mamma_mask_full_cvpr.ckpt"],
+        "setup": [GENDER_LINKS],
         "env": {"MPLBACKEND": "Agg", "OMP_NUM_THREADS": "4", "OPENBLAS_NUM_THREADS": "4", "MKL_NUM_THREADS": "4"},
         "commands": [{"name": "timing", "timeout_min": 15, "cmd": f"python -m dancecap timing {ctx.take} {t_args}"},
                      {"name": "physics", "timeout_min": 15, "cmd": f"python -m dancecap physics {ctx.take} --beats {beats}"},

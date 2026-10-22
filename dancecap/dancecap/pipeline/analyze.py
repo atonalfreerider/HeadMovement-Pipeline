@@ -266,6 +266,9 @@ def route_plan(route: str, f: dict, opts: dict | None = None) -> list[dict]:
                                    basis="measured 74 min (clean re-run ~25)", price="gpu_l4", optional=True))
         steps.append(_step("export", "Export the Unity capture", "local", ["analyses", "avatars"], 3, 6,
                            basis="minutes (writes the Unity folder)", price="local"))
+        for s_ in steps:          # what exactly blocks each step that still needs an agent (the run's waiting message)
+            if s_["executor"] in ("agent", "farm"):
+                s_["blocker"] = MULTI_BLOCKERS.get(s_["id"], "take-specific code today")
     else:
         # every mono step has a generic executor (pipeline/mono_route.py): `python -m dancecap.pipeline.mono_route <step>`,
         # local or one tagged `remote run` per step. The runner has GPU pods only (no CPU route: 2026-10-22 review), so the
@@ -324,6 +327,23 @@ def route_plan(route: str, f: dict, opts: dict | None = None) -> list[dict]:
     return steps
 
 
+# The multi-view route's steps without a generic executor (2026-10-22): the exact reason, shown when the run waits there
+MULTI_BLOCKERS = {
+    "room": "no generic room-map executor: each room map was built for its take (room.py / room_two_cams / room_single_cam)",
+    "cameras": "no generic multi-phone camera executor: a shared world frame needs every phone localised against a solved room "
+               "map, and that code is take-specific (cameras/newcam.py WORK paths, recap_cameras for the recap); "
+               "cameras.mono_cam solves one phone in its own frame only",
+    "people": "no generic multi-view people executor: the dancers are picked by triangulating across phones (recap_people, "
+              "carlos_aline_people are take-specific); people_mono handles one phone",
+    "fronts": "the volume farm's chunk profiles are per take (farm/recap_profile, ca_profile, jl_profile): no generic profile yet",
+    "shape": "the volume farm's chunk profiles are per take: no generic profile yet",
+    "fits": "the volume farm's chunk profiles are per take: no generic profile yet",
+    "stitch": "the volume farm's chunk profiles are per take: no generic profile yet",
+    "analyses": "farm/recap_analysis and ca_analysis are per take: no generic multi-view analysis job yet",
+    "avatars": "the LHM++ avatar job is take-specific",
+    "speech": "the speech jobs (dancecap/speech) are set up per take",
+    "export": "recap_export / carlos_aline_export are per take: no generic multi-view export yet",
+}
 CHUNK_MAX_S = 26.0       # mono fit windows (mono_route.CHUNK_MAX_S): <= 26 s overlapping by 4 s, cores of ~22 s
 
 
@@ -1185,7 +1205,8 @@ class Driver:
                            f"--max-cost is capped at it)" if left > 0 else "; the run's pod limit is used up: "
                            f"`analysis limit {self.run} USD` before its sessions can start")
                     update_step(self.run, st["id"], status="waiting_agent",
-                                message=f"needs an agent: take-specific code today ({st['executor']} step){lim}")
+                                message=f"needs an agent: {st.get('blocker') or 'take-specific code today'} "
+                                        f"({st['executor']} step){lim}")
                     event(self.run, "waiting_agent", st["id"], st["label"])
                     changed = True
             if changed:

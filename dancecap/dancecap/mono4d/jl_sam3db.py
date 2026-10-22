@@ -133,7 +133,11 @@ def log(msg: str) -> None:
 
 
 def _ws(p: Path) -> str:
-    return Path(p).resolve().relative_to(WORKSPACE.resolve()).as_posix()
+    import os   # no resolve(): a worktree reaches work/ through a junction, which resolve() would follow out of the workspace
+    r = Path(os.path.relpath(os.path.abspath(p), os.path.abspath(WORKSPACE))).as_posix()
+    if r.startswith(".."):
+        raise ValueError(f"{p} is outside the workspace {WORKSPACE}")
+    return r
 
 
 def _rel(p: Path) -> str:                  # relative to <ws>/dancecap, the pod commands' cwd

@@ -195,3 +195,31 @@ def test_john_lula_toml_is_a_single_view_take_with_the_chunk_arithmetic():
     c = cfg["chunks"]
     r = equal_windows(n, 30.0, c["chunk_s"], c["overlap_s"])
     assert r["n"] == 2 and r["windows"] == [[0, 1381], [1262, 2642]] and r["overlap_k"] == 120
+
+
+def synth_mid(duration: float = 20.0, seed: int = 0) -> np.ndarray:
+    """A phone in a studio: the beat is audible all through, but only in the 1-4 kHz band (a 2 kHz click on every pulse), no bass."""
+    rng = np.random.default_rng(seed)
+    n = int(duration * SR)
+    x = 0.01 * rng.standard_normal(n)
+    # the room's steady low rumble (60-120 Hz tones with a slow random level): the bass band carries no lattice
+    tt = np.arange(n) / SR
+    lvl = 0.3 * (1.0 + 0.3 * np.interp(tt, np.arange(0, duration + 1, 0.37), rng.standard_normal(len(np.arange(0, duration + 1, 0.37)))))
+    x += lvl * (np.sin(2 * np.pi * 61 * tt) + 0.7 * np.sin(2 * np.pi * 97 * tt + 1.0) + 0.5 * np.sin(2 * np.pi * 131 * tt + 2.0))
+    t = np.arange(int(0.05 * SR)) / SR
+    click = 0.5 * np.sin(2 * np.pi * 2000 * t) * np.exp(-t / 0.01)
+    for k in range(int((duration - T0) / P)):
+        i = int((T0 + P * k) * SR)
+        x[i:i + len(click)] += click[: len(x) - i]
+    return x
+
+
+def test_a_bass_less_clip_that_is_music_all_through_still_gets_a_grid():
+    """2026-10-22 (lk03_mono20, a 20-s phone cut from the middle of a song): the bass band never reached MUSIC_Z, so the whole
+    clip was 'no beat' and beats_heat.json was empty; the clearest band now decides at FALLBACK_Z and says so."""
+    a = hb.analyse(synth_mid(), SR, fake_tracker(20.0), 20.0)
+    assert a["span"] is not None and a["music_band"] == "mid_1_4k" and len(a["gov"]) >= 8
+    b = hb.analyse(0.01 * np.random.default_rng(3).standard_normal(20 * SR), SR, fake_tracker(20.0), 20.0)
+    assert b["span"] is None and b["music_band"] is None              # noise only: still no music
+    c = hb.analyse(synth(30.0), SR, fake_tracker(30.0), 30.0)
+    assert c["music_band"] == "bass_30_150"                           # a bass kick keeps the original rule
