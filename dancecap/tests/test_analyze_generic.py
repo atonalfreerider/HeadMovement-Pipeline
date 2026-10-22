@@ -144,11 +144,12 @@ def test_a_snapshot_draws_the_state_of_its_event_not_of_its_render(root, monkeyp
 
 # ------------------------------------------------------------------------------------------------ the generic plan + driver
 
-def test_every_mono_step_has_a_generic_executor_and_pod_cpu_is_gone():
+def test_every_mono_step_has_a_generic_executor():
     steps = A.route_plan("mono", TRIAL, {})
     for s in steps:
         assert s["executor"] in ("builtin", "cmd"), s["id"]
-        assert not (s["where"] == "pod-cpu" and s["id"] != "upload"), s["id"]    # the runner has no CPU route
+        # the runner's CPU route (ready pods) takes the analyses; every other pod step needs a GPU
+        assert (s["where"] == "pod-cpu") == (s["id"] in ("upload", "analyses")), s["id"]
     by = {s["id"]: s for s in steps}
     assert by["fits"]["deps"] == ["world", "sam3d_body"] and by["export"]["deps"] == ["analyses"]
     assert by["avatars"]["optional"] and by["film"]["optional"]
@@ -278,6 +279,7 @@ def test_job_writers_map_the_video_and_never_name_john_lula(tmp_path, monkeypatc
     assert any("mono_cam skeleton" in c["cmd"] for c in cam["commands"]) and cam["min_vram_gb"] == 24
     assert ppl["needs"] == ["dancers"] and [c["name"] for c in ppl["commands"]][:2] == ["fetch_sam2", "detect"]
     assert "--no-beat 0:3.2,18.5:19.9" in ana["commands"][0]["cmd"] and ana["needs"] == []
+    assert ana["cpu"] is True and "min_vram_gb" not in ana                          # the CPU route
     assert [c["name"] for c in ana["commands"]] == ["timing", "physics", "counterbalance", "floorcraft"]
     blob = json.dumps(jobs)
     assert "john_lula" not in blob and "trial_mono_jl20" not in blob
@@ -327,6 +329,26 @@ def test_sam3db_configure_and_size_rules():
         assert px == round(1500 * 480 * 848 / (538 * 960)) and bh == pytest.approx(80 * 848 / 960)
     finally:
         S.configure("john_lula")
+
+
+def test_sam3db_job_of_a_take_brings_its_own_env(tmp_path, monkeypatch):
+    """Merged with the ready pods (2026-10-22): the generic SAM 3D Body job (video decoded on the pod by the venv's cv2) says
+    "base": false, so its session bootstraps nothing (no ffmpeg either) and its install starts at pod-ready."""
+    from dancecap import remote_jobs as rj
+    from dancecap.mono4d import jl_sam3db as S
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"x")
+    try:
+        S.configure("lk_mono_x")
+        monkeypatch.setattr(S, "JOB_DIR", tmp_path / "jobs")
+        monkeypatch.setattr(S, "JOB", tmp_path / "jobs" / "pod_job_sam3db.json")
+        d = json.loads(S.job(video=video, video_pod="dances/lk_mono_x/v.mp4").read_text(encoding="utf-8"))
+    finally:
+        S.configure("john_lula")
+    assert d["name"] == "lk_mono_x_sam3d_body" and d["base"] is False and d["min_vram_gb"] == 24
+    assert d["env"]["UV_LINK_MODE"] == "hardlink" and [c["name"] for c in d["commands"]][:2] == ["install", "decode"]
+    js = rj._parse_v1(d, "test")
+    assert rj.needed_features([js]) == [] and [c.name for _, c in rj.early_commands([js])] == ["install"]
 
 
 def test_export_and_front_follow_the_take(monkeypatch):
@@ -382,6 +404,7 @@ def test_avatars_step_runs_the_generic_lhmpp_job_or_skips_with_the_reason(tmp_pa
     d = json.loads(job.read_text(encoding="utf-8"))
     assert d["name"] == "lk_mono_lhmpp_avatars" and d["inputs"] == ["dancecap/work/lk_mono/realism/lhmpp_generic/input/"]
     assert [c["name"] for c in d["commands"]] == ["install", "build", "export"] and d["min_vram_gb"] == 24
+    assert d["base"] is False                                                       # LHM++'s own venv
 
     def no_frames(take, *a, **kw):
         raise SystemExit("lk_mono: follow has no usable frame")

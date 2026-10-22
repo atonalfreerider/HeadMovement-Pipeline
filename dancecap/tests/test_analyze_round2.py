@@ -55,8 +55,9 @@ def test_mono_plan_is_what_is_built_plus_session_overhead():
         assert s["overhead_min"]["kind"] == "session" and s["executor"] == "cmd" and "mono_route" in " ".join(s["cmd"])
         assert s["p50_min"] == pytest.approx(s["compute_min"]["p50"] + s["overhead_min"]["p50"], abs=0.11)
         assert s["overhead_min"]["p50"] >= A.SESSION_OVERHEAD_MIN["p50"] and s["p90_min"] > s["p50_min"]
-    for sid in ("beats", "world", "post", "export"):       # light: this PC (the runner has no CPU route)
+    for sid in ("beats", "world", "post", "export"):       # light: this PC (a pod session would cost 3+ min)
         assert by[sid]["where"] == "local" and by[sid]["executor"] == "cmd", sid
+    assert by["analyses"]["where"] == "pod-cpu" and by["analyses"]["price_hr"] == A.PRICE_HR["cpu"]   # the CPU route
     assert "shape" not in by                               # betas pinned from the statures: no shape pass
     assert not any(s["executor"] in ("agent", "farm") for s in by.values())
     # every fit session uploads the stripped ma_2d checkpoint (540 MB) + the body models

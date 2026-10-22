@@ -278,6 +278,9 @@ def test_job_doc_fields():
     from dancecap import remote_jobs as rj
     js = rj._parse_v1(d, "test")
     assert js.cwd == "dancecap" and js.min_vram_gb == 24 and [c.optional for c in js.commands] == [False, False, True]
+    # LHM++'s own venv (install.sh): no bootstrap at all, and its install starts at pod-ready next to the upload
+    assert d["base"] is False and js.base is False and rj.needed_features([js]) == []
+    assert [c.name for _, c in rj.early_commands([js])] == ["install"] and not rj.job_on_cpu(js)
 
 
 def test_ws_rel_keeps_the_junction_path():

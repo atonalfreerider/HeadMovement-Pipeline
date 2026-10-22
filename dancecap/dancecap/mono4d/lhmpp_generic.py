@@ -510,7 +510,9 @@ def job_doc(take: str, inp_ws: str, out_ws: str, export: bool = True, max_minute
         cmds.append({"name": "export", "timeout_min": 8, "optional": True,
                      "cmd": f"{POD_PY} remote/cand_lhmpp/recap_lhmpp_pod.py {args}"})
     return {"schema": "dancecap.pod_job/1", "name": job_name(take), "take": take, "cwd": "dancecap",
-            "max_minutes": float(max_minutes), "needs": [], "min_vram_gb": 24, "inputs": [inp_ws + "/"],
+            "max_minutes": float(max_minutes), "needs": [], "min_vram_gb": 24,
+            # its own venv (install.sh): no bootstrap base / check, and the install starts at pod-ready (early_commands)
+            "base": False, "inputs": [inp_ws + "/"],
             "exclude": list(EXCLUDE), "env": dict(POD_ENV), "commands": cmds, "outputs": [out_ws + "/"],
             "verify": [f"{out_ws}/lhmpp_render_pod.json"] + [f"{out_ws}/gs/{r}_cano.ply" for r in ROLES] +
                       [f"{out_ws}/turntable/{r}.png" for r in ROLES],

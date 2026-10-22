@@ -275,8 +275,8 @@ def route_plan(route: str, f: dict, opts: dict | None = None) -> list[dict]:
                 s_["blocker"] = MULTI_BLOCKERS.get(s_["id"], "take-specific code today")
     else:
         # every mono step has a generic executor (pipeline/mono_route.py): `python -m dancecap.pipeline.mono_route <step>`,
-        # local or one tagged `remote run` per step. The runner has GPU pods only (no CPU route: 2026-10-22 review), so the
-        # light steps run here (beats 26 s, world ~1 min, post seconds) and the analyses on a GPU runner pod.
+        # local or one tagged `remote run` per step. The light steps run here (beats 26 s, world ~1 min, post seconds: a pod
+        # session costs 3+ min), the analyses on a CPU runner pod (the ready-pods CPU route, PIPELINE_EFFICIENCY.md 7d).
         K = mono_chunks(D, f.get("fps") or 30.0)
         T = min(frames, int(round(CHUNK_MAX_S * 30)))     # frames of one chunk's fit window
         # measured 2026-10-22 on lk03_mono20 (599 frames, 4090): camera installs 0.5 + probe / skeleton / track / MoGe-2 1.7 min;
@@ -316,9 +316,9 @@ def route_plan(route: str, f: dict, opts: dict | None = None) -> list[dict]:
                  "statures (no shape pass)"),
             mono("post", "Stitch the chunks + depth-spike repair", "local", ["fits"], 0.5, 2,
                  basis="stitch 0.4-8 s, jl_repair 0.6-1.8 s (trial)"),
-            mono("analyses", "Timing, physics, counterbalance, floorcraft, one GPU pod", "pod-gpu", ["post", "beats"],
-                 ana50, ana50 * 2, basis="measured 9 min for 2643 frames (J4), 66 s for 599 (trial); a GPU runner pod "
-                 "(the runner has no CPU route)"),
+            mono("analyses", "Timing, physics, counterbalance, floorcraft, one CPU pod", "pod-cpu", ["post", "beats"],
+                 ana50, ana50 * 2, price="cpu", basis="measured 9 min for 2643 frames (J4), 66 s for 599 (trial); a CPU "
+                 "runner pod (the trial's analyses: 50 s on 8 vCPUs against 70 s on a 4090, 2026-10-22)"),
             mono("avatars", "LHM++ splat avatars from the take's own crops, one pod", "pod-gpu", ["post"], 8, 15,
                  optional=True, basis="crops chosen here 20-50 s (lhmpp_generic); pod: LHM++ venv install 2-7.5 min "
                  "(john_lula), both avatars 2.3 min, LBS export ~2 min; nothing in the export reads them"),

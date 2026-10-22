@@ -16,7 +16,7 @@ analysis (DANCECAP_ANALYSIS / DANCECAP_ANALYSIS_STEP: the monitor shows its sess
                        (frames, cameras, masks, ma_2d, sync, prepare, mono-init, qa-mask), the build (configs + prior slice),
                        MAMMA_MONO + SAM 3D Body prior with the betas PINNED from the statures (no shape pass), select, refine
     post        local  the stitcher over the chunks (per-frame flags the export needs; the trial's copy lacked them) + jl_repair
-    analyses    pod    timing, physics, counterbalance, floorcraft on the stitched motion
+    analyses    pod    timing, physics, counterbalance, floorcraft on the stitched motion (a CPU pod)
     avatars     pod    LHM++ splat avatars (optional; nothing in the export reads them)
     export      local  jl_export --take --no-install (work/<take>/export/<capture>/; the Unity project is never touched)
     film        local  needs the Unity editor (another workflow owns it): skipped with that reason
@@ -687,9 +687,12 @@ def analyses_job(ctx: Ctx) -> Path:
               f"--n-cams 1" + (f" --no-beat {nb}" if nb else ""))
     w = ctx.ws(ctx.work)
     return ctx.write_job({
-        "name": f"{ctx.take}_analyses"[:60], "max_minutes": 40, "needs": [], "min_vram_gb": 24,
+        "name": f"{ctx.take}_analyses"[:60], "max_minutes": 40, "needs": [],
+        # no GPU: a CPU pod (the trial's analyses ran 50 s on 8 vCPUs, 70 s on a 4090; remote_jobs.job_on_cpu)
+        "cpu": True,
         # base + open3d (implied by physics) is the whole environment; physics / counterbalance read the MAMMA locked-head
         # neutral model (physics_body.MAMMA_LOCKED_HEAD), which a job without the mamma feature does not get by default
+        # (a pod on the farm volume links it from there: remote_jobs.VOLUME_ARCS)
         "inputs": [f"{w}/smplx/", f"{w}/smplx_rf2_noslip/", f"{w}/song/", f"{w}/clock/alignment.json",
                    "mamma/data/body_models/smplx_locked_head/smplx/SMPLX_NEUTRAL.npz", "smplx/SMPLX_NEUTRAL.npz"],
         "exclude": EXCLUDE + GENDER_EXCLUDE,

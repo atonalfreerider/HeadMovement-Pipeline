@@ -201,7 +201,7 @@ python -m dancecap.pipeline analysis limit RUN USD|none  # change it (a step par
   (this PC, 26 s), camera (`cameras.mono_cam`, one pod), people (`people_mono`: the couple without bibs, lead / follow from
   the TOML descriptions or the statures; one pod), world (this PC: focal, gravity, camera height from the statures),
   SAM 3D Body (one pod, frames decoded on the pod), fits (one pod per chunk of <= 26 s, side by side; betas pinned from the
-  statures, no shape pass), post (stitch + repair, this PC), analyses (one GPU pod: the runner has no CPU route), export
+  statures, no shape pass), post (stitch + repair, this PC), analyses (one CPU pod), export
   (`work/<take>/export/Mono_<Take>/`, the Unity project untouched), LHM++ avatars beside the analyses (one pod, optional:
   crops chosen from the take's own masks and fit, `work/<take>/avatar_lhmpp/`). The film is skipped with its reason.
   Every pod step needs `--yes`; each writes its pod jobs to `work/<take>/jobs/analyze/` and runs them as a `remote run`
