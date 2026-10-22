@@ -759,6 +759,80 @@ room, `--room-known --yes`). It does **not** reach done; the exact blocking step
   (background residuals over 2 px / 4 px), not a solver. A video with a rotation tag is refused with the ffmpeg command for an
   upright copy. The focal is MoGe-2's (+-10 %): distances scale with it, the camera height does not.
 
+## 7f. Combined round (2026-10-22): the generic route on the ready pods
+
+Both branches merged (`claude/vigilant-almeida-162366`: the generic analyze of 7e and the ready pods of 7d), then the
+generic route adapted:
+- SAM 3D Body (`jl_sam3db`) and the LHM++ avatars (`lhmpp_generic`) say `"base": false`. They bring their own venvs, so their
+  sessions bootstrap nothing and their `install` starts at pod-ready, next to the upload.
+- The mono analyses job says `"cpu": true`. The plan's analyses step is `pod-cpu` at the CPU price.
+- The fit chunk's inputs needed no change. The front job maps the ma_2d copy to `mamma/data/weights/...`, and the fit reads the
+  locked-head model under `mamma/data/body_models/...`, both arcs the volume route serves. On the `lk03_cut20b` fit jobs the
+  merged runner builds a 41 MB bundle and serves 670 MB from the volume: the 540 MB ma_2d copy, the 109 MB locked-head
+  SMPLX_NEUTRAL and the 21.5 MB verts_512 (`smplx/SMPLX_NEUTRAL` is the same file). A pod outside EU-RO-1 gets those
+  670 MB in a side bundle. `MA2D_CKPT_MB` is 670 (ready pods had 540, which left out the body models) and the plan keeps
+  the side bundle.
+- Tests (`pytest tests` from `dancecap/`): 2328 passed, 59 skipped. Five failed, all known and unrelated: carlos_aline window
+  drift, two worktree-junction paths (hair_reference, hand_mano) and two OpenEXR (mono4d_atlas). Run from `dancecap/`
+  without a path, pytest also collects old test copies under `work/` through the junction.
+
+**Measured run 3** (run `20261022-111105-lk03_cut20c`, take `lk03_cut20c`, the same clip and command as runs 1 and 2, nothing
+reused). It reached **done in 65.2 min for $1.10** with no manual marks, against a plan of 65 min p50 and $1.04. The export
+was done at **56.0 min**, against 64.3 min in run 1 and 69.1 min in run 2. Another workflow's runner sessions (job
+`zc_final`) shared the home uplink from 11:43.
+
+| Step | Run 3 | Run 2 | Run 1 | Inside the pod session (run 3) |
+|---|---|---|---|---|
+| intake, upload, beats | 2, 54, 74 s | 2, 51, 39 s | 2, 62, 95 s | 11 MB to the volume in 20 s |
+| camera | 539 s | 839 s | 548 s | upload 26 s, bootstrap 53 s in the background (20 s waited), installs 35 s, skeleton 53 s, track 269 s, MoGe-2 24 s |
+| people (beside camera) | 576 s | 722 s | 634 s | upload 16 s, bootstrap 114 s (93 s waited), detect 36 s, SAM 2.1 96 s, RTMW 73 s, second round 134 s |
+| world | 73 s | 38 s | 52 s | focal 780 px, camera 1.77 m high, the couple 4.9 m away |
+| sam3d_body | 662 s | 677 s | 740 s | no bootstrap; install 40 s from pod-ready, beside the upload (31 s); decode 3 s, infer 395 s, convert 51 s; prior on 595 / 589 of 599 |
+| fits | 1843 s | 2226 s | 1922 s | **pod 441 s** (below), upload 16 s, **side bundle 670 MB in 330 s**, bootstrap 395 s behind it (1 s waited), front 45 s, fit 866 s (RTX 6000 Ada), refine 32 s; 2D residual 7.9 / 5.3 px |
+| post | 12 s | 6 s | 8 s | stitch gate passed |
+| analyses | **180 s** | 345 s | 485 s | **CPU pod** (cpu5c x 8, EU-RO-1), body models linked from the volume in 3 s, bootstrap 43 s (3 s waited), the four analyses 43 s, $0.01 |
+| avatars (beside the analyses) | 738 s | 683 s | skipped | no bootstrap; LHM++ install from pod-ready **521 s** (CUDA extensions built on the pod: 515 s; run 2's venv: 275 s), both avatars 56 s, LBS export 48 s |
+| export | 8 s | 6 s | 8 s | `Mono_Lk03Cut20c`: 25 checks passed, 0 failed |
+
+Session start-up (pod ready to the first compute command; in brackets the upload and the bootstrap the runner waited for):
+
+| Session | Run 3 | Run 2 | Run 1 |
+|---|---|---|---|
+| camera | **91 s** (26 + 20) | 656 s (18 + 600) | 164 s (29 + 100) |
+| people | **140 s** (16 + 93) | 413 s (20 + 354) | 238 s (28 + 174) |
+| sam3d_body | **78 s** (31 + 0) | 150 s (25 + 75) | 189 s (28 + 105) |
+| fits | **426 s** (16 + 330 side + 1) | 862 s (250 + 584) | 807 s (248 + 530) |
+| analyses | **49 s** (30 + 3) | 217 s (72 + 135) | 371 s (50 + 312) |
+| avatars | 537 s (12 + 0; the install is the wait) | 458 s (26 + 141, + the 275-s venv) | - |
+| **all sessions** | upload + bootstrap 579 of 4348 pod-session s (**13 %**) | 2299 of 5372 (43 %) | 1604 of 4209 (38 %) |
+
+What it shows:
+- With uv and the parallel boot the bootstrap is no longer a wait. Run 3 waited 117 s for it over six sessions, against
+  1221 s (run 1, five sessions) and 1889 s (run 2, six). Two pods booting at once (camera and people) no longer slow each
+  other: 53 s and 114 s on the pods, against run 2's 600 s and 354 s.
+- **The fit session missed the volume route.** At 11:33 no RTX 4090 had stock anywhere, and EU-RO-1 had no L40S or
+  RTX 6000 Ada. The first pod, an L40S, never reported a container: 6 min and $0.11 before it was deleted. The second, an
+  RTX 6000 Ada, was a plain Secure Cloud pod without the volume, so the 670 MB came through the home uplink in 330 s (2.0 MB/s). Pod acquisition was
+  441 s in this session, against 80-92 s in runs 1 and 2. On a volume pod with stock at once, the side bundle becomes a 3-s
+  link and the export would land near 44 min (estimate: 330 + ~380 s less on the critical path).
+- **The analyses take 3 min** on the CPU route with the volume (pod ready to compute 49 s), against 5.8-8.1 min on 4090 pods.
+- **The LHM++ install is now the longest start-up** (521 s, its CUDA extensions compiled on the pod; host-dependent: run 2
+  took 275 s). It runs beside the analyses, so it moves the run's end, not the analysis's.
+- The plan was right this time (65 min p50 against 65.2), because it assumes the side bundle (`MA2D_CKPT_MB` 670). On a volume
+  pod the fit lane is about 5 min shorter.
+
+**Found during the run** (left as follow-ups, `remote_jobs.py` is being changed on another branch):
+- Camera and people start `remote run` in the same second, and both runners took the same session id
+  (`20261022-111116-batch`, a stamp to the second) and wrote to one session folder. Both also built the same bundle into the
+  same `.tar.part`, and the camera's `os.replace` failed (`WinError 32`). `mono_route` started the camera again in a new
+  session 6 s later, so the run lost nothing more. The runner needs a unique session folder (exclusive create) and a
+  per-process `.part` name.
+- Pod placement for the fit: the runner tries each GPU type through the volume route, then that type's plain options,
+  before the next type. A 670 MB side bundle (about 5.3 min at the median uplink) costs more than the speed gap to a slower
+  card in EU-RO-1, so a job with a large side bundle should try every volume option before any plain one.
+- The LHM++ CUDA extensions (diff-gaussian-rasterization, pointops) could be built once per GPU arch and cached (the
+  volume or the runner's wheelhouse) instead of compiled in every session.
+
 ---
 
 ## 8. Sources
