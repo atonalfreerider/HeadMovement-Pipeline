@@ -307,6 +307,9 @@ def test_pinned_betas_and_chunk_jobs(tmp_path, monkeypatch):
     assert [x["name"] for x in front["commands"]] == ["frames", "cameras", "masks", "ma2d", "sync", "prepare", "mono_init", "qa_mask"]
     assert [x["name"] for x in fit["commands"]] == ["build", "fit", "select", "refine"]
     assert any(isinstance(i, dict) and i["pod"] == M.MA2D_POD for i in front["inputs"])
+    # the stripped checkpoint is mapped to that arc: an exclude of it dropped the file from the bundle (first fits check)
+    from dancecap.remote_jobs import _excluded
+    assert not any(_excluded(M.MA2D_POD, j["exclude"]) for j in (front, fit))
     assert f"--grid-k={c['k0']}:{c['k1']}" in front["commands"][5]["cmd"]
 
 

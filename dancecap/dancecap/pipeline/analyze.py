@@ -275,8 +275,10 @@ def route_plan(route: str, f: dict, opts: dict | None = None) -> list[dict]:
         # light steps run here (beats 26 s, world ~1 min, post seconds) and the analyses on a GPU runner pod.
         K = mono_chunks(D, f.get("fps") or 30.0)
         T = min(frames, int(round(CHUNK_MAX_S * 30)))     # frames of one chunk's fit window
-        cam50 = 4 + 7 * jl                              # skeleton + track (2 shards) + MoGe-2, scaled by the frames
-        people50 = 3 + 6.5 * frames / 600               # detect 2 passes, SAM 2.1 two rounds, RTMW x 2, CPU (people_mono)
+        # measured 2026-10-22 on lk03_mono20 (599 frames, 4090): camera installs 0.5 + probe / skeleton / track / MoGe-2 1.7 min;
+        # people installs 0.4 + detect 0.5 + SAM 1.4 + RTMW 0.6 + refinement round 2.1 + the rest 0.4 min
+        cam50 = 1.0 + 2.0 * frames / 600                # the track scales with the frames (2 shards on one GPU)
+        people50 = 1.0 + 4.6 * frames / 600             # detection, SAM 2.1 and RTMW scale with the frames
         sam50 = frames * (1785 + 306) / 2643 / 60 + 3   # 3DB infer + convert per frame on one 4090 (trial: 0.87 s) + install
         fit50 = 2 + 1.8 * T / 60 + 1                    # front ~2 min, MAMMA_MONO + prior 1.8 s per frame (trial), refine
         ana50 = max(2.0, 9 * jl)                        # 9 min for 2643 frames (J4); 66 s for 599 (trial)
@@ -293,11 +295,12 @@ def route_plan(route: str, f: dict, opts: dict | None = None) -> list[dict]:
         steps += [
             mono("beats", "The video's sound + beat grid (beats, heat_beats)", "local", ["intake"], 1, 3,
                  basis="measured 26 s on this PC (2026-10-21 trial); light, a pod session would cost 6+ min"),
-            mono("camera", "Camera: PTZ track + MoGe-2, one pod", "pod-gpu", ["intake"], cam50, cam50 * 1.6,
-                 basis="measured ~11 min on one pod for 2643 frames (john_lula J2), scaled by frames; cameras.mono_cam"),
+            mono("camera", "Camera: PTZ track + MoGe-2, one pod", "pod-gpu", ["intake"], cam50, cam50 * 1.8,
+                 basis="measured 2.2 min of pod commands for 599 frames (lk03_mono20, 2026-10-22), scaled by frames; "
+                 "cameras.mono_cam"),
             mono("people", "The couple: detect, lead / follow, SAM 2.1, whole-body pose, one pod", "pod-gpu", ["intake"],
-                 people50, people50 * 1.6, basis="SAM 2.1 ~20 frame-evaluations/s and RTMW 70 s per 2643 frames on a 4090 "
-                 "(J3a), two rounds; people_mono (no bibs)"),
+                 people50, people50 * 1.8, basis="measured 5.6 min of pod commands for 599 frames (lk03_mono20, "
+                 "2026-10-22: two SAM 2.1 rounds), scaled by frames; people_mono (no bibs)"),
             mono("world", "World frame: focal, gravity, camera height from the statures", "local", ["camera", "people"],
                  1.5, 4, basis="CPU: the skeleton re-solved at one focal + the track refine (2 min for 2643 frames, J2)"),
             mono("sam3d_body", "SAM 3D Body pose prior, one pod (frames decoded on the pod)", "pod-gpu", ["world"], sam50,

@@ -522,7 +522,7 @@ def chunk_jobs(ctx: Ctx, c: dict, inputs: dict, pin: Path) -> list[Path]:
     front = ctx.write_job({
         "name": f"{ct}_front"[:60], "max_minutes": 25, "needs": ["ma2d", "mamma"], "min_vram_gb": 24,
         "inputs": common_in + [{"local": str((WORKSPACE / MA2D_STRIPPED).resolve()), "pod": MA2D_POD}],
-        "exclude": EXCLUDE + GENDER_EXCLUDE + ["mamma/data/weights/ma_2d/mamma_mask_full_cvpr.ckpt"],
+        "exclude": EXCLUDE + GENDER_EXCLUDE,
         "env": base_env, "setup": [GENDER_LINKS],
         "commands": [{"name": "frames", "timeout_min": 10, "cmd": f"python -m dancecap.recap_front frames {cid}"},
                      {"name": "cameras", "timeout_min": 5, "cmd": f"python -m dancecap.jl_front cameras {cid}"},
@@ -542,7 +542,7 @@ def chunk_jobs(ctx: Ctx, c: dict, inputs: dict, pin: Path) -> list[Path]:
     fit = ctx.write_job({
         "name": f"{ct}_fit"[:60], "max_minutes": fit_min + 30, "needs": ["mamma"], "min_vram_gb": 24, "after": [f"{ct}_front"[:60]],
         "inputs": [ctx.ws(pin), ctx.ws(inputs["prior"])],
-        "exclude": EXCLUDE + GENDER_EXCLUDE + ["mamma/data/weights/ma_2d/mamma_mask_full_cvpr.ckpt"],
+        "exclude": EXCLUDE + GENDER_EXCLUDE,
         "env": {**base_env, "MAMMA_MONO_INIT": f"{pw}/mamma/mono_init.npz", "MAMMA_FREEZE_BETAS": "1",
                 "MAMMA_INIT_BETAS": f"{POD_WS}/{ctx.ws(pin)}", "MAMMA_POSE_PRIOR": f"{pw}/mamma/prior_3db.npz"},
         "setup": [GENDER_LINKS, "nvidia-smi --query-gpu=name,memory.total --format=csv"],
@@ -631,8 +631,9 @@ def step_post(ctx: Ctx) -> str:
     doc = stitch_list_doc(ctx.take, plan["chunks"], plan["duration_s"])
     sl = ctx.work / "stitch_list.json"
     sl.write_text(json.dumps(doc, indent=1), encoding="utf-8")
+    # --gate-exit report: a seam gate that fails is written into stitch.json (the verdict, the refit advice), not a failed step
     ctx.local(["-m", "dancecap.stitch", ctx.take, "--chunks", str(sl), "--partial", "--force", "--select-weights",
-               "arm=0.3,fingers=0.3", "--no-sheets"], timeout_min=15)
+               "arm=0.3,fingers=0.3", "--no-sheets", "--gate-exit", "report"], timeout_min=15)
     ctx.local(["-m", "dancecap.jl_repair", str(ctx.work / "smplx"), str(ctx.work / "smplx_rf2_noslip")], timeout_min=10)
     st = _json(ctx.work / "stitch.json") or _json(ctx.work / "smplx" / "stitch.json") or {}
     return f"stitched {len(plan['chunks'])} chunk(s) -> smplx/, smplx_rf2_noslip/; repaired" + (
@@ -654,7 +655,7 @@ def analyses_job(ctx: Ctx) -> Path:
         # neutral model (physics_body.MAMMA_LOCKED_HEAD), which a job without the mamma feature does not get by default
         "inputs": [f"{w}/smplx/", f"{w}/smplx_rf2_noslip/", f"{w}/song/", f"{w}/clock/alignment.json",
                    "mamma/data/body_models/smplx_locked_head/smplx/SMPLX_NEUTRAL.npz", "smplx/SMPLX_NEUTRAL.npz"],
-        "exclude": EXCLUDE + GENDER_EXCLUDE + ["mamma/data/weights/ma_2d/mamma_mask_full_cvpr.ckpt"],
+        "exclude": EXCLUDE + GENDER_EXCLUDE,
         "setup": [GENDER_LINKS],
         "env": {"MPLBACKEND": "Agg", "OMP_NUM_THREADS": "4", "OPENBLAS_NUM_THREADS": "4", "MKL_NUM_THREADS": "4"},
         "commands": [{"name": "timing", "timeout_min": 15, "cmd": f"python -m dancecap timing {ctx.take} {t_args}"},
