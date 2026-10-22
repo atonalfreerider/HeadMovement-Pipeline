@@ -5,13 +5,21 @@ import { Defrag, chunkColor } from "../components/defrag.js";
 import { openDialog, confirmDialog, typedConfirm, toast, errorText } from "../components/dialog.js";
 import { pill } from "../components/status.js";
 import * as api from "../api.js";
-import { strip as stepStrip, STATUS_TEXT } from "../components/stepmap.js";
-import { sessionRow } from "./analysis.js";
+import { strip as stepStrip, STATUS_TEXT, uploadText, sessionStatePill } from "../components/stepmap.js";
+import { sessionRow, alertBar } from "./analysis.js";
+
+/** "1 pod on Runpod · 7 open in the ledger (6 past their kill time)": the two counts the budget mixed up before. */
+function podCounts(b) {
+  if (!b || b.ledger_open == null) return null;
+  const rp = b.runpod_listed == null ? "Runpod pod list not read yet" : `${b.runpod_listed} pod${b.runpod_listed === 1 ? "" : "s"} on Runpod`;
+  return `${rp} · ${b.ledger_open} open in the ledger${b.ledger_stale ? ` (${b.ledger_stale} past their kill time: python -m dancecap remote reconcile closes them)` : ""}`;
+}
 
 const POLL_VISIBLE_MS = 2000, POLL_HIDDEN_MS = 10000;
 const STAGE_TEXT = { none: "nothing yet", front: "front only (cameras, 2D, sync; no 3D yet)", fit: "raw 3D fit", refined: "refined, awaiting stitch", analysed: "refined and analysed" };
 const STATE_TEXT = { complete: "complete", partial: "partial", none: "not done" };
-const GPU_SHORT = (g) => (g || "?").replace(/^NVIDIA /, "").replace(/GeForce /, "").replace(/ ?80GB( HBM3)?/, "").replace(/-SXM4/, " SXM").replace(/ Generation/, "");
+// -SXM4 before the memory suffix: "A100-SXM4-80GB" read "A100 SXM-" (the suffix took the 80GB and left the dash)
+const GPU_SHORT = (g) => (g || "?").replace(/^NVIDIA /, "").replace(/GeForce /, "").replace(/-SXM4/, " SXM").replace(/[- ]?80GB( HBM3)?/, "").replace(/ Generation/, "");
 
 const fmtSpan = (a, b) => (a == null || b == null ? "–" : `${a.toFixed(1)} → ${b.toFixed(1)} s`);
 const fmtPct = (p) => (p > 0 && p < 1 ? "<1" : String(Math.round(p || 0)));
@@ -151,6 +159,8 @@ export default {
       const chunkIndex = {};
       d.chunks.forEach((c, k) => { chunkIndex[c.id] = k; });
       map.setModel({ cells: cov.cells, chunkIndex, cellS: cov.cell_s || 1 });
+      // a take analysed by the pod runner has no per-second map: the hero says so; an empty timeline card says nothing
+      mapCard.hidden = !cov.exists && !d.chunks.length;
       if (S.selected >= 0) showDetail(S.selected);
       renderHead(d); renderAlerts(d); renderHero(d); renderLegends(d);
       const fp = (k, o) => { const f = fingerprint(o); if (S.lastFp[k] === f) return false; S.lastFp[k] = f; return true; };
@@ -168,7 +178,9 @@ export default {
     function renderTicking(d) { renderPods(d); renderJobs(d); }
 
     function renderHead(d) {
-      const sel = d.dances.map((x) => h("option", { value: x.id, selected: x.id === d.dance }, x.label + (x.complete_pct != null ? `  ·  ${Math.round(x.complete_pct)} % complete` : "")));
+      const sel = d.dances.map((x) => h("option", { value: x.id, selected: x.id === d.dance }, x.label +
+        (x.complete_pct != null ? `  ·  ${Math.round(x.complete_pct)} % complete` : "") +
+        (x.analysis ? `  ·  analysis ${x.analysis.status} ${x.analysis.done}/${x.analysis.total}` : "")));
       replace(danceSel, sel);
       danceSel.value = d.dance;
       const w = d.world || {};
@@ -177,20 +189,26 @@ export default {
       const cov = d.coverage;
       const stale = d.outputs && d.outputs.stale;
       const refreshing = (d.actions || []).some((a) => a.label === "coverage" && (a.state === "running" || a.state === "starting"));
+      // a take only the pod runner analysed (pipeline analyze): no farm, so no coverage map, watcher or farm actions
+      const cur = (d.dances || []).find((x) => x.id === d.dance) || {};
+      const runnerOnly = !!d.analysis && cur.farm === false;
       replace(updatedEl, cov.exists ? [`map computed ${cov.updated_ts ? fmtAgo(cov.updated_ts, srvNow()) : cov.updated || "?"}`,
         refreshing ? pill("recomputing…", "info") : stale ? pill("new output: map refreshes", "info") : null,
-        h("button", { class: "btn small ghost", title: "Recompute the map from the real outputs now", onclick: () => act("/api/farm/coverage/refresh", "Coverage refresh") }, "recompute")] : "no coverage yet");
+        h("button", { class: "btn small ghost", title: "Recompute the map from the real outputs now", onclick: () => act("/api/farm/coverage/refresh", "Coverage refresh") }, "recompute")]
+        : runnerOnly ? pill("pod-runner analysis", "info", "analysed by the pod runner (pipeline analyze), not the volume farm: its steps are above, there is no coverage map")
+          : "no coverage yet");
       const cmd = d.commands || {};
       const wch = d.watcher || {};
-      replace(watcherEl, wch.running ? pill(`watcher alive${wch.cycle != null ? " · cycle " + wch.cycle : ""}`, "good", "the detached watcher pulls finished chunks and keeps pods healthy")
+      replace(watcherEl, runnerOnly ? null : wch.running ? pill(`watcher alive${wch.cycle != null ? " · cycle " + wch.cycle : ""}`, "good", "the detached watcher pulls finished chunks and keeps pods healthy")
         : wch.hung ? pill("watcher hung", "crit", "its process exists but its heartbeat is old: restart it")
           : wch.known ? pill(`watcher ${wch.state || "stopped"}`, "neutral") : pill("no watcher", "neutral", "it starts with Fill gaps (farm up)"));
       const busy = (label) => (d.actions || []).some((a) => a.label === label && (a.state === "running" || a.state === "starting"));
-      bFill.disabled = !cov.exists || busy("fill");
-      bPull.disabled = !cmd.pull || busy("pull");
+      bFill.disabled = !cov.exists || busy("fill") || runnerOnly;
+      if (runnerOnly) bFill.title = "This take has no volume-farm plan: the pod runner analysed it";
+      bPull.disabled = !cmd.pull || busy("pull") || runnerOnly;
       bPull.title = cmd.pull ? "Download every finished chunk from the volume now" : "Not installed yet: `farm pull` arrives with the watcher stage";
       bLog.title = d.logs && d.logs.length ? "The farm logs (watcher, actions)" : "No log yet: the watcher writes farm/watcher.log once it runs";
-      bRestart.disabled = !cmd.watch;
+      bRestart.disabled = !cmd.watch || runnerOnly;
       bRestart.title = cmd.watch ? "Stop the detached watcher and start it again" : "Not installed yet: `farm watch` arrives with the watcher stage";
       bStop.disabled = !d.pods.some((p) => p.stoppable);
       bStop.title = bStop.disabled ? "No farm pod is running (fit_full pods are stopped through fit_full, not here)"
@@ -206,11 +224,28 @@ export default {
       alertsEl.hidden = !al.length;
     }
 
+    /** A take analysed by the pipeline runner (analyze + agents): its completion is the run's steps and the result folders
+     *  on disk, not a farm map (it showed "0 % complete, no coverage map" for a finished analysis). */
+    function analysisLine(an) {
+      if (!an) return null;
+      const st = an.status;
+      return h("div", { class: "fm-analysis" },
+        h("strong", null, "Pipeline analysis "), h("a", { class: "mono", href: `#/analysis/${encodeURIComponent(an.run)}` }, an.run), " ",
+        pill(st, { done: "good", running: "info", waiting: "warn", failed: "crit" }[st] || "neutral"),
+        h("span", null, ` ${an.done}/${an.total} steps done${(an.reused || []).length ? ` (${an.reused.length} reused: ${an.reused.join(", ")})` : ""}`),
+        an.ended ? h("span", { class: "muted" }, ` · ended ${fmtTime(an.ended, true)}`) : null,
+        h("div", { class: "muted small" }, (an.outputs || []).length ? `results on disk: ${an.outputs.join(", ")} (work/${S.dance}/)` : "no result folder on disk yet"));
+    }
+
     function renderHero(d) {
       const cov = d.coverage;
       if (!cov.exists) {
-        replace(heroEl, h("div", { class: "fm-empty" }, h("strong", null, "No coverage map yet."), " The map is computed from the real outputs: ",
-          h("code", null, "python -m dancecap.farm --dance " + d.dance + " coverage")));
+        replace(heroEl, d.analysis
+          ? h("div", { class: "fm-empty" }, analysisLine(d.analysis),
+            h("p", { class: "muted small" }, "This take was analysed by the pod runner, not by the volume farm: there is no per-second coverage map. ",
+              h("a", { href: `#/analysis/${encodeURIComponent(d.analysis.run)}` }, "Open the analysis"), " for its steps, sessions, cost and snapshots."))
+          : h("div", { class: "fm-empty" }, h("strong", null, "No coverage map yet."), " The map is computed from the real outputs: ",
+            h("code", null, "python -m dancecap.farm --dance " + d.dance + " coverage")));
         return;
       }
       const pc = cov.percent, sec = cov.seconds, cn = cov.counts;
@@ -230,7 +265,8 @@ export default {
         h("div", { class: "fm-stack", role: "img", "aria-label": `${pc.complete}% complete, ${pc.partial}% partial, ${pc.none}% not done` },
           h("span", { class: "fm-seg complete", style: { width: `${100 * (sec.complete || 0) / total}%` } }),
           h("span", { class: "fm-seg partial", style: { width: `${100 * (sec.partial || 0) / total}%` } }),
-          h("span", { class: "fm-seg none", style: { width: `${100 * (sec.none || 0) / total}%` } })));
+          h("span", { class: "fm-seg none", style: { width: `${100 * (sec.none || 0) / total}%` } })),
+        analysisLine(d.analysis));
     }
 
     function renderLegends(d) {
@@ -251,7 +287,7 @@ export default {
       app.setTop && app.setTop(
         open.length ? pill(`${open.length} pod${open.length > 1 ? "s" : ""} · ${fmtUSD(rate)}/h`, "info", "pods billing now") : h("span", { class: "muted small" }, "no pods"),
         b && b.spent != null ? h("span", { class: ["fm-topbud", b.level === "red" ? "crit-text" : b.level === "amber" ? "warn-text" : ""], title: "spent / cap (ledger)" },
-          `${fmtUSD(b.spent, 1)} / ${fmtUSD(b.cap, 0)}`) : null);
+          `${fmtUSD(b.spent)} / ${fmtUSD(b.cap)}`) : null);
     }
 
     function statusItems(d) {
@@ -327,13 +363,18 @@ export default {
       const level = b.level || "green";
       const cap = b.cap, spent = b.spent;
       card(panels.budget, "Budget", h("span", { class: ["lvl", "lvl-" + level] }, { green: "within budget", amber: "watch it", red: "over" }[level] || level),
-        spent != null && cap ? [h("div", { class: "fm-money" }, h("strong", null, fmtUSD(spent)), h("span", { class: "muted" }, ` spent of ${fmtUSD(cap, 0)} cap`)),
+        spent != null && cap ? [h("div", { class: "fm-money" }, h("strong", null, fmtUSD(spent)), h("span", { class: "muted" }, ` spent of ${fmtUSD(cap)} cap`)),
           h("div", { class: "fm-capbar", title: "spent / cap" }, h("div", { style: { width: `${clamp(100 * spent / cap, 0, 100)}%` } }))] : h("p", { class: "muted" }, b.connection ? "Runpod ledger not read yet." : "Waiting for the Runpod ledger…"),
         h("div", { class: "kv fm-kv" },
           h("span", null, "account balance"), h("span", null, b.balance != null ? fmtUSD(b.balance) : "–"),
           h("span", null, "cap left"), h("span", null, b.remaining != null ? fmtUSD(b.remaining) : "–"),
           h("span", { title: "min(cap left, balance - $2) minus the worst case of pods already open" }, "free for new pods"), h("span", { class: b.available_usd != null && b.available_usd < 2 ? "warn-text" : "" }, b.available_usd != null ? fmtUSD(b.available_usd) : "–"),
-          h("span", null, "billing now"), h("span", null, b.open_rate_hr != null ? `${fmtUSD(b.open_rate_hr)}/h` : "–")),
+          h("span", null, "billing now"), h("span", null, b.open_rate_hr != null ? `${fmtUSD(b.open_rate_hr)}/h` : "–"),
+          // two different counts: pods Runpod lists now, and rows the ledger still holds open (a lost close stays open
+          // until `remote reconcile` sees the pod gone twice: "6 open pods" while none ran, 2026-10-21)
+          h("span", { title: "pods `runpodctl pod list` returns now (any owner)" }, "running on Runpod"), h("span", null, b.runpod_listed != null ? String(b.runpod_listed) : "–"),
+          h("span", { title: "rows of work/runpod/ledger.json without a delete time" }, "open in the ledger"),
+          h("span", { class: b.ledger_stale ? "warn-text" : "" }, b.ledger_open != null ? `${b.ledger_open}${b.ledger_stale ? ` (${b.ledger_stale} past their kill time)` : ""}` : "–")),
         (b.messages || []).map((m) => h("p", { class: "warn-text small" }, m)));
     }
 
@@ -537,15 +578,18 @@ export default {
       if (S.destroyed) return;
       S.timer = setTimeout(async () => { await poll(); schedule(); }, document.visibilityState === "visible" ? POLL_VISIBLE_MS : POLL_HIDDEN_MS);
     }
-    const onVis = () => { if (document.visibilityState === "visible") { poll(); schedule(); } };
+    const onVis = () => { if (document.visibilityState === "visible") { poll(); schedule(); pollAct(); } };
     document.addEventListener("visibilitychange", onVis);
 
     // ---- analyses and pod sessions (GET /api/activity): what runs now, above the map (owner 2026-10-21)
     function renderAct(a) {
       const now = a.now;
       const b = a.budget || {};
-      const active = (a.analyses || []).filter((x) => ["running", "waiting", "planned"].includes(x.status));
-      const shown = active.length ? active.slice(0, 3) : (a.analyses || []).slice(0, 1);
+      const isActive = (x) => ["running", "waiting", "planned"].includes(x.status);
+      const active = (a.analyses || []).filter(isActive);
+      // the server lists the active runs, then the most recently FINISHED ones by their end (a later-created, earlier-
+      // cancelled run hid the mono trial that finished after it): with nothing active, those are shown
+      const shown = active.length ? active.slice(0, 4) : (a.analyses || []).slice(0, 3);
       const live = a.sessions_live || [];
       const recent = a.sessions_recent || [];
       const nOk = recent.filter((c) => c.state === "ok").length, nBad = recent.filter((c) => ["failed", "orphaned"].includes(c.state)).length;
@@ -554,36 +598,43 @@ export default {
           h("span", { class: "spacer" }),
           h("span", { class: ["small", b.level === "red" ? "crit-text" : b.level === "amber" ? "warn-text" : "muted"], title: `cap: ${a.cap_source || "?"}` },
             b.spent != null ? `Runpod: ${fmtUSD(b.spent)} spent of ${fmtUSD(b.cap)} cap · ${fmtUSD(b.remaining)} left${a.balance != null ? ` · balance ${fmtUSD(a.balance)}` : ""}` : ""),
+          h("span", { class: "small muted", title: "rows open in work/runpod/ledger.json against the pods Runpod lists now" }, podCounts(b)),
           h("a", { class: "btn small ghost", href: "#/snapshots" }, "Snapshots")),
-        shown.length ? shown.map((x) => analysisRow(x, now)) : null,
+        (a.alerts || []).length ? h("div", { class: "ac-alerts" }, alertBar(a.alerts, { max: 4 })) : null,
+        shown.length ? [!active.length ? h("div", { class: "ac-sub" }, "Nothing running: the most recently finished analyses") : null, shown.map((x) => analysisRow(x, now))] : null,
         live.length ? h("div", { class: "ac-live" }, h("div", { class: "ac-sub" }, `Pod sessions running now (${live.length})`), live.map((c) => sessionRow(c))) : null,
         !active.length && !live.length ? h("p", { class: "muted small ac-idle" }, "Nothing is running now. Start an analysis with ",
           h("code", null, "python -m dancecap.pipeline analyze <folder|video>"), "; every pod session and farm run also shows here.") : null,
-        recent.length ? h("details", { class: "ac-recent" }, h("summary", { class: "small" }, `Recent pod sessions (24 h): ${nOk} ok, ${nBad} failed or orphaned, ${recent.length - nOk - nBad} other`),
+        recent.length ? h("details", { class: "ac-recent", open: S.recentOpen || null, ontoggle: (e) => { S.recentOpen = e.target.open; } },
+          h("summary", { class: "small" }, `Recent pod sessions (24 h): ${recent.length} — ${nOk} ok, ${nBad} failed or orphaned, ${recent.length - nOk - nBad} other`),
           h("table", { class: "fm-tbl" }, h("thead", null, h("tr", null, ["session", "state", "jobs", "GPU", "upload", "cost", "problem"].map((x) => h("th", null, x)))),
             h("tbody", null, recent.map((c) => h("tr", null,
               h("td", { class: "mono small" }, h("a", { href: `#/runpod/session/${encodeURIComponent(c.sid)}` }, c.sid)),
-              h("td", null, pill(c.state === "orphaned" ? "runner gone" : c.state, { ok: "good", failed: "crit", orphaned: "crit", running: "info" }[c.state] || "neutral")),
+              h("td", null, sessionStatePill(c)),
               h("td", { class: "small" }, (c.jobs || []).join(", ")),
-              h("td", { class: "small" }, GPU_SHORT(c.gpu)),
-              h("td", { class: "small num" }, c.upload && c.upload.total ? `${(c.upload.total / 1e6).toFixed(0)} MB${c.upload.mbps ? ` @ ${c.upload.mbps.toFixed(2)} MB/s` : ""}` : "–"),
+              h("td", { class: "small" }, c.no_pod ? "no pod" : GPU_SHORT(c.gpu)),
+              h("td", { class: "small num" }, c.upload ? (c.upload.no_pod || c.upload.stopped ? uploadText(c.upload)
+                : c.upload.total ? `${(c.upload.total / 1e6).toFixed(0)} MB${c.upload.mbps ? ` @ ${c.upload.mbps.toFixed(2)} MB/s` : ""}` : "–") : "–"),
               h("td", { class: "num" }, c.cost_usd != null ? fmtUSD(c.cost_usd) : "–"),
-              h("td", { class: "small crit-text" }, c.jobs_bad ? Object.entries(c.jobs_bad).map(([k, v]) => `${k}: ${v}`).join("; ").slice(0, 120) : (c.error || "").slice(0, 120))))))) : null);
+              h("td", { class: "small crit-text am-wrap" }, c.no_pod && c.error ? c.error.slice(0, 200)
+                : c.jobs_bad && Object.keys(c.jobs_bad).length ? Object.entries(c.jobs_bad).map(([k, v]) => `${k}: ${v}`).join("; ").slice(0, 160) : (c.error || "").slice(0, 160))))))) : null);
     }
 
     function analysisRow(x, now) {
       const lv = x.live || {}, eta = lv.eta_s || {}, fin = lv.finish_at || {}, cost = lv.cost_usd || {};
       const waiting = lv.waiting_agent || [], running = lv.running || [];
+      const ended = lv.ended || x.ended;
       return h("div", { class: "ac-row" },
         h("div", { class: "ac-row-top" },
           h("a", { href: `#/analysis/${encodeURIComponent(x.run)}`, class: "ac-take" }, x.take),
           pill(x.route === "mono" ? "one phone" : `${(x.facts || {}).n || "?"} phones`, "neutral"),
           pill(x.status, { running: "info", waiting: "warn", done: "good", failed: "crit" }[x.status] || "neutral"),
-          stepStrip(x.steps), h("span", { class: "small" }, `${lv.done || 0}/${lv.total || 0} steps`),
+          stepStrip(x.steps), h("span", { class: "small" }, `${lv.done || 0}/${lv.total || 0} steps${(lv.reused || []).length ? ` (${lv.reused.length} reused)` : ""}`),
           h("span", { class: "spacer" }),
           h("span", { class: "small", title: "end to end, critical path from now (plan p50 / p90 until a step reports, then live)" },
-            x.status === "cancelled" ? `cancelled ${fmtAgo(x.updated, now)}` : fin.p50 ? `ETA ${fmtDur(eta.p50)} (p90 ${fmtDur(eta.p90)}) · finish ~${fmtTime(fin.p50)}` : "nothing left to run"),
-          h("span", { class: "small" }, `cost ${fmtUSD(cost.so_far)} → ${fmtUSD(cost.p50)} (p90 ${fmtUSD(cost.p90)})`),
+            ["cancelled", "done", "failed"].includes(x.status) ? `${x.status} ${ended ? fmtAgo(ended, now) : ""} · took ${fmtDur(lv.elapsed_s)}`
+              : fin.p50 ? `ETA ${fmtDur(eta.p50)} (p90 ${fmtDur(eta.p90)}) · finish ~${fmtTime(fin.p50)}` : "nothing left to run"),
+          h("span", { class: "small" }, ["cancelled", "done", "failed"].includes(x.status) ? `cost ${fmtUSD(cost.so_far)}` : `cost ${fmtUSD(cost.so_far)} → ${fmtUSD(cost.p50)} (p90 ${fmtUSD(cost.p90)})`),
           h("a", { class: "btn small", href: `#/analysis/${encodeURIComponent(x.run)}` }, "Open")),
         running.length || waiting.length ? h("div", { class: "small" },
           running.length ? h("span", null, "running: ", h("strong", null, running.join(", ")), "  ") : null,
@@ -594,6 +645,7 @@ export default {
       if (S.destroyed) return;
       try { S.act = await api.get("/api/activity"); renderAct(S.act); } catch (e) { /* the farm poll reports connection problems */ }
     }
+    // the strip polls only while its tab is visible; a tab shown again is brought up to date at once (onVis)
     const actTimer = setInterval(() => { if (document.visibilityState === "visible") pollAct(); }, 3000);
     if (!route.dance) {   // the dance being analysed now wins over the one last viewed in this browser
       await pollAct();

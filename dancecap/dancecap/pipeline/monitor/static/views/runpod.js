@@ -97,7 +97,7 @@ export async function cleanupOrphans(app, after) {
   return true;
 }
 
-const SETUP = new Set(["bundle_scan", "bundle_build", "pod_start", "extract", "bootstrap", "wheels_back", "delete"]);
+const SETUP = new Set(["bundle_scan", "bundle_build", "pod_start", "extract", "bootstrap", "bootstrap_try1", "wheels_back", "delete"]);
 function phaseCat(ph) {
   if (ph === "upload") return "upload";
   if (SETUP.has(ph)) return "setup";
@@ -210,9 +210,11 @@ export default {
                 h("thead", null, h("tr", null, ["session", "take", "jobs", "state", "origin", "started", "duration", "GPU", "cost"].map((x) => h("th", null, x)))),
                 h("tbody", null, list.map((x) => h("tr", { class: "clickable", onclick: () => app.navigate(`#/runpod/session/${x.sid}`) },
                   h("td", { class: "mono small" }, x.sid), h("td", null, x.take || ""), h("td", { class: "small" }, (x.jobs || []).join(", ")),
-                  h("td", null, sessionStatePill(x.state)), h("td", { class: "small muted" }, x.origin || ""),
+                  h("td", { title: x.error || "" }, sessionStatePill(x.state)), h("td", { class: "small muted" }, x.origin || ""),
                   h("td", { class: "small", style: { whiteSpace: "nowrap" } }, fmtTime(x.started, true)),
-                  h("td", { class: "small num" }, x.started ? fmtDur((x.ended || Date.now() / 1000) - x.started) : ""),
+                  // only a live session's duration grows; an ended one without an end time shows none
+                  h("td", { class: "small num" }, x.started && (x.ended || ["running", "preparing", "orphaned"].includes(x.state))
+                    ? fmtDur((x.ended || Date.now() / 1000) - x.started) : ""),
                   h("td", { class: "small", style: { whiteSpace: "nowrap" } }, (x.gpu || "–").replace("NVIDIA ", "")),
                   h("td", { class: "num" }, x.cost_usd !== null && x.cost_usd !== undefined ? fmtUSD(x.cost_usd) : "–")))))) : h("div", { class: "empty" }, "No sessions yet."))),
           h("div", null,
@@ -221,9 +223,13 @@ export default {
                 h("span", null, "API"), h("span", null, rp.connection === "ok" ? "ok" : rp.connection),
                 h("span", null, "balance"), h("span", null, acc.balance_usd !== null && acc.balance_usd !== undefined ? fmtUSD(acc.balance_usd) : "–"),
                 h("span", null, "spending now"), h("span", null, acc.spend_per_hr_usd !== null && acc.spend_per_hr_usd !== undefined ? `${fmtUSD(acc.spend_per_hr_usd)}/h` : "–"),
-                h("span", null, "pods running"), h("span", null, String(rp.pods_running || 0)),
+                h("span", { title: "pods `runpodctl pod list` returns now" }, "pods on Runpod"), h("span", null, rp.connection === "ok" ? String(rp.pods_running || 0) : "–"),
+                // not the same count: a row whose close was lost stays open until `remote reconcile` sees the pod gone twice
+                h("span", { title: "rows of work/runpod/ledger.json without a delete time" }, "open in the ledger"),
+                h("span", { class: bud && (bud.pods || []).some((p) => p.phantom_cost != null) ? "warn-text" : "" }, bud && bud.open_pods != null
+                  ? `${bud.open_pods}${(bud.pods || []).filter((p) => p.phantom_cost != null).length ? ` (${(bud.pods || []).filter((p) => p.phantom_cost != null).length} past their kill time)` : ""}` : "–"),
                 h("span", null, "progress level"), h("span", { title: "L0 parses logs; L1 adds live GPU/upload probes; L2 instruments the stages" }, rp.progress_level || "L0"),
-                h("span", null, "cap"), h("span", null, bud ? `${fmtUSD(bud.cap, 0)} (reserve ${fmtUSD(bud.reserve, 0)})` : "–"),
+                h("span", null, "cap"), h("span", null, bud ? `${fmtUSD(bud.cap)} (reserve ${fmtUSD(bud.reserve)})` : "–"),
                 h("span", null, "remaining"), h("span", null, bud ? fmtUSD(bud.remaining) : "–"))),
             h("div", { class: "card" }, h("h3", { class: "section-title" }, "How costs are counted"),
               h("ul", { class: "small", style: { paddingLeft: "18px", margin: 0, color: "var(--text-2)" } },

@@ -1,7 +1,8 @@
 """Runpod offload for GPU-heavy stages (MAMMA ma_3d, gsplat room training, texture bakes, large models).
 
 Basic GPU work (YOLO, ma_2d inference, beats, Unity) stays local; anything that would hold the local
-2080 Ti for a long time runs on a rented 80 GB GPU here.
+2080 Ti for a long time runs on a rented GPU here: the fastest card with enough memory first (GPU_LADDER, 4090 first),
+each card in every cloud before the next, (gpu, cloud) pairs that led to a broken host last (pod_session).
 
 Safety and cost rules (user decisions, 2026-10-06):
 - Spending cap enforced from work/runpod/ledger.json BEFORE a pod is created: remaining budget must cover
@@ -40,25 +41,37 @@ SSH_KEY = Path.home() / ".ssh" / "runpod_dancecap"
 # only works for Windows' own OpenSSH; Git Bash's ssh wrote a file literally named NUL into the cwd (dancecap/NUL).
 KNOWN_HOSTS = PACKAGE_ROOT / "work" / "runpod" / "known_hosts"
 DEFAULT_CAP = 106.7  # J3b 2026-10-11: spent 78.60 + (balance 36.18 - 8) = 106.78, rounded down (john_lula single-camera fits); was 101.7 (F1 2026-10-09)
-# preferred 80 GB GPUs, cheapest first; availability changes, so status/gpus shows what's live
-GPU_PREFERENCE = ["NVIDIA A100-SXM4-80GB", "NVIDIA A100 80GB PCIe", "NVIDIA H100 80GB HBM3", "NVIDIA H100 NVL",
-                  "NVIDIA H100 PCIe"]
-CLOUDS = ["COMMUNITY", "SECURE"]  # community is cheaper; secure when no community host with a public IP is free
-# GPUs by memory, fastest first for this workload (owner 2026-10-21: speed over cost). Measured: a 4090 fits MAMMA 2.4x faster
-# than an A100 (farm drill). Blackwell cards (RTX 5090, RTX PRO) are left out: the bootstrap's torch 2.5.1 / cu124 has no
-# sm_120 kernels. A job declares "min_vram_gb" to get this wider list instead of the 80 GB GPU_PREFERENCE.
+# the 80 GB GPUs for a caller that passes no list (front_full; jobs needing 80 GB get the same order from GPU_LADDER), FASTEST
+# first (owner 2026-10-21: speed over cost; fit_full's tiers already put the H100 first); availability changes, `remote gpus`
+GPU_PREFERENCE = ["NVIDIA H100 80GB HBM3", "NVIDIA H100 NVL", "NVIDIA H100 PCIe", "NVIDIA A100-SXM4-80GB",
+                  "NVIDIA A100 80GB PCIe"]
+# the clouds tried for EACH GPU before the next (slower) GPU: community is cheaper, secure has the same card when no
+# community host with a public IP is free (pod_session loops GPUs outside, clouds inside)
+CLOUDS = ["COMMUNITY", "SECURE"]
+# GPUs by memory, fastest first for the measured workloads (owner 2026-10-21: speed over cost): a 4090 ran SAM 3D Body at 0.355 s
+# per person-frame against 2.0 s on an A100-SXM (trial 2026-10-21) and fits MAMMA 2.4x faster than an A100 (farm drill); the
+# Ada 48 GB cards next, then H100 before A100, the Ampere 48 GB cards and the 3090 last (LHM++ ran out of memory on a 3090 where
+# the 4090 peaked at 8 GB). Blackwell cards (RTX 5090, RTX PRO) are left out: the bootstrap's torch 2.5.1 / cu124 has no sm_120
+# kernels. remote_jobs.job_vram_gb gives every runner job a memory need (24 GB unless measured otherwise), so this ladder is the
+# default order of `remote run`.
 GPU_LADDER = [("NVIDIA GeForce RTX 4090", 24), ("NVIDIA L40S", 48), ("NVIDIA RTX 6000 Ada Generation", 48), ("NVIDIA L40", 48),
-              ("NVIDIA A100-SXM4-80GB", 80), ("NVIDIA A100 80GB PCIe", 80), ("NVIDIA H100 PCIe", 80),
-              ("NVIDIA H100 80GB HBM3", 80), ("NVIDIA A40", 48), ("NVIDIA RTX A6000", 48), ("NVIDIA GeForce RTX 3090", 24)]
+              ("NVIDIA H100 80GB HBM3", 80), ("NVIDIA H100 NVL", 94), ("NVIDIA H100 PCIe", 80),
+              ("NVIDIA A100-SXM4-80GB", 80), ("NVIDIA A100 80GB PCIe", 80),
+              ("NVIDIA A40", 48), ("NVIDIA RTX A6000", 48), ("NVIDIA GeForce RTX 3090", 24)]
 
 
 def gpus_for(min_vram: list) -> list[str] | None:
-    """The GPU list for a batch whose every job declares min_vram_gb (the largest wins); None = GPU_PREFERENCE."""
+    """The GPU list for a batch whose every job declares a memory need (the largest wins), fastest first; None when a job
+    declares none (remote_jobs.job_vram_gb always declares one) or nothing in the ladder is big enough (= GPU_PREFERENCE)."""
     vals = [float(v) for v in min_vram if v is not None]
     if not min_vram or len(vals) != len(min_vram):
         return None
     need = max(vals)
     return [g for g, gb in GPU_LADDER if gb >= need] or None
+
+
+def short_gpu(g: str | None) -> str:
+    return str(g or "?").replace("NVIDIA ", "").replace("GeForce ", "")
 DEFAULT_IMAGE = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
 
 
@@ -347,6 +360,7 @@ class Pod:
     port: int
     user: str = "root"
     killswitch: dict | None = None
+    choice: dict | None = None   # how pod_session picked this GPU / cloud (options tried, max-cost exclusions)
 
     def _ssh_base(self) -> list[str]:
         return ["ssh", "-i", str(SSH_KEY), "-p", str(self.port), "-o", "StrictHostKeyChecking=no",
@@ -354,10 +368,11 @@ class Pod:
                 "-o", "ServerAliveInterval=30", "-o", "LogLevel=ERROR", f"{self.user}@{self.host}"]
 
     def run(self, cmd: str, check: bool = True, timeout: float | None = None, log: Path | None = None,
-            echo: bool = True) -> int:
+            echo: bool = True, on_line=None) -> int:
         """Run a shell command on the pod (bash -lc), streaming output to the console and optional log file.
 
         timeout (s) is enforced by a watchdog that kills the local ssh client even when the command is silent.
+        on_line(line) sees every output line as it arrives (the runner's frame counter); its errors are swallowed.
         """
         full = self._ssh_base() + [f"bash -lc {shlex.quote(cmd)}"]
         timed_out = threading.Event()
@@ -380,6 +395,11 @@ class Pod:
                     if fh:
                         fh.write(line)
                         fh.flush()
+                    if on_line is not None:
+                        try:
+                            on_line(line)
+                        except Exception:  # noqa: BLE001 - progress must never end a pod command
+                            pass
                 rc = proc.wait()
             finally:
                 if dog:
@@ -443,7 +463,8 @@ def _pod_ssh(pod_json: dict) -> tuple[str, int]:
 
 BAD_HOSTS = PACKAGE_ROOT / "work" / "runpod" / "bad_hosts.json"
 KNOWN_BAD_HOSTS = {"60.249.37.148": {"fails": 6, "ok": 0, "reason": "CUDA unknown error, 6 of 6 sessions 2026-10-19..21 "
-                                                                   "(docs/PIPELINE_EFFICIENCY.md)"}}
+                                                                   "(docs/PIPELINE_EFFICIENCY.md)",
+                                     "gpu": "NVIDIA L40S", "cloud": "COMMUNITY"}}   # the ledger's 5 deletions 2026-10-21
 BAD_HOST_DENY_S = 24 * 3600
 PREFLIGHT_TIMEOUT_S = 150
 PREFLIGHT_CMD = ("nvidia-smi -L >/dev/null 2>&1 || { echo PREFLIGHT_NVSMI_FAIL; exit 3; }; "
@@ -466,12 +487,7 @@ def bad_hosts() -> dict:
     return out
 
 
-def host_denied(host: str | None, now: float | None = None) -> str | None:
-    """Why `host` is denied now, or None."""
-    if not host:
-        return None
-    now = time.time() if now is None else now
-    v = bad_hosts().get(str(host))
+def _deny_reason(v: dict | None, now: float) -> str | None:
     if not v:
         return None
     if float(v.get("deny_until") or 0) > now:
@@ -481,33 +497,86 @@ def host_denied(host: str | None, now: float | None = None) -> str | None:
     return None
 
 
-def note_host(host: str | None, ok: bool, reason: str = "") -> None:
-    """Count a CUDA check result for a host (the deny list learns). Never fatal."""
+def host_denied(host: str | None, now: float | None = None) -> str | None:
+    """Why `host` is denied now, or None."""
     if not host:
+        return None
+    return _deny_reason(bad_hosts().get(str(host)), time.time() if now is None else now)
+
+
+# (gpu, cloud) -> host for every broken host THIS process met (pod_session landed on it, or its CUDA check failed): Runpod
+# cannot be told to avoid a host, and its scheduler hands the same (gpu, cloud) the same machine again (2026-10-21: the L40S
+# community host 60.249.37.148 came up first in 4 of 11 creations), so pod_session tries such pairs last for the rest of the
+# session. The persisted list (bad_hosts.json gpu/cloud of a denied host) does the same for later processes.
+_BROKEN_PAIRS: dict[tuple[str, str], str] = {}
+_BROKEN_LOCK = threading.Lock()
+
+
+def remember_broken(host: str | None, gpu: str | None, cloud: str | None) -> None:
+    """Remember which (gpu, cloud) led to a broken host, in this process and in bad_hosts.json. Never fatal."""
+    if not (host and gpu and cloud):
         return
+    with _BROKEN_LOCK:
+        _BROKEN_PAIRS[(gpu, cloud)] = str(host)
+    _update_host(host, lambda v: v.update(gpu=gpu, cloud=cloud, last=time.time()))   # met again: the demotion renews
+
+
+BROKEN_PAIR_TTL_S = 3 * 86400   # a remembered (gpu, cloud) demotion lapses this long after its host last failed / was met
+KNOWN_BAD_SINCE = 1792620000.0  # 2026-10-21: when the seed host last failed (its entries carry no `last`)
+
+
+def broken_pairs(now: float | None = None) -> dict[tuple[str, str], str]:
+    """(gpu, cloud) -> host to try later: hosts denied right now whose GPU / cloud is known (seed + bad_hosts.json) and
+    met within BROKEN_PAIR_TTL_S, and every broken host met by this process. The host itself stays denied (a pod that
+    lands on it is deleted at once); only the pair's demotion lapses, since Runpod moves hosts between pools."""
+    now = time.time() if now is None else now
+    out = {(v["gpu"], v["cloud"]): h for h, v in bad_hosts().items()
+           if v.get("gpu") and v.get("cloud") and _deny_reason(v, now)
+           and now - float(v.get("last") or KNOWN_BAD_SINCE) < BROKEN_PAIR_TTL_S}
+    with _BROKEN_LOCK:
+        out.update(_BROKEN_PAIRS)
+    return out
+
+
+def _update_host(host: str, fn) -> None:
+    """Read-modify-write one bad_hosts.json entry under the ledger lock. Never fatal."""
     try:
         with ledger_lock():
             try:
                 d = json.loads(BAD_HOSTS.read_text())
             except (OSError, ValueError):
                 d = {}
-            hosts = d.setdefault("hosts", {})
-            v = hosts.setdefault(str(host), {"fails": 0, "ok": 0})
-            now = time.time()
-            if ok:
-                v["ok"] = int(v.get("ok") or 0) + 1
-                v.pop("deny_until", None)
-            else:
-                v["fails"] = int(v.get("fails") or 0) + 1
-                v["deny_until"] = now + BAD_HOST_DENY_S
-                v["reason"] = reason[:200]
-            v["last"] = now
+            v = d.setdefault("hosts", {}).setdefault(str(host), {"fails": 0, "ok": 0})
+            fn(v)
             BAD_HOSTS.parent.mkdir(parents=True, exist_ok=True)
-            tmp = BAD_HOSTS.with_name(f"{BAD_HOSTS.name}.{os.getpid()}.tmp")
+            tmp = BAD_HOSTS.with_name(f"{BAD_HOSTS.name}.{os.getpid()}.{threading.get_ident()}.tmp")
             tmp.write_text(json.dumps(d, indent=1))
             os.replace(tmp, BAD_HOSTS)
     except Exception:  # noqa: BLE001
         pass
+
+
+def note_host(host: str | None, ok: bool, reason: str = "", gpu: str | None = None, cloud: str | None = None) -> None:
+    """Count a CUDA check result for a host (the deny list learns); a failure also remembers its (gpu, cloud). Never fatal."""
+    if not host:
+        return
+    now = time.time()
+
+    def upd(v):
+        if ok:
+            v["ok"] = int(v.get("ok") or 0) + 1
+            v.pop("deny_until", None)
+        else:
+            v["fails"] = int(v.get("fails") or 0) + 1
+            v["deny_until"] = now + BAD_HOST_DENY_S
+            v["reason"] = reason[:200]
+            if gpu and cloud:
+                v.update(gpu=gpu, cloud=cloud)
+        v["last"] = now
+    _update_host(host, upd)
+    if not ok and gpu and cloud:
+        with _BROKEN_LOCK:
+            _BROKEN_PAIRS[(gpu, cloud)] = str(host)
 
 
 def preflight(p: "Pod") -> tuple[bool, str]:
@@ -527,6 +596,24 @@ def preflight(p: "Pod") -> tuple[bool, str]:
         return True, f"unchecked: {msg[-120:]}"
 
 
+def option_order(gpus: list[str], clouds: list[str], broken: dict | None = None) -> tuple[list[tuple[str, str]], list]:
+    """(gpu, cloud) pairs in the order pod_session tries them: GPU by GPU (fastest first), each GPU in every cloud before the
+    next, slower GPU (the 2026-10-21 trial walked every community GPU first and ended on slower cards and the broken host).
+    A pair that led to a broken host (`broken`, remote.broken_pairs) moves behind the NEXT GPU type, not behind every slower
+    card: landing on the broken host again costs ~30-50 s and $0.006 (the CUDA check deletes it), a 3090 instead of an L40S
+    costs far more time (review 2026-10-21: speed over cost). -> (order, the demoted pairs)."""
+    bad = [(g, c) for g in gpus for c in clouds if (g, c) in (broken or {})]
+    out, carry = [], []
+    for g in gpus:
+        out += [(g, c) for c in clouds if (g, c) not in bad]
+        out += carry                      # the previous GPU's broken pairs, after this GPU's good ones
+        carry = [(g, c) for c in clouds if (g, c) in bad]
+    return out + carry, bad
+
+
+_GPU_MEMO = threading.local()   # pod_session reads the GPU catalog once per round, not once per (gpu, cloud) (~0.7 s each)
+
+
 @contextlib.contextmanager
 def pod_session(name: str, max_minutes: float, gpus: list[str] | None = None, image: str = DEFAULT_IMAGE,
                 disk_gb: int = 80, clouds: list[str] | None = None, start_timeout_min: float = 6,
@@ -535,94 +622,137 @@ def pod_session(name: str, max_minutes: float, gpus: list[str] | None = None, im
 
     max_cost: a per-session ceiling ($) on top of the global cap: GPU/cloud options whose listed price x
     (max_minutes + start timeout) exceeds it are skipped (the on-pod kill switch makes that the worst case).
+    Options are tried fastest GPU first (option_order). The yielded Pod carries `choice` = what was tried and why; when the
+    session max or the remaining budget ruled out a FASTER GPU than the one picked, choice["warning"] says so (also printed)
+    so a slower card is never chosen silently. A failure raises with the same `choice` attached (e.choice).
     """
     ensure_ssh_key()
     last_err = None
     pod = None
     attempts = 0
-    for gpu, cloud in [(g, c) for c in (clouds or CLOUDS) for g in (gpus or GPU_PREFERENCE)]:
-        price = gpu_price(gpu, cloud)
-        if price is None:
-            print(f"[runpod] {gpu} ({cloud}): not offered / no stock right now")
-            continue
-        # budget check uses the listed price BEFORE anything is created
-        need = price * (max_minutes + start_timeout_min) / 60
-        if max_cost is not None and need > max_cost:
-            print(f"[runpod] skip {gpu} ({cloud}) ${price:.2f}/h: worst case ${need:.2f} > session max ${max_cost:.2f}")
-            last_err = BudgetError(f"every option exceeds the session max ${max_cost:.2f}")
-            continue
-        if need > remaining():
-            raise BudgetError(f"{gpu}: {max_minutes + start_timeout_min:.0f} min at ${price:.2f}/h = ${need:.2f} > "
-                              f"remaining ${remaining():.2f} of the ${cap():.2f} cap")
-        # 22/tcp must be requested at creation: without it Runpod gives only its ssh proxy, which can't scp
-        args = ["pod", "create", "--name", f"dancecap-{name}", "--image", image, "--gpu-id", gpu,
-                "--container-disk-in-gb", str(disk_gb), "--cloud-type", cloud, "--ports", "22/tcp"]
-        if cloud == "COMMUNITY":
-            args.append("--public-ip")
-        try:
-            created = _ctl(*args, timeout=180)  # no --wait: record the pod in the ledger the moment it exists
-        except Exception as e:  # no capacity for this GPU/cloud: try the next one
-            last_err = e
-            pid = _id_from_error(str(e))
-            if pid:
-                _record(pid, name, gpu, cloud, price, max_minutes)
-                _delete(pid, reason="create errored")
-            continue
-        pod_id = created["id"]
-        cost = float(created.get("costPerHr") or price)
-        _record(pod_id, name, gpu, cloud, cost, max_minutes)
-        print(f"[runpod] created {pod_id}: {gpu} ({cloud}) ${cost:.2f}/h; waiting up to {start_timeout_min:.0f} min "
-              f"for the container")
-        try:
-            pod = _wait_running(pod_id, start_timeout_min * 60)
-            why_bad = None
-            if pod:
-                host, port = _pod_ssh(pod)
-                denied = host_denied(host)
-                if denied:
-                    why_bad = f"host {host} is on the broken-host list ({denied})"
-                else:
-                    p = Pod(pod_id, name, gpu, cost, host, port)
-                    for _ in range(30):  # sshd answers before keys are installed
-                        try:
-                            if p.run("true", check=False, timeout=40) == 0:
-                                break
-                        except TimeoutError:
-                            pass
-                        time.sleep(5)
-                    ok, detail = preflight(p)
-                    if detail.startswith("unchecked") or not ok:
-                        print(f"[runpod] CUDA check on {host}: {detail}")
-                    if ok:
-                        if not detail.startswith("unchecked"):
-                            note_host(host, True)
-                            print(f"[runpod] CUDA check ok on {host}: {detail}")
+    broken = broken_pairs()
+    order, demoted = option_order(gpus or GPU_PREFERENCE, clouds or CLOUDS, broken)
+    choice: dict = {"order": [f"{g} ({c})" for g, c in order], "max_cost": max_cost, "max_minutes": max_minutes,
+                    "tried": [], "demoted": [{"gpu": g, "cloud": c, "host": broken[(g, c)]} for g, c in demoted]}
+    for g, c in demoted:
+        print(f"[runpod] {short_gpu(g)} ({c}) is tried after the next GPU type: it led to the broken host {broken[(g, c)]}")
+    started = False   # a create was attempted (a pure budget refusal stays a BudgetError, as before)
+    _GPU_MEMO.on, _GPU_MEMO.rows = True, None
+    try:
+        for gpu, cloud in order:
+            row: dict = {"gpu": gpu, "cloud": cloud}
+            choice["tried"].append(row)
+            price = gpu_price(gpu, cloud)
+            row["price"] = price
+            if price is None:
+                row["result"] = "no stock"
+                print(f"[runpod] {gpu} ({cloud}): not offered / no stock right now")
+                continue
+            # budget check uses the listed price BEFORE anything is created
+            need = price * (max_minutes + start_timeout_min) / 60
+            row["need"] = round(need, 2)
+            if max_cost is not None and need > max_cost:
+                row["result"] = "over the session max"
+                print(f"[runpod] skip {gpu} ({cloud}) ${price:.2f}/h: worst case ${need:.2f} > session max ${max_cost:.2f}")
+                last_err = BudgetError(f"every option exceeds the session max ${max_cost:.2f}")
+                continue
+            rem = remaining()
+            if need > rem:   # a cheaper (slower) option may still fit: try it rather than stop here
+                row["result"] = "over the remaining budget"
+                last_err = BudgetError(f"{gpu}: {max_minutes + start_timeout_min:.0f} min at ${price:.2f}/h = ${need:.2f} > "
+                                       f"remaining ${rem:.2f} of the ${cap():.2f} cap")
+                print(f"[runpod] skip {gpu} ({cloud}): {last_err}")
+                continue
+            # 22/tcp must be requested at creation: without it Runpod gives only its ssh proxy, which can't scp
+            args = ["pod", "create", "--name", f"dancecap-{name}", "--image", image, "--gpu-id", gpu,
+                    "--container-disk-in-gb", str(disk_gb), "--cloud-type", cloud, "--ports", "22/tcp"]
+            if cloud == "COMMUNITY":
+                args.append("--public-ip")
+            started = True
+            _GPU_MEMO.rows = None   # stock moves while a pod starts: the next option reads the catalog again
+            try:
+                created = _ctl(*args, timeout=180)  # no --wait: record the pod in the ledger the moment it exists
+            except Exception as e:  # no capacity for this GPU/cloud: try the next one
+                row.update(result="create failed", error=str(e)[:200])
+                print(f"[runpod] {gpu} ({cloud}): create failed: {str(e)[:200]}")
+                last_err = e
+                pid = _id_from_error(str(e))
+                if pid:
+                    _record(pid, name, gpu, cloud, price, max_minutes)
+                    row["pod_id"] = pid   # analyze.run_pods charges every pod a session made to its run, exactly
+                    _delete(pid, reason="create errored")
+                continue
+            pod_id = created["id"]
+            cost = float(created.get("costPerHr") or price)
+            _record(pod_id, name, gpu, cloud, cost, max_minutes)
+            row["pod_id"] = pod_id
+            print(f"[runpod] created {pod_id}: {gpu} ({cloud}) ${cost:.2f}/h; waiting up to {start_timeout_min:.0f} min "
+                  f"for the container")
+            try:
+                pod = _wait_running(pod_id, start_timeout_min * 60)
+                why_bad = None
+                if pod:
+                    host, port = _pod_ssh(pod)
+                    denied = host_denied(host)
+                    if denied:
+                        why_bad = f"host {host} is on the broken-host list ({denied})"
+                        remember_broken(host, gpu, cloud)
                     else:
-                        note_host(host, False, detail)
-                        why_bad = f"host {host} failed the CUDA check: {detail}"
-        except BaseException:  # Ctrl-C / crash while waiting: never leave the pod behind
-            _delete(pod_id, reason="interrupted while starting")
-            raise
-        if pod and not why_bad:
-            break
-        if why_bad:
-            last_err = RuntimeError(why_bad)
-            print(f"[runpod] {why_bad}: deleting {pod_id} and trying the next option")
-            _delete(pod_id, reason=why_bad[:120])
-            pod = None
-            attempts += 1
-            if attempts >= max_start_attempts + 1:  # one extra try for a broken host
+                        p = Pod(pod_id, name, gpu, cost, host, port)
+                        for _ in range(30):  # sshd answers before keys are installed
+                            try:
+                                if p.run("true", check=False, timeout=40) == 0:
+                                    break
+                            except TimeoutError:
+                                pass
+                            time.sleep(5)
+                        ok, detail = preflight(p)
+                        if detail.startswith("unchecked") or not ok:
+                            print(f"[runpod] CUDA check on {host}: {detail}")
+                        if ok:
+                            if not detail.startswith("unchecked"):
+                                note_host(host, True)
+                                print(f"[runpod] CUDA check ok on {host}: {detail}")
+                        else:
+                            note_host(host, False, detail, gpu=gpu, cloud=cloud)
+                            why_bad = f"host {host} failed the CUDA check: {detail}"
+            except BaseException:  # Ctrl-C / crash while waiting: never leave the pod behind
+                _delete(pod_id, reason="interrupted while starting")
+                raise
+            if pod and not why_bad:
+                row["result"] = "ok"
                 break
-            continue
-        last_err = RuntimeError(f"{gpu} ({cloud}) not reachable over direct ssh in {start_timeout_min:.0f} min")
-        _delete(pod_id, reason="not reachable over direct ssh")
-        attempts += 1
-        if attempts >= max_start_attempts:  # don't walk the whole GPU list paying for start-ups
-            break
+            if why_bad:
+                row.update(result="broken host", host=why_bad.split()[1])
+                last_err = RuntimeError(why_bad)
+                print(f"[runpod] {why_bad}: deleting {pod_id} and trying the next option")
+                _delete(pod_id, reason=why_bad[:120])
+                pod = None
+                attempts += 1
+                if attempts >= max_start_attempts + 1:  # one extra try for a broken host
+                    break
+                continue
+            row["result"] = "unreachable"
+            last_err = RuntimeError(f"{gpu} ({cloud}) not reachable over direct ssh in {start_timeout_min:.0f} min")
+            _delete(pod_id, reason="not reachable over direct ssh")
+            attempts += 1
+            if attempts >= max_start_attempts:  # don't walk the whole GPU list paying for start-ups
+                break
+    finally:
+        _GPU_MEMO.on, _GPU_MEMO.rows = False, None
     if not pod:
-        raise RuntimeError(f"no GPU pod could be started: {last_err}")
+        raise _no_pod_error(last_err, choice, started)
 
     try:
+        try:   # bookkeeping only: it must never keep the pod from its delete below
+            choice["chosen"] = {"gpu": gpu, "cloud": cloud, "price": cost, "rank": order.index((gpu, cloud))}
+            warn = excluded_faster(choice)
+            if warn:
+                choice.update(warn)
+                print(f"[runpod] NOTE: {warn['warning']}")
+        except Exception as e:  # noqa: BLE001
+            choice["error"] = f"{type(e).__name__}: {e}"[:200]
+        p.choice = choice
         # on-pod kill switch: Runpod injects a pod-scoped RUNPOD_API_KEY and runpodctl into pods. ssh sessions do
         # not always inherit the container environment, so take the two variables from PID 1.
         p.killswitch = arm_killswitch(p, max_minutes)
@@ -634,6 +764,51 @@ def pod_session(name: str, max_minutes: float, gpus: list[str] | None = None, im
             _delete(pod_id, reason="session end")
         except PodDeleteError as e:   # already reported loudly; do not hide the exception that ended the session
             print(f"[runpod] {e}", flush=True)
+
+
+_BUDGET_SKIPS = ("over the session max", "over the remaining budget")
+
+
+def excluded_faster(choice: dict) -> dict | None:
+    """{warning, excluded_faster: [...]} when the session max or the remaining budget ruled out a FASTER GPU type than the one
+    picked (an option tried before it in the speed order); None when the fastest affordable card got the pod. 2026-10-21 trial:
+    the session max put a fit on an A40 without a word, and the agent only noticed from the run time."""
+    chosen = choice.get("chosen") or {}
+    rows = choice.get("tried") or []
+    k = next((i for i, r in enumerate(rows) if r.get("result") == "ok"), len(rows))
+    faster = [r for r in rows[:k] if r.get("result") in _BUDGET_SKIPS and r.get("gpu") != chosen.get("gpu")]
+    if not faster:
+        return None
+    best = faster[0]   # the fastest one that was ruled out
+    by = (f"the session max ${choice['max_cost']:.2f}" if best["result"] == "over the session max"
+          else "the remaining Runpod budget")
+    fix = (f"--max-cost {best['need']:.2f} or a shorter --max-minutes would allow it"
+           if best["result"] == "over the session max" else "the account balance would have to grow")
+    return {"excluded_faster": [{x: r.get(x) for x in ("gpu", "cloud", "price", "need", "result")} for r in faster],
+            "warning": (f"{by} ruled out the faster {short_gpu(best['gpu'])} ({best['cloud']}, ${best['price']:.2f}/h, "
+                        f"worst case ${best['need']:.2f} for {choice.get('max_minutes', 0):.0f} min); this session runs "
+                        f"on the slower {short_gpu(chosen.get('gpu'))}: {fix}")}
+
+
+def _no_pod_error(last_err, choice: dict, started: bool) -> Exception:
+    """The exception for 'no pod': a pure refusal of the remaining budget stays a BudgetError (callers such as fit_full catch
+    that type); otherwise RuntimeError('no GPU pod could be started: ...'), naming the max-cost a session max would need."""
+    rows = choice.get("tried") or []
+    priced = [r for r in rows if r.get("price") is not None]
+    if not started and priced and all(r.get("result") == "over the remaining budget" for r in priced):
+        err: Exception = BudgetError(str(last_err))
+    else:
+        msg = f"no GPU pod could be started: {last_err}"
+        over = [r for r in priced if r.get("result") == "over the session max"]
+        if over and not started:
+            cheapest = min(over, key=lambda r: r["need"])
+            msg += (f" (the cheapest, {short_gpu(cheapest['gpu'])} ({cheapest['cloud']}), needs ${cheapest['need']:.2f}; "
+                    f"the fastest, {short_gpu(over[0]['gpu'])} ({over[0]['cloud']}), ${over[0]['need']:.2f})")
+        if not priced:
+            msg += f" (no stock for any of {len(rows)} GPU/cloud options)"
+        err = RuntimeError(msg)
+    err.choice = choice   # type: ignore[attr-defined]  - remote_jobs puts it in the session state
+    return err
 
 
 def arm_killswitch(p: "Pod", max_minutes: float) -> dict:
@@ -848,7 +1023,23 @@ def gpu_price(gpu: str, cloud: str = "COMMUNITY") -> float | None:
     return None
 
 
-def gpu_table(min_gb: float = 80) -> list[dict]:
+def gpu_table(min_gb: float | None = None) -> list[dict]:
+    """The GPU catalog for people (`remote gpus`, the monitor's /api/runpod/gpus). Default: the GPU_LADDER cards in the
+    order the runner tries them (fastest first), each with its memory, prices, stock and data centers - the cards it picks
+    first (4090, the Ada 48 GB cards) used to be missing from a list of 80 GB cards sorted by price. min_gb: the old
+    table, every catalog GPU with at least that much memory, cheapest first."""
+    if min_gb is None:
+        cat = {g.get("gpuId"): g for g in gpu_list()}
+        out = []
+        for i, (gid, gb) in enumerate(GPU_LADDER):
+            g = cat.get(gid) or {}
+            stocked = [d["dataCenterId"] for d in g.get("dataCenterAvailability", []) or []
+                       if d.get("stockStatus") not in (None, "none")]
+            out.append({"rank": i + 1, "gpu": gid, "gb": g.get("memoryInGb") or gb,
+                        "community": g.get("communityPricePerHr") if g.get("communityCloud", True) else None,
+                        "secure": g.get("securePricePerHr") if g.get("secureCloud", True) else None,
+                        "stock": g.get("stockStatus") if g else "not offered", "datacenters": stocked})
+        return out
     rows = []
     for g in gpu_list():
         if (g.get("memoryInGb") or 0) < min_gb:
@@ -860,8 +1051,14 @@ def gpu_table(min_gb: float = 80) -> list[dict]:
 
 
 def gpu_list() -> list[dict]:
+    rows = getattr(_GPU_MEMO, "rows", None)   # inside pod_session's option loop only (thread-local)
+    if rows is not None:
+        return rows
     data = _ctl("gpu", "list")
-    return data if isinstance(data, list) else data.get("gpus", data.get("items", []))
+    rows = data if isinstance(data, list) else data.get("gpus", data.get("items", []))
+    if getattr(_GPU_MEMO, "on", False):
+        _GPU_MEMO.rows = rows
+    return rows
 
 
 def cleanup_orphans(delete: bool = False, only: list[str] | None = None) -> list[str]:

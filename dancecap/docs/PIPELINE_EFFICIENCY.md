@@ -342,6 +342,94 @@ test; sessions `20261021-142911-batch-p1/-p2`; no take data on the pods, a 42 MB
 
 ---
 
+## 7c. Round 2 (2026-10-21): fixed and measured
+
+Three groups (runner, plan, dashboard) fixed the review's gap list in parallel, each checked by an adversarial verifier;
+the integrator applied the cross-group hand-offs and the verifiers' blocker / major findings. Code: `remote.py`,
+`remote_jobs.py`, `remote/bootstrap.sh`, `cameras/newcam.py`, `pipeline/{analyze,activity,runpod_view,snapshots,estimate,
+farm_view}.py`, `pipeline/monitor/`, `progress_eta.py`. Tests: `tests/test_runner_round2.py`, `test_analyze_round2.py`,
+`test_dashboard_round2.py` (new), `test_analyze_monitor.py`. User guide: PIPELINE_MONITOR_GUIDE.md 0.1, 0.2.
+
+**What changed**
+- Runner pods get ffmpeg + ffprobe (a static 8.1 build fetched in the background while base installs, apt as the fallback)
+  and open3d whenever a job decodes video or reaches physics, without declaring them and without fattening slim bundles.
+- The static ffmpeg fetch has one 150-s deadline, drops a URL that stays under 1 MB/s for 15 s, never runs twice on one
+  pod (a pid file for a retried bootstrap) and never repeats a failed fetch in the foreground.
+- `cameras/newcam.FrameStream` ends with the error on every failure (the trial's 10-min hang), and a window that decodes
+  short of the PTS table warns, or fails when ffmpeg logged decode errors and 10 % or more is missing.
+- `remote run` without `--gpus` tries the fastest card with enough memory first (4090 for the 24-GB default; 80 GB for
+  room, CoTracker3, `mamma_chunks fit`, `dancers_pod run` and `front_pod run`; 48 GB for a single MAMMA fit over 3000
+  frames), each GPU in every cloud before the next GPU.
+- A (GPU, cloud) pair that led to a broken host waits behind the next GPU type only, and that demotion lapses 3 days after
+  the host was last met; the host itself stays denied.
+- Every pod a session creates is in its GPU choice (`tried[*].pod_id`), and a GPU over the session max or the remaining
+  budget is skipped with a NOTE naming the faster card and the `--max-cost` that would allow it.
+- A frame counter per pod command (`progress/frames.json`) reads what jobs already print (SAM 3D Body chunks, MAMMA
+  iterations relayed live from its log, tqdm); a second or nested bar, a MAMMA early stop, reused SAM 3D Body chunks and a
+  runner that died mid-command are counted correctly, and a rate 2x the 4090 reference is a slow-GPU warning.
+- `analyze` plans what is built: one pod per mono step plus the measured 6.3 / 15 min session start-up, side-by-side lanes
+  sharing the home uplink for the 1.6 GB checkpoint, and at most 6 runner pods at once.
+- A running step past its estimate pushes the ETA out, a session ETA only pushes out and one built from a timeout is
+  ignored, and the older estimator (`estimate.live_blend`) follows the same rule.
+- `--max-cost` is the run's pod limit: the driver starts no pod step past it, every session tagged with the run is capped
+  at what is left (none starts at 0), and `analysis limit` / `analysis resume --yes` un-park the steps they held.
+- ELAPSED stops at the run's end and `cancel` keeps an earlier end; a builtin failure beside a running agent step keeps the
+  run open; the run's cost counts every pod its sessions created and is kept in analysis.json once the run is finished.
+- One driver per run, snapshots only at progress points, and a heartbeat process that snapshots every 15 min while the run
+  moves and no longer runs for ever on a step an agent left "running".
+- The dashboard fills the step map only from measured progress (striped squares = time against the plan), draws reused
+  steps apart, shows ended uploads as stopped, says why a session got no pod (and no longer says it of a session still
+  starting), lists pods deleted inside sessions, and raises one alert per slow GPU.
+- Volume-farm runs take snapshots at the farm's real chunk events; the Farm page shows a runner-only take's analysis; the
+  GPU list shows the runner's ladder; ended sessions stop counting their duration.
+
+**What was measured**
+- Live probe through `remote run` (session `20261021-194737-batch`, $0.056, pod deleted): 4090 community had no instance,
+  4090 secure was next, and the broken L40S community pair was announced as tried after the next GPU type.
+- On that pod: base 74 s, the static ffmpeg fetched in 9 s behind base (0 s of feature time), open3d 25 s, import check
+  ALL OK, bootstrap 106 s in all.
+- On that pod: FrameStream decoded 60 of 60 frames and a missing file raised after 0.04 s.
+- On that pod: the relayed MAMMA iterations and the SAM 3D Body chunk lines gave 6 frame events in all (not one per line),
+  600/600 frames, and one slow-GPU warning (the probe's rate is fake on purpose).
+- The runner group's two earlier probes ($0.164): the static fetch took 24 s and 101 s, open3d 36 s and 51 s, and the
+  relayed MAMMA lines arrived live after the mawk fix (0.503 s per iteration, as written).
+- Trial replay with the new plan and ETA rule: at 15:11 p50 57 / p90 132 min against 84 actually left (the page said 18);
+  cost p90 $2.78 against the $2.26 spent (it said $1.73).
+- The new plan for an 88-s mono video is 4.3 h p50 (p90 8.8 h, $9.95 p50) and for the 20-s trial 2.0 h ($2.20); the 88-s
+  figure is dominated by 5 fit sessions uploading 5 x 1.6 GB through one home uplink.
+- The trial run's cost is $2.2601, every ledger row of its sessions including 4 broken-host pods ($0.0318), and the page
+  explains the $0.03 between the session rows and the KPI.
+- The monitor restarted through `/api/restart` three times (new pid in 3.3-6.3 s) with no new Edge window; #/farm,
+  #/analysis/20261021-145414-trial_mono_jl20, #/snapshots and #/runpod were checked in the browser pane.
+- Tests: 291 passed in the main set from the workspace root and from `dancecap/` (test_remote, the three round-2 files,
+  test_analyze_monitor, test_progress, test_pipeline_*, test_newcam, test_pod_detach), and the 14 farm files 207 passed
+  with 1 skipped from both, after one order-dependent farm test was fixed (below). One run of the main set beside the farm
+  run lost `test_pipeline_fixes::test_stop_now...` to load (its 90-s wait); it passes alone (8.6 s) and with its file.
+
+**What is still open**
+- The agent steps (camera, people, SAM 3D Body, fits, analyses, avatars; cameras and people for a folder) still need
+  take-specific code, so `analyze` is a planner, tracker and uploader, not "video in, analysis out".
+- Every runner session still uploads its own bundle, so the 1.6 GB ma_2d checkpoint goes up once per fit pod; putting it on
+  the volume (or a prebuilt image) is the biggest single saving left in the plan.
+- `front_full.py` still installs apt ffmpeg on top of the bootstrap's static build, `cli.py`'s `--gpus` help still names
+  `GPU_PREFERENCE`, and `progress_pull.py` still tails the MAMMA log under the job's take; those files were outside this
+  round's scope.
+- The runner ladder checks GPU memory only; host RAM and vCPUs (dancers_pod, front_pod) are covered by giving those jobs
+  the 80 GB cards, not by a check.
+- MAMMA's frame counter gives progress within a run but no whole-fit ETA, and only SAM 3D Body has a reference rate for
+  the slow-GPU warning.
+- SAM 3D Body prints one line per 200-frame chunk, so its first rate (and a slow-GPU warning) comes one chunk late.
+- Cost attribution of a pod a session deleted itself is exact only for sessions run with this round's runner (pod ids in
+  the GPU choice); older sessions are matched by label, kill time and start window.
+- The tagged-session cap, the shared-uplink plan and the un-parking were checked with unit tests only; no analysis with a
+  pod limit has run live yet.
+- The snapshots page alone shows "connecting..." in the top bar until another view has polled the server (cosmetic,
+  app.js).
+- `test_farm_watch_ops::test_down_abandon...` failed whenever `test_farm_watch.py` ran first because that file leaves
+  `FlakyLink.cut` at 3000; the test now sets it itself, which is a test-only change.
+
+---
+
 ## 8. Sources
 
 - Session records: `dancecap/work/runpod/sessions/*/result.json`, `state.json`, `runner.log`,

@@ -58,14 +58,17 @@ analysed, with snapshots at progress points. What was added:
     DANCECAP_RUNPOD_CAP it follows the Runpod balance (ledger spend + balance - $2, since 2026-10-21); a runner started
     with an explicit DANCECAP_RUNPOD_CAP records that cap in `work/runpod/cap_in_use.json` and it is shown instead; the spent figure is `remote.spent()` exactly (ledger rows
     left open past their kill switch no longer accrue forever: the monitor showed $530 spent where the ledger said $101).
-  - The Farm page opens on the dance being analysed (when it has a farm), not on the one last viewed in this browser.
-- **One analysis** (`#/analysis/<run>`): KPIs (steps, elapsed, ETA with the finish time, pod cost, critical path), the
-  **analysis map** (one row per step, one square per pod x 2 minutes of the plan: green done, blue running and filled as far
-  as it got, amber hatched = needs an agent, grey pending, red failed), the run's pod sessions with their uploads and
-  phases, the take's coverage map (the farm's defrag squares) when it has one, the events and the snapshots.
+  - The Farm page opens on the take being analysed, not on the one last viewed in this browser.
+- **One analysis** (`#/analysis/<run>`): alerts at the top, KPIs (steps, elapsed, ETA with the finish time, pod cost,
+  critical path), the **analysis map** (one row per step, one square per pod x 2 minutes of the plan; the colours are in
+  0.2), the run's pod sessions with their uploads, phases and frame counters, the take's coverage map (the farm's defrag
+  squares) when it has one, the events and the snapshots.
 - **Snapshots** (`#/snapshots`, `#/snapshots/<run>`): PNG + static HTML in `work/pipeline/snapshots/<run>/` with an
-  `index.json`. Taken by a detached background process (never in the way of the work) at: the analysis start, each step's
-  end, the driver's end, each `analysis step` mark, a 15-min heartbeat while steps run; and in every pod session (tagged to
+  `index.json`. Taken by a detached background process (never in the way of the work) at: the analysis start (its first
+  driver), each builtin step's end, each `analysis step` mark, the run's final state, and every 15 min while anything of the
+  run moves (the run's heartbeat process, `analysis heartbeat RUN`, which the driver and every mark start; it ends with the
+  run, or after 6 h with nothing moving; a step left "running" keeps it busy for at most 3x its plan p90). A plain driver
+  stop / resume is no snapshot any more (23 of the trial's 80 were). In every pod session (tagged to
   an analysis or not): upload done, bootstrap done / failed, each job's end, the session end. A static page (no script)
   rendered by headless Edge in 2-3 s; a text card (PIL) when Edge fails. Also: `python -m dancecap.pipeline analysis snap RUN`.
 - **Always running**: `dancecap remote run`, `dancecap.pipeline run`, `dancecap.pipeline analyze` and `dancecap.farm up /
@@ -73,14 +76,111 @@ analysed, with snapshots at progress points. What was added:
   when it is) and leave a lease (`work/monitor/leases/<pid>.json`). The server no longer quits after 20 idle minutes while a
   lease's process lives, a pod is open in the ledger, or an analysis step runs. Open the window any time with the launcher.
 
+## 0.2 What the dashboard shows honestly (fix round 2, 2026-10-22)
+
+The 2026-10-21 review compared the dashboard with the runner's own files. What changed after it:
+
+- **Analysis map squares.** A running step is filled only by **measured progress**: its own byte or frame counter (the
+  volume upload), else its live pod session's phases (the finished phases' time plus the running phase, against the
+  remaining time progress_eta estimates from frame counters, byte counts and history). Solid blue = that progress. With no
+  progress figure (no counter, no live session: e.g. between an agent's sessions), the squares are **striped blue** = time
+  elapsed against the plan, never "done so far"; time past the plan adds **dashed red** squares (the trial's "running 49
+  min of ~23" now shows 12 striped + 13 dashed squares). The legend says which is which; the tooltip and the right column
+  name the source ("40 % · pod session phases (5 of 13 phases done; s/infer 240/599 frames)").
+- **Reused steps** (`analysis step ... done --reused`, or "REUSED" in an older run's note) are one grey hatched square with
+  "reused, not computed", "no pod (reused)" and no cost; the steps KPI and the strip count them. A step still "running" in a
+  cancelled run shows "stopped (run ended)" with dashed grey squares, and its time no longer counts.
+- **Cost per step** is the ledger cost of the step's pods (`analyze.cost_detail`, including pods a session deleted itself);
+  the p50 estimate is shown only for steps that have not run.
+- **Elapsed** stops at the run's end ("ended 16:34"); the Pod cost KPI shows the run's limit and what is left when it has one.
+- **Ended sessions** never show an upload in progress: "stopped at 65 of 146 MB (the session ended)", no bar, no ETA. A
+  session that never got a pod says so ("no pod") with its error ("every option exceeds the session max $1.00") and the GPU
+  options it tried (state `gpu_choice`).
+- **Frame counters** of pod commands (`progress/frames.json`, written by the runner): done / total, the rate, time left, and
+  the slowdown against the reference GPU ("2.000 s per person-frame, 5.6x the 0.355 s measured on RTX 4090"). The session
+  ETA uses them for the running command (progress_eta); a command without history no longer gets an ETA from its timeout
+  but from the median of every measured command, and one running more than 2x its history's p90 gets a warning.
+- **Alerts** at the top of the analysis page (and of the Farm strip, for active runs): stalls ("no progress in ... for 12
+  min"), kill-switch and GPU-idle warnings of live sessions, a runner that is gone, a pod command far slower than its
+  reference, a step past its plan's p90, failed steps, and a session that got no pod while its step is still open.
+- **Session ids** are shown in full; a step with more than 3 sessions folds them into "N pod sessions" (it stays open across
+  refreshes). "Recent pod sessions (24 h)" lists all of them (it stopped at 12).
+- **Budget**: the cap is shown with cents. "Running on Runpod" (pods `runpodctl pod list` returns) and "open in the
+  ledger" (rows without a delete time, with how many are past their kill time) are separate lines: the 6 rows from
+  2026-10-11 whose closes were lost said "6 open pods" while none ran. They were closed with the repo's own
+  `python -m dancecap remote reconcile` (two looks at Runpod's list; it closes only rows whose pod Runpod no longer lists),
+  and the monitor server now runs that same reconcile every 30 min when a row is past its kill time (never on younger rows).
+- **Farm page and runner analyses**: a take analysed by the pod runner (no volume-farm coverage map) shows its analysis
+  ("Pipeline analysis <run> done, 12/12 steps (3 reused), ended 16:34", the result folders on disk) instead of "0 %
+  complete, no coverage map"; the dropdown lists such takes with their analysis status. With nothing running, the strip
+  lists the most recently **finished** runs by their end time (a later-created, earlier-cancelled run hid the finished
+  mono trial). A tab that was hidden refreshes the moment it is shown again (Farm strip, analysis page, snapshots).
+- **Snapshots**: the button counts every snapshot ("Snapshots (80)", it said 60). Long messages wrap and are cut at a word
+  with "…". **Volume-farm runs** now take snapshots too: the monitor server reads the farm's state.json events and takes one
+  at the run's start (plan / first launch), pod launches, each chunk pulled or ended, a failure, every 15 min while chunks run,
+  and the end, into `work/pipeline/snapshots/<start>-farm_<dance>/` (a farm page: coverage squares, chunks, pods, spend,
+  events). At most one a minute per dance (the end always); a milestone inside that minute is taken on the next tick.
+- **Older tools**: the session Gantt keeps a failed first bootstrap ("bootstrap_try1", red) before its retry; a retry whose
+  rc is still not 0 is red too. The phase label no longer says "history history".
+- **Server**: dead lease files are pruned every 10 min (37 had piled up). `monitor --launch --replace` now stops the running
+  server first (its own POST /api/quit, then, only if it has not exited after 20 s, that one pid, checked by its instance
+  id) and starts a new one. `/api/restart` relaunches without opening a window (open windows reload themselves).
+
+### Round 2 integration (2026-10-21 evening): what the reviews still found, fixed
+
+- **Sessions still starting are not "no pod".** A session that bundles or starts its pod is "preparing" (a light-blue
+  pill), also the -p1..p(n-1) sessions of `remote run --parallel` (they used to read "unknown", then a red "no pod" with an
+  amber alert at the top). "No pod" now means the session finished without one (its error says why). A **dry run** shows
+  neither "no pod" nor an upload, and its phases are "skipped" (its pod start read "running, 14 min left" an hour later).
+- **One slow GPU, one alert.** The runner's slow-GPU warning and the frame counter's "N x slower" line are one alert, not
+  three; the session row lists each warning once.
+- **Pods a session deleted itself** (broken host, failed CUDA check) are a line under the run's pod sessions: "+ 4 pods
+  deleted inside their sessions (broken host / CUDA check), $0.03: ..." - the trial's gap between the session rows ($2.23)
+  and the Pod cost KPI ($2.26).
+- **Map legend**: also "stopped (the run ended)" (dashed grey) and "skipped", on the page and in the snapshots.
+- **Farm page for a take only the pod runner analysed**: the header says "pod-runner analysis" (not "no coverage yet"), and
+  Fill gaps, Pull now and Restart watcher are disabled (there is no farm plan to fill). GPU names read "A100 SXM" (they
+  read "A100 SXM-").
+- **Older tools, Runpod sessions table**: an ended session's duration stops at its pod's delete (161832 read "2 h 27" for a
+  2-min session); the Plan & run dialog shows the cap and the reserve with cents.
+- **GPU list** (`python -m dancecap remote gpus`, GET /api/runpod/gpus): the runner's GPU ladder in the order it tries the
+  cards (4090, L40S, RTX 6000 Ada, L40, H100, A100, A40, A6000, 3090) with prices and stock; it listed only 80 GB cards
+  by price, without the cards the runner picks first.
+- **Farm-run snapshots** read the farm's real event kinds: a chunk finishing or failing (kind "chunk": "jlg0000: running ->
+  done", "... failed on <pod> ...; re-queued", "FAILED for good") is a milestone; a failed pull is "pull_failed", not "chunk
+  pulled"; a failed launch never starts a new run. A farm record left unfinished by an older server for a farm silent for
+  6 h is closed (no heartbeat, no re-read every 30 s).
+- **Session cost of a finished run** is kept in its analysis.json (`cost_final`) once every pod is closed, so it does not
+  drop when its session folders fall out of the newest-400 window the cost reads.
+
 ### `python -m dancecap.pipeline analyze <folder|video>`
 
 ```
 python -m dancecap.pipeline analyze C:\Users\johnb\Videos\Zouk\john-lula\john_lula_jnj.mp4 --take john_lula --dry-run
-python -m dancecap.pipeline analyze <folder> --take NAME --yes [--room-known] [--no-realism] [--detach]
-python -m dancecap.pipeline analysis list | show RUN | resume RUN | snap RUN | cancel RUN
-python -m dancecap.pipeline analysis step RUN STEP start|done|fail|skip [--note TEXT] [--session SID]
+python -m dancecap.pipeline analyze <folder> --take NAME --yes [--max-cost USD] [--room-known] [--no-realism] [--detach]
+python -m dancecap.pipeline analysis list | show RUN | resume RUN [--yes] | snap RUN | cancel RUN
+python -m dancecap.pipeline analysis step RUN STEP start|done|fail|skip [--reused] [--note TEXT] [--session SID]
+python -m dancecap.pipeline analysis step RUN STEP retry   # a failed step back to pending (the driver reruns a builtin one)
+python -m dancecap.pipeline analysis budget RUN          # what is left of the run's pod limit
+python -m dancecap.pipeline analysis limit RUN USD|none  # change it (a step parked at the limit runs again)
 ```
+
+- **The plan is what is built**: one pod per mono step (the time shards do not exist), and every pod step pays the measured
+  runner session start-up (6.3 min p50 / 15 min p90: bundle, pod start, upload, bootstrap, installs, download). Lanes that
+  run side by side share the home uplink (5 fit lanes each upload the 1.6 GB ma_2d checkpoint: about 63 min p50 for the
+  uploads alone, and the pods bill while they wait for them) and `remote run --parallel` starts at most 6 pods at once (8
+  phones = 2 rounds). An 88-s mono video plans at about 4.3 h p50 (p90 8.8 h, $10 p50) today, a 20-s one at about 2 h
+  ($2.20); "up to N pods at once" counts the steps that overlap.
+- **ETA**: a running step that is past its estimate pushes the ETA out (the plan's spread, at least 0.3x / 1x its elapsed
+  time past p90); a pod session's own ETA can push it out, never in, and one built from a job's timeout is ignored.
+- **The run's pod limit** (`--max-cost`): the driver starts no pod step past it, and every `remote run` session tagged
+  with the run (DANCECAP_ANALYSIS) is capped at what is left (its --max-cost becomes the smaller of the two; none starts
+  when nothing is left). Raising it with `analysis limit` lets a step parked at the limit run; a step parked for "needs
+  --yes" runs after `analysis resume RUN --yes`.
+- `--reused` marks a step whose results an agent reused instead of computing them: $0, drawn as one hatched square.
+- ELAPSED stops when the run ends; `cancel` keeps the end of a run that had already ended; a late `done` / `skip` of an
+  optional step does not reopen a finished run, a `start` does. A builtin step failing while an agent step runs keeps the
+  run open (it used to end it as failed under the agent).
 
 - One video = the monocular route; a folder of 2+ videos = the multi-view route (an audio file in the folder is the
   soundtrack). It probes the videos, reuses the take when it exists with the same videos, or creates it (a new take needs

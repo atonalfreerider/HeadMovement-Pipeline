@@ -155,8 +155,11 @@ def session_overhead(upload_mb: float) -> dict:
 def live_blend(p50_s: float, p90_s: float, frac: float | None, elapsed_s: float | None) -> dict:
     """Remaining time of a running step: model x (1 - x) blended with the live rate (log space)."""
     if frac is None or elapsed_s is None or frac <= 0.0:
-        rem50 = max(0.0, p50_s - (elapsed_s or 0))
-        rem90 = max(rem50, p90_s - (elapsed_s or 0))
+        # no progress figure: what is left of a step that has not finished yet (analyze.residual_min: past its estimate
+        # it pushes out instead of collapsing to 0, the 2026-10-21 review's "running 49 min of ~23")
+        from .analyze import residual_min
+        l50, l90 = residual_min(p50_s / 60.0, p90_s / 60.0, (elapsed_s or 0) / 60.0)
+        rem50, rem90 = l50 * 60, max(l50, l90) * 60
         return {"p50_s": round(rem50), "p90_s": round(rem90), "p10_s": round(rem50 * 0.6), "basis": "model",
                 "confidence": "estimate"}
     frac = min(max(frac, 1e-3), 0.999)

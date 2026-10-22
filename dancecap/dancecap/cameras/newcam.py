@@ -150,29 +150,56 @@ class FrameStream:
         self.path, self.pts, self.start, self.end, self.size = Path(path), pts_sorted, start, end, size
         self.want, self.every, self.prepare, self.depth = want, every, prepare, depth
         self.threads = threads
+        self.short: tuple[int, int] | None = None   # (yielded, expected) when the window ended short (truncated file)
 
-    def _run(self, q: queue.Queue) -> None:
-        w, h = self.size
-        seek = max(0.0, self.start - 1.0)
-        cmd = ["ffmpeg", "-v", "info", "-nostats", "-threads", str(self.threads), "-ss", f"{seek:.6f}",
-               "-t", f"{self.end - seek + 0.5:.6f}", "-copyts", "-i", str(self.path), "-map", "0:v:0",
-               "-vf", f"scale={w}:{h}:flags=area,showinfo", *_passthrough(), "-f", "rawvideo", "-pix_fmt", "bgr24", "-"]
-        log: list[float] = []
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1 << 24)
-        tb = (probe(self.path).get("time_base"))
+    def expected(self) -> int:
+        """How many frames this window should yield: the PTS table's frames inside [start, end] that `every` / `want`
+        keep."""
+        pts = np.asarray(self.pts, float)
+        idx = np.nonzero((pts >= self.start - 1e-6) & (pts <= self.end + 1e-6))[0]
+        return sum(1 for n in idx.tolist() if not n % self.every and (self.want is None or n in self.want))
 
-        def read_err():
-            from ..ingest import showinfo_pts
-            for line in proc.stderr:
-                m = SHOWINFO.search(line.decode("utf-8", "replace"))
-                if m:
-                    log.append(showinfo_pts(m, tb))
-        th = threading.Thread(target=read_err, daemon=True)
-        th.start()
-        fb = w * h * 3
-        i = 0
+    def _run(self, q: queue.Queue, stop: threading.Event) -> None:
+        """Producer. EVERY way out queues the end marker, carrying the error when there is one (__iter__ raises it in the
+        consumer): 2026-10-21 trial, a pod without ffprobe made probe() raise before the try, the marker never came and the
+        front job hung ~10 min. A missing ffmpeg, a probe or prepare() error, or an ffmpeg that decodes nothing now ends the
+        stream at once with the reason."""
+        err: BaseException | None = None
+        proc = th = None
+        tail: list[str] = []   # ffmpeg's last non-showinfo stderr lines, for the error message
+
+        def put(item) -> bool:   # False once the consumer is gone (it stopped iterating)
+            while not stop.is_set():
+                try:
+                    q.put(item, timeout=0.5)
+                    return True
+                except queue.Full:
+                    continue
+            return False
         try:
-            while True:
+            w, h = self.size
+            seek = max(0.0, self.start - 1.0)
+            cmd = ["ffmpeg", "-v", "info", "-nostats", "-threads", str(self.threads), "-ss", f"{seek:.6f}",
+                   "-t", f"{self.end - seek + 0.5:.6f}", "-copyts", "-i", str(self.path), "-map", "0:v:0",
+                   "-vf", f"scale={w}:{h}:flags=area,showinfo", *_passthrough(), "-f", "rawvideo", "-pix_fmt", "bgr24", "-"]
+            log: list[float] = []
+            tb = probe(self.path).get("time_base")   # before ffmpeg starts: a probe failure leaves nothing to clean up
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1 << 24)
+
+            def read_err():
+                from ..ingest import showinfo_pts
+                for line in proc.stderr:
+                    s = line.decode("utf-8", "replace")
+                    m = SHOWINFO.search(s)
+                    if m:
+                        log.append(showinfo_pts(m, tb))
+                    elif s.strip():
+                        tail[:] = (tail + [s.strip()[:200]])[-8:]
+            th = threading.Thread(target=read_err, daemon=True)
+            th.start()
+            fb = w * h * 3
+            i = got = 0
+            while not stop.is_set():
                 buf = proc.stdout.read(fb)
                 if len(buf) < fb:
                     break
@@ -188,27 +215,71 @@ class FrameStream:
                 if n % self.every or (self.want is not None and n not in self.want):
                     continue
                 img = np.frombuffer(buf, np.uint8).reshape(h, w, 3).copy()
-                item = (n, pts, img, self.prepare(n, img) if self.prepare else None)
-                q.put(item)
+                if not put((n, pts, img, self.prepare(n, img) if self.prepare else None)):
+                    break
+                got += 1
+            if i == 0 and not stop.is_set() and proc.wait() != 0:   # ffmpeg failed before one frame: say why
+                th.join(timeout=2)
+                raise RuntimeError(f"ffmpeg decoded no frame of {self.path} [{self.start:.3f}, {self.end:.3f}] s "
+                                   f"(rc={proc.returncode}): {' | '.join(tail[-3:]) or 'no message'}")
+            if not stop.is_set():
+                # a truncated / corrupt file decodes part of the window and ffmpeg still exits 0 (2026-10-21 review: 113 of
+                # 300 frames, nothing raised): compare with the PTS table. Short by >= 10 % (>= 5 frames) with ffmpeg
+                # decode errors -> the stream fails; any other shortfall is a warning and self.short
+                exp = self.expected()
+                if got < exp:
+                    proc.wait()
+                    th.join(timeout=2)
+                    self.short = (got, exp)
+                    bad = [t for t in tail if re.search(r"partial file|invalid|corrupt|error", t, re.I)]
+                    msg = (f"{self.path.name} [{self.start:.3f}, {self.end:.3f}] s: decoded {got} of {exp} frames"
+                           + (f" ({' | '.join(bad[-2:])})" if bad else ""))
+                    if bad and exp - got >= max(5, 0.1 * exp):
+                        raise RuntimeError(f"ffmpeg stopped early: {msg}")
+                    print(f"[newcam] WARNING {msg}", file=sys.stderr, flush=True)
+        except BaseException as e:  # noqa: BLE001 - handed to the consumer, never swallowed
+            err = e
         finally:
-            try:
-                proc.stdout.close()
-            except OSError:
-                pass
-            proc.wait()
-            th.join(timeout=2)
-            q.put(None)
+            if proc is not None:
+                if err is not None or stop.is_set():
+                    try:
+                        proc.kill()
+                    except OSError:
+                        pass
+                try:
+                    proc.stdout.close()
+                except OSError:
+                    pass
+                proc.wait()
+            if th is not None:
+                th.join(timeout=2)
+            put(_StreamEnd(err))
 
     def __iter__(self):
         q: queue.Queue = queue.Queue(self.depth)
-        t = threading.Thread(target=self._run, args=(q,), daemon=True)
+        stop = threading.Event()
+        t = threading.Thread(target=self._run, args=(q, stop), daemon=True)
         t.start()
-        while True:
-            it = q.get()
-            if it is None:
-                break
-            yield it
-        t.join(timeout=5)
+        try:
+            while True:
+                it = q.get()
+                if isinstance(it, _StreamEnd):
+                    if it.error is not None:
+                        raise RuntimeError(f"frame stream of {self.path.name} failed: "
+                                           f"{type(it.error).__name__}: {it.error}") from it.error
+                    break
+                yield it
+        finally:   # also when the consumer stops early: the producer ends and kills its ffmpeg
+            stop.set()
+            t.join(timeout=5)
+
+
+class _StreamEnd:
+    """FrameStream's end marker; `error` is the producer's exception (None = the window ended normally)."""
+    __slots__ = ("error",)
+
+    def __init__(self, error: BaseException | None = None):
+        self.error = error
 
 
 _PASS: list[str] = []

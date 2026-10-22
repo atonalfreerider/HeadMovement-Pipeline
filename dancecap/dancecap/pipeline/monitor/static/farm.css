@@ -190,6 +190,20 @@ body.farm-mode .view-analysis, body.farm-mode .view-snapshots { max-width: 1700p
 .am-b.wait { background: repeating-linear-gradient(135deg, var(--f-partial) 0 2px, var(--f-partial-bg) 2px 5px); border-color: var(--f-partial); }
 .am-b.fail { background: #cf222e; border-color: #a40e26; }
 .am-b.skip { background: var(--surface-3); border-color: var(--border); opacity: .6; }
+/* running without a progress figure: striped = time elapsed against the plan, never "done so far" (review 2026-10-21) */
+.am-b.time { background: repeating-linear-gradient(135deg, var(--f-run) 0 2px, transparent 2px 5px); border-color: var(--f-run); }
+.am-b.over { background: transparent; border: 1.5px dashed #cf222e; }
+.am-b.stop { background: var(--surface-3); border: 1.5px dashed var(--text-3); }
+.am-b.reused { background: repeating-linear-gradient(45deg, var(--text-3) 0 2px, var(--surface-3) 2px 5px); border-color: var(--text-3); }
+.am-wrap, .am-msg { overflow-wrap: anywhere; }
+.am-sids { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px 8px; }
+.am-sids summary { cursor: pointer; width: 100%; text-align: right; }
+details.am-sids[open] { display: flex; }
+.am-sid { white-space: nowrap; }
+.ac-alerts { margin: 4px 0 6px; }
+.fm-analysis { margin-top: 8px; font-size: 13.5px; overflow-wrap: anywhere; }
+.am-thumb, .am-runlink { min-width: 0; overflow-wrap: anywhere; }
+.am-thumb .small, .am-runlink .small { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .am-cov .am-b { width: 10px; height: 10px; }
 .am-sess { padding: 7px 0; border-top: 1px solid var(--border); }
 .am-sess:first-of-type { border-top: 0; }

@@ -333,7 +333,9 @@ def test_down_abandon_deletes_a_busy_pod_but_never_one_with_unpulled_results(env
     State(DANCE).set_chunk("g0000", status="queued")
     # the volume becomes unreachable for pulling: the pod that holds an unpulled result must stay
     env.be.links[done] = F.FlakyLink(F.LocalPod(done), root=env.vol.as_posix())
-    F.FlakyLink.drops = 10_000
+    # cut too: test_farm_watch.py leaves the class at cut = 3000, more than this 1-byte payload, and the pull then
+    # succeeded whenever that file ran first (the "flaky" failure of the multi-file runs since round 1)
+    F.FlakyLink.drops, F.FlakyLink.cut = 10_000, 64
     env.be.links[busy] = env.be.links[done]
     ns = argparse.Namespace(dance=DANCE, json=True, pod=None, abandon=True, keep_watcher=True)
     rc = launch.cmd_down(ns)

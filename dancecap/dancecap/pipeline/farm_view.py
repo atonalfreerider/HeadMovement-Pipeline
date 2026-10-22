@@ -57,25 +57,72 @@ def _is_demo(dance: str) -> bool:
     return bool(isinstance(st, dict) and st.get(DEMO_FLAG))
 
 
+ANALYSIS_OUTPUTS = ("smplx_rf2_noslip", "smplx", "timing", "physics", "counterbalance", "floorcraft", "export")
+
+
+def analyses_by_take(limit: int = 30) -> dict[str, dict]:
+    """{take: its newest pipeline analysis run (pipeline/analyze.py)}, reduced to {run, status, done, total, reused,
+    ended, created, outputs[]}. The farm only knows its own volume-farm outputs; a take analysed by the remote runner
+    (`analyze` + agents) has no coverage.json, and the Farm page called it "0 % complete, no coverage map" (2026-10-21
+    review). `outputs`: which result folders exist under work/<take>/."""
+    try:
+        from . import analyze
+        docs = analyze.list_runs(limit)
+    except Exception:  # noqa: BLE001 - the analysis records never break the farm view
+        return {}
+    # per take: a run in flight, else its newest FINISHED (done) run, else its newest run. A later cancelled run (the
+    # plan group's 4/12 verification run of trial_mono_jl20) must not hide the 12/12 analysis of the same take.
+    rank = {"running": 0, "waiting": 0, "planned": 0, "done": 1}
+    best: dict[str, dict] = {}
+    for d in docs:   # newest run first
+        t = d.get("take")
+        if t and (t not in best or rank.get(d.get("status"), 2) < rank.get(best[t].get("status"), 2)):
+            best[t] = d
+    out: dict[str, dict] = {}
+    for t, d in best.items():
+        if not TAKE_RE.match(t):
+            continue
+        steps = [s for s in d.get("steps") or [] if not s.get("optional")]
+        end = None
+        try:
+            end = analyze.run_end(d) if hasattr(analyze, "run_end") else None
+        except Exception:  # noqa: BLE001
+            pass
+        base = paths.work() / t
+        out[t] = {"run": d.get("run"), "status": d.get("status"), "created": d.get("created"), "ended": end,
+                  "done": sum(1 for s in steps if s.get("status") in ("done", "skipped")), "total": len(steps),
+                  "reused": [s.get("id") for s in d.get("steps") or [] if s.get("reused") or
+                             (s.get("reused") is None and "REUSED" in str(s.get("message") or ""))],
+                  "route": (d.get("input") or {}).get("route"),
+                  "outputs": [o for o in ANALYSIS_OUTPUTS if (base / o).exists()]}
+    return out
+
+
 def list_dances(show_demo: bool = False) -> list[dict]:
-    """Dances that have a farm directory with a coverage.json or a state.json, newest coverage first."""
+    """Dances that have a farm directory with a coverage.json or a state.json, newest coverage first, and takes with a
+    pipeline analysis run (runner analyses: their completion is the run's steps, not a farm map)."""
     out = []
     try:
         names = [p.name for p in paths.work().iterdir() if p.is_dir() and TAKE_RE.match(p.name)]
     except OSError:
         return out
+    runs = analyses_by_take()
     for n in names:
         fd = farm_dir(n)
         cm, sm = mtime(fd / "coverage.json"), mtime(fd / "state.json")
-        if cm is None and sm is None:
+        an = runs.get(n)
+        if cm is None and sm is None and an is None:
             continue
-        demo = _is_demo(n)
+        demo = _is_demo(n) if (cm is not None or sm is not None) else False
         if demo and not show_demo:
             continue
         cov = read_json(fd / "coverage.json", None) or {}
         pct = (cov.get("percent") or {}).get("complete")
-        out.append({"id": n, "label": n + (" (demo)" if demo else ""), "demo": demo, "updated_ts": max(cm or 0, sm or 0),
-                    "complete_pct": pct, "has_coverage": cm is not None})
+        out.append({"id": n, "label": n + (" (demo)" if demo else ""), "demo": demo,
+                    "updated_ts": max(cm or 0, sm or 0, float((an or {}).get("ended") or (an or {}).get("created") or 0)),
+                    "complete_pct": pct if cm is not None else None, "has_coverage": cm is not None,
+                    "farm": cm is not None or sm is not None,
+                    "analysis": {k: an[k] for k in ("run", "status", "done", "total")} if an else None})
     out.sort(key=lambda d: d["updated_ts"], reverse=True)
     return out
 
@@ -92,7 +139,8 @@ def default_dance(show_demo: bool = False) -> str | None:
                 return s["dance"]
     except Exception:  # noqa: BLE001
         pass
-    return ds[0]["id"]
+    # the defrag map is this page's subject: a dance with farm files first; a runner-only take (no map) only when none has
+    return next((d["id"] for d in ds if d.get("farm", True)), ds[0]["id"])
 
 
 # ------------------------------------------------------------------------------------------------ coverage
@@ -437,8 +485,15 @@ def _budget(rp: dict | None, state: dict) -> dict:
     if remaining is not None:
         avail = remaining if bal is None else min(remaining, float(bal) - reserve)
         avail = round(avail - (worst_open or 0.0), 2)
+    # pods Runpod lists now vs rows the ledger still holds open (2026-10-21: "6 open pods" while none ran: their closes
+    # were lost; `remote reconcile` closes such rows once Runpod has not listed the pod twice)
+    pods_b = b.get("pods") if isinstance(b.get("pods"), list) else []
+    listed = rp.get("pods") if rp.get("connection") == "ok" and isinstance(rp.get("pods"), list) else None
     return {"cap": cap, "spent": spent, "remaining": remaining, "balance": bal, "reserve_usd": reserve,
             "level": b.get("level") or "green", "messages": b.get("messages") or [], "open_pods": b.get("open_pods"),
+            "ledger_open": b.get("open_pods") if isinstance(b.get("open_pods"), int) else len(pods_b),
+            "ledger_stale": sum(1 for p in pods_b if isinstance(p, dict) and p.get("phantom_cost") is not None),
+            "runpod_listed": len(listed) if listed is not None else None,
             "open_rate_hr": acct.get("spend_per_hr_usd"), "worst_open_usd": worst_open, "available_usd": avail,
             "farm_spend": (state.get("spend") or {}), "connection": rp.get("connection"), "checked": rp.get("checked")}
 
@@ -536,9 +591,9 @@ def outputs_mtime(dance: str, chunks: list[dict]) -> float:
 # ------------------------------------------------------------------------------------------------ alerts
 
 def _alerts(b: dict, cov_ok: bool, chunks: list[dict], pods: list[dict], watcher: dict, outputs: dict, bud: dict,
-            counts: dict | None) -> list[dict]:
+            counts: dict | None, analysis: dict | None = None) -> list[dict]:
     out = []
-    if not cov_ok:
+    if not cov_ok and not analysis:
         out.append({"level": "amber", "id": "no-coverage", "message":
                     "No coverage map yet for this dance: run  python -m dancecap.farm coverage  (the map is computed from the real outputs)."})
     if bud.get("level") in ("amber", "red"):
@@ -593,9 +648,11 @@ def build(dance: str, rp: dict | None = None, now: float | None = None, show_dem
                 "seconds": (tot or {}).get("seconds") or (cov or {}).get("seconds") or {"complete": 0, "partial": 0, "none": 0},
                 "percent": (tot or {}).get("percent") or (cov or {}).get("percent") or {"complete": 0, "partial": 0, "none": 0},
                 "stages": (cov or {}).get("stages") or {}, "total_s": round(sum(((tot or {}).get("seconds") or {}).values()), 1)}
-    alerts = _alerts({}, bool(cov), chunks, pods, watcher, outputs, bud, coverage["counts"])
+    analysis = analyses_by_take().get(dance)
+    alerts = _alerts({}, bool(cov), chunks, pods, watcher, outputs, bud, coverage["counts"], analysis)
     live_n = sum(1 for c in cells if c.get("live"))
     return {"schema": SCHEMA, "dance": dance, "demo": bool(state.get(DEMO_FLAG)), "now": now, "coverage": coverage,
+            "analysis": analysis,
             "chunks": chunks, "jobs": jobs, "queue": queue, "pods": pods, "budget": bud, "volume": volume_info(state),
             "world": _world(cov, state), "watcher": watcher, "events": _events(state), "alerts": alerts,
             "outputs": outputs, "live": {"fit_full": live.get("found", 0), "cells": live_n},

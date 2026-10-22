@@ -69,7 +69,11 @@ SEED = {
 }
 BOOT_SEED_MIN = {"base": (1.4, 1.5, 6.5), "mamma": (0.35, 0.5, 3.7), "room": (0.3, 0.4, 3.0), "texture": (0, 0, 0.1),
                  "dancers": (1.5, 2.5, 5.2), "cameras": (0.2, 1.0, 3.8), "ma2d": (0.5, 0.8, 1.2),
-                 "check": (0.1, 0.12, 0.3), "gsplat": (0.2, 0.3, 2.0)}
+                 "check": (0.1, 0.12, 0.3), "gsplat": (0.2, 0.3, 2.0),
+                 # fix round 2 (runner group): the static ffmpeg fetch runs in the background during base; the trial's
+                 # open3d install took 19 s
+                 "ffmpeg": (0.0, 0.1, 2.5), "open3d": (0.2, 0.4, 1.5)}
+SLOW_HIST_X = 2.0     # a command running > 2x its history's p90 (and > 5 min) is flagged: "far slower than its history"
 MAMMA_Q_USED = (0.4, 0.6, 1.0, 0.8)      # seed share of N_max actually run per optimisation run (early stopping)
 # room gsplat time profile F(x) at x = 0, .05, .., 1 (2026-10-06 pod run, 30000 steps, 1 M cap)
 ROOM_PROFILE = [0.0, 0.0335, 0.0752, 0.1183, 0.1655, 0.2153, 0.2697, 0.3237, 0.3787, 0.4313, 0.4857, 0.5401, 0.5931,
@@ -1258,6 +1262,8 @@ class SessionModel:
                                                                   else f"{e['job']}/{e['step']}")
             if name == "bootstrap_retry":
                 name = "bootstrap"
+                if e["kind"] == "start":
+                    self._keep_first_bootstrap()
             if e["kind"] == "start":
                 ph = self._next_named(name, by_name)
                 if ph is not None:
@@ -1275,6 +1281,11 @@ class SessionModel:
                         ph.start = ph.end - secs
             elif e["kind"] == "fail" and e.get("step") == "session":
                 self.warnings.append({"level": "red", "msg": f"session error: {e.get('msg')}"})
+        # the runner logs "bootstrap done" even when the script's rc != 0 (it runs with check=False): its final rc decides
+        brc = self.state.get("bootstrap_rc")
+        bph = next((p for p in self.phases if p.name == "bootstrap"), None)
+        if brc not in (None, 0) and bph is not None and bph.status == "done":
+            bph.status, bph.detail = "failed", f"rc={brc}"
         # job status lines: skipped/failed jobs -> their pending phases will not run
         for e in self.evs:
             if e.get("src") == "runner" and e.get("step") == "_job":
@@ -1303,6 +1314,19 @@ class SessionModel:
                         ph.status = "failed"
                     elif rc not in (None, 0):
                         ph.detail = f"optional, rc={rc}"
+
+    def _keep_first_bootstrap(self):
+        """remote_jobs retries a bootstrap once on the same pod when its rc != 0 ("bootstrap_retry"). The retry reuses the
+        "bootstrap" phase; the first try is kept as its own FAILED phase (bootstrap_try1) so the session Gantt shows it
+        (an 860 s failed first bootstrap vanished behind its 48 s retry, 20261021-132809-batch)."""
+        ph = next((p for p in self.phases if p.name == "bootstrap"), None)
+        if ph is None or ph.start is None or any(p.name == "bootstrap_try1" for p in self.phases):
+            return
+        first = Phase("bootstrap_try1", ph.job, "bootstrap_try")
+        first.status, first.start, first.end, first.seconds = "failed", ph.start, ph.end, ph.seconds
+        first.remaining, first.detail = (0.0, 0.0, 0.0), "first bootstrap failed (rc != 0): retried once on this pod"
+        self.phases.insert(self.phases.index(ph), first)
+        ph.status, ph.start, ph.end, ph.seconds, ph.detail = "pending", None, None, None, "retry"
 
     def _pod_rc(self, job, cmd):
         rc = None
@@ -1509,15 +1533,62 @@ class SessionModel:
             r = remaining_linear(last["total"], last["done"], obs, s_h, 1, 0.3, now=self.now, diag=diag)
             self._flag(ph, diag)
             return r
-        # generic: history of this command kind, else the timeout
+        # the runner's frame counter of this command (progress/frames.json, fix round 2): what is left of the step it counts
+        fr = self._frames(ph) if ph.status == "running" else None
+        if fr is not None:
+            return fr
+        # generic: history of this command kind, else a prior from every measured command (never the timeout)
         v, n, sig, src = lookup(self.rates, f"cmd/{key}/s", self.gpu)
-        if v is None:  # timeouts are generous: measured run/timeout 0.03-0.57 (median ~0.3) on 2026-10-06/07
-            dur = (0.05 * to, 0.3 * to, 0.9 * to)
-            ph.detail = (ph.detail or "") + " (no history: timeout-based)"
+        if v is None:
+            # the timeout said 21 min for a 3-min job (2026-10-21 trial): the median of every measured command kind,
+            # capped by 0.3 x the timeout (the measured run/timeout median). The word "timeout" stays out of the detail:
+            # activity.py rejects a session ETA whose detail names it.
+            keys = (self.rates or {}).get("keys", {})
+            meds = sorted(float(r["p50"]) for k, r in keys.items()
+                          if k.startswith("cmd/") and "/s" in k and r.get("n") and r.get("p50") is not None)
+            m = min(meds[len(meds) // 2] if meds else 180.0, 0.3 * to)
+            dur = (0.5 * m, m, min(0.9 * to, 4 * m))
+            ph.detail = ((ph.detail or "") + " (no history: generic prior)").strip()
         else:
             dur = est(v, max(sig, 0.25))
-            ph.detail = f"history {src} n={n}" if not ph.detail else ph.detail
+            # src is "history", "history (A100-SXM4)" or "seed": the label said "history history" before
+            ph.detail = f"{src} n={n}" if not ph.detail else ph.detail
+            if ph.status == "running" and n and elapsed > max(300.0, SLOW_HIST_X * dur[2]):
+                self.warnings.append({"level": "amber", "kind": "slow_history", "msg":
+                                      f"{ph.name} has run {elapsed / 60:.0f} min, {elapsed / max(1.0, dur[1]):.1f}x its "
+                                      f"history's median of {dur[1] / 60:.1f} min ({src}, n={n}): far slower than before"})
         return remaining_after_elapsed(dur, elapsed) if ph.status == "running" else dur
+
+    def _frames(self, ph):
+        """(p10, p50, p90) seconds left of a running command from the runner's frame counter (progress/frames.json
+        jobs["<job>/<cmd>"]: done, total, rate_avg_s, state), None without one. MAMMA's optimisation runs stop early
+        (iteration totals 50 / 500 / 100 / 25 are ceilings): only the run index gives a fraction there, so it is left to
+        history. A counter more than 10 min older than the session's last word is not trusted."""
+        if self.at is not None:
+            return None
+        fj = P.read_json(self.dir / "progress" / "frames.json")
+        j = ((fj or {}).get("jobs") or {}).get(f"{ph.job}/{ph.cmd['name'] if ph.cmd else ''}")
+        if not isinstance(j, dict) or j.get("state") != "running" or j.get("src") == "mamma_iter":
+            return None
+        done, total, rate = j.get("done"), j.get("total"), j.get("rate_s") or j.get("rate_avg_s")
+        ts = float(j.get("ts") or 0)
+        if not total or done is None or self.now - ts > 600:
+            return None
+        if j.get("eta_s") is not None:   # the runner's own (SAM 3D Body: per-frame time of the chunks, not per person)
+            left = max(0.0, float(j["eta_s"]) - max(0.0, self.now - ts))
+        elif j.get("rate_avg_s") and (j.get("rate_unit") or j.get("unit")) == j.get("unit"):
+            left = max(0.0, (float(total) - float(done)) * float(j["rate_avg_s"]))
+        else:
+            return None
+        ph.fraction = min(0.999, float(done) / float(total))
+        ph.detail = (f"{j.get('step') or ''} {done}/{total} {j.get('unit') or 'frames'}"
+                     + (f" at {float(rate):.3g} s per {j.get('rate_unit') or j.get('unit') or 'frame'}" if rate else "")
+                     + " (frame counter)").strip()
+        if j.get("stage"):
+            ph.detail += f", {j['stage']}"
+        # one chunk of a counted step may be followed by more work in the same command (SAM 3D Body: chunk n/m, then a
+        # convert): the p90 keeps room for it
+        return (left * 0.85, left, left * 1.4 + 30.0)
 
     def _texture(self, ph, evs, elapsed):
         views, passes = None, None
@@ -1973,6 +2044,9 @@ def snapshot(session_dir, now: float | None = None, at: float | None = None, rat
         for ph in phases:
             if ph.status == "pending" and ph.kind == "delete":
                 ph.status, ph.remaining = "done", (0.0, 0.0, 0.0)
+            elif state_s == "dry_run" and ph.status in ("running", "pending"):
+                # a dry run starts no pod: its pod_start was drawn "running" with time left, an hour after it ended
+                ph.status, ph.remaining = "skipped", (0.0, 0.0, 0.0)
     # kill switch
     kill = None
     ks = pod.get("killswitch") or {}
@@ -2051,6 +2125,12 @@ def snapshot(session_dir, now: float | None = None, at: float | None = None, rat
         if runner_alive is False and open_row:
             m.warnings.append({"level": "red", "msg": "pod alive but its runner process is gone: orphan (the kill "
                                                       "switch deletes it at its deadline)"})
+    # the runner's own warnings (state.json, fix round 2): gpu_choice (the session max or the budget ruled out a faster
+    # GPU), slow_gpu (measured rate >= 2x the reference GPU's)
+    for w in state.get("warnings") or []:
+        if isinstance(w, dict) and w.get("msg"):
+            lvl = "red" if w.get("level") in ("red", "crit") else "amber"
+            m.warnings.append({"level": lvl, "kind": w.get("kind"), "msg": str(w["msg"])[:400]})
     # QA: probe B's camera_motion metric (cameras stage qa step, today's unconstrained track) vs the user's camera
     # types, with camera_types' thresholds (section 9.2); the latest measurement per camera
     mets = {}
@@ -2083,6 +2163,9 @@ def snapshot(session_dir, now: float | None = None, at: float | None = None, rat
         "warnings": m.warnings,
         "runner": {"pid": (ri or {}).get("pid"), "alive": runner_alive, "attempt": (ri or {}).get("attempt")}
         if ri else None,
+        # why this GPU (pod.choice) or why no pod at all (gpu_choice: each option tried and its result)
+        "choice": pod.get("choice") if isinstance(pod.get("choice"), dict) else
+        (state.get("gpu_choice") if isinstance(state.get("gpu_choice"), dict) else None),
     }
     return out
 

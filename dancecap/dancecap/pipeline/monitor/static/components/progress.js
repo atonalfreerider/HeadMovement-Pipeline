@@ -50,7 +50,7 @@ export function budgetGauge(b, { title = "Budget", compact = false } = {}) {
     h("div", { class: "g-tick g-cap", style: { left: x(cap) }, title: `cap ${fmtUSD(cap)}` }),
   );
   if (compact) return h("div", { class: "gauge-compact", title: `${title}: ${fmtUSD(spent)} of ${fmtUSD(cap)}` },
-    h("span", { class: "gc-txt" }, `${fmtUSD(spent)} / ${fmtUSD(cap, 0)}`), bar);
+    h("span", { class: "gc-txt" }, `${fmtUSD(spent)} / ${fmtUSD(cap)}`), bar);
   return h("div", { class: "gauge-wrap" },
     h("div", { class: "gauge-head" },
       h("span", { class: "gauge-title" }, title),

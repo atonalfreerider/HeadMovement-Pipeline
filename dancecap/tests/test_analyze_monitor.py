@@ -82,10 +82,13 @@ def test_route_plans_put_every_heavy_step_on_runpod(route, n, dur):
         assert set(s["deps"]) <= set(ids) and s["p50_min"] <= s["p90_min"]
     t = A.totals(steps)
     assert t["critical"][0] == "intake" and t["critical"][-1] == "film"
-    assert 40 < t["wall_min"]["p50"] < 150 and t["wall_min"]["p90"] > t["wall_min"]["p50"]
+    # 2026-10-22: planned from what is built (one pod per mono step, every session's start-up): the 88-s mono plan is
+    # about 3.4 h, as john_lula's first pass measured 3.2 h of compute on its critical path (PIPELINE_EFFICIENCY.md 4.1)
+    lo, hi = (150, 260) if route == "mono" else (40, 150)
+    assert lo < t["wall_min"]["p50"] < hi and t["wall_min"]["p90"] > t["wall_min"]["p50"]
     assert t["cost_usd"]["p90"] >= t["cost_usd"]["p50"] > 0
     if route == "mono":
-        assert by["people"]["lanes"] == 6 and by["sam3d_body"]["deps"] == ["people"]
+        assert by["people"]["lanes"] == 1 and by["sam3d_body"]["deps"] == ["people"]     # time shards are not built
         assert "sam3d_body" in by["fits"]["deps"]
         no_real = {s["id"]: s for s in A.route_plan("mono", f, {"realism": False})}
         assert "sam3d_body" not in no_real["fits"]["deps"] and no_real["sam3d_body"]["optional"]
@@ -107,9 +110,11 @@ def test_schedule_and_live_follow_what_finished():
            {**steps[2], "status": "done", "started": now - 300, "ended": now - 60},
            {**steps[3], "status": "pending"}]
     lv = A.live({"steps": run, "created": now - 900, "cost_so_far_usd": 0.5}, now)
-    assert lv["eta_s"]["p50"] == pytest.approx((30 - 10) * 60 + 2 * 60)       # b has 20 min left, then d
+    # b has about 20 min left (its residual given 10 min run, well before its p50), then d
+    assert lv["eta_s"]["p50"] == pytest.approx((30 - 10) * 60 + 2 * 60, abs=10)
     assert lv["done"] == 2 and lv["total"] == 4 and lv["running"] == ["b"]
-    assert lv["cost_usd"]["so_far"] == 0.5 and lv["cost_usd"]["p50"] == pytest.approx(0.5 + A.step_cost(steps[1]), abs=0.01)
+    # a running step costs its residual minutes (2026-10-22), not its whole p50 again
+    assert lv["cost_usd"]["so_far"] == 0.5 and lv["cost_usd"]["p50"] == pytest.approx(0.5 + 0.6 * 20 / 60, abs=0.01)
     finished = A.live({"steps": [{**s, "status": "done", "ended": now} for s in steps], "created": now - 60}, now)
     assert finished["eta_s"]["p50"] == 0 and finished["finish_at"]["p50"] is None
 
@@ -286,7 +291,8 @@ def test_snapshot_renders_a_static_page_and_indexes_it(root, monkeypatch):
     A.run_dir(run).mkdir(parents=True)
     A.save(d)
     kinds = snapshots.step_blocks(d["steps"][1], time.time())
-    assert len(kinds) == 6 * round(17 / 2) and kinds[0] == "run" and kinds[-1] == "left"    # 6 pods x 17 min / 2-min squares
+    # no progress figure: striped "time" squares (elapsed against the plan), never "run" (= measured progress)
+    assert len(kinds) == 6 * round(17 / 2) and kinds[0] == "time" and kinds[-1] == "left"   # 6 pods x 17 min / 2-min squares
     calls = []
 
     def fake_png(hp, pp, height):

@@ -339,7 +339,7 @@ def _monitor_up(a, what: str) -> None:
         return
     try:
         from ..pipeline import monitor
-        monitor.ensure_running(f"farm {what} {a.dance}")
+        monitor.ensure_running(f"farm {what} {a.dance}", route=f"#/farm/{a.dance}")
     except Exception:  # noqa: BLE001
         pass
 

@@ -19,7 +19,11 @@
 #            local commit (eb42fee) + kornia
 #   ma2d     MAMMA ma_2d inference (landmarks/run_ma_2d.py) on a pod: the lightning / albumentations / omegaconf stack it
 #            imports, pinned to the local .venv-nopo4d versions (numpy held at 1.26.4)
-#   check    import checks (torch.cuda, smplx, pytorch_sdf, gsplat, open3d, pyrender/EGL) -> $STATE/check.json
+#   ffmpeg   ffmpeg + ffprobe for jobs that decode video (the image has neither; 2026-10-21 trial: 2 sessions lost, one hung):
+#            a static build (BtbN n8.1 = the local 8.1, else johnvansickle's release) fetched in the BACKGROUND while
+#            base installs, Ubuntu's apt ffmpeg 4.4 as the fallback (dancecap.ingest handles both)
+#   open3d   open3d 0.19.0 alone (physics_body.segment_masses): the blinker workaround of 'room' without gsplat / xatlas
+#   check    import checks (torch.cuda, smplx, pytorch_sdf, gsplat, open3d, pyrender/EGL, ffmpeg) -> $STATE/check.json
 #
 # Idempotent: each feature leaves $STATE/<feature>.ok (with this script's version) and is skipped when present.
 # Built CUDA wheels go to $WHEELHOUSE; when the runner uploads cached wheels there they are installed instead of
@@ -42,7 +46,8 @@ _cpus=$(nproc)
 if [ -r /sys/fs/cgroup/cpu.max ] && read -r _q _p < /sys/fs/cgroup/cpu.max && [ "$_q" != max ]; then
   _cpus=$(( (_q + _p - 1) / _p ))
 fi
-_mem_gb=$(( $(awk '/MemAvailable/ {print $2}' /proc/meminfo) / 1048576 ))
+_mem_kb=$(awk '/MemAvailable/ {print $2}' /proc/meminfo 2>/dev/null)   # absent on old kernels / Git Bash (the tests)
+_mem_gb=$(( ${_mem_kb:-8388608} / 1048576 ))
 if [ -r /sys/fs/cgroup/memory.max ] && [ "$(cat /sys/fs/cgroup/memory.max)" != max ]; then
   _mem_gb=$(( $(cat /sys/fs/cgroup/memory.max) / 1073741824 ))
 fi
@@ -92,6 +97,107 @@ apt_base() {
   dpkg -s $APT_PKGS >/dev/null 2>&1 && { log "apt: packages already installed"; return 0; }
   rm -f /etc/apt/sources.list.d/*deadsnakes* 2>/dev/null || true
   apt-get $APT_OPTS update -qq && apt-get $APT_OPTS install -y -qq --no-install-recommends $APT_PKGS > /dev/null
+}
+# one more apt install (the lists from apt_base when they exist, else a fresh update), retried once after 10 s
+apt_get() {
+  rm -f /etc/apt/sources.list.d/*deadsnakes* 2>/dev/null || true
+  local i
+  for i in 1 2; do
+    apt-get $APT_OPTS install -y -qq --no-install-recommends "$@" > /dev/null 2>&1 && return 0
+    apt-get $APT_OPTS update -qq > /dev/null 2>&1
+    apt-get $APT_OPTS install -y -qq --no-install-recommends "$@" > /dev/null && return 0
+    [ $i = 1 ] && { log "apt: install $* failed; retrying in 10 s"; sleep 10; }
+  done
+  return 1
+}
+
+# static ffmpeg: one tarball, two binaries, no apt and no PyPI (a few seconds from GitHub's CDN). BtbN's n8.1 build matches
+# the local ffmpeg 8.1 (showinfo pts_time to 6 decimals, -fps_mode); the release-branch name moves on, hence the fallbacks.
+FFMPEG_URLS=${DANCECAP_FFMPEG_URLS:-"https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"}
+FFMPEG_DIR=$STATE/ffmpeg_static
+FFMPEG_BIN=${DANCECAP_FFMPEG_BIN:-/usr/local/bin}   # ahead of /usr/bin on PATH (tests point it elsewhere)
+# One deadline for the whole static fetch, and curl drops a URL that crawls (2026-10-21 review: --max-time restarts on each
+# --retry, so the 150 MB BtbN tarball alone could burn ~6 min on a slow link before the 42 MB build was tried, and a failed
+# background fetch was repeated in the foreground): under FFMPEG_MIN_BPS for 15 s -> the next URL; past the deadline ->
+# apt. The pid file lets a retried bootstrap (the runner reruns it at once after a quick base failure) wait for the first
+# run's fetch instead of starting a second one into the same directory; the .failed marker sends a retry straight to apt.
+FFMPEG_FETCH_S=${DANCECAP_FFMPEG_FETCH_S:-150}
+FFMPEG_MIN_BPS=${DANCECAP_FFMPEG_MIN_BPS:-1000000}
+FFMPEG_PIDF=$STATE/ffmpeg_fetch.pid
+FFMPEG_FAILED=$STATE/ffmpeg_fetch.failed
+have_ffmpeg() { command -v ffmpeg > /dev/null && command -v ffprobe > /dev/null && ffprobe -version > /dev/null 2>&1; }
+ffmpeg_fetching() { local p; p=$(cat "$FFMPEG_PIDF" 2>/dev/null) && [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
+ffmpeg_fetch() {  # -> $FFMPEG_DIR/{ffmpeg,ffprobe}; python's lzma extracts (the image may lack xz)
+  local u left part=$FFMPEG_DIR.part.${BASHPID:-$$} t0=$(date +%s)
+  rm -f "$FFMPEG_FAILED"
+  for u in $FFMPEG_URLS; do
+    left=$(( FFMPEG_FETCH_S - ($(date +%s) - t0) ))
+    [ $left -lt 5 ] && { log "ffmpeg: no static build within ${FFMPEG_FETCH_S} s"; break; }
+    rm -rf "$part"; mkdir -p "$part"
+    if curl -fsSL --connect-timeout 15 --max-time $left --speed-limit $FFMPEG_MIN_BPS --speed-time 15 \
+         -o "$part/dl.tar.xz" "$u" &&
+       "$PY" - "$part/dl.tar.xz" "$part" <<'EOF'
+import os, sys, tarfile
+src, dst = sys.argv[1:3]
+got = set()
+with tarfile.open(src, "r:xz") as t:
+    for m in t:
+        b = os.path.basename(m.name)
+        if m.isfile() and b in ("ffmpeg", "ffprobe") and b not in got:
+            with t.extractfile(m) as f, open(os.path.join(dst, b), "wb") as o:
+                o.write(f.read())
+            os.chmod(os.path.join(dst, b), 0o755)
+            got.add(b)
+sys.exit(0 if len(got) == 2 else 1)
+EOF
+    then
+      rm -f "$part/dl.tar.xz"; echo "$u" > "$part/source"; rm -rf "$FFMPEG_DIR"; mv "$part" "$FFMPEG_DIR"
+      log "ffmpeg: static build fetched in $(( $(date +%s) - t0 ))s from $u"
+      return 0
+    fi
+    log "ffmpeg: static build from $u failed after $(( $(date +%s) - t0 ))s"
+  done
+  rm -rf "$part"; touch "$FFMPEG_FAILED"
+  return 1
+}
+# the background fetch, at most one per pod: a fetch still running from an earlier bootstrap run is left to finish
+ffmpeg_fetch_bg() {
+  if ffmpeg_fetching; then log "ffmpeg: the static fetch of an earlier bootstrap run is still going"; return 0; fi
+  ( echo "${BASHPID:-$$}" > "$FFMPEG_PIDF"; ffmpeg_fetch; rc=$?; rm -f "$FFMPEG_PIDF"; exit $rc ) \
+    > "$STATE/ffmpeg_fetch.log" 2>&1 &
+  FFMPEG_FETCH_PID=$!
+}
+
+feature_ffmpeg() {
+  if ! have_ffmpeg; then
+    if [ -n "${FFMPEG_FETCH_PID:-}" ]; then
+      wait "$FFMPEG_FETCH_PID"; cat "$STATE/ffmpeg_fetch.log" 2>/dev/null
+    elif ffmpeg_fetching; then   # an earlier run's fetch (not our child): bounded by its own deadline
+      local i=0
+      while ffmpeg_fetching && [ $i -lt $(( FFMPEG_FETCH_S + 30 )) ]; do sleep 1; i=$(( i + 1 )); done
+      cat "$STATE/ffmpeg_fetch.log" 2>/dev/null
+    fi
+    # a foreground fetch only when no fetch ran at all (a failed one goes straight to apt)
+    [ -x "$FFMPEG_DIR/ffmpeg" ] || [ -f "$FFMPEG_FAILED" ] || [ -n "${FFMPEG_FETCH_PID:-}" ] || ffmpeg_fetch
+    # over the image's python-package copies (imageio_ffmpeg links, the trial's front job had one without ffprobe)
+    [ -x "$FFMPEG_DIR/ffmpeg" ] && [ -x "$FFMPEG_DIR/ffprobe" ] && mkdir -p "$FFMPEG_BIN" &&
+      install -m 755 "$FFMPEG_DIR/ffmpeg" "$FFMPEG_DIR/ffprobe" "$FFMPEG_BIN/"
+  fi
+  if ! have_ffmpeg; then
+    log "ffmpeg: no static build reachable; Ubuntu's apt ffmpeg"
+    apt_get ffmpeg || return 1
+  fi
+  have_ffmpeg || return 1
+  log "ffmpeg: $(command -v ffmpeg): $(ffmpeg -hide_banner -version | head -1)"
+}
+
+feature_open3d() {
+  # physics_body / room_mesh import open3d; open3d -> dash -> flask -> blinker>=1.6, and the image's distutils blinker 1.4
+  # cannot be uninstalled by pip (2026-10-21 trial: 2 analyses sessions lost to this). numpy / torch held by constraints.
+  local c; c=$(_constraints)
+  pipq --ignore-installed "blinker>=1.6" || return 1
+  pip_pinned -c "$c" open3d==0.19.0 || return 1
+  "$PY" -c "import open3d; print('[bootstrap] open3d', open3d.__version__)"
 }
 
 feature_base() {
@@ -214,6 +320,11 @@ def smplx_():
 def o3d():
     import open3d
     return {"open3d": open3d.__version__}
+def ffm():
+    import subprocess
+    v = subprocess.run(["ffmpeg", "-hide_banner", "-version"], capture_output=True, text=True, timeout=30).stdout
+    subprocess.run(["ffprobe", "-hide_banner", "-version"], capture_output=True, check=True, timeout=30)
+    return {"ffmpeg": v.splitlines()[0] if v else "?"}
 def pyr():
     import pyrender  # ma_3d imports it (never renders with --skip_scene_videos)
     return {"pyrender": pyrender.__version__}
@@ -222,7 +333,7 @@ def egl():
     r = pyrender.OffscreenRenderer(64, 64); r.delete()
     return "egl offscreen ok"
 for n, f in [("torch_cuda", torch_cuda), ("pytorch_sdf", sdf), ("gsplat", gs), ("smplx", smplx_),
-             ("open3d", o3d), ("pyrender", pyr), ("egl_offscreen", egl)]:
+             ("open3d", o3d), ("pyrender", pyr), ("egl_offscreen", egl), ("ffmpeg", ffm)]:
     chk(n, f)
 OPTIONAL = {"egl_offscreen"}  # informational: no stage renders with EGL on the pod today
 import os
@@ -231,9 +342,11 @@ feats |= {f[:-3] for f in os.listdir(os.path.dirname(sys.argv[1])) if f.endswith
 if "mamma" not in feats:
     OPTIONAL |= {"pytorch_sdf", "pyrender", "pandas"}
 if "room" not in feats:
-    OPTIONAL |= {"open3d", "xatlas"}
+    OPTIONAL |= {"xatlas"} | ({"open3d"} if "open3d" not in feats else set())
     if "gsplat" not in feats:
         OPTIONAL |= {"gsplat", "plyfile"}
+if "ffmpeg" not in feats:
+    OPTIONAL |= {"ffmpeg"}
 out["features"] = sorted(feats)
 for m in ("numpy", "scipy", "cv2", "trimesh", "xatlas", "plyfile", "pandas", "yaml"):
     chk(m, lambda m=m: getattr(importlib.import_module(m), "__version__", "ok"))
@@ -247,6 +360,15 @@ EOF
 
 features=("base" "$@")
 export DANCECAP_FEATURES="${features[*]}"
+# the static ffmpeg download needs nothing from base: it runs next to base's apt / torch / pip work (~1.5-2.5 min) and
+# feature_ffmpeg only waits for it
+case " ${features[*]} " in
+  *" ffmpeg "*)
+    if ! have_ffmpeg && [ ! -x "$FFMPEG_DIR/ffmpeg" ] && [ ! -f "$FFMPEG_FAILED" ] &&
+       ! { [ -f "$STATE/ffmpeg.ok" ] && grep -qx "v$BOOTSTRAP_VERSION" "$STATE/ffmpeg.ok"; }; then
+      ffmpeg_fetch_bg
+    fi;;
+esac
 seen=" "
 rc=0
 for f in "${features[@]}"; do

@@ -26,11 +26,12 @@ export default {
         }
         const ix = await api.get(`/api/snapshots/${encodeURIComponent(S.run)}`);
         const shots = (ix.shots || []).slice().reverse();
-        const isAnalysis = ix.kind === "analysis";
+        const farm = /^\d{8}-\d{6}-farm_(.+)$/.exec(S.run);
         replace(head, h("div", { class: "fm-head-l" }, h("a", { href: "#/snapshots", class: "muted small" }, "← all snapshots"),
           h("h1", null, `Snapshots of ${S.run}`)),
-        h("div", { class: "fm-actions" }, isAnalysis ? h("a", { class: "btn", href: `#/analysis/${encodeURIComponent(S.run)}` }, "Open the analysis")
-          : h("a", { class: "btn", href: `#/runpod/session/${encodeURIComponent(S.run)}` }, "Open the session")));
+        h("div", { class: "fm-actions" }, ix.kind === "analysis" ? h("a", { class: "btn", href: `#/analysis/${encodeURIComponent(S.run)}` }, "Open the analysis")
+          : ix.kind === "farm" && farm ? h("a", { class: "btn", href: `#/farm/${encodeURIComponent(farm[1])}` }, "Open the farm view")
+            : h("a", { class: "btn", href: `#/runpod/session/${encodeURIComponent(S.run)}` }, "Open the session")));
         replace(body, h("p", { class: "muted small" }, `${shots.length} snapshot(s) in work/pipeline/snapshots/${S.run}/ — static pages rendered to PNG by headless Edge at each progress point.`),
           shots.length ? h("div", { class: "am-thumbs am-thumbs-big" }, shots.map((s2) => thumb(S.run, s2))) : h("p", { class: "muted" }, "None yet."));
       } catch (e) {
@@ -38,8 +39,10 @@ export default {
       }
     }
     const schedule = () => { clearTimeout(S.timer); if (!S.destroyed) S.timer = setTimeout(async () => { await load(); schedule(); }, 15000); };
+    const onVis = () => { if (document.visibilityState === "visible" && !S.destroyed) { load(); schedule(); } };
+    document.addEventListener("visibilitychange", onVis);
     await load();
     schedule();
-    return { destroy() { S.destroyed = true; clearTimeout(S.timer); }, route(r) { S.run = r.run || null; load(); }, refresh() { load(); } };
+    return { destroy() { S.destroyed = true; clearTimeout(S.timer); document.removeEventListener("visibilitychange", onVis); }, route(r) { S.run = r.run || null; load(); }, refresh() { load(); } };
   },
 };

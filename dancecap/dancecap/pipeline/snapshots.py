@@ -139,10 +139,27 @@ class _Lock:
 
 # ------------------------------------------------------------------------------------------------ data
 
+FARM_RUN_RE = re.compile(r"^(?P<ts>[0-9]{8}-[0-9]{6})-farm_(?P<dance>[A-Za-z0-9_]{1,64})$")
+
+
+def farm_run_id(dance: str, t: float) -> str:
+    """The snapshot run id of one volume-farm run of a dance: <start, local time>-farm_<dance>."""
+    return f"{time.strftime('%Y%m%d-%H%M%S', time.localtime(float(t)))}-farm_{dance}"
+
+
 def gather(run: str, sid: str | None = None, now: float | None = None) -> dict:
-    """{kind: analysis|session, ...} from activity.py (the monitor's own data)."""
+    """{kind: analysis|session|farm, ...} from activity.py / farm_view.py (the monitor's own data)."""
     from . import activity, analyze
     now = time.time() if now is None else now
+    fm = FARM_RUN_RE.match(run)
+    if fm and (paths.work() / fm.group("dance") / "farm").is_dir():
+        from . import estimate, farm_view
+        try:
+            bud = estimate.budget()
+        except Exception:  # noqa: BLE001
+            bud = {}
+        return {"kind": "farm", "now": now, "f": farm_view.build(fm.group("dance"), rp=None, now=now), "budget": bud,
+                "cap_source": activity._cap_source()}
     if analyze.RUN_RE.match(run) and analyze.load(run) is not None:
         det = activity.analysis_detail(run, now) or {}
         try:
@@ -173,16 +190,23 @@ h1{font-size:24px;margin:2px 0 0}.ev{margin-left:auto;background:#ddf4ff;color:#
 .kpi .l{font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;color:#57606a}.kpi .v{font-size:22px;font-weight:650;font-variant-numeric:tabular-nums}
 .kpi .s{font-size:12px;color:#57606a}
 .card{background:#fff;border:1px solid #d0d7de;border-radius:8px;padding:12px 14px;margin-bottom:12px}
-.card h2{font-size:14px;margin:0 0 8px;display:flex;gap:12px;align-items:center}
-.lg{display:flex;gap:14px;font-size:12px;color:#57606a;font-weight:400;margin-left:auto}.lg i{display:inline-block;width:12px;height:12px;border-radius:2px;vertical-align:-2px;margin-right:5px}
-.row{display:grid;grid-template-columns:270px 1fr 150px;gap:10px;align-items:start;padding:5px 0;border-top:1px solid #eaeef2}
+.card h2{font-size:14px;margin:0 0 8px;display:flex;gap:8px 12px;align-items:center;flex-wrap:wrap}
+.lg{display:flex;gap:4px 14px;font-size:12px;color:#57606a;font-weight:400;margin-left:auto;flex-wrap:wrap}.lg i{display:inline-block;width:12px;height:12px;border-radius:2px;vertical-align:-2px;margin-right:5px}
+.row{display:grid;grid-template-columns:270px 1fr 300px;gap:10px;align-items:start;padding:5px 0;border-top:1px solid #eaeef2}
 .row:first-of-type{border-top:0}.nm{font-weight:600}.nm small{display:block;font-weight:400;color:#57606a;font-size:11.5px}
 .sq{display:flex;flex-wrap:wrap;gap:3px}.b{width:14px;height:14px;border-radius:2px;background:#dedcd6;border:1px solid #c3c1b9}
 .b.done{background:#1f9d3f;border-color:#178a35}.b.run{background:#1c6fd1;border-color:#0b55ab}.b.left{background:#fff;border:1.5px solid #1c6fd1}
 .b.wait{background:repeating-linear-gradient(135deg,#d48a00 0 2px,#fbefce 2px 5px);border-color:#d48a00}
 .b.fail{background:#cf222e;border-color:#a40e26}.b.skip{background:#eef0f2;border-color:#d0d7de}
+.b.time{background:repeating-linear-gradient(135deg,#1c6fd1 0 2px,#dbe9fb 2px 5px);border-color:#1c6fd1}
+.b.over{background:#fff;border:1.5px dashed #cf222e}.b.stop{background:#eef0f2;border:1.5px dashed #8c959f}
+.b.reused{background:repeating-linear-gradient(45deg,#8c959f 0 2px,#eef0f2 2px 5px);border-color:#8c959f}
 .b.c{background:#1f9d3f;border-color:#178a35}.b.p{background:repeating-linear-gradient(135deg,#d48a00 0 2px,#fbefce 2px 5px);border-color:#d48a00}.b.n{background:#dedcd6}
-.st{font-size:12.5px;text-align:right;color:#57606a}.st b{color:#1f2328}
+.st{font-size:12.5px;text-align:right;color:#57606a;min-width:0;overflow-wrap:anywhere}.st b{color:#1f2328}
+.nm,.sub,td,.ev,.kpi .s{overflow-wrap:anywhere;min-width:0}.ev{max-width:620px}
+.alert{border-radius:8px;padding:6px 12px;margin-bottom:6px;font-size:13px;overflow-wrap:anywhere}
+.alert.red{background:#ffebe9;border:1px solid #ff8182;color:#82071e}.alert.amber{background:#fff8c5;border:1px solid #d4a72c;color:#7d4e00}
+.alert.info{background:#ddf4ff;border:1px solid #54aeff;color:#0a3069}
 .pill{display:inline-block;border-radius:10px;padding:0 8px;font-size:11.5px;border:1px solid #d0d7de;color:#57606a;background:#f6f8fa}
 .pill.good{background:#dafbe1;border-color:#4ac26b;color:#116329}.pill.info{background:#ddf4ff;border-color:#54aeff;color:#0a3069}
 .pill.warn{background:#fff8c5;border-color:#d4a72c;color:#7d4e00}.pill.crit{background:#ffebe9;border-color:#ff8182;color:#a40e26}
@@ -194,9 +218,54 @@ td{padding:5px 6px;border-bottom:1px solid #eaeef2;vertical-align:top}.mono{font
 """ % WIDTH
 
 STATUS_PILL = {"done": "good", "running": "info", "waiting_agent": "warn", "failed": "crit", "blocked": "crit",
-               "pending": "", "skipped": "", "ok": "good", "orphaned": "crit", "ended": "", "preparing": "info"}
+               "pending": "", "skipped": "", "ok": "good", "orphaned": "crit", "ended": "", "preparing": "info",
+               "stopped": ""}
 STATUS_TEXT = {"waiting_agent": "needs an agent", "pending": "pending", "running": "running", "done": "done",
-               "failed": "failed", "blocked": "blocked", "skipped": "skipped"}
+               "failed": "failed", "blocked": "blocked", "skipped": "skipped", "stopped": "stopped (run ended)"}
+
+
+def clip(s, n: int = 220) -> str:
+    """A long message cut at a word boundary with an ellipsis (the 90-character cut left "governing measu")."""
+    s = " ".join(str(s or "").split())
+    if len(s) <= n:
+        return s
+    cut = s[:n].rsplit(" ", 1)[0]
+    return (cut if len(cut) > n * 0.6 else s[:n]) + " …"
+
+
+def upload_text(up: dict) -> str:
+    """Upload cell text (static): done / stopped when the session ended / no pod / in progress with a bar."""
+    if not up:
+        return "–"
+    if up.get("no_pod"):
+        return "not uploaded: no pod started"
+    if not up.get("total"):
+        return "–"
+    mb = up["total"] / 1e6
+    if up.get("done"):
+        return f"{mb:.0f} MB done" + (f" at {up['mbps']:.2f} MB/s" if up.get("mbps") else "")
+    if up.get("stopped") or up.get("failed"):
+        return f"stopped at {(up.get('sent') or 0) / 1e6:.0f} of {mb:.0f} MB (session ended)"
+    if up.get("sent") is not None:
+        pct = 100.0 * up["sent"] / up["total"]
+        return (f"{up['sent'] / 1e6:.0f}/{mb:.0f} MB ({pct:.0f} %)" +
+                (f" at {up['mbps']:.2f} MB/s, {fmt_dur(up.get('eta_s'))} left" if up.get("mbps") else "") +
+                f'<div class="bar"><i style="width:{min(100, pct):.0f}%"></i></div>')
+    return f"{mb:.0f} MB to upload"
+
+
+def frames_text(fr: dict) -> str:
+    """One frame counter: "infer 120/599 frames · 0.355 s per person-frame · 5.6x slower than RTX 4090"."""
+    tot = fr.get("total")
+    s = f"{fr.get('key')}: {fr.get('done')}{('/' + str(tot)) if tot else ''} {fr.get('unit') or ''}"
+    if fr.get("stage"):
+        s += f" ({fr['stage']}{('/' + str(fr['stages_total'])) if fr.get('stages_total') else ''})"
+    if fr.get("rate_s") is not None:
+        s += f" · {float(fr['rate_s']):.3g} s per {fr.get('rate_unit') or 'unit'}"
+    if fr.get("slow"):
+        ref = fr.get("ref") or {}
+        s += f" · {fr['slow_x']:.1f}x slower than on {(ref.get('gpu') or 'the reference GPU').replace('NVIDIA ', '')}"
+    return s
 
 
 def _e(x) -> str:
@@ -221,9 +290,27 @@ def clock(ts) -> str:
     return time.strftime("%H:%M", time.localtime(float(ts))) if ts else "–"
 
 
+def step_frac(st: dict) -> float | None:
+    """The measured progress of a running step: activity.step_progress (byte / frame counters, live pod session phases),
+    else the step's own byte counter; None = no progress figure."""
+    pf = st.get("progress_frac") or {}
+    if isinstance(pf, dict) and pf.get("frac") is not None:
+        return max(0.0, min(1.0, float(pf["frac"])))
+    pr = st.get("progress") or {}
+    if isinstance(pr, dict) and pr.get("total"):
+        return max(0.0, min(1.0, float(pr.get("done") or 0) / float(pr["total"])))
+    return None
+
+
 def step_blocks(st: dict, now: float, unit_min: float = 2.0, cap: int = 90) -> list[str]:
     """The defrag squares of one step: one square per pod-lane x `unit_min` of its p50 minutes (at least one per lane),
-    coloured by its state; a running step is filled by elapsed / p50 (or its progress fraction)."""
+    coloured by its state. A running step is filled by MEASURED progress (step_frac: "run" squares) when there is a
+    figure; without one, its elapsed time against the plan is drawn as striped "time" squares, and the time past the
+    plan as extra "over" squares (2026-10-21 review: the fill was elapsed time under a "done so far" legend, so fits
+    showed 11 of 12 squares while no fit had run). A reused step (nothing computed) is ONE grey square: no pods, no cost.
+    The same rule is in static/components/stepmap.js."""
+    if st.get("reused"):
+        return ["reused"]
     lanes = int(st.get("lanes") or 1) if st.get("where") != "local" else 1
     per = max(1, int(round(float(st.get("p50_min") or 1) / unit_min)))
     n = min(cap, lanes * per)
@@ -231,51 +318,57 @@ def step_blocks(st: dict, now: float, unit_min: float = 2.0, cap: int = 90) -> l
     if status in ("done",):
         return ["done"] * n
     if status == "running":
-        frac = None
-        pr = st.get("progress") or {}
-        if pr.get("total"):
-            frac = float(pr.get("done") or 0) / float(pr["total"])
-        elif st.get("started"):
-            frac = min(0.95, (now - float(st["started"])) / 60.0 / max(0.1, float(st.get("p50_min") or 1)))
-        k = int(round((frac or 0) * n))
-        return ["run"] * k + ["left"] * (n - k)
-    return {"waiting_agent": ["wait"], "failed": ["fail"], "blocked": ["fail"], "skipped": ["skip"]}.get(status, ["n"]) * n
+        frac = step_frac(st)
+        if frac is not None:
+            k = int(round(frac * n))
+            return ["run"] * k + ["left"] * (n - k)
+        if not st.get("started"):
+            return ["left"] * n
+        ratio = (now - float(st["started"])) / 60.0 / max(0.1, float(st.get("p50_min") or 1))
+        k = min(n, int(round(max(0.0, ratio) * n)))
+        over = min(cap - n, int(round((ratio - 1.0) * n))) if ratio > 1.0 else 0
+        return ["time"] * k + ["left"] * (n - k) + ["over"] * max(0, over)
+    return {"waiting_agent": ["wait"], "failed": ["fail"], "blocked": ["fail"], "skipped": ["skip"],
+            "stopped": ["stop"]}.get(status, ["n"]) * n
 
 
 def _blocks_html(kinds: list[str]) -> str:
     return '<div class="sq">' + "".join(f'<i class="b {k}"></i>' for k in kinds) + "</div>"
 
 
+LEGEND = (("done", "done"), ("run", "running: measured progress (bytes, frames, pod phases)"),
+          ("time", "running, no progress figure: time elapsed vs the plan"), ("over", "past the plan"),
+          ("wait", "needs an agent"), ("reused", "reused (not computed, no pods)"), ("n", "pending"), ("fail", "failed"),
+          ("stop", "stopped (the run ended)"), ("skip", "skipped"))
+
+
 def _legend() -> str:
-    return ('<span class="lg"><span><i class="b done"></i>done</span><span><i class="b run"></i>running (filled = done '
-            'so far)</span><span><i class="b wait"></i>needs an agent</span><span><i class="b n"></i>pending</span>'
-            '<span><i class="b fail"></i>failed</span><span>one square = one pod x 2 min of the plan</span></span>')
+    return ('<span class="lg">' + "".join(f'<span><i class="b {k}"></i>{_e(t)}</span>' for k, t in LEGEND) +
+            '<span>one square = one pod x 2 min of the plan</span></span>')
 
 
 def _session_rows(cards: list[dict], now: float) -> str:
     rows = []
     for c in cards:
-        up = c.get("upload") or {}
-        uptxt = "–"
-        if up.get("total"):
-            if up.get("done"):
-                uptxt = f"{up['total'] / 1e6:.0f} MB done" + (f" at {up['mbps']:.2f} MB/s" if up.get("mbps") else "")
-            elif up.get("sent") is not None:
-                pct = 100.0 * up["sent"] / up["total"]
-                uptxt = (f"{up['sent'] / 1e6:.0f}/{up['total'] / 1e6:.0f} MB ({pct:.0f} %)" +
-                         (f" at {up['mbps']:.2f} MB/s, {fmt_dur(up.get('eta_s'))} left" if up.get("mbps") else "") +
-                         f'<div class="bar"><i style="width:{min(100, pct):.0f}%"></i></div>')
-            else:
-                uptxt = f"{up['total'] / 1e6:.0f} MB"
+        uptxt = upload_text(c.get("upload") or {})
         cost = c.get("cost") or {}
         eta = c.get("eta") or {}
         tag = c.get("analysis") or {}
         st = c.get("state")
+        bad = "; ".join(f"{k}: {v}" for k, v in (c.get("jobs_bad") or {}).items())
+        # a session that got no pod: its error says why (2026-10-21: "44.2 MB to upload" hid "every option exceeds the
+        # session max $1.00")
+        prob = clip(c.get("error"), 200) if c.get("error") and (c.get("no_pod") or not bad) else clip(bad, 160)
+        frames = "".join(f"<div style='font-size:11.5px' class='{'warn' if f.get('slow') else ''}'>{_e(clip(frames_text(f), 160))}</div>"
+                         for f in (c.get("frames") or [])[:2])
+        warns = "".join(f"<div style='font-size:11.5px' class='warn'>{_e(clip(w.get('msg') if isinstance(w, dict) else w, 180))}</div>"
+                        for w in ((c.get("warnings") or []) + (c.get("state_warnings") or []))[:2])
         rows.append(f"<tr><td class='mono'>{_e(c['sid'])}</td><td>{_e(tag.get('step') or c.get('take') or '')}</td>"
-                    f"<td>{_e((c.get('gpu') or '').replace('NVIDIA ', ''))}</td>"
+                    f"<td>{_e((c.get('gpu') or '').replace('NVIDIA ', '') or ('no pod' if c.get('no_pod') else ''))}</td>"
                     f"<td><span class='pill {STATUS_PILL.get(st, '')}'>{_e(st)}</span>"
-                    + (f"<div class='crit' style='font-size:11.5px'>{_e('; '.join(f'{k}: {v}' for k, v in (c.get('jobs_bad') or {}).items())[:120])}</div>" if c.get("jobs_bad") else "")
-                    + f"</td><td>{_e(c.get('phase') or '')}<div style='font-size:11.5px;color:#57606a'>{_e(c.get('phase_detail') or '')}</div></td>"
+                    + (f"<div class='crit' style='font-size:11.5px'>{_e(prob)}</div>" if prob else "")
+                    + f"</td><td>{_e(c.get('phase') or '')}<div style='font-size:11.5px;color:#57606a'>{_e(clip(c.get('phase_detail') or '', 140))}</div>"
+                    f"{frames}{warns}</td>"
                     f"<td>{uptxt}</td><td>{fmt_dur(eta.get('p50')) if eta.get('p50') is not None else '–'}"
                     f"{(' (p90 ' + fmt_dur(eta.get('p90')) + ')') if eta.get('p90') is not None else ''}</td>"
                     f"<td>{fmt_usd(cost.get('so_far', c.get('cost_usd')))}"
@@ -284,6 +377,19 @@ def _session_rows(cards: list[dict], now: float) -> str:
         return "<p style='color:#57606a'>No pod session belongs to this run yet.</p>"
     return ("<table><thead><tr><th>session</th><th>step</th><th>GPU</th><th>state</th><th>phase</th><th>upload</th>"
             "<th>ETA</th><th>cost so far → expected</th></tr></thead><tbody>" + "".join(rows) + "</tbody></table>")
+
+
+def step_line(st: dict, now: float) -> str:
+    """The time text of one step (same as stepmap.js stepLine)."""
+    if st.get("reused"):
+        return "reused, not computed"
+    if st.get("started") and st.get("ended"):
+        return f"took {fmt_dur(float(st['ended']) - float(st['started']))}"
+    if st.get("started") and st.get("status") == "running":
+        return f"running {fmt_dur(now - float(st['started']))} of ~{float(st.get('p50_min') or 0):.0f} min"
+    if st.get("status") == "stopped":
+        return "stopped when the run ended"
+    return f"plan {float(st.get('p50_min') or 0):.0f} min (p90 {float(st.get('p90_min') or 0):.0f})"
 
 
 def _budget_kpi(b: dict, cap_source: str | None) -> str:
@@ -305,22 +411,27 @@ def render_analysis(data: dict, event: str, label: str) -> str:
     steps_html = []
     for st in a.get("steps") or []:
         sts = st.get("status") or "pending"
-        dur = ""
-        if st.get("started") and st.get("ended"):
-            dur = f"took {fmt_dur(float(st['ended']) - float(st['started']))}"
-        elif st.get("started"):
-            dur = f"running {fmt_dur(now - float(st['started']))} of ~{st['p50_min']:.0f} min"
-        else:
-            dur = f"plan {st['p50_min']:.0f} min (p90 {st['p90_min']:.0f})"
+        dur = step_line(st, now)
         where = st.get("where")
         pods = f"{st['lanes']} pod{'s' if st['lanes'] > 1 else ''}" if where != "local" else "this PC"
+        if st.get("reused"):
+            pods = "no pod (reused)"
         msg = st.get("message") or ""
+        pf = st.get("progress_frac") or {}
+        basis = (f"progress {100 * float(pf['frac']):.0f} % from {pf.get('basis')}" if sts == "running" and
+                 pf.get("frac") is not None else "")
+        spent = (f"{fmt_usd(st['cost_usd'], 2 if st['cost_usd'] >= 0.01 else 4)} of pods so far"
+                 if st.get("cost_usd") else "")
         steps_html.append(
             f'<div class="row"><div class="nm">{_e(st["id"])} <span class="pill {STATUS_PILL.get(sts, "")}">'
-            f'{_e(STATUS_TEXT.get(sts, sts))}</span><small>{_e(st.get("label"))}</small>'
+            f'{_e(STATUS_TEXT.get(sts, sts))}</span>{" <span class=pill>reused</span>" if st.get("reused") else ""}'
+            f'<small>{_e(st.get("label"))}</small>'
             f'<small>{_e(where)} · {_e(pods)}{" · " + _e(st.get("executor")) if st.get("executor") not in ("builtin", "cmd") else ""}</small></div>'
             f'{_blocks_html(step_blocks(st, now))}<div class="st"><b>{_e(dur)}</b>'
-            f'<div>{_e(msg[:90])}</div></div></div>')
+            f'{("<div>" + _e(clip(basis, 160)) + "</div>") if basis else ""}{("<div>" + _e(spent) + "</div>") if spent else ""}'
+            f'<div>{_e(clip(msg, 200))}</div></div></div>')
+    alerts_html = "".join(f'<div class="alert {_e(x.get("level"))}">{_e(clip(x.get("message"), 300))}</div>'
+                          for x in (a.get("alerts") or [])[:6])
     cov = a.get("coverage")
     cov_html = ""
     if cov and cov.get("cells"):
@@ -343,9 +454,10 @@ def render_analysis(data: dict, event: str, label: str) -> str:
 <div class="kpi"><div class="l">Time left (ETA)</div><div class="v">{fmt_dur(eta.get('p50'))}</div>
 <div class="s">p90 {fmt_dur(eta.get('p90'))} · {_e(finish)}</div></div>
 <div class="kpi"><div class="l">Pod cost</div><div class="v">{fmt_usd(cost.get('so_far'))}</div>
-<div class="s">expected {fmt_usd(cost.get('p50'))} · p90 {fmt_usd(cost.get('p90'))}</div></div>
+<div class="s">expected {fmt_usd(cost.get('p50'))} · p90 {fmt_usd(cost.get('p90'))}{(' · limit ' + fmt_usd(cost.get('limit')) + ', ' + fmt_usd(cost.get('left')) + ' left') if cost.get('limit') is not None else ''}</div></div>
 {_budget_kpi(data.get('budget') or {}, data.get('cap_source'))}
 </div>
+{alerts_html}
 <div class="card"><h2>Analysis map {_legend()}</h2>{''.join(steps_html)}</div>
 <div class="card"><h2>Pod sessions of this run</h2>{_session_rows(a.get('sessions') or [], now)}
 {('<p style="color:#57606a;font-size:12px;margin:8px 0 0">' + _e(a.get('agent_hint')) + '</p>') if waiting and a.get('agent_hint') else ''}</div>
@@ -378,16 +490,77 @@ def render_session(data: dict, event: str, label: str) -> str:
 {('$%.2f/h' % c['price_hr']) if c.get('price_hr') else ''} · bundle {c.get('bundle_mb') or '?'} MB</div>
 <div class="kpis">
 <div class="kpi"><div class="l">State</div><div class="v">{_e(c.get('state'))}</div><div class="s">{_e(c.get('phase') or '')}</div></div>
-<div class="kpi"><div class="l">Upload</div><div class="v">{(f"{up['sent'] / 1e6:.0f}/{up['total'] / 1e6:.0f} MB" if up.get('sent') is not None and up.get('total') else '–')}</div>
-<div class="s">{(f"{up['mbps']:.2f} MB/s · {up.get('streams') or 1} stream(s)" if up.get('mbps') else _e(up.get('source') or ''))}</div></div>
+<div class="kpi"><div class="l">Upload</div><div class="v">{(f"{up['sent'] / 1e6:.0f}/{up['total'] / 1e6:.0f} MB" if up.get('sent') is not None and up.get('total') else ('no pod' if up.get('no_pod') else '–'))}</div>
+<div class="s">{'stopped: the session ended · ' if up.get('stopped') else ''}{(f"{up['mbps']:.2f} MB/s · {up.get('streams') or 1} stream(s)" if up.get('mbps') else _e(up.get('source') or ''))}</div></div>
 <div class="kpi"><div class="l">Time left (ETA)</div><div class="v">{fmt_dur(eta.get('p50'))}</div><div class="s">p90 {fmt_dur(eta.get('p90'))}</div></div>
 <div class="kpi"><div class="l">Cost</div><div class="v">{fmt_usd(cost.get('so_far', c.get('cost_usd')))}</div>
 <div class="s">expected {fmt_usd(cost.get('p50'))} · worst {fmt_usd(cost.get('worst'))}</div></div>
 {_budget_kpi(data.get('budget') or {}, data.get('cap_source'))}
 </div>
 <div class="card"><h2>Phases, one square per 15 s</h2>{''.join(rows) or '<p>No phase yet.</p>'}</div>
-{('<div class="card"><h2>Problems</h2><p class="crit">' + _e('; '.join(f'{k}: {v}' for k, v in (c.get('jobs_bad') or {}).items())) + '</p></div>') if c.get('jobs_bad') else ''}
+{('<div class="card"><h2>Problems</h2>' + ''.join('<p class="crit">' + _e(clip(x, 600)) + '</p>' for x in (c.get('error'), '; '.join(f'{k}: {v}' for k, v in (c.get('jobs_bad') or {}).items())) if x) + '</div>') if c.get('jobs_bad') or c.get('error') else ''}
+{''.join('<div class="alert amber">' + _e(clip(w.get('msg') if isinstance(w, dict) else w, 300)) + '</div>' for w in ((c.get('warnings') or []) + (c.get('state_warnings') or []))[:4])}
+{''.join('<div class="alert ' + ('amber' if f.get('slow') else 'info') + '">' + _e(clip(frames_text(f), 300)) + '</div>' for f in (c.get('frames') or [])[:3])}
 <div class="foot">Snapshot of the monitor's data at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now))}.</div>"""
+    return _page(title, body)
+
+
+FARM_CELL = {"complete": "c", "partial": "p", "none": "n"}
+CHUNK_PILL = {"running": "info", "starting": "info", "done": "good", "pulled": "good", "stitched": "good", "failed": "crit",
+              "queued": "", "planned": ""}
+
+
+def render_farm(data: dict, event: str, label: str) -> str:
+    """A volume-farm run (the defrag map): coverage per second, chunks, pods, spend, the last farm events. Taken by the
+    monitor server's farm watcher at launch, chunk milestones, a 15-min heartbeat and the end (FarmSnapper)."""
+    f, now = data["f"], data["now"]
+    cov = f.get("coverage") or {}
+    pc, sec = cov.get("percent") or {}, cov.get("seconds") or {}
+    chunks = f.get("chunks") or []
+    pods = [p for p in f.get("pods") or [] if p.get("source") == "farm"]
+    spend = ((f.get("budget") or {}).get("farm_spend") or {})
+    n_run = sum(1 for c in chunks if c.get("status") in ("running", "starting"))
+    n_done = sum(1 for c in chunks if c.get("status") in ("done", "pulled", "stitched"))
+    n_fail = sum(1 for c in chunks if c.get("status") == "failed")
+    cells = "".join(f'<i class="b {FARM_CELL.get(c.get("s"), "n")}"></i>' for c in (cov.get("cells") or [])[:1500])
+    def span(c: dict) -> str:
+        return "" if c.get("t0") is None or c.get("t1") is None else f"{float(c['t0']):.1f} → {float(c['t1']):.1f} s"
+    crow = "".join(
+        f"<tr><td class='mono'>{_e(c['id'])}</td><td>{_e(c.get('kind') or '')}</td><td>{_e(span(c))}</td>"
+        f"<td><span class='pill {CHUNK_PILL.get(c.get('status'), '')}'>{_e(c.get('status'))}</span></td>"
+        f"<td class='mono'>{_e(c.get('pod') or '')}</td><td>{_e(', '.join(c.get('stages_done') or []))}</td></tr>"
+        for c in chunks[:40])
+    prow = "".join(f"<tr><td>{_e((p.get('gpu') or '').replace('NVIDIA ', ''))}</td><td class='mono'>{_e(p.get('id'))}</td>"
+                   f"<td>{_e(p.get('state'))}</td><td>{fmt_usd(p.get('price_hr'))}/h</td><td>{fmt_usd(p.get('cost_usd'))}</td>"
+                   f"<td>{_e(', '.join(str(x) for x in p.get('chunks') or []))}</td></tr>" for p in pods[:16])
+    ev = "".join(f"<tr><td class='mono'>{_e((e.get('ts') or '')[11:19])}</td><td>{_e(e.get('kind'))}</td>"
+                 f"<td>{_e(clip(e.get('msg'), 220))}</td></tr>" for e in (f.get("events") or [])[:10])
+    alerts_html = "".join(f'<div class="alert {"red" if x.get("level") == "red" else "amber" if x.get("level") == "amber" else "info"}">'
+                          f'{_e(clip(x.get("message"), 300))}</div>' for x in (f.get("alerts") or [])[:5])
+    title = f"{f.get('dance')} — volume farm"
+    body = f"""
+<div class="top"><span class="brand">Pipeline Monitor · snapshot</span><h1>{_e(title)}</h1>
+<span class="ev">{_e(clock(now))} · {_e(label or event)}</span></div>
+<div class="sub">world {_e((f.get('world') or {}).get('id') or '?')} · map computed {_e(cov.get('updated') or '–')} ·
+watcher {'alive' if (f.get('watcher') or {}).get('running') else _e((f.get('watcher') or {}).get('state') or 'not running')}</div>
+<div class="kpis">
+<div class="kpi"><div class="l">Complete</div><div class="v">{float(pc.get('complete') or 0):.0f} %</div>
+<div class="s">{float(sec.get('complete') or 0):.0f} s · partial {float(pc.get('partial') or 0):.0f} % · not done {float(pc.get('none') or 0):.0f} %</div></div>
+<div class="kpi"><div class="l">Chunks</div><div class="v">{n_done}/{len(chunks)}</div>
+<div class="s">{n_run} running · {n_fail} failed</div></div>
+<div class="kpi"><div class="l">Farm pods</div><div class="v">{sum(1 for p in pods if p.get('state') in ('running', 'starting'))}</div>
+<div class="s">{len(pods)} listed in the farm state</div></div>
+<div class="kpi"><div class="l">Farm spend</div><div class="v">{fmt_usd(spend.get('farm_usd'))}</div>
+<div class="s">budget {fmt_usd(spend.get('budget_usd'))}</div></div>
+{_budget_kpi(data.get('budget') or {}, data.get('cap_source'))}
+</div>
+{alerts_html}
+<div class="card"><h2>Final result, one square per second <span class="lg"><span><i class="b c"></i>complete</span>
+<span><i class="b p"></i>partial</span><span><i class="b n"></i>not done</span></span></h2><div class="cov">{cells or '<p>No coverage map yet.</p>'}</div></div>
+<div class="card"><h2>Chunks</h2>{('<table><thead><tr><th>chunk</th><th>kind</th><th>span</th><th>status</th><th>pod</th><th>stages done</th></tr></thead><tbody>' + crow + '</tbody></table>') if crow else '<p>No chunks planned.</p>'}</div>
+<div class="card"><h2>Pods</h2>{('<table><thead><tr><th>GPU</th><th>pod</th><th>state</th><th>price</th><th>spend</th><th>chunks</th></tr></thead><tbody>' + prow + '</tbody></table>') if prow else '<p>No farm pod.</p>'}</div>
+<div class="card"><h2>Farm events</h2>{('<table><tbody>' + ev + '</tbody></table>') if ev else '<p>No events.</p>'}</div>
+<div class="foot">Snapshot of the monitor's farm data at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now))}.</div>"""
     return _page(title, body)
 
 
@@ -400,11 +573,16 @@ def page_height(data: dict) -> int:
     if data["kind"] == "analysis":
         a = data["a"]
         n_rows = len(a.get("steps") or [])
-        sq = sum(len(step_blocks(s, data["now"])) for s in a.get("steps") or [])
-        extra_lines = sum(max(0, len(step_blocks(s, data["now"])) // 58) for s in a.get("steps") or [])
+        extra_lines = sum(max(0, len(step_blocks(s, data["now"])) // 46) for s in a.get("steps") or [])
         cov = (a.get("coverage") or {}).get("cells") or ""
-        return int(380 + n_rows * 78 + extra_lines * 17 + max(1, len(a.get("sessions") or [])) * 64 + 160 +
-                   (80 + (len(cov) // 100 + 1) * 13 if cov else 0) + 0 * sq)
+        return int(400 + n_rows * 92 + extra_lines * 17 + max(1, len(a.get("sessions") or [])) * 84 + 160 +
+                   min(6, len(a.get("alerts") or [])) * 40 + (80 + (len(cov) // 100 + 1) * 13 if cov else 0))
+    if data["kind"] == "farm":
+        f = data["f"]
+        n_cells = len((f.get("coverage") or {}).get("cells") or [])
+        n_pods = len([p for p in f.get("pods") or [] if p.get("source") == "farm"])
+        return int(420 + (n_cells // 95 + 1) * 15 + min(40, len(f.get("chunks") or [])) * 34 + min(16, n_pods) * 34
+                   + 10 * 34 + 260 + min(5, len(f.get("alerts") or [])) * 40)
     s = data["s"]
     return int(330 + len(s.get("phases") or []) * 40 + 160)
 
@@ -482,7 +660,7 @@ def take(run: str, event: str, label: str = "", sid: str | None = None, requeste
         last = (ix.get("shots") or [{}])[-1] if ix.get("shots") else {}
         now = time.time()
         data = gather(run, sid, now)
-        page = render_analysis(data, event, label) if data["kind"] == "analysis" else render_session(data, event, label)
+        page = {"analysis": render_analysis, "farm": render_farm}.get(data["kind"], render_session)(data, event, label)
         i = len(ix.get("shots") or []) + 1
         ev = EVENT_RE.sub("_", (event or "snap").lower()).strip("_")[:40] or "snap"
         base = f"{i:02d}_{ev}"
@@ -497,6 +675,11 @@ def take(run: str, event: str, label: str = "", sid: str | None = None, requeste
             lv = data["a"].get("live") or {}
             shot.update({"done": lv.get("done"), "total": lv.get("total"), "eta_s": (lv.get("eta_s") or {}).get("p50"),
                          "cost_so_far": (lv.get("cost_usd") or {}).get("so_far")})
+        elif data["kind"] == "farm":
+            f = data["f"]
+            shot.update({"dance": f.get("dance"), "complete_pct": ((f.get("coverage") or {}).get("percent") or {}).get("complete"),
+                         "chunks_done": sum(1 for c in f.get("chunks") or [] if c.get("status") in ("done", "pulled", "stitched")),
+                         "chunks": len(f.get("chunks") or [])})
         ix = index(run)      # re-read: another process may have appended meanwhile (the lock serialises renders only)
         ix.setdefault("shots", []).append(shot)
         # renders queue behind one lock and finish in any order: the index is kept in the order they were asked for

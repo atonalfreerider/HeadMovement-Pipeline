@@ -211,8 +211,10 @@ def _session_summary(sid: str, d: Path, ledger: list[dict] | None) -> dict | Non
             # a job "skipped: bootstrap feature failed" or still "pending" in an ended session is NOT ok (2026-10-21:
             # the dashboard probe's skipped job was shown as a green ok session)
             state = "failed" if st.get("error") or bad_jobs else "ok"
-    elif not pod and newest and now - newest < 300 and _is_newest(d):
-        state = "preparing"  # bundling; no pod yet
+    elif not pod and not st.get("error") and (runner_alive or newest and now - newest < 300 and _is_newest(d)):
+        # bundling / starting its pod: also a session whose runner still lives though it is not the newest dir (every
+        # -p1..p(n-1) session of `remote run --parallel`, shown as "unknown" and then "no pod" before, review 2026-10-21)
+        state = "preparing"
     elif row is not None and row.get("deleted_ts"):
         state = "ended"
     else:
@@ -224,7 +226,10 @@ def _session_summary(sid: str, d: Path, ledger: list[dict] | None) -> dict | Non
     started = (st.get("timings") or [{}])[0].get("start") if st.get("timings") else None
     return {"sid": sid, "take": take, "label": sid[16:] if len(sid) > 16 else sid, "origin": "external",
             "state": state, "started": started or (_sid_date(sid).timestamp() if _sid_date(sid) else None),
-            "ended": res_m if finished else None, "pod_id": pod.get("id"), "gpu": pod.get("gpu"),
+            # a session whose runner died (no result.json) ended when its pod was deleted: the Older-tools table kept
+            # counting its duration (2 h 27 for a 2-min session)
+            "ended": res_m if finished else (float(row["deleted_ts"]) if state == "ended" and row is not None else None),
+            "pod_id": pod.get("id"), "gpu": pod.get("gpu"),
             "cost_per_hr": pod.get("cost_per_hr"), "cost_usd": cost, "jobs": sorted(jobs),
             "jobs_status": {k: v.get("status") for k, v in jobs.items()}, "progress_level": "L0",
             "jobs_bad": bad_jobs if finished or state not in ("running", "preparing") else {},

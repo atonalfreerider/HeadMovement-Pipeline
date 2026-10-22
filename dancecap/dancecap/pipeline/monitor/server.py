@@ -414,6 +414,12 @@ def create_app(m: Monitor):
         return ok({"app": "dancecap-monitor", "api": API, "version": VERSION, "instance": m.instance,
                    "pid": os.getpid(), "started": m.started, "static_rev": _static_rev()})
 
+    @app.get("/api/focus")
+    def focus():
+        # the one-window rule (monitor.set_focus): the open window follows the newest launch or job
+        from . import read_focus
+        return ok(read_focus())
+
     @app.get("/api/config")
     def config():
         u = _unity_info()
@@ -1545,7 +1551,15 @@ def create_app(m: Monitor):
     def activity_get():
         """Analysis runs, live pod sessions (upload, phase, ETA, cost), recent sessions, budget: the Farm page's
         'Analyses and pod sessions' strip."""
-        return ok(m.cached("activity", 2.0, lambda: activity_mod.bundle(rp=runpod_summary())))
+        out = dict(m.cached("activity", 2.0, lambda: activity_mod.bundle(rp=runpod_summary())))
+        out["monitor"] = monitor_info()
+        return ok(out)
+
+    def monitor_info() -> dict:
+        """This server's identity for the self-polling views (app.noteMonitor): a window that still holds an earlier
+        server's session notices the new instance and reloads itself, and the status bar says when it last heard."""
+        return {"instance": m.instance, "port": m.port, "started": m.started, "version": VERSION,
+                "static_rev": _static_rev()}
 
     @app.get("/api/analyses")
     def analyses_list():
@@ -1561,7 +1575,7 @@ def create_app(m: Monitor):
         d = m.cached(f"analysis:{run}", 2.0, lambda: activity_mod.analysis_detail(run))
         if d is None:
             raise ApiError(404, "not_found", "no such analysis run")
-        return ok(d)
+        return ok({**d, "monitor": monitor_info()})
 
     @app.get("/api/snapshots")
     def snapshots_list():

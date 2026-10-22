@@ -585,7 +585,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[pipeline] plan {st['stage']:16s} {st['action']:12s} {st.get('reason') or ''}", flush=True)
     if not dry:   # the dashboard runs whenever a pipeline run does (headless; leased to this process)
         from . import monitor
-        monitor.ensure_running(f"pipeline run {a.take}")
+        monitor.ensure_running(f"pipeline run {a.take}", route=f"#/take/{a.take}")
     return Orchestrator(a.take, plan, dry_run=dry).run()
 
 

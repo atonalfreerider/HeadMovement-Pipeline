@@ -442,9 +442,21 @@ def gateway(minutes: float = 30, vcpu: int = 2, reuse: bool = True, owner: str |
                     return attach(q["id"]), False
                 except PodError:
                     continue
-    info = create(f"{POD_PREFIX}-gateway", cpu="cpu5c", vcpu=vcpu, minutes=minutes, hard_minutes=minutes * 1.5, entry=True,
-                  autostart=False, disk_gb=20, price=cpu_price("cpu5c", vcpu), wait=True, owner=owner)
-    return pod_handle(info), True
+    # the flavors in CPU_PRIORITY order: cpu5c alone left an analysis without its upload step when EU-RO-1 had no cpu5c
+    # (HTTP 500 "no longer any instances available" through every _create_cpu retry, 2026-10-21 20:29). Only a stock
+    # refusal falls through; any other error (no ssh, budget) is the caller's.
+    err: PodError | None = None
+    for fl in CPU_PRIORITY:
+        try:
+            info = create(f"{POD_PREFIX}-gateway", cpu=fl, vcpu=vcpu, minutes=minutes, hard_minutes=minutes * 1.5, entry=True,
+                          autostart=False, disk_gb=20, price=cpu_price(fl, vcpu), wait=True, owner=owner)
+            return pod_handle(info), True
+        except PodError as e:
+            if "no longer any instances" not in str(e):
+                raise
+            print(f"[pods] gateway: no {fl} in stock; trying the next CPU flavor", flush=True)
+            err = e
+    raise err
 
 
 # ------------------------------------------------------------------------------------------------ CLI

@@ -12,14 +12,18 @@ A session (work/runpod/sessions/<sid>/) is:
                wheels (work/runpod/wheelhouse/<key>/) and every job's inputs, laid out relative to the workspace so it
                extracts to /workspace/HeadMovement/... exactly like the local tree. Cached by content
                (work/runpod/bundles/bundle_<hash>.tar.gz) so re-running never rebuilds or re-uploads needlessly.
-  2. pod       dancecap.remote.pod_session (budget cap, per-session max_cost, on-pod kill switch, always deleted)
+  2. pod       dancecap.remote.pod_session (budget cap, per-session max_cost, on-pod kill switch, always deleted); GPUs
+               fastest first for the jobs' memory need (job_vram_gb), each GPU in every cloud before the next GPU; a GPU
+               the session max kept out is a warning in state.json (choice / warnings), never silent
   3. upload    skipped when the pod already holds a file with the same sha256
   4. extract   marker per bundle hash
   5. bootstrap remote/bootstrap.sh <features of all jobs> check (idempotent per feature); newly built wheels are
-               downloaded into the local wheelhouse so the next session installs instead of compiling
+               downloaded into the local wheelhouse so the next session installs instead of compiling. Features a job
+               does not declare but needs are added (job_features: ffmpeg + ffprobe for video, open3d for physics)
   6. per job   setup + commands (each with a .done marker, timeout and log), then outputs packed on the pod,
                downloaded, sha256-checked, extracted with a path whitelist and verified; a failed job still
-               returns its logs and partial outputs
+               returns its logs and partial outputs. While a command runs, its frame counter (FrameProgress) writes
+               progress/frames.json: frames (or iterations) done / total and the rate, from the lines it prints
   7. result    result.json (timings of every step, pod, GPU, price, cost from the ledger, per-job status)
 
 Jobs whose last successful run in this session dir had the same fingerprint (spec + input sizes/mtimes) are not
@@ -57,13 +61,101 @@ WHEELHOUSE = RUNPOD_DIR / "wheelhouse" / WHEEL_KEY
 #     --abi cp311 --abi abi3 --abi none -d <dir> <bootstrap base/mamma packages>  (+ --no-deps for torch users:
 #     smplx kornia pyrender hydra-core omegaconf; --no-binary for PyOpenGL==3.1.0 antlr4-python3-runtime==4.9.3)
 PYWHEELS = RUNPOD_DIR / "pywheels" / "cp311-linux"
-FEATURES = ("base", "mamma", "room", "texture", "dancers", "cameras", "ma2d", "gsplat", "check")  # check last
+FEATURES = ("base", "mamma", "room", "texture", "dancers", "cameras", "ma2d", "gsplat", "ffmpeg", "open3d",
+            "check")  # check last
 UPLOAD_MBPS, DOWNLOAD_MBPS = 2.5, 12.0  # measured home link (2026-10-06)
-# bootstrap minutes per feature: cold (CUDA wheels compiled on the pod) / with cached wheels
+# bootstrap minutes per feature: cold (CUDA wheels compiled on the pod) / with cached wheels. ffmpeg: a static build fetched
+# in the background while base installs; open3d: the 2026-10-21 trial installed it in 19 s
 BOOTSTRAP_MIN = {"base": 5, "mamma": 8, "room": 15, "texture": 0, "dancers": 3, "cameras": 1, "ma2d": 3, "gsplat": 12,
-                 "check": 1}
+                 "ffmpeg": 1, "open3d": 1, "check": 1}
 BOOTSTRAP_MIN_CACHED = {"base": 5, "mamma": 2, "room": 3, "texture": 0, "dancers": 3, "cameras": 1, "ma2d": 3,
-                        "gsplat": 1, "check": 1}
+                        "gsplat": 1, "ffmpeg": 1, "open3d": 1, "check": 1}
+# features that come from the network in seconds (a static ffmpeg build, one PyPI wheel): they never pull the 330 MB pywheels
+# or the CUDA wheelhouse into the bundle (wheel_policy), so a slim bundle stays slim
+LIGHT_FEATURES = {"ffmpeg", "open3d"}
+# Implied features (job_features): the 2026-10-21 trial lost 4 sessions (~45 min, $1.33) to pods without ffprobe / ffmpeg or
+# open3d. A job gets 'ffmpeg' when it decodes video - a pod stage that does (cameras/newcam, ma2d, dancers: front_pod and
+# front_full decode the source MP4s), a video among its inputs, or a command that names ffmpeg / ffprobe / a video file / a
+# decoding module - and 'open3d' when a command runs physics (physics_body.segment_masses) or the room mesh / review.
+VIDEO_EXT = (".mp4", ".mov", ".m4v", ".mkv", ".avi", ".webm", ".mts", ".mpg", ".mpeg")
+DECODING_FEATURES = {"cameras", "ma2d", "dancers"}
+_FFMPEG_CMD = re.compile(r"\bff(?:mpeg|probe)\b|\.(?:mp4|mov|m4v|mkv|avi|webm|mts)\b|\bnewcam\b|"
+                         r"dancecap[ .](?:front_pod|front_full|recap_front|ingest|front)\b", re.I)
+# open3d: physics_body.segment_masses imports it; physics, counterbalance (body_com -> physics._body) and pose_quality
+# --physics (physics.run) reach it, as do the room mesh / review
+_OPEN3D_CMD = re.compile(r"-m\s+dancecap(?:\.cli)?\s+(?:physics|counterbalance)\b|\bdancecap\.(?:physics|counterbalance)\b|"
+                         r"\broom_mesh\b|\broom_review\b|"
+                         r"(?:-m\s+dancecap(?:\.cli)?\s+(?:pose_)?quality|\bdancecap\.pose_quality)\b[^;&|]*\s--physics\b")
+
+
+def implied_features(job: "JobSpec") -> list[str]:
+    """Bootstrap features a job needs without declaring them (see _FFMPEG_CMD / _OPEN3D_CMD above)."""
+    cmds = " ".join([c.cmd for c in job.commands] + list(job.setup))
+    out = []
+    if (set(job.needs) & DECODING_FEATURES or _FFMPEG_CMD.search(cmds)
+            or any(str(p).lower().endswith(VIDEO_EXT) for p, _ in job.inputs + job.inputs_if_alone)):
+        out.append("ffmpeg")
+    if _OPEN3D_CMD.search(cmds):
+        out.append("open3d")
+    return [f for f in out if f not in job.needs]
+
+
+def job_features(job: "JobSpec") -> list[str]:
+    """What the pod must bootstrap for this job: its declared needs + the implied ones."""
+    return list(job.needs) + implied_features(job)
+
+
+# GPU memory per job (remote.gpus_for picks the fastest GPUs that have it). Every runner job measured so far fits a 24 GB card:
+# SAM 3D Body peaks at 3.5 GB, LHM++ at 8.2 GB (4090), MAMMA 12.1 GiB for 1648 frames x 6 cameras and 6.4 GiB for a 900-frame
+# chunk, the texture bake 3.8 GB, the 2026-10-21 trial's front / fit / analyses ran on a 4090. Kinds measured or sized above:
+DEFAULT_VRAM_GB = 24.0
+VRAM_BY_KIND = (
+    # CoTracker3 offline (TrackEverything stage 0) ran out of memory on a 44 GB A40 with 39 GB in use (20261020-130536-batch)
+    (re.compile(r"cotracker|trackeverything|\bct3\b", re.I), 80.0),
+    # sized for ONE 80 GB pod and never measured on a 24 GB card (2026-10-21 review): mamma_chunks fits 6 chunks + a holdout
+    # side by side under CUDA MPS; dancers_pod runs --workers 5 SAM 2.1 large processes (3-5 GB each, ~32 GB host RAM each);
+    # front_pod runs every heavy step at once (A100 80 GB, ~30 vCPU, >100 GB RAM). The 80 GB cards also come with the
+    # host RAM / vCPUs these need, which the GPU ladder does not check. Until measured: 80 GB (H100 first).
+    (re.compile(r"dancecap\.mamma_chunks\s+fit\b|dancecap\.dancers_pod\s+run\b|dancecap\.front_pod\s+(?:run|supervise)\b"),
+     80.0),
+)
+
+
+def job_vram_gb(job: "JobSpec") -> float:
+    """min_vram_gb when declared; 80 for room training (room.py's pod preset is sized for an 80 GB A100/H100: every camera
+    at native resolution, 1M Gaussians); VRAM_BY_KIND; 48 for a single `mamma fit` without --fit-frames over more than
+    MAMMA_LONG_FRAMES frames (6.4 GiB per 900 frames: a 24 GB card holds ~3000); else DEFAULT_VRAM_GB."""
+    if job.min_vram_gb is not None:
+        return float(job.min_vram_gb)
+    if "room" in job.needs:
+        return 80.0
+    text = " ".join([job.name] + [c.cmd for c in job.commands])
+    gb = next((gb for rx, gb in VRAM_BY_KIND if rx.search(text)), None)
+    if gb is not None:
+        return gb
+    return 48.0 if _long_mamma_fit(job) else DEFAULT_VRAM_GB
+
+
+MAMMA_LONG_FRAMES = 3000
+
+
+def _long_mamma_fit(job: "JobSpec") -> bool:
+    """A `mamma fit <take>` over the whole take (no --fit-frames window) whose take is longer than MAMMA_LONG_FRAMES frames at
+    its timeline rate. Reads the take TOML only; unknown -> False (24 GB, as measured for the trial's fit)."""
+    for c in job.commands:
+        m = re.search(r"\bmamma\s+fit\s+([A-Za-z0-9_.-]+)", c.cmd)
+        if not m or "--fit-frames" in c.cmd:
+            continue
+        try:
+            import tomllib
+            d = tomllib.loads((PACKAGE_ROOT / "takes" / f"{m.group(1)}.toml").read_text(encoding="utf-8"))
+            w = d.get("window") or (d.get("stitch") or {}).get("mono", [[None, None]])[0]
+            hz = float((d.get("timeline") or {}).get("hz") or 30)
+            if w and w[0] is not None and (float(w[1]) - float(w[0])) * hz > MAMMA_LONG_FRAMES:
+                return True
+        except Exception:  # noqa: BLE001 - no take file / no window: the default
+            continue
+    return False
 DEFAULT_EXCLUDE = ("__pycache__", "*.pyc", ".git", ".pytest_cache", "node_modules", ".ipynb_checkpoints")
 ARCHIVE_CODE_EXCLUDE = ("dancecap/dancecap", "mamma-turing")  # code always comes from the bundle (current tree)
 MAMMA_SKIP = ("docs", "gui", "docker", "data", "tests", "output", "outputs", "wandb")  # top-level mamma-turing dirs
@@ -105,10 +197,15 @@ class JobSpec:
     inputs_if_alone: list[tuple[str, str]] = field(default_factory=list)  # inputs used when no `after` job is in the batch
     min_vram_gb: float | None = None         # optional: lets the runner try every GPU with this much memory (remote.gpus_for)
     bundle_pywheels: bool | None = None      # None = by its bootstrap features (bundle_files); True/False forces it
+    # pod log files (workspace-relative globs) whose progress lines the runner relays while a command runs (watch_globs:
+    # MAMMA's ma_3d log is added for every `mamma fit` command); they feed the frame counter (FrameProgress)
+    watch: list[str] = field(default_factory=list)
 
     def fingerprint(self) -> str:
         d = asdict(self)
         d.pop("source", None)
+        if not d.get("watch"):   # added 2026-10-21: an unset field leaves earlier fingerprints (session resume) unchanged
+            d.pop("watch", None)
         h = hashlib.sha256(json.dumps(d, sort_keys=True).encode())
         for local, _ in self.inputs + self.archives + self.inputs_if_alone:
             p = _local(local)
@@ -163,7 +260,7 @@ def _parse_v1(d: dict, source: str | None) -> JobSpec:
                  else "") for a in d.get("archives", [])]
     return JobSpec(archives=archives, after=list(d.get("after", [])), inputs_if_alone=items("inputs_if_alone"),
                    min_vram_gb=float(d["min_vram_gb"]) if d.get("min_vram_gb") is not None else None,
-                   bundle_pywheels=d.get("bundle_pywheels"),
+                   bundle_pywheels=d.get("bundle_pywheels"), watch=[ws_rel(w) for w in d.get("watch", [])],
                    name=d["name"], take=d["take"], max_minutes=mm,
                    commands=[_command(c, i, mm) for i, c in enumerate(d["commands"])],
                    outputs=[ws_rel(o) for o in d["outputs"]], inputs=inputs, needs=list(d.get("needs", [])),
@@ -380,7 +477,7 @@ def wheel_policy(jobs: list[JobSpec] | None) -> dict:
     jobs=None (code_items() without a batch, the other modules' callers): everything, as before."""
     if jobs is None:
         return {"pywheels": True, "wheelhouse": True, "why": "no batch given (legacy default)"}
-    feats = {n for j in jobs for n in j.needs} - BASE_FEATURES
+    feats = {n for j in jobs for n in j.needs} - BASE_FEATURES - LIGHT_FEATURES
     forced = os.environ.get("DANCECAP_BUNDLE_PYWHEELS")
     asked = [j.name for j in jobs if j.bundle_pywheels]
     refused = jobs and all(j.bundle_pywheels is False for j in jobs)
@@ -588,7 +685,7 @@ def estimate_minutes(jobs: list[JobSpec], upload_bytes: int, cached_wheels: bool
 
 
 def needed_features(jobs: list[JobSpec]) -> list[str]:
-    want = {"base", "check"} | {n for j in jobs for n in j.needs}
+    want = {"base", "check"} | {n for j in jobs for n in job_features(j)}
     return [f for f in FEATURES if f in want]
 
 
@@ -633,6 +730,40 @@ def push_secrets(pod, job: JobSpec) -> list[str]:
     return names
 
 
+def watch_globs(job: JobSpec, cmd: Command) -> list[str]:
+    """Pod log globs (workspace-relative) relayed while `cmd` runs: the job's `watch` + MAMMA's ma_3d log of every take a
+    `mamma fit <take>` names. ma_3d writes its 'Iter. n of N' lines to that log only, so the trial's 18-min fit
+    (2026-10-21) showed no counter at all (the puller's tail looked under the job's take, not the chunk take it fitted)."""
+    out = list(job.watch)
+    for m in re.finditer(r"\bmamma\s+fit\s+([A-Za-z0-9_.-]+)", cmd.cmd):
+        out.append(f"dancecap/work/{m.group(1)}/mamma/logs/ma_3d_*.log")
+    return list(dict.fromkeys(out))
+
+
+# the relayed lines: MAMMA runs / every 10th iteration / early stop / total, SAM 3D Body chunk and frame lines (mawk-safe)
+_WATCH_AWK = (r'/^(RUN: |Stopping early|Optimization took|sequence length:)/ {print p $0; fflush(); next} '
+              r'/^Iter\. [0-9]+ of [0-9]+/ {n = $2 + 0; t = $4 + 0; if (n == 1 || n % 10 == 0 || n == t) '
+              r'{print p "Iter. " n " of " t; fflush()}; next} '
+              r'/(chunk|frame) [0-9]+\/[0-9]+/ {print p substr($0, 1, 240); fflush()}')
+
+
+def watch_script(globs: list[str], every_s: int = 3, root: str = POD_WS) -> str:
+    """Background relay for command_script: each log matching a glob that is written AFTER the command starts is followed
+    (tail -F) and its progress lines printed as '[watch <file>] <line>' into the command's ssh stream (not into its pod
+    log), where FrameProgress counts them. It ends with the command's shell ($$); logs already on the pod are not replayed."""
+    if not globs:
+        return ""
+    pats = " ".join(f"{root}/{g}" for g in globs)   # unquoted on purpose: the shell expands the globs
+    # Ubuntu's awk is mawk, which reads a pipe in whole blocks: without -W interactive the 2026-10-21 live probe got every
+    # relayed line in one burst when the command ended (gawk, e.g. Git Bash's, reads lines as they come)
+    return (f"_wm=$(mktemp); ( A=awk; awk -W version 2>&1 | grep -qi mawk && A='awk -W interactive'; seen=' '; "
+            f"while kill -0 $$ 2>/dev/null; do for f in {pats}; do "
+            f"case \"$seen\" in *\" $f \"*) continue;; esac; [ -f \"$f\" ] && [ \"$f\" -nt \"$_wm\" ] || continue; "
+            f"seen=\"$seen$f \"; ( tail -n +1 -F --pid=$$ \"$f\" 2>/dev/null | "
+            f"$A -v p=\"[watch $(basename \"$f\")] \" {shlex.quote(_WATCH_AWK)} ) & done; sleep {every_s}; done; "
+            f"rm -f \"$_wm\" ) & ")
+
+
 def command_script(job: JobSpec, cmd: Command, log_rel: str) -> str:
     """Pod shell for one command: skip when its .done marker exists; log with tee; exit code to <name>.rc."""
     logd = f"{POD_WS}/{log_rel}"
@@ -641,6 +772,7 @@ def command_script(job: JobSpec, cmd: Command, log_rel: str) -> str:
     secs = int(cmd.timeout_min * 60)
     return (f"mkdir -p {logd}; if [ -f {logd}/{cmd.name}.done ]; then echo '[pod-runner] {job.name}/{cmd.name} "
             f"already done'; exit 0; fi; cd {POD_WS}/{job.cwd} || exit 97; export {envs}; {secret_exports(job)}set -o pipefail; "
+            f"{watch_script(watch_globs(job, cmd))}"
             f"echo \"[pod-runner] $(date -u +%FT%TZ) start {job.name}/{cmd.name}\" | tee -a {logd}/{cmd.name}.log; "
             f"timeout --kill-after=30 {secs} bash -c {shlex.quote(cmd.cmd)} 2>&1 | tee -a {logd}/{cmd.name}.log; "
             f"rc=${{PIPESTATUS[0]}}; echo $rc > {logd}/{cmd.name}.rc; "
@@ -658,6 +790,288 @@ def _progress_env(job: JobSpec, cmd: Command, log_rel: str) -> dict:
     sess = "/".join(parts[:-2])
     return {"DANCECAP_PROGRESS": f"{POD_WS}/{sess}/progress.jsonl", "DANCECAP_PROGRESS_JOB": job.name,
             "DANCECAP_PROGRESS_CMD": cmd.name, "DANCECAP_SID": parts[-3], "DANCECAP_TAKE": job.take}
+
+
+# ---------------------------------------------------------------------------------------------- frame counter
+
+
+FRAMES_FILE = "frames.json"   # <session>/progress/frames.json (format: FrameProgress)
+# progress.LineParser adapters for command output (runner / bootstrap lines are the L0 parser's, not a command's progress)
+FRAME_ADAPTERS = ("texture", "room", "hands", "loc", "chunks", "mamma_iter", "tqdm", "detect", "splats")
+_WATCH_PREFIX = re.compile(r"^\[watch ([^\]]+)\] ")
+_S3DB_CHUNK = re.compile(r"^\[sam3db_pod [\d:]+\] ([\w-]+): chunk (\d+)/(\d+) \((\d+) frames, (\d+) prompts\) in (\d+) s = "
+                         r"([\d.]+) s per person-frame")
+_S3DB_FRAME = re.compile(r"^\[sam3db_pod [\d:]+\] ([\w-]+): frame (\d+)/(\d+)\s*$")
+_SEQ_LEN = re.compile(r"^sequence length:\s+(\d+)")
+# the rate of the fastest GPU measured, per source: a pod running far slower says so (SLOW_X_WARN). 2026-10-21 trial: an A100-SXM
+# ran SAM 3D Body at 2.0 s per person-frame, 5.6x the 4090's 0.355 s, for 29 min ($0.87) before anyone noticed.
+REF_RATE_S = {"sam3db": {"rate_s": 0.355, "rate_unit": "person-frame", "gpu": "NVIDIA GeForce RTX 4090",
+                         "source": "session 20261021-151934-batch"}}
+SLOW_X_WARN = 2.0
+
+
+class FrameProgress:
+    """The frame counter of one pod command, from the lines it prints (remote.Pod.run on_line) and the logs the runner relays
+    (watch_script). No job code changes: it reads what long jobs already print - SAM 3D Body's chunk / frame lines, MAMMA's
+    'Iter. n of N' (relayed from the ma_3d log), tqdm bars, '[cameras] cam: d/t frames', '[texture] d/t views', room /
+    splat steps (progress.LineParser adapters).
+
+    <session>/progress/frames.json (atomic, at most every 2 s; read it, never write it):
+      {"v": 1, "sid", "gpu", "updated": <epoch s>,
+       "jobs": {"<job>/<cmd>": {"job", "cmd", "src": sam3db|mamma_iter|tqdm|loc|texture|..., "step", "stage",
+                "unit": frames|iters|views|steps, "done", "total" (null = unknown), "rate_s" (s per rate_unit, last
+                interval), "rate_avg_s" (since the step's first report), "rate_unit" (default = unit), "eta_s" (this step),
+                "t0", "ts", "state": running|done, "gpu", "ref": {rate_s, rate_unit, gpu, source} | null,
+                "slow_x" (rate_s / ref rate_s) | null, "hist": [[ts, done], ...] (<= 60), "frames" (MAMMA: sequence length)}}}
+    Each update is also a throttled 'tick' event (job, cmd, step, done, total, unit, extra {rate_s, src}) in
+    progress/runner.jsonl (start / end always, ticks >= 15 s apart). A rate SLOW_X_WARN x the reference is a session warning
+    (state.json "warnings", kind slow_gpu)."""
+
+    WRITE_MIN_S = 2.0
+    EVENT_MIN_S = 15.0
+
+    def __init__(self, ses: "Session", job: JobSpec, cmd: Command, gpu: str | None = None):
+        from . import progress
+        self.ses, self.job, self.cmd, self.gpu = ses, job, cmd, gpu
+        self.parsers: dict[str, object] = {}
+        self._LineParser = progress.LineParser
+        self.key = f"{job.name}/{cmd.name}"
+        self.entry: dict | None = None
+        self.aside: dict[tuple, dict] = {}   # counts of the same step interrupted by another one (nested tqdm bars)
+        self.last_write = self.last_event = 0.0
+        self.frames = None
+        self.warned = False
+
+    # input ----------------------------------------------------------------------------------------------------
+    def feed(self, line: str, now: float | None = None) -> None:
+        try:
+            self._feed(line.rstrip("\r\n"), time.time() if now is None else now)
+        except Exception:  # noqa: BLE001 - a counter never ends a command
+            pass
+
+    def _parser(self, stream: str):
+        p = self.parsers.get(stream)
+        if p is None:
+            p = self.parsers[stream] = self._LineParser(FRAME_ADAPTERS, job=self.job.name)
+            p.cmd = self.cmd.name
+        return p
+
+    def _feed(self, line: str, now: float) -> None:
+        stream = "stdout"
+        m = _WATCH_PREFIX.match(line)
+        if m:
+            stream, line = m.group(1), line[m.end():]
+        m = _SEQ_LEN.match(line)
+        if m:
+            self.frames = int(m.group(1))
+            return
+        m = _S3DB_CHUNK.match(line)
+        if m:
+            var, c, n, f, prompts, dt, rate = (m.group(1), int(m.group(2)), int(m.group(3)), int(m.group(4)),
+                                               int(m.group(5)), float(m.group(6)), float(m.group(7)))
+            e = self._entry(f"sam3db/{var}", "frames", "sam3db", now)
+            e.setdefault("chunk_frames", f)
+            # chunks reused from an earlier run print no line: count the chunks BEFORE this one as done at the first
+            # chunk's size (the review saw 199/199 'done' when 2 of 3 chunks were reused), capped by the last chunk's size
+            first = e.get("frames_done") is None
+            e["frames_done"] = int(e.get("frames_done") or (e["chunk_frames"] * (c - 1) if first else 0)) + f
+            e["chunks"] = [c, n]
+            done = e["frames_done"]
+            total = done if c >= n else max(done, e["chunk_frames"] * n)
+            self._update(e, done, total, now, rate_s=rate, rate_unit="person-frame",
+                         s_per_unit=dt / max(1, f), stage=f"chunk {c}/{n}")
+            return
+        m = _S3DB_FRAME.match(line)
+        if m:
+            done, total = int(m.group(2)), int(m.group(3))
+            e = self._entry(f"sam3db/{m.group(1)}", "frames", "sam3db", now, done, total)
+            if e is not None:
+                self._update(e, done, total, now)
+            return
+        for ev in self._parser(stream).feed(line):
+            if ev.get("done") is None or ev.get("kind") not in ("start", "tick", "end"):
+                continue
+            src = ev.get("src") or "log"
+            step = str(ev.get("step") or src)
+            e = self._entry(step if not ev.get("lane") else f"{step}@{ev['lane']}", ev.get("unit") or "frames", src, now,
+                            int(ev["done"]), ev.get("total"), end=ev.get("kind") == "end")
+            if e is None:
+                continue
+            if src == "mamma_iter":
+                e["stage"], e["stages_total"] = step, len(MAMMA_RUNS)
+                if self.frames:
+                    e["frames"] = self.frames
+            self._update(e, int(ev["done"]), ev.get("total"), now, end=ev.get("kind") == "end")
+
+    # state ----------------------------------------------------------------------------------------------------
+    def _entry(self, step: str, unit: str, src: str, now: float, done: int | None = None, total=None,
+               end: bool = False) -> dict | None:
+        """The entry this line counts into. A new one starts when the step or source changes, and also when the same step
+        finished, went backwards or changed its total (a second tqdm bar in one command: the 2026-10-21 review saw every
+        line after the first bar become an unthrottled 'end' + a forced frames.json write, shown as 'done' while running).
+        None = the finished count's last line again (tqdm reprints it when the bar closes). A running count of the same
+        step that another one interrupts (nested bars) is kept aside and resumed by its next line. An end at a smaller total
+        ends the running count (MAMMA's 'Stopping early at iteration 30' sets total = 30 of 50; the live probe of 19:51
+        counted it as a second bar)."""
+        tot = int(total) if total is not None else None
+        e = self.entry
+        if e is not None and e["step"] == step and e["src"] == src:
+            same_total = tot is None or e["total"] is None or tot == e["total"]
+            if e["state"] == "running":
+                if done is None or (same_total or end) and done >= e["done"]:
+                    return e
+                if not same_total:   # another bar of the same step: resumed when its next line comes
+                    self.aside[(src, step, e["total"])] = e
+                    while len(self.aside) > 4:
+                        self._end(self.aside.pop(next(iter(self.aside))), now)
+                    e = None
+            elif done is not None and done == e["done"] and same_total:
+                return None
+        a = self.aside.pop((src, step, tot), None) if done is not None else None
+        if a is not None and done >= a["done"]:
+            self.entry = a
+            return a
+        if a is not None:
+            self._end(a, now)
+        if e is not None and e["state"] == "running":
+            self._end(e, now)
+        e = self.entry = {"job": self.job.name, "cmd": self.cmd.name, "src": src, "step": step, "unit": unit,
+                          "done": 0, "total": None, "rate_s": None, "rate_avg_s": None, "rate_unit": unit,
+                          "eta_s": None, "t0": round(now, 1), "ts": round(now, 1), "state": "running",
+                          "gpu": self.gpu, "ref": REF_RATE_S.get(src), "slow_x": None, "hist": []}
+        self._event("start", e, now)
+        return e
+
+    def _end(self, e: dict, now: float) -> None:
+        """A count another one replaced before it reached its total: ended, once."""
+        if e.get("state") == "running":
+            e["state"], e["eta_s"] = "done", None
+            self._event("end", e, now)
+
+    def _update(self, e: dict, done: int, total, now: float, rate_s: float | None = None, rate_unit: str | None = None,
+                s_per_unit: float | None = None, stage: str | None = None, end: bool = False) -> None:
+        was = e["state"]
+        hist = e["hist"]
+        prev = hist[-1] if hist else None
+        if prev is None or done != prev[1]:
+            hist.append([round(now, 1), done])
+            if len(hist) > 60:
+                del hist[1:len(hist) - 59]   # keep the first point (the average's start) and the latest ones
+        if rate_s is None and prev is not None and done > prev[1]:
+            rate_s = (now - prev[0]) / (done - prev[1])
+        if rate_s is not None:
+            e["rate_s"] = round(rate_s, 4)
+        first = hist[0]
+        if done > first[1] and now > first[0]:
+            e["rate_avg_s"] = round((now - first[0]) / (done - first[1]), 4)
+        if rate_unit:
+            e["rate_unit"] = rate_unit
+        if stage:
+            e["stage"] = stage
+        e.update(done=done, total=int(total) if total is not None else e.get("total"), ts=round(now, 1))
+        spu = s_per_unit if s_per_unit is not None else (e.get("rate_avg_s") if e.get("rate_unit") == e["unit"] else None)
+        if e["total"] is not None and spu:
+            e["eta_s"] = round(max(0, e["total"] - done) * spu, 1)
+        if end or (e["total"] is not None and done >= e["total"]):
+            e["state"], e["eta_s"] = "done", 0.0
+        ref = e.get("ref")
+        if ref and e.get("rate_s") and e.get("rate_unit") == ref.get("rate_unit"):
+            e["slow_x"] = round(e["rate_s"] / ref["rate_s"], 2)
+            if e["slow_x"] >= SLOW_X_WARN and not self.warned:
+                self.warned = True
+                from .remote import short_gpu
+                self.ses.warn("slow_gpu", f"{self.key}: {e['rate_s']:.3f} s per {ref['rate_unit']} on "
+                                          f"{short_gpu(self.gpu)}, {e['slow_x']:.1f}x the {ref['rate_s']} s measured "
+                                          f"on {short_gpu(ref['gpu'])} ({ref['source']})",
+                              job=self.job.name, cmd=self.cmd.name, slow_x=e["slow_x"])
+        finished = e["state"] == "done" and was == "running"   # 'end' + a forced write once per count, never per line
+        if finished or e["state"] == "running":
+            self._event("end" if finished else "tick", e, now)
+        self._write(now, force=finished)
+
+    # output ---------------------------------------------------------------------------------------------------
+    def _event(self, kind: str, e: dict, now: float | None = None) -> None:
+        now = time.time() if now is None else now
+        if kind == "tick" and now - self.last_event < self.EVENT_MIN_S:
+            return
+        self.last_event = now
+        try:
+            self.ses.writer().emit(kind, e["step"], job=e["job"], cmd=e["cmd"], src="frames", done=e.get("done"),
+                                   total=e.get("total"),
+                                   unit=e["unit"] if e["unit"] in ("frames", "iters", "views", "steps") else None,
+                                   extra={"counter": e["src"], "rate_s": e.get("rate_s"),
+                                          "rate_unit": e.get("rate_unit"), "eta_s": e.get("eta_s"),
+                                          "slow_x": e.get("slow_x")})
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _write(self, now: float, force: bool = False) -> None:
+        if self.entry is None or (not force and now - self.last_write < self.WRITE_MIN_S):
+            return
+        self.last_write = now
+        try:
+            from . import progress
+            p = self.ses.dir / "progress" / FRAMES_FILE
+            doc = self._doc()
+            doc.update(v=1, sid=self.ses.sid, gpu=self.gpu, updated=round(now, 1))
+            doc.setdefault("jobs", {})[self.key] = self.entry
+            progress.write_json_atomic(p, doc)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def close(self, rc=None) -> None:
+        """The command ended (rc as _run_job records it): a count that did not reach its total is written as 'ended' (rc 0)
+        or 'failed', so a stale 'running' never outlives its command - also one a dead runner left in frames.json for this
+        command when the rerun printed no counter line (resume)."""
+        now = time.time()
+        for a in self.aside.values():
+            self._end(a, now)
+        self.aside.clear()
+        e = self.entry
+        if e is None:
+            old = (self._doc().get("jobs") or {}).get(self.key)
+            if not (isinstance(old, dict) and old.get("state") == "running"):
+                return
+            e = self.entry = old
+        if e.get("state") not in ("done", "ended", "failed"):
+            e["state"] = "ended" if rc == 0 else "failed"
+            e["eta_s"] = None
+            self._event("end" if rc == 0 else "fail", e)
+        e["rc"] = rc if isinstance(rc, int) else (str(rc)[:80] if rc is not None else None)
+        self._write(now, force=True)
+
+    def _doc(self) -> dict:
+        from . import progress
+        doc = getattr(self.ses, "_frames_doc", None)
+        if doc is None:
+            doc = self.ses._frames_doc = progress.read_json(self.ses.dir / "progress" / FRAMES_FILE) or {"v": 1, "jobs": {}}
+        return doc
+
+
+def end_stale_frames(ses: "Session", why: str = "the runner that counted it is gone") -> int:
+    """A resumed session: every frames.json entry still 'running' belongs to a runner that died mid-command (its pod is gone
+    too) -> 'ended' with no ETA. Returns how many. Never fatal."""
+    try:
+        from . import progress
+        p = ses.dir / "progress" / FRAMES_FILE
+        doc = progress.read_json(p)
+        if not doc:
+            return 0
+        n = 0
+        for e in (doc.get("jobs") or {}).values():
+            if isinstance(e, dict) and e.get("state") == "running":
+                e.update(state="ended", eta_s=None, note=why)
+                n += 1
+        if n:
+            doc["updated"] = round(time.time(), 1)
+            progress.write_json_atomic(p, doc)
+        ses._frames_doc = doc
+        return n
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+MAMMA_RUNS = (50, 500, 100, 25)   # = progress.MAMMA_RUN_TOTALS: ma_3d's four optimisation runs
 
 
 def safe_extract(archive: Path, dest_outputs: Path, dest_logs: Path, allowed: list[str], log_prefix: str) -> list[str]:
@@ -735,18 +1149,34 @@ class Session:
     # Additive and never fatal: a failing event write is swallowed.
     def event(self, kind: str, step: str, msg: str | None = None, **extra) -> None:
         try:
-            from . import progress
-            w = getattr(self, "_pw", None)
-            if w is None:
-                w = self._pw = progress.Writer(self.dir / "progress" / "runner.jsonl", job="_session", sid=self.sid)
+            w = self.writer()
             job, name = (step.split("/", 1) if "/" in step else ("_session", step))
             extra = {k: v for k, v in extra.items() if k in ("seconds", "mb", "job", "features", "bytes", "done",
-                                                              "total")}
+                                                              "total", "level")}
             done, total = extra.pop("done", None), extra.pop("total", None)
             w.emit(kind, name, job=job, msg=msg, done=done, total=total,
                    unit="bytes" if total is not None else None, extra={"runner_step": step, **extra})
         except Exception:
             pass
+
+    def writer(self):
+        """The progress.Writer of progress/runner.jsonl (one per session object)."""
+        w = getattr(self, "_pw", None)
+        if w is None:
+            from . import progress
+            w = self._pw = progress.Writer(self.dir / "progress" / "runner.jsonl", job="_session", sid=self.sid)
+        return w
+
+    def warn(self, kind: str, msg: str, **extra) -> None:
+        """A warning the dashboard shows: state.json "warnings" [{kind, level, msg, ts, ...}] (+ a runner.log line and a note
+        event). One per (kind, msg)."""
+        ws = self.state.setdefault("warnings", [])
+        if any(w.get("kind") == kind and w.get("msg") == msg for w in ws):
+            return
+        ws.append({"kind": kind, "level": "warn", "msg": msg, "ts": round(time.time(), 1), **extra})
+        self.save()
+        self.log(f"WARNING ({kind}): {msg}")
+        self.event("note", kind, msg=msg, level="warn")
 
     def write_runner_info(self, label: str, jobs: list[str]) -> None:
         """runner.json: lets a monitor check the runner process is alive (no argv, no environment)."""
@@ -781,17 +1211,42 @@ def run_session(jobs: list[JobSpec], sid: str | None = None, label: str = "batch
     """clouds: e.g. ["SECURE"] when the bundle holds licence-restricted files (MANO/FLAME); default remote.CLOUDS."""
     from . import remote
     ses = Session(sid, label)
-    ses.state.pop("error", None)  # a resumed session starts clean
-    ses.state.pop("bootstrap_rc", None)
+    for k in ("error", "bootstrap_rc", "gpu_choice", "warnings"):   # a resumed session starts clean
+        ses.state.pop(k, None)
+    end_stale_frames(ses)   # counts a dead runner left 'running' (the review: one outlived its command on resume)
     tag = analysis_tag()
     if tag:
         ses.state["analysis"] = tag   # the monitor groups this session under that analysis run (pipeline/analyze.py)
+        if not dry_run:   # the run's pod limit (analyze --max-cost / analysis limit) caps every session tagged with it
+            try:
+                from .pipeline import analyze
+                left = analyze.budget_left(tag["run"])
+            except Exception:  # noqa: BLE001 - the dashboard's bookkeeping never blocks a session
+                left = None
+            if left is not None:
+                if left <= 0:
+                    ses.state["error"] = (f"BudgetError: analysis run {tag['run']} has no pod limit left "
+                                          f"(raise it with `python -m dancecap.pipeline analysis limit {tag['run']} USD`)")
+                    ses.log(ses.state["error"])
+                    ses.save()
+                    return _finish(ses, None)
+                capped = max_cost is None or left < float(max_cost)
+                max_cost = left if capped else float(max_cost)
+                ses.state["run_limit_left"] = round(left, 4)
+                # say which one set the max: the live check's --max-cost 1.2 read "what is left of the run's limit" at $3.00 left
+                ses.log(f"session max ${max_cost:.2f} " + (f"(what is left of analysis run {tag['run']}'s pod limit)" if capped
+                        else f"(--max-cost; analysis run {tag['run']} has ${left:.2f} of its pod limit left)"))
     ses.write_runner_info(label, [j.name for j in jobs])
     if not dry_run:
         _monitor_up(ses)
         remote.record_cap_in_use(ses.sid)
-    if not gpus:
-        gpus = remote.gpus_for([j.min_vram_gb for j in jobs])   # None = remote.GPU_PREFERENCE (the 80 GB list)
+    if not gpus:   # fastest first among the cards with enough memory for every job (job_vram_gb: 24 GB unless measured)
+        need = max([job_vram_gb(j) for j in jobs] or [DEFAULT_VRAM_GB])
+        gpus = remote.gpus_for([need])   # None (nothing that big in the ladder) = remote.GPU_PREFERENCE
+        ses.state["gpu_need_gb"] = need
+        ses.log(f"GPUs for {need:.0f} GB, fastest first: "
+                f"{', '.join(remote.short_gpu(g) for g in (gpus or remote.GPU_PREFERENCE))}")
+    ses.state["gpus"] = list(gpus or remote.GPU_PREFERENCE)
     todo = []
     for j in jobs:
         fp = j.fingerprint()
@@ -831,9 +1286,14 @@ def run_session(jobs: list[JobSpec], sid: str | None = None, label: str = "batch
             # for the monitor (additive): ssh port (optional read-only legacy probe) and the kill-switch estimate
             # (the puller replaces it with the exact /workspace/.dancecap_kill_at)
             pod_info.update({"port": getattr(pod, "port", None), "kill_at_est": round(time.time() + mm * 60, 1)})
+            choice = getattr(pod, "choice", None)
+            if choice:
+                pod_info["choice"] = choice
             ses.state["pod"] = pod_info
             ses.save()
             ses.event("note", "pod", msg=f"pod {pod.id} {pod.gpu} ${pod.cost_per_hr:.2f}/h ready")
+            if choice and choice.get("warning"):   # never a slower card without a word (owner: speed over cost)
+                ses.warn("gpu_choice", choice["warning"], excluded=choice.get("excluded_faster"))
             puller = _start_puller(ses, pod, todo, bundle, man)
             try:
                 _pod_steps(ses, pod, todo, bundle, man, feats)
@@ -841,6 +1301,8 @@ def run_session(jobs: list[JobSpec], sid: str | None = None, label: str = "batch
                 _stop_puller(puller)
     except Exception as e:
         ses.state["error"] = f"{type(e).__name__}: {e}"[:2000]
+        if getattr(e, "choice", None) and not pod_info:   # no pod: what was tried, so the dashboard can say why
+            ses.state["gpu_choice"] = e.choice
         ses.log(f"session error: {ses.state['error']}")
     finally:
         ses.save()
@@ -868,7 +1330,9 @@ def _monitor_up(ses: Session) -> None:
     process. Never fatal."""
     try:
         from .pipeline import monitor
-        r = monitor.ensure_running(f"remote run {ses.sid}")
+        run = os.environ.get("DANCECAP_ANALYSIS")   # a session of an analysis keeps the window on that analysis
+        r = monitor.ensure_running(f"remote run {ses.sid}",
+                                   route=f"#/analysis/{run}" if run else f"#/runpod/session/{ses.sid}")
         if r.get("state") in ("started", "starting"):
             ses.log("monitor: started the Pipeline Monitor in the background (python -m dancecap.pipeline monitor "
                     "--launch opens its window)")
@@ -1074,8 +1538,9 @@ def _pod_steps(ses: Session, pod, todo: list[JobSpec], bundle: Path, man: dict, 
             ses.log(f"{job.name}: {st['status']}")
             ses.save()
             continue
-        if set(job.needs) & failed_feats or "base" in failed_feats:
-            st["status"] = "skipped: bootstrap feature failed " + str(sorted(set(job.needs) & failed_feats or {"base"}))
+        feats_j = set(job_features(job))
+        if feats_j & failed_feats or "base" in failed_feats:
+            st["status"] = "skipped: bootstrap feature failed " + str(sorted(feats_j & failed_feats or {"base"}))
             ses.log(f"{job.name}: {st['status']}")
             ses.save()
             continue
@@ -1144,12 +1609,16 @@ def _run_job(ses: Session, pod, job: JobSpec, st: dict) -> None:
             break
     for c in job.commands if not failed else []:
         st["current"] = c.name  # for the monitor (additive)
+        fp = FrameProgress(ses, job, c, getattr(pod, "gpu", None))   # frames done / total + rate -> progress/frames.json
+        rc = None
         try:
-            rc = ses.timed(f"{job.name}/{c.name}", lambda c=c: pod.run(
+            rc = ses.timed(f"{job.name}/{c.name}", lambda c=c, fp=fp: pod.run(
                 command_script(job, c, log_rel), check=False, log=ses.runner_log,
-                timeout=c.timeout_min * 60 + 120), job=job.name)
+                timeout=c.timeout_min * 60 + 120, on_line=fp.feed), job=job.name)
         except TimeoutError as e:
             rc = f"timeout: {e}"
+        finally:
+            fp.close(rc)
         st["commands"][c.name] = rc
         ses.save()
         if rc != 0 and not c.optional:

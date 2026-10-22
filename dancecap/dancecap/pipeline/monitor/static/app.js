@@ -432,6 +432,24 @@ function showHelp() {
     h("tbody", null, rows.map(([k, v]) => h("tr", null, h("td", null, h("kbd", null, k)), h("td", null, v))))) });
 }
 
+// ------------------------------------------------------------------------------------------------ one window
+// (2026-10-22) There is one monitor window: a launch or a new job writes work/monitor/focus.json (monitor.set_focus) and
+// this window follows it instead of another window opening. A fresh window only notes the current focus: its own URL
+// already shows what it was opened for.
+let focusTs = null;
+async function followFocus() {
+  let f;
+  try { f = await api.get("/api/focus"); } catch { return; }   // the state poll reports a server that is down
+  const ts = (f && f.ts) || 0;
+  if (focusTs === null) { focusTs = ts; return; }
+  if (ts <= focusTs) return;
+  focusTs = ts;
+  if (f.route && f.route.startsWith("#/") && location.hash !== f.route) {
+    location.hash = f.route;
+    toast(`Now showing ${f.reason || f.route}`, "info");
+  }
+}
+
 // ------------------------------------------------------------------------------------------------ boot
 
 (async function boot() {
@@ -452,6 +470,9 @@ function showHelp() {
   await app.render();
   await first;
   schedule();
+  followFocus();
+  setInterval(followFocus, 3000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) followFocus(); });
 })();
 
 export default app;

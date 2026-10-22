@@ -159,7 +159,7 @@ export async function planDialog(app, take, init = {}) {
         metric("Wall time", fmtEta({ p50_s: p.totals && p.totals.wall_s && p.totals.wall_s.p50, p90_s: p.totals && p.totals.wall_s && p.totals.wall_s.p90 }),
           p.totals && p.totals.local_s ? `${fmtDur(p.totals.local_s)} on this PC` : ""),
         metric("Pod cost", fmtCostBand(p.totals && p.totals.pod_cost_usd), sessions.length ? `${sessions.length} pod session${sessions.length > 1 ? "s" : ""}` : "no pods"),
-        metric("Budget after (p90)", fmtUSD(p.budget && p.budget.after_p90), `cap ${fmtUSD(p.budget && p.budget.cap, 0)}, reserve ${fmtUSD(p.budget && p.budget.reserve, 0)}`)),
+        metric("Budget after (p90)", fmtUSD(p.budget && p.budget.after_p90), `cap ${fmtUSD(p.budget && p.budget.cap)}, reserve ${fmtUSD(p.budget && p.budget.reserve)}`)),
       h("div", { class: "tbl-wrap", style: { maxHeight: "300px" } },
         h("table", { class: "tbl compact" },
           h("thead", null, h("tr", null, ["", "stage", "where", "action", "ETA p50 / p90", "cost p50 / p90", "session", "reason"].map((x) => h("th", null, x)))),
