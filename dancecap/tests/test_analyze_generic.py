@@ -333,3 +333,10 @@ def test_export_and_front_follow_the_take(monkeypatch):
     assert JE.default_capture("lk03_mono20") == "Mono_Lk03Mono20"
     monkeypatch.setattr(JF.RF, "DANCE", "lk03_mono20")
     assert JF.people_dir().parts[-2:] == ("lk03_mono20", "people")
+
+
+def test_world_warns_when_the_phone_walked():
+    ok = {"steps": {"skeleton": {"median_px": 0.85}, "track": {"rms_p90_px": 1.17}}}
+    assert M.camera_model_warning(ok) == "" and M.camera_model_warning({}) == ""
+    bad = M.camera_model_warning({"steps": {"skeleton": {"median_px": 3.4}, "track": {"rms_p90_px": 9.0}}})
+    assert "may have moved" in bad and "3.40" in bad and "9.00" in bad

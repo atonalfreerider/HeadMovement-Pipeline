@@ -402,7 +402,22 @@ def step_world(ctx: Ctx) -> str:
         write_frames_json(ctx)
     rig = _json(ctx.work / "cameras" / "rig.json") or {}
     keys = ("focal_1x_px", "camera_height_m", "dancers_mean_distance_m")
-    return "world: " + ", ".join(f"{k} {rig.get(k):.3g}" if isinstance(rig.get(k), (int, float)) else f"{k} {rig.get(k)}" for k in keys)
+    msg = "world: " + ", ".join(f"{k} {rig.get(k):.3g}" if isinstance(rig.get(k), (int, float)) else f"{k} {rig.get(k)}" for k in keys)
+    return msg + camera_model_warning(_json(ctx.work / "camera_work" / "mono_cam.json") or {})
+
+
+SKEL_MAX_PX = 2.0      # a fixed-centre (pan / tilt / zoom) camera fits the background to ~1 px (J2: 0.85-0.92; lk03_mono20: 0.85)
+TRACK_P90_MAX_PX = 4.0
+
+
+def camera_model_warning(mc: dict) -> str:
+    """'' or a warning for the step's message: background residuals this large say the phone walked (translation: parallax the
+    fixed-centre model cannot explain), so the world frame and every distance are doubtful. Not fatal: the analysis goes on."""
+    st = mc.get("steps") or {}
+    sk, tr = (st.get("skeleton") or {}).get("median_px"), (st.get("track") or {}).get("rms_p90_px")
+    bad = [f"skeleton median {sk:.2f} px" for _ in [0] if isinstance(sk, (int, float)) and sk > SKEL_MAX_PX] + \
+          [f"track p90 {tr:.2f} px" for _ in [0] if isinstance(tr, (int, float)) and tr > TRACK_P90_MAX_PX]
+    return ("; WARNING: the camera may have moved (" + ", ".join(bad) + "): the fixed-centre model is doubtful") if bad else ""
 
 
 def write_frames_json(ctx: Ctx) -> Path:
