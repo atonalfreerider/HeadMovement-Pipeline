@@ -315,8 +315,9 @@ def route_plan(route: str, f: dict, opts: dict | None = None) -> list[dict]:
             mono("analyses", "Timing, physics, counterbalance, floorcraft, one GPU pod", "pod-gpu", ["post", "beats"],
                  ana50, ana50 * 2, basis="measured 9 min for 2643 frames (J4), 66 s for 599 (trial); a GPU runner pod "
                  "(the runner has no CPU route)"),
-            mono("avatars", "LHM++ avatars (not built for a new take yet: skipped)", "local", ["post"], 0.1, 0.3,
-                 optional=True, basis="the generic reference crops are not written yet; nothing in the export reads them"),
+            mono("avatars", "LHM++ splat avatars from the take's own crops, one pod", "pod-gpu", ["post"], 8, 15,
+                 optional=True, basis="crops chosen here 20-50 s (lhmpp_generic); pod: LHM++ venv install 2-7.5 min "
+                 "(john_lula), both avatars 2.3 min, LBS export ~2 min; nothing in the export reads them"),
             mono("export", "Export the Unity capture (work/<take>/export/, Unity untouched)", "local", ["analyses"], 0.5, 2,
                  basis="measured 4.5-5 s (trial, round 2)"),
         ]

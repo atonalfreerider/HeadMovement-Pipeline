@@ -34,7 +34,6 @@ import argparse
 import json
 import math
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -719,10 +718,21 @@ def step_analyses(ctx: Ctx) -> str:
 
 
 def step_avatars(ctx: Ctx) -> str:
-    """LHM++ splat avatars (optional; nothing in the export reads them). The generic job needs reference crops chosen from the
-    masks and the fit, which is not written yet: this step reports that and is skipped (never fails the run)."""
-    raise SkipStep("LHM++ avatars for a new take need generic reference crops (masks + fit); not built yet - the export uses "
-                   "plain bodies")
+    """Pod: LHM++ splat avatars of both dancers (optional; nothing in the export reads them). Here: 8 reference crops per
+    dancer chosen from the masks, the whole-body pose and the fit's facing (mono4d.lhmpp_generic prep, refs_sheet.jpg); one
+    pod: LHM++'s own venv, the canonical avatars + turntables, LHM++'s LBS export; imported to work/<take>/avatar_lhmpp/."""
+    from ..mono4d import lhmpp_generic as LG
+    try:
+        LG.prep(ctx.take)
+    except SystemExit as e:              # no usable frame of a dancer, or not one video: the reason, not a failed run
+        raise SkipStep(f"LHM++ avatars: {e}") from None
+    name = LG.job_name(ctx.take)
+    job = LG.job(ctx.take, path=ctx.jobs_dir / f"{name}.json")
+    res = ctx.remote([job])
+    if ctx.dry_run:
+        return "dry run"
+    sid = next((r["sid"] for r in reversed(res) if (r.get("jobs") or {}).get(name, {}).get("status") == "ok"), None)
+    return LG.import_(ctx.take, sid)
 
 
 def step_export(ctx: Ctx) -> str:

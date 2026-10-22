@@ -152,6 +152,7 @@ def test_every_mono_step_has_a_generic_executor_and_pod_cpu_is_gone():
     by = {s["id"]: s for s in steps}
     assert by["fits"]["deps"] == ["world", "sam3d_body"] and by["export"]["deps"] == ["analyses"]
     assert by["avatars"]["optional"] and by["film"]["optional"]
+    assert by["avatars"]["where"] == "pod-gpu" and by["avatars"]["deps"] == ["post"]    # beside the analyses
     assert A.mono_chunks(19.97, 30.0) == 1 and A.mono_chunks(88.1, 29.994) == 4
     for dur, fps in ((19.97, 30.0), (26.5, 30.0), (50.0, 30.0), (88.1, 29.994), (300.0, 30.0)):
         assert A.mono_chunks(dur, fps) == len(M.plan_chunks("x", M.grid_frames(dur, fps))), dur
@@ -352,3 +353,38 @@ def test_chunks_follow_the_lattice_instants_that_have_frames():
     assert len(c) == 1 and (c[0]["id"], c[0]["k0"], c[0]["k1"]) == ("g0001", 1, 597)
     long = M.plan_chunks("t", 2600, k_first=5)
     assert long[0]["k0"] == 5 and long[-1]["k1"] == 2604 and long[0]["id"] == "g0005"
+
+
+def test_avatars_step_runs_the_generic_lhmpp_job_or_skips_with_the_reason(tmp_path, monkeypatch):
+    from dancecap.mono4d import lhmpp_generic as LG
+    pkg = _mono_take(tmp_path, monkeypatch)
+    monkeypatch.setattr(LG, "PACKAGE_ROOT", pkg)
+    monkeypatch.setattr(LG, "WORKSPACE", pkg.parent)
+    inp = LG.default_dir("lk_mono") / "input"
+
+    def fake_prep(take, *a, **kw):           # what prep leaves for job(): crops per dancer + the pod's pose / view files
+        for r in LG.ROLES:
+            (inp / "refs" / r).mkdir(parents=True, exist_ok=True)
+            (inp / "refs" / r / "00.png").write_bytes(b"png")
+        for f in ("poses.npz", "views.npz", "views.json"):
+            (inp / f).write_bytes(b"x")
+        return {}
+
+    calls = []
+    monkeypatch.setattr(LG, "prep", fake_prep)
+    monkeypatch.setattr(LG, "import_", lambda take, sid: f"imported {take} from {sid}")
+    monkeypatch.setattr(M.Ctx, "remote", lambda self, jobs, **kw: calls.append(jobs) or
+                        [{"sid": "S1", "jobs": {LG.job_name("lk_mono"): {"status": "ok"}}}])
+    ctx = M.Ctx("lk_mono", run="20261022-100007-lk_mono", step="avatars")
+    assert M.step_avatars(ctx) == "imported lk_mono from S1"
+    (job,) = calls[0]
+    assert job.parent == ctx.jobs_dir
+    d = json.loads(job.read_text(encoding="utf-8"))
+    assert d["name"] == "lk_mono_lhmpp_avatars" and d["inputs"] == ["dancecap/work/lk_mono/realism/lhmpp_generic/input/"]
+    assert [c["name"] for c in d["commands"]] == ["install", "build", "export"] and d["min_vram_gb"] == 24
+
+    def no_frames(take, *a, **kw):
+        raise SystemExit("lk_mono: follow has no usable frame")
+    monkeypatch.setattr(LG, "prep", no_frames)
+    with pytest.raises(M.SkipStep, match="no usable frame"):
+        M.step_avatars(ctx)

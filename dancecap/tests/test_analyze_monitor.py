@@ -75,9 +75,9 @@ def test_route_plans_put_every_heavy_step_on_runpod(route, n, dur):
     by = {s["id"]: s for s in steps}
     assert ids[0] == "intake" and "upload" in ids and ids[-1] == "film"
     local = {s["id"] for s in steps if s["where"] == "local"}
-    # this PC: light work only (owner rule): mono beats 26 s, world ~1 min of CPU, post seconds, the skipped avatars / film
-    assert local <= {"intake", "clocks", "export", "film", "beats", "world", "post", "avatars"}
-    for heavy in ("people", "fits", "analyses") + (("avatars", "shape") if route == "multi" else ("camera", "sam3d_body")):
+    # this PC: light work only (owner rule): mono beats 26 s, world ~1 min of CPU, post seconds, the skipped film
+    assert local <= {"intake", "clocks", "export", "film", "beats", "world", "post"}
+    for heavy in ("people", "fits", "analyses", "avatars") + (("shape",) if route == "multi" else ("camera", "sam3d_body")):
         assert by[heavy]["where"].startswith("pod"), heavy
     for s in steps:
         assert set(s["deps"]) <= set(ids) and s["p50_min"] <= s["p90_min"]
