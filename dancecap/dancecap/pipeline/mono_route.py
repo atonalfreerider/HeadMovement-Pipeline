@@ -262,13 +262,14 @@ def grid_frames(duration_s: float, fps: float, hz: float = HZ) -> int:
     return int(math.floor(t_last * hz + 1e-6)) + 1
 
 
-def plan_chunks(take: str, n_grid: int, max_s: float = CHUNK_MAX_S, overlap_s: float = OVERLAP_S) -> list[dict]:
-    """Fit windows of at most max_s over the lattice 0..n_grid-1, overlapping by overlap_s, cut at the overlaps' middles
-    (farm.chunks.equal_windows). Ids g<core start, 4 digits> (farm.chunks.chunk_id); chunk takes <take>_<id>."""
+def plan_chunks(take: str, n_grid: int, max_s: float = CHUNK_MAX_S, overlap_s: float = OVERLAP_S, k_first: int = 0) -> list[dict]:
+    """Fit windows of at most max_s over the lattice k_first .. k_first + n_grid - 1, overlapping by overlap_s, cut at the overlaps'
+    middles (farm.chunks.equal_windows). Ids g<core start, 4 digits> (farm.chunks.chunk_id); chunk takes <take>_<id>."""
     from ..farm.chunks import equal_windows
     w = equal_windows(n_grid, HZ, max_s, overlap_s)
     out = []
     for (k0, k1), (c0, c1) in zip(w["windows"], w["cores"]):
+        k0, k1, c0, c1 = k0 + k_first, k1 + k_first, c0 + k_first, c1 + k_first
         cid = f"g{c0:04d}"
         out.append({"id": cid, "k0": int(k0), "k1": int(k1), "core_k0": int(c0), "core_k1": int(c1),
                     "overlap_k": int(w["overlap_k"]) if w["n"] > 1 else 0, "take": f"{take}_{cid}", "T": int(k1 - k0 + 1),
@@ -461,12 +462,24 @@ def step_sam3d_body(ctx: Ctx) -> str:
 # ------------------------------------------------------------------------------------------------ fits
 
 
+def usable_lattice(t: np.ndarray, window: tuple[float, float] | None, hz: float = HZ) -> tuple[int, int]:
+    """(k_first, k_last) of the lattice instants t_k = k / hz that lie between the first and the last video frame AND inside the
+    take's window: the instants mamma prepare keeps. A cut's first frame need not be at 0 (lk03_mono20: 0.033 s) and the window
+    ends on the last frame rounded down: prepare kept k 1..597 where the plan said 0..598 (first fits check, 2026-10-22)."""
+    lo, hi = float(np.min(t)), float(np.max(t))
+    if window is not None:
+        lo, hi = max(lo, float(window[0])), min(hi, float(window[1]))
+    return int(math.ceil(lo * hz - 1e-6)), int(math.floor(hi * hz + 1e-6))
+
+
 def fit_plan(ctx: Ctx) -> dict:
-    """The chunks of the take on its fit lattice (from cameras/01.npz: the frames the fit can use)."""
+    """The chunks of the take on its fit lattice (from cameras/01.npz: the frames the fit can use, inside the take's window)."""
     z = np.load(ctx.work / "cameras" / f"{CAM}.npz", allow_pickle=True)
     t = np.asarray(z["t"], float)
-    n_grid = int(math.floor(float(t.max()) * HZ + 1e-6)) + 1
-    return {"n_grid": n_grid, "duration_s": float(t.max()), "chunks": plan_chunks(ctx.take, n_grid)}
+    win = ctx.cfg.get("window")
+    ka, kb = usable_lattice(t, tuple(win) if win else None)
+    return {"n_grid": kb + 1, "k_first": ka, "k_last": kb, "duration_s": float(t.max()),
+            "chunks": plan_chunks(ctx.take, kb - ka + 1, k_first=ka)}
 
 
 def write_pinned_betas(ctx: Ctx) -> Path:
@@ -610,26 +623,33 @@ def fit_build(take: str, cid: str) -> dict:
     prep = json.loads((dst / "prepare.json").read_text(encoding="utf-8"))
     if "refit" in prep:   # rebuilt on a resumed session: start from the front's prepare.json
         prep = json.loads((dst / "prepare.front.json").read_text(encoding="utf-8"))
-    gk = prep["grid"]["trim"]["grid_k"]
+    gk = [int(v) for v in prep["grid"]["trim"]["grid_k"]]
     tg = np.asarray(prep["grid"]["t"], float)
     job = json.loads((PACKAGE_ROOT / "work" / take / "farm" / "jobs" / f"{cid}.json").read_text(encoding="utf-8"))
     k0, k1 = int(job["chunk"]["k0"]), int(job["chunk"]["k1"])
-    if [int(gk[0]), int(gk[1])] != [k0, k1] or np.abs(tg - np.arange(k0, k1 + 1) / HZ).max() > 1e-9:
-        raise SystemExit(f"prepared grid {gk} is not k {k0}..{k1} / {HZ:g}")
+    # prepare may keep fewer instants than planned (no camera frame within its tolerance at an edge): the prior follows the
+    # prepared grid, as long as it lies inside the planned one and on the lattice
+    if not (k0 <= gk[0] <= gk[1] <= k1) or len(tg) != gk[1] - gk[0] + 1 or np.abs(tg - np.arange(gk[0], gk[1] + 1) / HZ).max() > 1e-9:
+        raise SystemExit(f"prepared grid {gk} is not inside k {k0}..{k1} on the {HZ:g} Hz lattice")
     (dst / "prepare.front.json").write_text(json.dumps(prep, indent=1), encoding="utf-8")
     rep = {"configs": JR._configs(dst)}
     src = PACKAGE_ROOT / "work" / take / "realism" / "sam3db" / "chunks" / f"{cid}.npz"
     z = np.load(src, allow_pickle=True)
-    if len(z["t"]) != len(tg) or np.abs(np.asarray(z["t"], float) - tg).max() > 1e-9:
-        raise SystemExit(f"the prior slice {src.name} does not match the prepared grid")
-    shutil.copy2(src, dst / "prior_3db.npz")
+    kz = np.asarray(z["k"], int)
+    sel = (kz >= gk[0]) & (kz <= gk[1])
+    d = {n: (np.asarray(z[n])[sel] if np.ndim(z[n]) and len(z[n]) == len(kz) else z[n]) for n in z.files}
+    if len(d["t"]) != len(tg) or np.abs(np.asarray(d["t"], float) - tg).max() > 1e-9:
+        raise SystemExit(f"the prior slice {src.name} does not cover the prepared grid {gk}")
+    d["source"] = np.array(f"{src.name} k {gk[0]}..{gk[1]}")
+    np.savez_compressed(dst / "prior_3db.npz", **d)
     p2 = copy.deepcopy(prep)
     p2["sets"][JR.SET]["config"] = JR.CFG_3DB
     p2["sets"][JR.SET]["pose_prior"] = {"weight": JR.PRIOR_W, "npz": "prior_3db.npz", "source": str(src)}
     p2["config"] = "ma3d_config.yaml"
     p2["refit"] = {"by": "pipeline/mono_route fit-build", "created": time.strftime("%Y-%m-%dT%H:%M:%S")}
     (dst / "prepare.json").write_text(json.dumps(p2, indent=1), encoding="utf-8")
-    rep["prior"] = {"frames_with_prior": [int((np.asarray(z["conf"])[:, b] > 0).sum()) for b in range(2)]}
+    rep["prior"] = {"frames_with_prior": [int((np.asarray(d["conf"])[:, b] > 0).sum()) for b in range(2)], "grid_k": gk,
+                    "planned_k": [k0, k1]}
     rep["seq"] = prep["sets"][JR.SET].get("seq")
     (cw / "build.json").write_text(json.dumps(rep, indent=1, default=str), encoding="utf-8")
     log(f"fit-build {ct}: {json.dumps(rep, default=str)[:400]}")

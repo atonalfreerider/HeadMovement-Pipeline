@@ -340,3 +340,15 @@ def test_world_warns_when_the_phone_walked():
     assert M.camera_model_warning(ok) == "" and M.camera_model_warning({}) == ""
     bad = M.camera_model_warning({"steps": {"skeleton": {"median_px": 3.4}, "track": {"rms_p90_px": 9.0}}})
     assert "may have moved" in bad and "3.40" in bad and "9.00" in bad
+
+
+def test_chunks_follow_the_lattice_instants_that_have_frames():
+    """lk03_mono20 (2026-10-22): the cut's first frame is at 0.033 s and the window ends at 19.93 s, so mamma prepare kept
+    k 1..597 where the plan said 0..598 and fit-build refused the chunk."""
+    t = (np.arange(599) + 1) / 30.0
+    assert M.usable_lattice(t, (0.0, 19.93)) == (1, 597)
+    assert M.usable_lattice(np.arange(599) / 30.0, None) == (0, 598)
+    c = M.plan_chunks("t", 597, k_first=1)
+    assert len(c) == 1 and (c[0]["id"], c[0]["k0"], c[0]["k1"]) == ("g0001", 1, 597)
+    long = M.plan_chunks("t", 2600, k_first=5)
+    assert long[0]["k0"] == 5 and long[-1]["k1"] == 2604 and long[0]["id"] == "g0005"
