@@ -339,7 +339,7 @@ def install_moge() -> None:
     """MoGe-2 (the pre-V3 commit) and its pinned utils3d WITHOUT dependencies, then the few small packages they import (single_cam_pod's recipe)."""
     _pip(["--no-deps", f"git+https://github.com/microsoft/MoGe.git@{MOGE_COMMIT}",
           f"git+https://github.com/EasternJournalist/utils3d.git@{UTILS3D_COMMIT}"])
-    _pip(["click", "trimesh", "scipy", "matplotlib"])
+    _pip(["click", "trimesh", "scipy", "matplotlib", "huggingface_hub", "einops", "safetensors"])   # the hub: MoGe's weights
 
 
 def stage_moge(video: Path, cw: Path, n: int = MOGE_N_FRAMES, install: bool = False) -> dict:
@@ -359,7 +359,7 @@ def stage_moge(video: Path, cw: Path, n: int = MOGE_N_FRAMES, install: bool = Fa
     rep = json.loads((out / "geom_report.json").read_text()) if (out / "geom_report.json").exists() else {}
     if rc or not (out / "moge.npz").exists():
         raise RuntimeError(f"MoGe-2 failed (rc {rc}): {rep.get('moge', {}).get('error', 'see camera_work/moge.log')}; install it with --install-moge "
-                           f"(MoGe {MOGE_COMMIT[:8]} + utils3d {UTILS3D_COMMIT[:8]} --no-deps, then click trimesh scipy matplotlib)")
+                           f"(MoGe {MOGE_COMMIT[:8]} + utils3d {UTILS3D_COMMIT[:8]} --no-deps, then click trimesh scipy matplotlib huggingface_hub einops safetensors)")
     m = np.load(out / "moge.npz")
     fx = m["intrinsics"][:, 0, 0] * float(m["size"][0])
     nums = {"frames": [int(v) for v in m["frame"]], "focal_px": np.round(fx, 1).tolist(), "focal_median_px": float(np.median(fx))}

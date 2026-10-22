@@ -171,8 +171,17 @@ python -m dancecap.pipeline analysis limit RUN USD|none  # change it (a step par
   uploads alone, and the pods bill while they wait for them) and `remote run --parallel` starts at most 6 pods at once (8
   phones = 2 rounds). An 88-s mono video plans at about 4.3 h p50 (p90 8.8 h, $10 p50) today, a 20-s one at about 2 h
   ($2.20); "up to N pods at once" counts the steps that overlap.
-- **ETA**: a running step that is past its estimate pushes the ETA out (the plan's spread, at least 0.3x / 1x its elapsed
-  time past p90); a pod session's own ETA can push it out, never in, and one built from a job's timeout is ignored.
+- **ETA** (2026-10-22): a running step that is past its estimate pushes the ETA out (the plan's spread, at least 0.3x / 1x
+  its elapsed time past p90). A pod session's own ETA that comes from measured progress and covers the whole step (one
+  session per lane, every lane live, no generic prior, no stall: "measured" on the step row) IS the step's time left, in or
+  out; any other session ETA can only push it out, and one built from a job's timeout is ignored. The step row shows the
+  same time left the run's ETA counts (they disagreed: 92 s on the row against 396 s in the KPI).
+- **Badge**: the run reads "running" while any step runs (it read "waiting" when the driver ended beside a running step);
+  "waiting" = nothing runs and the open steps wait for an agent, `--yes` or the pod limit.
+- **Snapshots** are drawn from the monitor's data captured AT the event (`snapshots.freeze`: request() writes it to
+  `<run>/pending/`, the detached renderer draws that file): a render queued behind others no longer shows a later state
+  (the trial's `export_start` snapshot, rendered 85 s late, showed the finished run). The index records `ts` (the data's
+  time), `rendered` and `frozen`.
 - **The run's pod limit** (`--max-cost`): the driver starts no pod step past it, and every `remote run` session tagged
   with the run (DANCECAP_ANALYSIS) is capped at what is left (its --max-cost becomes the smaller of the two; none starts
   when nothing is left). Raising it with `analysis limit` lets a step parked at the limit run; a step parked for "needs
@@ -188,12 +197,20 @@ python -m dancecap.pipeline analysis limit RUN USD|none  # change it (a step par
 - It prints the plan: every step with where it runs (every heavy step on Runpod; this PC only for the intake, the audio
   clocks, the Unity export and the film), how many pods side by side, p50 / p90 minutes and dollars from the measured 2026-10
   runs, the end-to-end time on the critical path and the total pod cost. `--dry-run` stops there.
-- Without `--dry-run` it runs the steps that have a generic executor today: the intake, the **upload of the source videos to
-  the Runpod volume at t = 0** (a CPU gateway pod this run creates and deletes; 6 resumable streams; needs `--yes`) and the
-  audio clocks. The other steps are marked **needs an agent** (they need take-specific code today; PIPELINE_EFFICIENCY.md
-  5 rank 1): an agent drives such a step with `DANCECAP_ANALYSIS=<run> DANCECAP_ANALYSIS_STEP=<step>` set on its
-  `remote run` sessions (the dashboard shows them under the step, as running) and marks it with `analysis step ... done`,
-  which restarts the driver for the next steps.
+- **One video (2026-10-22): every step runs with no agent** (`pipeline/mono_route.py`; PIPELINE_EFFICIENCY.md 7d): beats
+  (this PC, 26 s), camera (`cameras.mono_cam`, one pod), people (`people_mono`: the couple without bibs, lead / follow from
+  the TOML descriptions or the statures; one pod), world (this PC: focal, gravity, camera height from the statures),
+  SAM 3D Body (one pod, frames decoded on the pod), fits (one pod per chunk of <= 26 s, side by side; betas pinned from the
+  statures, no shape pass), post (stitch + repair, this PC), analyses (one GPU pod: the runner has no CPU route), export
+  (`work/<take>/export/Mono_<Take>/`, the Unity project untouched). Avatars and the film are skipped with their reason.
+  Every pod step needs `--yes`; each writes its pod jobs to `work/<take>/jobs/analyze/` and runs them as a `remote run`
+  tagged with the run and the step (a session that failed for pod reasons is started again, up to 3 times; a command that
+  failed on its own fails the step with its log tail). The lead / follow decision can be forced with
+  `work/<take>/people/roles_override.json` (`{"swap": true}`) and `analysis step RUN people retry`.
+- **A folder** runs the intake, the upload of the source videos to the volume at t = 0 (a CPU gateway pod; 4 resumable
+  streams; `--yes`) and the audio clocks; the other steps wait for an agent, each with the exact reason (no generic
+  multi-phone camera, people or farm-profile executor yet). An agent drives such a step with `DANCECAP_ANALYSIS=<run>
+  DANCECAP_ANALYSIS_STEP=<step>` set on its `remote run` sessions and marks it with `analysis step ... done`.
 
 ---
 

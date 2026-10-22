@@ -65,7 +65,8 @@ ULTRALYTICS = f"{PIP} ultralytics==8.4.138 opencv-python==4.11.0.86"
 MOGE_COMMIT = "07444410f1e33f402353b99d6ccd26bd31e469e8"       # cameras/single_cam_pod.py: MoGe-2 before the V3 rewrite
 UTILS3D_COMMIT = "3fab839f0be9931dac7c8488eb0e1600c236e183"
 MOGE = (f"python -m pip install -q --no-deps git+https://github.com/microsoft/MoGe.git@{MOGE_COMMIT} "
-        f"git+https://github.com/EasternJournalist/utils3d.git@{UTILS3D_COMMIT} && {PIP} click trimesh matplotlib scipy")
+        f"git+https://github.com/EasternJournalist/utils3d.git@{UTILS3D_COMMIT} && "
+        f"{PIP} click trimesh matplotlib scipy huggingface_hub einops safetensors")   # the hub: MoGe-2's weights (first pod run)
 # rtmlib pulls opencv-contrib 5 over the pinned 4.11 (people_mono / NOTES_J3a): put 4.11 back
 RTMW = (f"{PIP} rtmlib onnxruntime-gpu==1.20.2 && (python -m pip uninstall -y -q opencv-contrib-python || true) && "
         "python -m pip install -q --force-reinstall --no-deps opencv-python==4.11.0.86")
@@ -159,7 +160,9 @@ class Ctx:
             before = set(_sessions_since(t0 - 2))
             argv[argv.index("--jobs") + 1] = ",".join(str(p) for p in todo)
             rc = subprocess.run(argv, cwd=str(PACKAGE_ROOT), env=env).returncode
-            sids = [s for s in _sessions_since(t0 - 2) if s not in before]
+            # this call's sessions only: other workflows start sessions at the same time (the first pod check took a sibling
+            # session's "no GPU pod" for its own and retried a real command failure)
+            sids = [s for s in _sessions_since(t0 - 2) if s not in before and _session_jobs(s) & set(names)]
             res = [r for r in (_result(s) for s in sids) if r]
             out += res
             ok_jobs = {j for r in res for j, v in (r.get("jobs") or {}).items() if v.get("status") == "ok"}
@@ -197,6 +200,15 @@ def _sessions_since(t0: float) -> list[str]:
         return []
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(t0))
     return sorted(x.name for x in d.iterdir() if x.is_dir() and x.name[:15] >= stamp)
+
+
+def _session_jobs(sid: str) -> set:
+    """The job names a session runs (its runner.json, written when it starts)."""
+    from . import paths
+    try:
+        return set(json.loads((paths.sessions_dir() / sid / "runner.json").read_text(encoding="utf-8")).get("jobs") or [])
+    except (OSError, ValueError):
+        return set()
 
 
 def _result(sid: str) -> dict | None:
