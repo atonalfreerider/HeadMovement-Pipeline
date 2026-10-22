@@ -15,11 +15,17 @@ A session (work/runpod/sessions/<sid>/) is:
   2. pod       dancecap.remote.pod_session (budget cap, per-session max_cost, on-pod kill switch, always deleted); GPUs
                fastest first for the jobs' memory need (job_vram_gb), each GPU in every cloud before the next GPU; a GPU
                the session max kept out is a warning in state.json (choice / warnings), never silent
+     (2026-10-22, docs/PIPELINE_EFFICIENCY.md 7d) at pod-ready, next to the upload: the boot kit (dancecap/remote/) goes
+               up through ssh stdin and remote/bootstrap.sh starts in the background (start_boot); jobs with their own
+               environment ("base": false) start their setup commands (start_early). Body models / the ma_2d checkpoint
+               copy the farm volume holds are linked from it on a pod in its data center (the volume route), else they
+               come in a side bundle. Analysis-only jobs run on a CPU pod.
   3. upload    skipped when the pod already holds a file with the same sha256
   4. extract   marker per bundle hash
-  5. bootstrap remote/bootstrap.sh <features of all jobs> check (idempotent per feature); newly built wheels are
-               downloaded into the local wheelhouse so the next session installs instead of compiling. Features a job
-               does not declare but needs are added (job_features: ffmpeg + ffprobe for video, open3d for physics)
+  5. bootstrap remote/bootstrap.sh <features of all jobs> check (idempotent per feature, uv first, pip as the fallback);
+               the runner waits for what is left of it; newly built wheels are downloaded into the local wheelhouse so
+               the next session installs instead of compiling. Features a job does not declare but needs are added
+               (job_features: ffmpeg + ffprobe for video, open3d for physics)
   6. per job   setup + commands (each with a .done marker, timeout and log), then outputs packed on the pod,
                downloaded, sha256-checked, extracted with a path whitelist and verified; a failed job still
                returns its logs and partial outputs. While a command runs, its frame counter (FrameProgress) writes
@@ -63,12 +69,15 @@ WHEELHOUSE = RUNPOD_DIR / "wheelhouse" / WHEEL_KEY
 PYWHEELS = RUNPOD_DIR / "pywheels" / "cp311-linux"
 FEATURES = ("base", "mamma", "room", "texture", "dancers", "cameras", "ma2d", "gsplat", "ffmpeg", "open3d",
             "check")  # check last
+GPU_FEATURES = {"room", "gsplat", "dancers"}   # CUDA extensions / SAM 2.1: never on a CPU pod (bootstrap.sh refuses them)
 UPLOAD_MBPS, DOWNLOAD_MBPS = 2.5, 12.0  # measured home link (2026-10-06)
-# bootstrap minutes per feature: cold (CUDA wheels compiled on the pod) / with cached wheels. ffmpeg: a static build fetched
-# in the background while base installs; open3d: the 2026-10-21 trial installed it in 19 s
-BOOTSTRAP_MIN = {"base": 5, "mamma": 8, "room": 15, "texture": 0, "dancers": 3, "cameras": 1, "ma2d": 3, "gsplat": 12,
+# bootstrap minutes per feature (the kill-switch budget, not the expected time): cold (CUDA wheels compiled on the pod) /
+# with cached wheels. Since 2026-10-22 every install goes through uv (probe: base + mamma + open3d in 11 s, cold cache)
+# with pip as the fallback (pip took 278 s for the same in the 2026-10-21 trial: these minutes still cover it), and the
+# bootstrap starts while the bundle uploads. ffmpeg: a static build fetched in the background
+BOOTSTRAP_MIN = {"base": 3, "mamma": 8, "room": 15, "texture": 0, "dancers": 3, "cameras": 1, "ma2d": 2, "gsplat": 12,
                  "ffmpeg": 1, "open3d": 1, "check": 1}
-BOOTSTRAP_MIN_CACHED = {"base": 5, "mamma": 2, "room": 3, "texture": 0, "dancers": 3, "cameras": 1, "ma2d": 3,
+BOOTSTRAP_MIN_CACHED = {"base": 3, "mamma": 1, "room": 2, "texture": 0, "dancers": 3, "cameras": 1, "ma2d": 2,
                         "gsplat": 1, "ffmpeg": 1, "open3d": 1, "check": 1}
 # features that come from the network in seconds (a static ffmpeg build, one PyPI wheel): they never pull the 330 MB pywheels
 # or the CUDA wheelhouse into the bundle (wheel_policy), so a slim bundle stays slim
@@ -88,11 +97,19 @@ _OPEN3D_CMD = re.compile(r"-m\s+dancecap(?:\.cli)?\s+(?:physics|counterbalance)\
                          r"(?:-m\s+dancecap(?:\.cli)?\s+(?:pose_)?quality|\bdancecap\.pose_quality)\b[^;&|]*\s--physics\b")
 
 
+_FFMPEG_NAMED = re.compile(r"\bff(?:mpeg|probe)\b")
+
+
 def implied_features(job: "JobSpec") -> list[str]:
-    """Bootstrap features a job needs without declaring them (see _FFMPEG_CMD / _OPEN3D_CMD above)."""
+    """Bootstrap features a job needs without declaring them (see _FFMPEG_CMD / _OPEN3D_CMD above). A job that brings its
+    own environment ("base": false: SAM 3D Body decodes its video with its venv's cv2) gets ffmpeg only when a command
+    names ffmpeg / ffprobe: the static build's GitHub download slowed its own install (2026-10-22 live run)."""
     cmds = " ".join([c.cmd for c in job.commands] + list(job.setup))
     out = []
-    if (set(job.needs) & DECODING_FEATURES or _FFMPEG_CMD.search(cmds)
+    if not job.base:
+        if _FFMPEG_NAMED.search(cmds):
+            out.append("ffmpeg")
+    elif (set(job.needs) & DECODING_FEATURES or _FFMPEG_CMD.search(cmds)
             or any(str(p).lower().endswith(VIDEO_EXT) for p, _ in job.inputs + job.inputs_if_alone)):
         out.append("ffmpeg")
     if _OPEN3D_CMD.search(cmds):
@@ -136,6 +153,35 @@ def job_vram_gb(job: "JobSpec") -> float:
     return 48.0 if _long_mamma_fit(job) else DEFAULT_VRAM_GB
 
 
+# Host RAM / vCPUs per job kind (remote.pod_session asks Runpod for them and checks the pod record). front_pod / front_full
+# run every heavy step at once: two A100 PCIe sessions with 9 vCPUs (155 GB RAM) ended rc=137 (20261006-212908-batch,
+# 20261006-224524-batch), the A100 SXM ones with 28 vCPUs and 100-233 GB RAM passed (20261007-002359-batch,
+# 20261007-175818-front-full). Other kinds: only what a job declares (min_ram_gb / min_vcpu).
+HOST_BY_KIND = (
+    (re.compile(r"dancecap\.front_(?:pod|full)\s+(?:run|supervise)\b"), {"min_vcpu": 24.0, "min_ram_gb": 96.0}),
+)
+
+
+def job_host_needs(job: "JobSpec") -> dict:
+    """{min_ram_gb, min_vcpu} (only the ones that apply): the job's declared values, else HOST_BY_KIND."""
+    text = " ".join([c.cmd for c in job.commands])
+    kind = next((d for rx, d in HOST_BY_KIND if rx.search(text)), {})
+    out = {}
+    for k in ("min_ram_gb", "min_vcpu"):
+        v = getattr(job, k) if getattr(job, k) is not None else kind.get(k)
+        if v:
+            out[k] = float(v)
+    return out
+
+
+def batch_host_needs(jobs: list["JobSpec"]) -> dict:
+    out: dict = {}
+    for j in jobs:
+        for k, v in job_host_needs(j).items():
+            out[k] = max(out.get(k, 0.0), v)
+    return out
+
+
 MAMMA_LONG_FRAMES = 3000
 
 
@@ -170,6 +216,7 @@ class Command:
     cmd: str
     timeout_min: float = 60.0
     optional: bool = False  # failure is reported but the job's later commands still run
+    early: bool = False     # may start at pod-ready, next to the upload (early_commands; setup names do by default)
 
 
 @dataclass
@@ -200,12 +247,30 @@ class JobSpec:
     # pod log files (workspace-relative globs) whose progress lines the runner relays while a command runs (watch_globs:
     # MAMMA's ma_3d log is added for every `mamma fit` command); they feed the frame counter (FrameProgress)
     watch: list[str] = field(default_factory=list)
+    # False: the job brings its own environment (SAM 3D Body's uv venv) and never uses the image python's torch / numpy
+    # stack, so a session of such jobs skips bootstrap 'base' and 'check' (2026-10-21 trial: 143 s of base for nothing)
+    base: bool = True
+    # True: no GPU needed (timing, physics, counterbalance, floorcraft, beats): a batch of such jobs runs on a CPU pod;
+    # None: decided by the commands (job_on_cpu); False: always a GPU pod
+    cpu: bool | None = None
+    # host minimums (remote.pod_session: REST create with minRAMPerGPU / minVCPUPerGPU, and a check of the pod record)
+    min_ram_gb: float | None = None
+    min_vcpu: float | None = None
+    # body models in the bundle: "all" (MAMMA's three locked-head models + the 512-vertex files, what ma_3d loads),
+    # "neutral" (SMPLX_NEUTRAL only: the analyses' physics / stitch), "none"; None = by the job (job_models)
+    models: str | None = None
 
     def fingerprint(self) -> str:
         d = asdict(self)
         d.pop("source", None)
         if not d.get("watch"):   # added 2026-10-21: an unset field leaves earlier fingerprints (session resume) unchanged
             d.pop("watch", None)
+        for k, default in (("base", True), ("cpu", None), ("min_ram_gb", None), ("min_vcpu", None), ("models", None)):
+            if d.get(k, default) == default:   # added 2026-10-22, same rule
+                d.pop(k, None)
+        for c in d.get("commands") or []:
+            if not c.get("early"):
+                c.pop("early", None)
         h = hashlib.sha256(json.dumps(d, sort_keys=True).encode())
         for local, _ in self.inputs + self.archives + self.inputs_if_alone:
             p = _local(local)
@@ -239,7 +304,7 @@ def _command(c, i: int, default_timeout: float) -> Command:
     if isinstance(c, str):
         return Command(f"cmd{i + 1}", c, default_timeout)
     return Command(c.get("name") or f"cmd{i + 1}", c["cmd"], float(c.get("timeout_min", default_timeout)),
-                   bool(c.get("optional", False)))
+                   bool(c.get("optional", False)), bool(c.get("early", False)))
 
 
 def _parse_v1(d: dict, source: str | None) -> JobSpec:
@@ -261,6 +326,10 @@ def _parse_v1(d: dict, source: str | None) -> JobSpec:
     return JobSpec(archives=archives, after=list(d.get("after", [])), inputs_if_alone=items("inputs_if_alone"),
                    min_vram_gb=float(d["min_vram_gb"]) if d.get("min_vram_gb") is not None else None,
                    bundle_pywheels=d.get("bundle_pywheels"), watch=[ws_rel(w) for w in d.get("watch", [])],
+                   base=bool(d.get("base", True)), cpu=None if d.get("cpu") is None else bool(d["cpu"]),
+                   min_ram_gb=float(d["min_ram_gb"]) if d.get("min_ram_gb") is not None else None,
+                   min_vcpu=float(d["min_vcpu"]) if d.get("min_vcpu") is not None else None,
+                   models=d.get("models"),
                    name=d["name"], take=d["take"], max_minutes=mm,
                    commands=[_command(c, i, mm) for i, c in enumerate(d["commands"])],
                    outputs=[ws_rel(o) for o in d["outputs"]], inputs=inputs, needs=list(d.get("needs", [])),
@@ -363,6 +432,11 @@ def parse_job(d: dict, source: str | None = None) -> JobSpec:
         raise ValueError(f"{job.name}: command names must be unique and non-empty: {names}")
     if not job.outputs:
         raise ValueError(f"{job.name}: no outputs")
+    if job.models not in (None, "all", "neutral", "none"):
+        raise ValueError(f"{job.name}: models must be 'all', 'neutral' or 'none'")
+    gpu_only = set(job.needs) & GPU_FEATURES
+    if job.cpu and gpu_only:
+        raise ValueError(f"{job.name}: a CPU job cannot need {sorted(gpu_only)} (CUDA extensions / SAM 2.1)")
     return job
 
 
@@ -470,26 +544,27 @@ def wheel_policy(jobs: list[JobSpec] | None) -> dict:
     """Which cached wheel dirs a batch uploads (slim bundles, 2026-10-21). The 330 MB pywheels dir went into EVERY bundle
     and agents opted out job by job: at the measured home uplink (median 2.1 MB/s, p10 0.73 MB/s) that is 2.6-7.5 min of
     billed upload per session, while a pod pulls the same wheels from PyPI in seconds.
-    - pywheels: only for batches with a bootstrap feature beyond base/check (their long installs keep the offline-first
-      cache: one host once stalled 20 min on PyPI), or a job with "bundle_pywheels": true. DANCECAP_BUNDLE_PYWHEELS=1/0
-      forces it on/off.
-    - wheelhouse (19 MB of compiled CUDA wheels): only when a feature beyond base/check is needed.
+    - pywheels: only when a job asks ("bundle_pywheels": true) or DANCECAP_BUNDLE_PYWHEELS=1. Since 2026-10-22 the
+      bootstrap installs through uv (the 2026-10-22 probe: every base + mamma + open3d wheel from PyPI and the PyTorch index
+      in 11 s), so the offline-first cache kept for the long feature installs (one host once stalled 20 min on PyPI) cost
+      more upload than it could save. DANCECAP_BUNDLE_PYWHEELS=0 forces it off.
+    - wheelhouse (19 MB of compiled CUDA wheels): only when a feature beyond base/check is needed, and never for a CPU pod.
     jobs=None (code_items() without a batch, the other modules' callers): everything, as before."""
     if jobs is None:
         return {"pywheels": True, "wheelhouse": True, "why": "no batch given (legacy default)"}
     feats = {n for j in jobs for n in j.needs} - BASE_FEATURES - LIGHT_FEATURES
     forced = os.environ.get("DANCECAP_BUNDLE_PYWHEELS")
     asked = [j.name for j in jobs if j.bundle_pywheels]
-    refused = jobs and all(j.bundle_pywheels is False for j in jobs)
     if forced in ("0", "1"):
         pyw, why = forced == "1", f"DANCECAP_BUNDLE_PYWHEELS={forced}"
     elif asked:
         pyw, why = True, f"asked by {asked}"
-    elif refused:
-        pyw, why = False, "every job sets bundle_pywheels false"
     else:
-        pyw, why = bool(feats), (f"features {sorted(feats)}" if feats else "base/check only: the pod uses PyPI")
-    return {"pywheels": pyw, "wheelhouse": bool(feats), "why": why}
+        pyw, why = False, (f"features {sorted(feats)}: uv fetches the wheels on the pod" if feats
+                           else "base/check only: the pod uses PyPI")
+    on_cpu = bool(jobs) and all(job_on_cpu(j) for j in jobs)   # a CPU pod installs no CUDA wheel
+    return {"pywheels": pyw, "wheelhouse": bool(feats) and not on_cpu,
+            "why": why + ("; CPU pod: no CUDA wheels" if on_cpu else "")}
 
 
 def code_items(jobs: list[JobSpec] | None = None) -> list[tuple[Path, str]]:
@@ -508,17 +583,48 @@ def code_items(jobs: list[JobSpec] | None = None) -> list[tuple[Path, str]]:
     return items
 
 
-def model_items() -> list[tuple[Path, str]]:
+def model_items(level: str = "all") -> list[tuple[Path, str]]:
     """MAMMA's ma_3d builds male + female + neutral locked-head models (utils_smplx.get_smplx_models) even though
-    dancecap fits are neutral, so all three npz must exist on the pod (~109 MB each)."""
+    dancecap fits are neutral, so all three npz must exist on the pod (~109 MB each). level "neutral": only SMPLX_NEUTRAL
+    (both paths, one file in the bundle): what physics / stitch read for a neutral fit (2026-10-21 trial: the analyses
+    session uploaded all three, 130 MB of its 146 MB)."""
     bm = env.mamma_data() / "body_models"
+    genders = ("FEMALE", "MALE", "NEUTRAL") if level == "all" else ("NEUTRAL",) if level == "neutral" else ()
     lh = [(bm / "smplx_locked_head" / "smplx" / f"SMPLX_{g}.npz",
-           f"mamma/data/body_models/smplx_locked_head/smplx/SMPLX_{g}.npz") for g in ("FEMALE", "MALE", "NEUTRAL")]
+           f"mamma/data/body_models/smplx_locked_head/smplx/SMPLX_{g}.npz") for g in genders]
+    if level == "neutral":
+        return lh + [(WORKSPACE / "smplx" / "SMPLX_NEUTRAL.npz", "smplx/SMPLX_NEUTRAL.npz")]
+    if level != "all":
+        return []
     return lh + [
             (bm / "downsampled_verts" / "verts_512.pkl", "mamma/data/body_models/downsampled_verts/verts_512.pkl"),
             (bm / "downsampled_verts" / "smplx_512_body_parts.npz",
              "mamma/data/body_models/downsampled_verts/smplx_512_body_parts.npz"),
             (WORKSPACE / "smplx" / "SMPLX_NEUTRAL.npz", "smplx/SMPLX_NEUTRAL.npz")]
+
+
+# The ma_2d checkpoint goes up as its state_dict-only copy (540 MB of the 1.6 GB file: identical tensors, the state dict's
+# sha256 in the copy's json note; front_pod / front_full have shipped it since 2026-10-06). An agent-written job that lists
+# the full file (the 2026-10-21 trial's front job: 1636 MB, 600 s of upload) gets the copy at the same pod path.
+SLIM_COPIES = (("weights/ma_2d/mamma_mask_full_cvpr.ckpt", "dancecap/work/runpod/weights/ma_2d/mamma_mask_full_cvpr.ckpt"),)
+
+
+def slim_input(local: Path) -> Path:
+    """The file to upload for `local`: its slim copy (SLIM_COPIES, relative to the MAMMA data dir) when its note says the
+    copy holds the same tensors and both sizes still match; else `local` itself."""
+    for full_rel, slim_rel in SLIM_COPIES:
+        full = env.mamma_data() / full_rel
+        try:
+            if local.name != full.name or local.resolve() != full.resolve():
+                continue
+            slim = _local(slim_rel)
+            note = json.loads(slim.with_suffix(".json").read_text())
+            if (note.get("identical_state_dict") and int(note["src_bytes"]) == full.stat().st_size
+                    and int(note["dst_bytes"]) == slim.stat().st_size):
+                return slim
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return local
 
 
 def expand(items: list[tuple[Path | str, str]], exclude=DEFAULT_EXCLUDE) -> list[BundleFile]:
@@ -535,6 +641,7 @@ def expand(items: list[tuple[Path | str, str]], exclude=DEFAULT_EXCLUDE) -> list
         for f, a in walk:
             if _excluded(a, exclude):
                 continue
+            f = slim_input(f)
             st = f.stat()
             old = files.get(a)
             if old:
@@ -576,15 +683,69 @@ def _dedupe(files: list[BundleFile], min_bytes: int = 1 << 20) -> None:
 
 
 MODEL_FEATURES = {"mamma", "texture"}  # stages that read the SMPL-X / MAMMA body models
+MODEL_LEVELS = ("none", "neutral", "all")
+# commands that read a fit through physics_body / stitch only (SMPLX_<gender of the fit>.npz), never MAMMA's ma_3d
+_ANALYSIS_CMD = re.compile(r"\bpython3?\s+-m\s+dancecap(?:\.cli)?\s+(?:timing|physics|quality|pose_quality)\b|"
+                           r"\bpython3?\s+-m\s+dancecap\.(?:counterbalance|floorcraft|timing|physics|pose_quality|stitch|"
+                           r"stitch_provisional)\b")
+
+
+def _fit_genders(job: JobSpec, limit: int = 40) -> set[str]:
+    """Genders of the SMPL-X contract files among the job's inputs (a few npz headers read locally); unknown -> {'?'}."""
+    out: set[str] = set()
+    try:
+        import numpy as np
+        n = 0
+        for local, _ in job.inputs + job.inputs_if_alone:
+            p = _local(local)
+            for f in (sorted(p.glob("*.npz")) if p.is_dir() else [p] if p.suffix == ".npz" else []):
+                if n >= limit:
+                    return out
+                n += 1
+                with np.load(f, allow_pickle=False) as z:
+                    if "gender" in z.files:
+                        out.add(str(z["gender"]).lower())
+    except Exception:  # noqa: BLE001 - unreadable: be safe
+        out.add("?")
+    return out
+
+
+CPU_FEATURES = {"base", "check", "mamma", "open3d", "ffmpeg", "texture"}   # what a CPU pod bootstraps (no CUDA extension)
+
+
+def job_on_cpu(job: JobSpec) -> bool:
+    """Whether a job runs on a CPU pod: its `cpu` field; unset, when every command is an analysis (_ANALYSIS_CMD: timing,
+    physics, counterbalance, floorcraft, quality, stitch) and it needs nothing a CPU pod cannot bootstrap. 2026-10-22: the
+    trial's four analyses ran in 50 s on an 8-vCPU cpu3c pod ($0.24/h) against 70 s on a 4090 pod ($0.89/h)."""
+    if job.cpu is not None:
+        return bool(job.cpu)
+    return (bool(job.commands) and all(_ANALYSIS_CMD.search(c.cmd) for c in job.commands)
+            and set(job_features(job)) <= CPU_FEATURES and not job.archives)
+
+
+def job_models(job: JobSpec) -> str:
+    """The body models a job needs on the pod: its `models` field; else 'none' without a MODEL_FEATURES need; 'neutral' when
+    every command is an analysis (timing, physics, counterbalance, floorcraft, quality, stitch) and every fit among its
+    inputs is neutral; else 'all' (MAMMA ma_3d loads all three)."""
+    if job.models:
+        return job.models
+    if not set(job.needs) & MODEL_FEATURES:
+        return "none"
+    if job.commands and all(_ANALYSIS_CMD.search(c.cmd) for c in job.commands) and _fit_genders(job) <= {"neutral"}:
+        return "neutral"
+    return "all"
 
 
 def bundle_files(jobs: list[JobSpec], code: bool = True, models: bool | None = None) -> list[BundleFile]:
-    """models=None: the body models go in only when some job needs a feature in MODEL_FEATURES."""
+    """models=None: the body models each job needs (job_models: all three for MAMMA, SMPLX_NEUTRAL for the analyses, none
+    without a MODEL_FEATURES need); True: all; False: none."""
     items: list[tuple[Path | str, str]] = []
     if code:
         items += code_items(jobs)
-    if models or (models is None and any(set(j.needs) & MODEL_FEATURES for j in jobs)):
-        items += model_items()
+    level = "all" if models else "none" if models is False else max(
+        (job_models(j) for j in jobs), key=MODEL_LEVELS.index, default="none")
+    if level != "none":
+        items += model_items(level)
     excl = set(DEFAULT_EXCLUDE)
     for j in jobs:
         items += effective_inputs(j, jobs)
@@ -656,6 +817,79 @@ def prune_bundles(out_dir: Path = BUNDLES, keep: int = 3) -> list[str]:
     return [p.name for p in olds]
 
 
+# ---------------------------------------------------------------------------------------------- the volume route
+
+
+# Bundle files the farm volume (farm_volume.json; FARM.md section 4) holds at a known place: the gated body models and the
+# ma_2d checkpoint's state_dict copy (farm.volume.sync_models put them there, sha256-diffed). A pod that mounts the volume
+# links them after an on-pod sha256 check instead of taking them through the home uplink (the 2026-10-22 analyses session
+# uploaded 146 MB in 81 s, ~100 MB of it SMPLX_NEUTRAL.npz; a fit session 540 MB more). Arc prefix -> volume path prefix.
+VOLUME_ARCS = (("mamma/data/body_models/", "models/mamma_data/body_models/"),
+               ("smplx/", "models/smplx/"),
+               ("mamma/data/weights/", "weights/mamma/"))
+VOLUME_MIN_BYTES = 8 << 20
+VOLUME_JSON = PACKAGE_ROOT / "farm_volume.json"
+
+
+def runner_volume() -> dict | None:
+    """{id, dc, mount, root} of the farm volume for runner pods (mounted at remote.VOL_MOUNT; root = the farm's directory
+    under it), or None: no farm_volume.json, or DANCECAP_RUNNER_VOLUME=0."""
+    if os.environ.get("DANCECAP_RUNNER_VOLUME", "").strip() in ("0", "off", "no"):
+        return None
+    try:
+        v = json.loads(VOLUME_JSON.read_text(encoding="utf-8"))
+        rel = PurePosixPath(v.get("root") or "/workspace/hm").relative_to(v.get("mount") or "/workspace").as_posix()
+        from .remote import VOL_MOUNT
+        return {"id": v["id"], "dc": v["dc"], "mount": VOL_MOUNT, "root": rel}
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def volume_path(arc: str) -> str | None:
+    for a, v in VOLUME_ARCS:
+        if arc.startswith(a):
+            return v + arc[len(a):]
+    return None
+
+
+def volume_split(files: list[BundleFile]) -> tuple[list[BundleFile], list[dict]]:
+    """(the bundle's files, the ones a volume pod links instead: [{arc, vol, local, size, sha256}]). A hard link whose
+    target leaves the bundle leaves with it (same content, its own volume path) or becomes a full file again."""
+    from .farm import volume as fv
+    served, keep = [], []
+    for f in files:
+        vp = volume_path(f.arc)
+        if vp and f.size >= VOLUME_MIN_BYTES and not f.link:
+            served.append({"arc": f.arc, "vol": vp, "local": f.local, "size": f.size,
+                           "sha256": fv.sha256_file(Path(f.local))})
+        else:
+            keep.append(f)
+    by_arc = {d["arc"]: d for d in served}
+    main = []
+    for f in keep:
+        if f.link and f.link in by_arc:
+            vp = volume_path(f.arc)
+            if vp:
+                served.append({**by_arc[f.link], "arc": f.arc, "vol": vp})
+                continue
+            f = BundleFile(f.arc, f.local, f.size, f.mtime_ns, None)
+        main.append(f)
+    return main, served
+
+
+def link_script(served: list[dict], vol: dict) -> str:
+    """Pod shell: for each served file, link it into the workspace when the volume's copy has the expected sha256, else
+    print MISS <arc> (that file then comes in the side bundle)."""
+    base = f"{vol['mount']}/{vol['root']}"
+    lines = []
+    for d in served:
+        src, dst = shlex.quote(f"{base}/{d['vol']}"), shlex.quote(f"{POD_WS}/{d['arc']}")
+        lines.append(f"if [ -f {src} ] && [ \"$(sha256sum {src} | cut -d' ' -f1)\" = {d['sha256']} ]; then "
+                     f"mkdir -p \"$(dirname {dst})\" && ln -sfn {src} {dst} && echo LINKED {shlex.quote(d['arc'])}; "
+                     f"else echo MISS {shlex.quote(d['arc'])}; fi")
+    return "; ".join(lines) or "true"
+
+
 # ---------------------------------------------------------------------------------------------- session
 
 
@@ -685,7 +919,11 @@ def estimate_minutes(jobs: list[JobSpec], upload_bytes: int, cached_wheels: bool
 
 
 def needed_features(jobs: list[JobSpec]) -> list[str]:
-    want = {"base", "check"} | {n for j in jobs for n in job_features(j)}
+    """Bootstrap features of a batch, in FEATURES order. 'base' + 'check' unless every job brings its own environment
+    ("base": false) and needs nothing beyond the LIGHT_FEATURES (a static ffmpeg, open3d): those never touch torch."""
+    want = {n for j in jobs for n in job_features(j)}
+    if any(j.base for j in jobs) or want - LIGHT_FEATURES:
+        want |= BASE_FEATURES
     return [f for f in FEATURES if f in want]
 
 
@@ -1207,12 +1445,14 @@ def _retry(fn, tries: int = 3, wait_s: float = 10, what: str = "step"):
 
 def run_session(jobs: list[JobSpec], sid: str | None = None, label: str = "batch", max_cost: float | None = None,
                 gpus: list[str] | None = None, force: bool = False, dry_run: bool = False,
-                max_minutes: float | None = None, clouds: list[str] | None = None) -> dict:
-    """clouds: e.g. ["SECURE"] when the bundle holds licence-restricted files (MANO/FLAME); default remote.CLOUDS."""
+                max_minutes: float | None = None, clouds: list[str] | None = None, cpu: bool | None = None,
+                vcpu: int | None = None) -> dict:
+    """clouds: e.g. ["SECURE"] when the bundle holds licence-restricted files (MANO/FLAME); default remote.CLOUDS.
+    cpu: run on a CPU pod (None = when every job says "cpu": true); vcpu: its vCPUs (remote.DEFAULT_VCPU)."""
     from . import remote
     ses = Session(sid, label)
-    for k in ("error", "bootstrap_rc", "gpu_choice", "warnings"):   # a resumed session starts clean
-        ses.state.pop(k, None)
+    for k in ("error", "bootstrap_rc", "gpu_choice", "warnings", "boot", "ready_to_compute_s", "compute_start_ts"):
+        ses.state.pop(k, None)   # a resumed session starts clean
     end_stale_frames(ses)   # counts a dead runner left 'running' (the review: one outlived its command on resume)
     tag = analysis_tag()
     if tag:
@@ -1240,13 +1480,31 @@ def run_session(jobs: list[JobSpec], sid: str | None = None, label: str = "batch
     if not dry_run:
         _monitor_up(ses)
         remote.record_cap_in_use(ses.sid)
-    if not gpus:   # fastest first among the cards with enough memory for every job (job_vram_gb: 24 GB unless measured)
+    if cpu is None:   # a caller's own GPU list wins over the automatic choice; a job's explicit "cpu": true does not
+        on_cpu = all(j.cpu is True for j in jobs) or (not gpus and all(job_on_cpu(j) for j in jobs))
+    else:
+        on_cpu = bool(cpu)
+    gpu_only = sorted({f for j in jobs for f in job_features(j)} & GPU_FEATURES)
+    if on_cpu and gpu_only:
+        ses.state["error"] = f"ValueError: a CPU pod cannot run {gpu_only} (CUDA extensions / SAM 2.1)"
+        ses.log(ses.state["error"])
+        ses.save()
+        return _finish(ses, None)
+    host = batch_host_needs(jobs)
+    if host:
+        ses.state["host_need"] = host
+    if on_cpu:
+        vcpu = int(vcpu or remote.DEFAULT_VCPU)
+        ses.state["cpu_pod"] = {"vcpu": vcpu, "options": remote.cpu_options(vcpu, None, host.get("min_ram_gb"))}
+        ses.log(f"CPU pod, {vcpu} vCPUs: {', '.join(ses.state['cpu_pod']['options']) or 'no flavor has the RAM asked for'}")
+    elif not gpus:   # fastest first among the cards with enough memory for every job (job_vram_gb: 24 GB unless measured)
         need = max([job_vram_gb(j) for j in jobs] or [DEFAULT_VRAM_GB])
         gpus = remote.gpus_for([need])   # None (nothing that big in the ladder) = remote.GPU_PREFERENCE
         ses.state["gpu_need_gb"] = need
         ses.log(f"GPUs for {need:.0f} GB, fastest first: "
-                f"{', '.join(remote.short_gpu(g) for g in (gpus or remote.GPU_PREFERENCE))}")
-    ses.state["gpus"] = list(gpus or remote.GPU_PREFERENCE)
+                f"{', '.join(remote.short_gpu(g) for g in (gpus or remote.GPU_PREFERENCE))}"
+                + (f"; host at least {host}" if host else ""))
+    ses.state["gpus"] = list(ses.state["cpu_pod"]["options"]) if on_cpu else list(gpus or remote.GPU_PREFERENCE)
     todo = []
     for j in jobs:
         fp = j.fingerprint()
@@ -1262,10 +1520,19 @@ def run_session(jobs: list[JobSpec], sid: str | None = None, label: str = "batch
         return _finish(ses, None)
 
     files = ses.timed("bundle_scan", lambda: bundle_files(todo))
+    vol = runner_volume() if (not clouds or "SECURE" in clouds) else None
+    served: list[dict] = []
+    if vol:
+        files, served = ses.timed("volume_scan", lambda: volume_split(files))
+        if served:
+            ses.state["volume"] = {"id": vol["id"], "dc": vol["dc"], "files": [d["arc"] for d in served],
+                                   "bytes": sum(d["size"] for d in served)}
+            ses.log(f"volume route: {len(served)} file(s), {ses.state['volume']['bytes'] / 1e6:.0f} MB are on the farm volume "
+                    f"({vol['dc']}): a pod there links them, any other pod gets them in a side bundle")
     bundle, man = ses.timed("bundle_build", lambda: build_bundle(files))
     ses.state["bundle"] = {k: man[k] for k in ("key", "path", "bytes", "raw_bytes", "n_files", "sha256",
                                                 "groups_raw_bytes", "links", "build_s")}
-    est = estimate_minutes(todo, man["bytes"])
+    est = estimate_minutes(todo, man["bytes"] + sum(d["size"] for d in served))   # the side bundle may go up too
     mm = float(max_minutes or est["total"])
     ses.state["estimate_min"] = est
     ses.state["max_minutes"] = mm
@@ -1280,9 +1547,16 @@ def run_session(jobs: list[JobSpec], sid: str | None = None, label: str = "batch
 
     pod_info = {}
     try:
-        with remote.pod_session(f"{label}", max_minutes=mm, gpus=gpus, max_cost=max_cost, clouds=clouds) as pod:
+        with remote.pod_session(f"{label}", max_minutes=mm, gpus=gpus, max_cost=max_cost, clouds=clouds,
+                                cpu={"vcpu": vcpu} if on_cpu else None, volume=vol if served else None, **host) as pod:
             pod_info.update({"id": pod.id, "gpu": pod.gpu, "cost_per_hr": pod.cost_per_hr, "host": pod.host,
                              "killswitch": pod.killswitch, "started": time.time()})
+            if getattr(pod, "cpu", False):
+                pod_info["cpu"] = True
+            if getattr(pod, "machine", None):
+                pod_info["machine"] = pod.machine   # vCPUs and RAM of the host (the runner's minimums are checked on it)
+            if getattr(pod, "volume", None):
+                pod_info["volume"] = pod.volume
             # for the monitor (additive): ssh port (optional read-only legacy probe) and the kill-switch estimate
             # (the puller replaces it with the exact /workspace/.dancecap_kill_at)
             pod_info.update({"port": getattr(pod, "port", None), "kill_at_est": round(time.time() + mm * 60, 1)})
@@ -1296,7 +1570,7 @@ def run_session(jobs: list[JobSpec], sid: str | None = None, label: str = "batch
                 ses.warn("gpu_choice", choice["warning"], excluded=choice.get("excluded_faster"))
             puller = _start_puller(ses, pod, todo, bundle, man)
             try:
-                _pod_steps(ses, pod, todo, bundle, man, feats)
+                _pod_steps(ses, pod, todo, bundle, man, feats, served)
             finally:
                 _stop_puller(puller)
     except Exception as e:
@@ -1354,15 +1628,19 @@ def snapshot(ses: Session, event: str, label: str, final: bool = False) -> None:
         pass
 
 
+STRIPE_MIN_BYTES = 2 << 20
+
+
 def upload_streams(nbytes: int) -> int:
-    """Parallel ssh streams for a bundle upload: DANCECAP_UPLOAD_STREAMS (default 4) from 24 MB up, else 1 (plain scp).
+    """Parallel ssh streams for a bundle upload: DANCECAP_UPLOAD_STREAMS (default 4) from 2 MB up, else 1 (plain scp).
     On the shared home uplink each stream gets about the same share when one stream is slow (FARM.md: one stream
-    0.08-0.13 MB/s, four 0.42 MB/s; 2026-10-19..21: 5 single-stream uploads timed out)."""
+    0.08-0.13 MB/s, four 0.42 MB/s; 2026-10-19..21: 5 single-stream uploads timed out). The threshold was 24 MB until the
+    2026-10-22 probe: its 6.9 MB bundle took 30.8 s over one stream (0.22 MB/s)."""
     try:
         n = int(os.environ.get("DANCECAP_UPLOAD_STREAMS", "4"))
     except ValueError:
         n = 4
-    return max(1, min(n, 8)) if nbytes >= 24 << 20 else 1
+    return max(1, min(n, 8)) if nbytes >= STRIPE_MIN_BYTES else 1
 
 
 class UploadProgress:
@@ -1406,7 +1684,8 @@ def striped_upload(pod, local: Path, remote_dir: str, streams: int, progress=Non
     """Upload `local` to <remote_dir>/<name> over `streams` parallel ssh connections, resumable per stripe and sha256-checked
     before the atomic rename (farm.volume.Link.push_file: the volume uploader the farm uses since 2026-10-08)."""
     from .farm import volume
-    return volume.Link(pod, root=remote_dir).push_file(Path(local), Path(local).name, progress=progress, streams=streams)
+    return volume.Link(pod, root=remote_dir).push_file(Path(local), Path(local).name, progress=progress, streams=streams,
+                                                       stripe_min=STRIPE_MIN_BYTES)
 
 
 def components(jobs: list[JobSpec]) -> list[list[JobSpec]]:
@@ -1432,7 +1711,8 @@ def components(jobs: list[JobSpec]) -> list[list[JobSpec]]:
 
 def run_parallel(jobs: list[JobSpec], label: str = "batch", max_cost: float | None = None, gpus: list[str] | None = None,
                  force: bool = False, dry_run: bool = False, max_minutes: float | None = None,
-                 clouds: list[str] | None = None, max_pods: int = 6) -> dict:
+                 clouds: list[str] | None = None, max_pods: int = 6, cpu: bool | None = None,
+                 vcpu: int | None = None) -> dict:
     """Owner, 2026-10-21: speed over cost. Independent job groups (components) run as separate sessions on separate pods at
     the same time instead of one after another on one pod; each session keeps every guard of run_session (budget cap,
     max_cost per session, kill switch, always deleted). At most `max_pods` sessions at once."""
@@ -1440,14 +1720,15 @@ def run_parallel(jobs: list[JobSpec], label: str = "batch", max_cost: float | No
     groups = components(jobs)
     if len(groups) == 1:
         return {"sessions": [run_session(jobs, label=label, max_cost=max_cost, gpus=gpus, force=force, dry_run=dry_run,
-                                         max_minutes=max_minutes, clouds=clouds)]}
+                                         max_minutes=max_minutes, clouds=clouds, cpu=cpu, vcpu=vcpu)]}
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 
     def one(k_g):
         k, g = k_g
         time.sleep(3 * k)   # stagger the pod creates (runpodctl, ledger lock)
         return run_session(g, sid=f"{stamp}-{label}-p{k + 1}", label=f"{label}-p{k + 1}", max_cost=max_cost, gpus=gpus,
-                           force=force, dry_run=dry_run, max_minutes=max_minutes, clouds=clouds)
+                           force=force, dry_run=dry_run, max_minutes=max_minutes, clouds=clouds,
+                           cpu=cpu, vcpu=vcpu)
     with ThreadPoolExecutor(max_workers=max(1, min(max_pods, len(groups)))) as ex:
         res = list(ex.map(one, enumerate(groups)))
     return {"sessions": res, "groups": [[j.name for j in g] for g in groups]}
@@ -1472,62 +1753,212 @@ def _stop_puller(puller) -> None:
         pass
 
 
-def _pod_steps(ses: Session, pod, todo: list[JobSpec], bundle: Path, man: dict, feats: list[str]) -> None:
+BOOT_DIR = "/workspace/.dancecap_boot"   # the parallel boot's copy of bootstrap.sh, its pid and exit code
+BOOT_LOG = "/workspace/bootstrap.log"
+
+
+def bundle_marker(man: dict) -> str:
+    """The file the runner creates on the pod once the bundle is extracted (bootstrap.sh DANCECAP_WAIT_BUNDLE)."""
+    return f"/workspace/.dancecap_bundle_{man['key']}.ready"
+
+
+def boot_args(feats: list[str]) -> str:
+    return " ".join(f for f in feats if f != "base") if "base" in feats else " ".join(["--no-base", *feats])
+
+
+def boot_env(pod) -> str:
+    return "DANCECAP_CPU_POD=1 " if getattr(pod, "cpu", False) else ""
+
+
+def boot_kit() -> bytes:
+    """tar.gz of dancecap/remote/ (bootstrap.sh + the tools' setup scripts, ~0.5 MB; .sh with LF line endings and mode 755,
+    as build_bundle ships them): what the pod needs before the bundle has arrived."""
+    root = PACKAGE_ROOT / "remote"
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz", compresslevel=6, format=tarfile.GNU_FORMAT) as tar:
+        for f in sorted(root.rglob("*")):
+            arc = f"dancecap/remote/{f.relative_to(root).as_posix()}"
+            if not f.is_file() or _excluded(arc, DEFAULT_EXCLUDE):
+                continue
+            data = f.read_bytes()
+            ti = tarfile.TarInfo(arc)
+            ti.mtime, ti.uid, ti.gid, ti.uname, ti.gname = int(f.stat().st_mtime), 0, 0, "root", "root"
+            if arc.endswith(".sh"):
+                data, ti.mode = data.replace(b"\r\n", b"\n"), 0o755
+            else:
+                ti.mode = 0o644
+            ti.size = len(data)
+            tar.addfile(ti, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def _slug(s: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", s)
+
+
+def early_commands(todo: list[JobSpec]) -> list[tuple[JobSpec, Command]]:
+    """Commands that start at pod-ready, next to the upload: the leading setup commands (SETUP_COMMANDS names, or
+    "early": true) of a job that brings its own environment ("base": false). They read nothing but dancecap/remote/ (the
+    boot kit) and the network (SAM 3D Body's install: a uv venv, three repos, a 2.8 GB checkpoint). When one fails it runs
+    again in its place in the job (its .done marker decides)."""
+    out = []
+    for j in todo:
+        if j.base or j.archives or j.setup:
+            continue
+        for c in j.commands:
+            if not (c.early or c.name in SETUP_COMMANDS):
+                break
+            out.append((j, c))
+    return out
+
+
+def start_boot(ses: Session, pod, feats: list[str], man: dict) -> dict | None:
+    """The parallel boot (2026-10-22): ONE ssh call sends the boot kit (dancecap/remote/) through stdin and starts
+    bootstrap.sh in the background the moment the pod is up, so the installs run while the bundle uploads (the 2026-10-21
+    trial ran upload, then bootstrap: 68 + 285 s for its analyses session). Steps that need a bundle file (the cached CUDA
+    wheels) wait for bundle_marker(). None when it could not start (the runner then bootstraps after the extract, as
+    before)."""
+    boot = (f"nohup bash -c {shlex.quote(f'{boot_env(pod)}DANCECAP_WAIT_BUNDLE={bundle_marker(man)} bash {BOOT_DIR}/bootstrap.sh {boot_args(feats)} >> {BOOT_LOG} 2>&1; echo $? > {BOOT_DIR}/rc')} "
+            f"> /dev/null 2>&1 < /dev/null & echo $! > {BOOT_DIR}/pid; echo BOOT_PID=$!") if feats else "echo BOOT_PID=none"
+    cmd = (f"set -e; mkdir -p {BOOT_DIR} {POD_WS}; tar -xzf - -C {POD_WS}; "
+           f"cp {POD_WS}/dancecap/remote/bootstrap.sh {BOOT_DIR}/bootstrap.sh; rm -f {BOOT_DIR}/rc; {boot}")
+    try:
+        t0 = time.time()
+        out = pod.feed(cmd, boot_kit(), timeout=90)
+        pid = next((ln.split("=", 1)[1].strip() for ln in out.splitlines() if ln.startswith("BOOT_PID=")), None)
+        if feats:
+            ses.log(f"bootstrap started in the background on the pod (pid {pid}, features {feats}); the upload runs next "
+                    f"to it")
+        return {"started": t0, "pid": pid, "kit": True, "skipped": not feats}
+    except Exception as e:  # noqa: BLE001 - the old order still works
+        ses.log(f"bootstrap could not start before the upload ({type(e).__name__}: {str(e)[:200]}); it runs after it")
+        return None
+
+
+def start_early(ses: Session, pod, todo: list[JobSpec]) -> dict:
+    """Push the secrets of the early commands' jobs and start those commands in the background (command_script: logs,
+    .rc / .done markers, the job env) -> {(job, cmd): pid file}. Runs in a thread next to the upload; never raises."""
+    out: dict = {}
+    pushed: dict = {}
+    for j, c in early_commands(todo):
+        try:
+            if j.secrets and j.name not in pushed:
+                pushed[j.name] = push_secrets(pod, j)
+            pidf = f"{BOOT_DIR}/early_{_slug(j.name)}_{_slug(c.name)}.pid"
+            script = command_script(j, c, ses.log_rel(j.name))
+            pod.run(f"nohup bash -c {shlex.quote(script)} > /dev/null 2>&1 < /dev/null & echo $! > {pidf}", check=True,
+                    timeout=60, echo=False)
+            out[(j.name, c.name)] = pidf
+            ses.log(f"{j.name}/{c.name}: started at pod-ready, next to the upload")
+        except Exception as e:  # noqa: BLE001 - it runs in its place in the job instead
+            ses.log(f"{j.name}/{c.name}: could not start early ({type(e).__name__}: {str(e)[:160]}); it runs in its place")
+            break
+    ses._secrets_pushed = pushed
+    return out
+
+
+def wait_early(ses: Session, pod, job: JobSpec, c: Command, pidf: str, on_line=None) -> None:
+    """Follow an early command's pod log until it ends (its rc / .done are then where command_script expects them)."""
+    log = f"{POD_WS}/{ses.log_rel(job.name)}/{c.name}.log"
+    pod.run(f"p=$(cat {pidf} 2>/dev/null); if [ -n \"$p\" ] && kill -0 \"$p\" 2>/dev/null; then "
+            f"tail -n +1 -F --pid=\"$p\" {log} 2>/dev/null; else cat {log} 2>/dev/null; fi; true", check=False,
+            log=ses.runner_log, timeout=c.timeout_min * 60 + 120, on_line=on_line)
+
+
+def wait_boot(ses: Session, pod, boot: dict, timeout_s: float) -> int:
+    """Follow the background bootstrap's log into runner.log until it ends -> its exit code (99 = no exit code)."""
+    rc_box: list = []
+
+    def on_line(line: str) -> None:
+        if line.startswith("BOOT_RC="):
+            rc_box.append(line.split("=", 1)[1].strip())
+    cmd = (f"p=$(cat {BOOT_DIR}/pid 2>/dev/null); "
+           f"if [ -n \"$p\" ] && kill -0 \"$p\" 2>/dev/null; then tail -n +1 -F --pid=\"$p\" {BOOT_LOG} 2>/dev/null; "
+           f"else cat {BOOT_LOG} 2>/dev/null; fi; echo BOOT_RC=$(cat {BOOT_DIR}/rc 2>/dev/null || echo 99)")
+    pod.run(cmd, check=False, log=ses.runner_log, timeout=timeout_s, on_line=on_line)
+    try:
+        return int(rc_box[-1]) if rc_box else 99
+    except ValueError:
+        return 99
+
+
+CUDA_WHEEL_FEATURES = {"mamma", "room", "gsplat"}   # the features whose compiled wheels come back (wheels_back)
+
+
+def _pod_steps(ses: Session, pod, todo: list[JobSpec], bundle: Path, man: dict, feats: list[str],
+               served: list[dict] | None = None) -> None:
+    """Upload, extract, bootstrap, every job. Since 2026-10-22 the pod-ready moment starts three things at once: the
+    bundle upload; the bootstrap in the background (start_boot); the secrets and the setup commands of the jobs that bring
+    their own environment (start_early, in a thread). The jobs wait only for what is left of them."""
+    import threading
     rlog = ses.runner_log
     remote_b = f"{POD_UPLOAD}/{bundle.name}"
+    boot = start_boot(ses, pod, feats, man)
+    early_box: dict = {}
+    early_thread = None
+    if boot and early_commands(todo):
+        early_thread = threading.Thread(target=lambda: early_box.update(start_early(ses, pod, todo)), daemon=True,
+                                        name=f"early-{ses.sid}")
+        early_thread.start()
 
-    streams = upload_streams(man["bytes"])
-
-    def upload():
-        have = pod.output(f"mkdir -p {POD_UPLOAD}; [ -f {remote_b} ] && sha256sum {remote_b} | cut -d' ' -f1 || true")
-        if have.strip() == man["sha256"]:
-            ses.log("upload: pod already has this bundle")
-            return
-        if streams > 1:
-            striped_upload(pod, bundle, POD_UPLOAD, streams, UploadProgress(ses.dir, man["bytes"], streams))
-            return
-        pod.put(bundle, remote_b + ".part", timeout=max(600, man["bytes"] / 1e6 / 0.5))
-        got = pod.output(f"sha256sum {remote_b}.part | cut -d' ' -f1").strip()
-        if got != man["sha256"]:
-            raise RuntimeError(f"upload sha256 mismatch {got} != {man['sha256']}")
-        pod.output(f"mv {remote_b}.part {remote_b}")
-    ses.timed("upload", lambda: _retry(upload, what="upload"), mb=round(man["bytes"] / 1e6, 1), streams=streams)
+    upload_bundle(ses, pod, bundle, man, "upload")
     snapshot(ses, "upload_done", f"upload of {man['bytes'] / 1e6:.0f} MB done")
 
     marker = f"{POD_WS}/.bundle_{man['key']}.ok"
+    # the boot kit put dancecap/remote/ there already (the same files): early commands may be running from it
+    keep = " --exclude=dancecap/remote" if boot and boot.get("kit") else ""
     ses.timed("extract", lambda: pod.run(
         f"set -e; mkdir -p {POD_WS}; if [ -f {marker} ]; then echo extracted already; else "
-        f"tar -xzf {remote_b} -C {POD_WS} && echo {man['n_files']} > {marker}; fi; "
+        f"tar -xzf {remote_b} -C {POD_WS}{keep} && echo {man['n_files']} > {marker}; fi; touch {bundle_marker(man)}; "
         f"echo files=$(find {POD_WS} -type f | wc -l); du -sh {POD_WS} | cut -f1", log=rlog, timeout=900))
+    if served:
+        ses.timed("volume_files", lambda: place_served(ses, pod, served), files=len(served))
 
     boot_to = 60 * (sum(BOOTSTRAP_MIN[f] for f in feats) * 2 + 10)
-    boot_cmd = (f"bash {POD_WS}/dancecap/remote/bootstrap.sh {' '.join(f for f in feats if f != 'base')} "
-                f"2>&1 | tee -a /workspace/bootstrap.log; exit ${{PIPESTATUS[0]}}")
-    rc = ses.timed("bootstrap", lambda: pod.run(boot_cmd, check=False, log=rlog, timeout=boot_to), features=feats)
+    boot_cmd = (f"{boot_env(pod)}bash {POD_WS}/dancecap/remote/bootstrap.sh {boot_args(feats)} "
+                f"2>&1 | tee -a {BOOT_LOG}; exit ${{PIPESTATUS[0]}}")
+    if not feats:
+        rc = 0
+        ses.state["boot"] = {"mode": "none", "features": feats}
+    elif boot:   # started next to the upload: what is left of it is all that waits here
+        t_wait = time.time()
+        rc = ses.timed("bootstrap", lambda: wait_boot(ses, pod, boot, boot_to), features=feats, mode="parallel")
+        ses.state["boot"] = {"mode": "parallel", "features": feats, "total_s": round(time.time() - boot["started"], 1),
+                             "waited_s": round(time.time() - t_wait, 1)}
+        ses.log(f"bootstrap: {ses.state['boot']['total_s']:.0f} s on the pod, {ses.state['boot']['waited_s']:.0f} s of it "
+                f"after the upload and extract")
+    else:
+        rc = ses.timed("bootstrap", lambda: pod.run(boot_cmd, check=False, log=rlog, timeout=boot_to), features=feats)
+        ses.state["boot"] = {"mode": "after_upload", "features": feats}
     if rc != 0:  # transient pip/network failures (2026-10-07: PyPI read timeouts lost a whole session): one more try
         ses.log(f"bootstrap rc={rc}: retrying once on this pod (finished features are skipped)")
         rc = ses.timed("bootstrap_retry", lambda: pod.run(boot_cmd, check=False, log=rlog, timeout=boot_to),
                        features=feats)
-    for name in ("check.json", "timings.tsv"):
+    if feats:   # check.json + timings.tsv in one round trip; the full log comes back in the background
         try:
-            (ses.dir / f"bootstrap_{name}").write_text(pod.output(f"cat /workspace/.dancecap_bootstrap/{name}"),
-                                                       encoding="utf-8")
+            out = pod.output("cd /workspace/.dancecap_bootstrap 2>/dev/null && { cat check.json 2>/dev/null; "
+                             "echo @@DANCECAP_SPLIT@@; cat timings.tsv 2>/dev/null; }; true")
+            check, _, timings = out.partition("@@DANCECAP_SPLIT@@\n")
+            for name, text in (("check.json", check), ("timings.tsv", timings)):
+                if text.strip():
+                    (ses.dir / f"bootstrap_{name}").write_text(text, encoding="utf-8")
         except RuntimeError:
             pass
-    try:
-        pod.get("/workspace/bootstrap.log", ses.dir / "bootstrap.log", timeout=300)
-    except Exception:
-        pass
+        threading.Thread(target=_get_quietly, args=(pod, BOOT_LOG, ses.dir / "bootstrap.log"), daemon=True).start()
     ses.state["bootstrap_rc"] = rc
     snapshot(ses, "bootstrap_done" if rc == 0 else "bootstrap_failed", "bootstrap done" if rc == 0 else
              f"bootstrap FAILED rc={rc}")
-    ses.timed("wheels_back", lambda: _sync_wheels(pod, ses))
+    if set(feats) & CUDA_WHEEL_FEATURES and not getattr(pod, "cpu", False):   # a CPU pod builds no CUDA wheel
+        ses.timed("wheels_back", lambda: _sync_wheels(pod, ses))
     if rc != 0:
         ses.log(f"bootstrap failed (rc={rc}); see {ses.dir / 'bootstrap.log'} - jobs will still be attempted "
                 f"only if their features passed")
     failed_feats = _failed_features(ses)
     if rc != 0 and not (ses.dir / "bootstrap_timings.tsv").exists():
         failed_feats = set(feats)  # the script itself did not run
+    if early_thread is not None:
+        early_thread.join(timeout=300)
+    ses._early = dict(early_box)
 
     for job in todo:
         st = ses.state["jobs"][job.name]
@@ -1545,6 +1976,57 @@ def _pod_steps(ses: Session, pod, todo: list[JobSpec], bundle: Path, man: dict, 
             ses.save()
             continue
         _run_job(ses, pod, job, st)
+
+
+def upload_bundle(ses: Session, pod, bundle: Path, man: dict, step: str) -> None:
+    """Upload a bundle to POD_UPLOAD (striped from STRIPE_MIN_BYTES, sha256-checked, skipped when the pod has it)."""
+    remote_b = f"{POD_UPLOAD}/{bundle.name}"
+    streams = upload_streams(man["bytes"])
+
+    def upload():
+        have = pod.output(f"mkdir -p {POD_UPLOAD}; [ -f {remote_b} ] && sha256sum {remote_b} | cut -d' ' -f1 || true")
+        if have.strip() == man["sha256"]:
+            ses.log(f"{step}: pod already has this bundle")
+            return
+        if streams > 1:
+            striped_upload(pod, bundle, POD_UPLOAD, streams, UploadProgress(ses.dir, man["bytes"], streams))
+            return
+        pod.put(bundle, remote_b + ".part", timeout=max(600, man["bytes"] / 1e6 / 0.5))
+        got = pod.output(f"sha256sum {remote_b}.part | cut -d' ' -f1").strip()
+        if got != man["sha256"]:
+            raise RuntimeError(f"upload sha256 mismatch {got} != {man['sha256']}")
+        pod.output(f"mv {remote_b}.part {remote_b}")
+    ses.timed(step, lambda: _retry(upload, what=step), mb=round(man["bytes"] / 1e6, 1), streams=streams)
+
+
+def place_served(ses: Session, pod, served: list[dict]) -> dict:
+    """The volume route's files: linked from the volume (a pod that mounts it, sha256 checked there); the rest go up in a
+    side bundle (build_bundle, content-keyed like the main one) and are extracted in place."""
+    vol = getattr(pod, "volume", None)
+    missing = list(served)
+    if vol:
+        out = pod.output(link_script(served, vol), timeout=600)
+        linked = {ln[7:].strip() for ln in out.splitlines() if ln.startswith("LINKED ")}
+        missing = [d for d in served if d["arc"] not in linked]
+        ses.log(f"volume route: {len(linked)} file(s) linked from the volume" +
+                (f"; {len(missing)} not there or different, uploaded: {[d['arc'] for d in missing]}" if missing else ""))
+    res = {"linked": len(served) - len(missing), "uploaded": len(missing)}
+    if missing:
+        side_files = [BundleFile(d["arc"], d["local"], d["size"], Path(d["local"]).stat().st_mtime_ns) for d in missing]
+        _dedupe(side_files)
+        sb, sman = build_bundle(side_files, out_dir=BUNDLES, compresslevel=1)
+        upload_bundle(ses, pod, sb, sman, "side_upload")
+        pod.run(f"set -e; tar -xzf {POD_UPLOAD}/{sb.name} -C {POD_WS}", log=ses.runner_log, timeout=900)
+        res["side_mb"] = round(sman["bytes"] / 1e6, 1)
+    ses.state["volume_files"] = res
+    return res
+
+
+def _get_quietly(pod, remote_path: str, local: Path) -> None:
+    try:
+        pod.get(remote_path, local, timeout=300)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _failed_features(ses: Session) -> set[str]:
@@ -1580,6 +2062,25 @@ def _sync_wheels(pod, ses: Session) -> list[str]:
     return got
 
 
+# job commands that set a tool up rather than compute (SAM 3D Body's install, front_full's weights / check)
+SETUP_COMMANDS = ("install", "setup", "deps", "weights", "fetch", "prepare", "check")
+
+
+def mark_compute_start(ses: Session, what: str) -> None:
+    """The first compute command of the session starts: state.json compute_start_ts and ready_to_compute_s = the seconds
+    from the pod being ready (CUDA check passed, kill switch armed) to here: upload, extract, bootstrap, tool installs.
+    Once per session."""
+    if ses.state.get("compute_start_ts"):
+        return
+    now = time.time()
+    ses.state["compute_start_ts"] = round(now, 1)
+    ready = (ses.state.get("pod") or {}).get("started")
+    if ready:
+        ses.state["ready_to_compute_s"] = round(now - float(ready), 1)
+        ses.log(f"pod ready -> compute ({what}): {ses.state['ready_to_compute_s']:.0f} s")
+    ses.save()
+
+
 def _run_job(ses: Session, pod, job: JobSpec, st: dict) -> None:
     log_rel = ses.log_rel(job.name)
     st.update(status="running", commands={}, started=time.time())
@@ -1596,7 +2097,10 @@ def _run_job(ses: Session, pod, job: JobSpec, st: dict) -> None:
         if rc != 0:
             failed = f"archive {Path(a).name} rc={rc}"
             break
-    if job.secrets and not failed:
+    pushed_early = (getattr(ses, "_secrets_pushed", None) or {}).get(job.name)
+    if job.secrets and not failed and pushed_early:
+        st["secrets"] = pushed_early   # pushed at pod-ready for an early command (start_early)
+    elif job.secrets and not failed:
         try:
             st["secrets"] = ses.timed(f"{job.name}/secrets", lambda: push_secrets(pod, job))
         except Exception as e:  # never echo a value: the message names the secret / file only
@@ -1609,12 +2113,19 @@ def _run_job(ses: Session, pod, job: JobSpec, st: dict) -> None:
             break
     for c in job.commands if not failed else []:
         st["current"] = c.name  # for the monitor (additive)
+        if c.name not in SETUP_COMMANDS:
+            mark_compute_start(ses, f"{job.name}/{c.name}")
         fp = FrameProgress(ses, job, c, getattr(pod, "gpu", None))   # frames done / total + rate -> progress/frames.json
         rc = None
+        pidf = (getattr(ses, "_early", None) or {}).get((job.name, c.name))
+
+        def run_cmd(c=c, fp=fp, pidf=pidf):
+            if pidf:   # started at pod-ready: follow it to its end; its .done marker then makes the run below a no-op
+                wait_early(ses, pod, job, c, pidf, on_line=fp.feed)
+            return pod.run(command_script(job, c, log_rel), check=False, log=ses.runner_log,
+                           timeout=c.timeout_min * 60 + 120, on_line=fp.feed)
         try:
-            rc = ses.timed(f"{job.name}/{c.name}", lambda c=c, fp=fp: pod.run(
-                command_script(job, c, log_rel), check=False, log=ses.runner_log,
-                timeout=c.timeout_min * 60 + 120, on_line=fp.feed), job=job.name)
+            rc = ses.timed(f"{job.name}/{c.name}", run_cmd, job=job.name, **({"early": True} if pidf else {}))
         except TimeoutError as e:
             rc = f"timeout: {e}"
         finally:

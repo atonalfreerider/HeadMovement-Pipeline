@@ -41,6 +41,8 @@ export DANCECAP_WS=$WS DANCECAP_BOOTSTRAP_STATE=$STATE DANCECAP_WHEELHOUSE=$HM/w
 export DANCECAP_PYWHEELS=/nonexistent       # PyPI only (the pod's link is fast; the local pywheels are for slow hosts)
 export TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST:-"8.0;8.9;9.0"}
 export PIP_CACHE_DIR=/tmp/pip-cache TMPDIR=/tmp
+# bootstrap.sh installs with uv: its cache on the env's local disk (hardlinks), never on the volume (24 ms per small file)
+export UV_CACHE_DIR=${UV_CACHE_DIR:-/tmp/uv-cache}
 [ -z "$(nvidia-smi -L 2>/dev/null)" ] && export DANCECAP_ALLOW_NO_GPU=1   # CPU build pod: the GPU assert in remote/bootstrap.sh base is skipped
 
 FEATURES=("$@")

@@ -50,27 +50,33 @@ def test_mono_plan_is_what_is_built_plus_session_overhead():
     by = {s["id"]: s for s in A.route_plan("mono", TRIAL, {})}
     for sid in ("camera", "people", "sam3d_body"):        # the time shards (4 / 6 / 4) are not built: one pod each
         assert by[sid]["lanes"] == 1, sid
-    for sid in ("beats", "camera", "people", "sam3d_body", "shape", "fits", "analyses", "avatars"):
+    for sid in ("camera", "people", "sam3d_body", "fits", "analyses"):   # 2026-10-22: every mono step has an executor
         s = by[sid]
-        assert s["overhead_min"]["kind"] == "session"
+        assert s["overhead_min"]["kind"] == "session" and s["executor"] == "cmd" and "mono_route" in " ".join(s["cmd"])
         assert s["p50_min"] == pytest.approx(s["compute_min"]["p50"] + s["overhead_min"]["p50"], abs=0.11)
         assert s["overhead_min"]["p50"] >= A.SESSION_OVERHEAD_MIN["p50"] and s["p90_min"] > s["p50_min"]
-    # every fit session uploads the ma_2d checkpoint today (trial: 1636 MB in 600 s)
-    assert by["fits"]["overhead_min"]["p50"] == pytest.approx(6.3 + 1600 / 2.1 / 60, abs=0.11)
-    # SAM 3D Body for 600 frames on one 4090: about 8 min of compute + a session (the trial's good session: 14.3 min)
+    for sid in ("beats", "world", "post", "export"):       # light: this PC (a pod session would cost 3+ min)
+        assert by[sid]["where"] == "local" and by[sid]["executor"] == "cmd", sid
+    assert by["analyses"]["where"] == "pod-cpu" and by["analyses"]["price_hr"] == A.PRICE_HR["cpu"]   # the CPU route
+    assert "shape" not in by                               # betas pinned from the statures: no shape pass
+    assert not any(s["executor"] in ("agent", "farm") for s in by.values())
+    # every fit session uploads the stripped ma_2d checkpoint (540 MB) + the body models
+    assert by["fits"]["overhead_min"]["p50"] == pytest.approx(A.SESSION_OVERHEAD_MIN["p50"] + 670 / 2.1 / 60, abs=0.11)
+    # SAM 3D Body for 600 frames on one 4090: about 8 min of compute + install + a session (the trial's good session: 14.3 min;
+    # the ready pods' session start-up is 3.0 min p50)
     assert 12 < by["sam3d_body"]["p50_min"] < 17
-    assert by["post"]["overhead_min"]["kind"] == "same_pod"          # one chunk: on the fit pod (trial: 2 s)
-    assert "beats" in by["analyses"]["deps"]                          # timing reads the beat grid
+    assert "beats" in by["analyses"]["deps"] and by["world"]["deps"] == ["camera", "people"]
+    assert by["upload"]["optional"] and not any("upload" in s["deps"] for s in by.values())
     t = A.totals(list(by.values()))
-    assert 100 < t["wall_min"]["p50"] < 140 and t["wall_min"]["p90"] > 1.6 * t["wall_min"]["p50"]
-    assert t["critical"][:3] == ["intake", "upload", "people"]
+    assert 60 < t["wall_min"]["p50"] < 100 and t["wall_min"]["p90"] > 1.6 * t["wall_min"]["p50"]
+    assert t["critical"][:3] == ["intake", "people", "world"]
     long = {s["id"]: s for s in A.route_plan("mono", {**TRIAL, "duration_s": 88.1, "frames": 2643}, {})}
-    assert long["fits"]["lanes"] == 5 and long["post"]["overhead_min"]["kind"] == "session"
+    assert long["fits"]["lanes"] == 4 == A.mono_chunks(88.1, 29.994)
     multi = {s["id"]: s for s in A.route_plan("multi", {"n": 6, "duration_s": 360.0, "size_mb": 1230.0, "fps": 30.0,
                                                          "frames": 10800}, {"room_known": True})}
     assert multi["cameras"]["lanes"] == 6 and multi["cameras"]["overhead_min"]["kind"] == "session"
     assert all(multi[s]["overhead_min"]["kind"] == "farm" for s in ("fronts", "shape", "fits", "stitch", "analyses"))
-    assert "6 ssh" in multi["upload"]["label"] and "4 files" in multi["upload"]["label"]
+    assert "4 ssh" in multi["upload"]["label"] and "4 files" in multi["upload"]["label"] and not multi["upload"]["optional"]
 
 
 # ------------------------------------------------------------------------------------------------ ETA
@@ -430,12 +436,13 @@ def test_parallel_lanes_share_the_uplink_and_run_in_rounds():
     min where the physical floor is 63), and 8 phones as 8 pods at once where `remote run --parallel` starts 6."""
     long = {s["id"]: s for s in A.route_plan("mono", {**TRIAL, "duration_s": 88.1, "frames": 2643}, {})}
     fits = long["fits"]
-    assert fits["lanes"] == 5 and fits["overhead_min"]["p50"] == pytest.approx(6.3 + 5 * 1600 / 2.1 / 60, abs=0.11)
-    assert fits["overhead_min"]["p90"] == pytest.approx(15.0 + 5 * 1600 / 0.73 / 60, abs=0.11)
+    o = A.SESSION_OVERHEAD_MIN
+    assert fits["lanes"] == 4 and fits["overhead_min"]["p50"] == pytest.approx(o["p50"] + 4 * 670 / 2.1 / 60, abs=0.11)
+    assert fits["overhead_min"]["p90"] == pytest.approx(o["p90"] + 4 * 670 / 0.73 / 60, abs=0.11)
     one = {s["id"]: s for s in A.route_plan("mono", TRIAL, {})}["fits"]
-    assert one["lanes"] == 1 and one["overhead_min"]["p50"] == pytest.approx(6.3 + 1600 / 2.1 / 60, abs=0.11)
+    assert one["lanes"] == 1 and one["overhead_min"]["p50"] == pytest.approx(o["p50"] + 670 / 2.1 / 60, abs=0.11)
     t = A.totals(list(long.values()))
-    assert t["wall_min"]["p50"] > 240                                   # ~4.3 h for 88 s, not the 3.4 h quoted before
+    assert t["wall_min"]["p50"] > 120                                   # the 4 fit lanes share the one home uplink
     multi = {s["id"]: s for s in A.route_plan("multi", {"n": 8, "duration_s": 60.0, "size_mb": 400.0, "fps": 30.0,
                                                          "frames": 1800}, {"room_known": True})}
     cam = multi["cameras"]
@@ -466,7 +473,8 @@ def test_a_builtin_failure_beside_a_running_agent_step_keeps_the_run_open(root, 
     A.Driver(run, poll_s=0.05).loop()
     d = A.load(run)
     assert [s["status"] for s in d["steps"]] == ["running", "failed", "blocked"]
-    assert d["status"] == "waiting" and not d.get("ended")       # the agent still works: no end, ETA and ELAPSED go on
+    # the agent still works: no end, ETA and ELAPSED go on, and the run reads "running", not "waiting" (2026-10-22 review)
+    assert d["status"] == "running" and not d.get("ended")
     assert A.live(d)["eta_s"]["p50"] > 0
 
 

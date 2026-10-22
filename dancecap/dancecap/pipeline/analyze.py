@@ -46,7 +46,7 @@ import time
 from pathlib import Path
 
 from . import paths
-from .util import SID_RE, TAKE_RE, append_jsonl, mtime, pid_alive, read_json, read_jsonl, write_json_atomic, \
+from .util import SID_RE, TAKE_RE, append_fd, append_jsonl, mtime, pid_alive, read_json, read_jsonl, write_json_atomic, \
     write_text_atomic
 
 SCHEMA = "dancecap.analysis/1"
@@ -70,14 +70,20 @@ PRICE_HR = {"gpu": 0.89,        # RTX 4090 secure: the farm's EU-RO-1 pods and e
             "cpu_gw": 0.07,     # 2 vCPU gateway
             "local": 0.0}
 # One remote-runner pod session costs this much wall before and after its job's compute: bundle, pod create to ssh,
-# CUDA check, upload, bootstrap, tool installs, pack + download. Measured on the 32 sessions of 2026-10-19..21 whose
-# jobs all worked (result.json timings): p50 6.3 min, p90 15.0, max 23.9 (the 2026-10-21 trial: 5.2-17.8). Every agent
-# step is at least one such session today. A volume-farm job starts from the prebuilt env: container up 30 s, env 16 s,
-# pull 15-40 s (FARM.md drill).
-SESSION_OVERHEAD_MIN = {"p50": 6.3, "p90": 15.0}
+# CUDA check, upload, bootstrap, tool installs, pack + download. The 32 sessions of 2026-10-19..21 whose jobs all worked:
+# p50 6.3 min, p90 15.0, max 23.9. Since 2026-10-22 (uv installs, the bootstrap and the setup commands next to the upload,
+# the volume route, CPU pods; docs/PIPELINE_EFFICIENCY.md 7d) the 7 live sessions measured 2.3-4.1 min (pod lifetime minus
+# compute, median 2.8) with the home uplink at 0.3-1.8 MB/s; p90 keeps room for a slow uplink and stock retries. A
+# volume-farm job starts from the prebuilt env: container up 30 s, env 16 s, pull 15-40 s (FARM.md drill).
+SESSION_OVERHEAD_MIN = {"p50": 3.0, "p90": 7.0}
 FARM_OVERHEAD_MIN = {"p50": 1.0, "p90": 4.0}
 SAME_POD_MIN = {"p50": 0.5, "p90": 2.0}          # a step that runs on the previous step's pod (no new session)
-MA2D_CKPT_MB = 1600       # every fit bundle carries the 1.6 GB ma_2d checkpoint today (trial: 1636 MB, 600 s upload)
+# what a fit session sends on top of the usual bundle: the ma_2d checkpoint's state_dict copy (front_pod.MA2D_STRIPPED, 540 MB;
+# the trial uploaded the 1.6 GB file in 600 s) + the MAMMA body models ma_3d loads (locked-head SMPLX_NEUTRAL 109 MB, verts_512
+# 21.5 MB; smplx/SMPLX_NEUTRAL is the same file). Measured on the merged runner (2026-10-22, the lk03_cut20b fit jobs): a
+# 41 MB bundle + these 670 MB, which a pod on the farm volume links from it (the volume route) and any other pod gets in a
+# side bundle through the home uplink. The plan keeps the side bundle (EU-RO-1 stock is not guaranteed).
+MA2D_CKPT_MB = 670
 RUNNER_MAX_PODS = 6       # `remote run --parallel` starts at most this many pods at once (cli --max-pods default)
 # A running step past its plan: the lognormal of its p50 / p90 says how much is left given that it has not finished
 # (residual_min); past p90, where the plan says nothing more, at least this many x the elapsed time is left. Measured:
@@ -219,10 +225,13 @@ def route_plan(route: str, f: dict, opts: dict | None = None) -> list[dict]:
     steps = [_step("intake", "Probe the videos, create the take", "local", [], 0.5, 1.0, basis="ffprobe: seconds",
                    executor="builtin", price="local")]
     if o["upload"]:
+        # the volume farm's copy (multi-view: the farm jobs read src/<take>/). The mono route's runner sessions upload their
+        # own inputs, so there it is optional and nothing waits for it
         steps.append(_step("upload", "Upload the videos once to the Runpod volume (resumable; a file over 24 MB striped "
-                           "over 6 ssh streams, smaller ones in tar batches; 4 files at once)", "pod-cpu", ["intake"], up50, up90,
+                           "over 4 ssh streams, smaller ones in tar batches; 4 files at once)", "pod-cpu", ["intake"], up50, up90,
                            basis=f"{S:.0f} MB at {UPLOAD_MBPS['p50']} MB/s (p90 at {UPLOAD_MBPS['p90']} MB/s), measured "
-                           "2026-10-19..21; gateway up in 26-37 s", executor="builtin", price="cpu_gw"))
+                           "2026-10-19..21; gateway up in 26-37 s", executor="builtin", price="cpu_gw",
+                           optional=route == "mono"))
     up = ["upload"] if o["upload"] else ["intake"]
     if route == "multi":
         C = int(f["n"])
@@ -261,45 +270,100 @@ def route_plan(route: str, f: dict, opts: dict | None = None) -> list[dict]:
                                    basis="measured 74 min (clean re-run ~25)", price="gpu_l4", optional=True))
         steps.append(_step("export", "Export the Unity capture", "local", ["analyses", "avatars"], 3, 6,
                            basis="minutes (writes the Unity folder)", price="local"))
+        for s_ in steps:          # what exactly blocks each step that still needs an agent (the run's waiting message)
+            if s_["executor"] in ("agent", "farm"):
+                s_["blocker"] = MULTI_BLOCKERS.get(s_["id"], "take-specific code today")
     else:
-        K = max(1, math.ceil(D / 22.0))
-        cam50 = 4 + 7 * jl                              # focal hypotheses + the track, which scales with the frames
-        people50 = 82 * jl + 3                          # 82 min for 2643 frames on one 4090
-        sam50 = frames * (1785 + 306) / 2643 / 60       # 3DB infer + convert per frame on one 4090 (trial: 0.87 s)
+        # every mono step has a generic executor (pipeline/mono_route.py): `python -m dancecap.pipeline.mono_route <step>`,
+        # local or one tagged `remote run` per step. The light steps run here (beats 26 s, world ~1 min, post seconds: a pod
+        # session costs 3+ min), the analyses on a CPU runner pod (the ready-pods CPU route, PIPELINE_EFFICIENCY.md 7d).
+        K = mono_chunks(D, f.get("fps") or 30.0)
+        T = min(frames, int(round(CHUNK_MAX_S * 30)))     # frames of one chunk's fit window
+        # measured 2026-10-22 on lk03_mono20 (599 frames, 4090): camera installs 0.5 + probe / skeleton / track / MoGe-2 1.7 min;
+        # people installs 0.4 + detect 0.5 + SAM 1.4 + RTMW 0.6 + refinement round 2.1 + the rest 0.4 min
+        cam50 = 1.0 + 2.0 * frames / 600                # the track scales with the frames (2 shards on one GPU)
+        people50 = 1.0 + 4.6 * frames / 600             # detection, SAM 2.1 and RTMW scale with the frames
+        sam50 = frames * (1785 + 306) / 2643 / 60 + 3   # 3DB infer + convert per frame on one 4090 (trial: 0.87 s) + install
+        fit50 = 2 + 1.8 * T / 60 + 1                    # front ~2 min, MAMMA_MONO + prior 1.8 s per frame (trial), refine
         ana50 = max(2.0, 9 * jl)                        # 9 min for 2643 frames (J4); 66 s for 599 (trial)
+
+        def mono(id, label, where, deps, p50, p90, **kw):
+            """A mono step run by mono_route (cmd executor; pod steps pay the runner session's start-up)."""
+            cmd = ["-m", "dancecap.pipeline.mono_route", id, "--take", "{take}", "--run", "{run}"]
+            if where == "local":
+                return _step(id, label, where, deps, p50, p90, executor="cmd", price="local", cmd=cmd, **kw)
+            st = _pod_step(id, label, where, deps, p50, p90, executor="cmd", **kw)
+            st["cmd"] = cmd
+            return st
+        realism = ["sam3d_body"] if o["realism"] else []
         steps += [
-            _pod_step("beats", "Beat grid (heat_beats)", "pod-cpu", up, 1, 3, price="cpu",
-                      basis="heat_beats: 26 s of CPU + 3 s of GPU (trial, run on this PC: no pod job yet)"),
-            _pod_step("camera", "Camera track + focal, one pod", "pod-gpu", up, cam50, cam50 * 1.6,
-                      basis="measured ~11 min on one pod for 2643 frames (john_lula J2), scaled by frames; time shards "
-                      "are not built"),
-            _pod_step("people", "People, bibs, SAM 2.1, whole-body pose, one pod", "pod-gpu", up, people50,
-                      people50 * 1.6, basis="measured 82 min for 2643 frames on one 4090; time shards are not built"),
-            _pod_step("sam3d_body", "SAM 3D Body pose prior, one pod", "pod-gpu", ["people"], sam50, sam50 * 1.6,
-                      basis="measured 1785 s infer + 306 s convert for 2643 frames; trial 0.355 s per person-frame on a "
-                      "4090; time shards are not built", optional=not o["realism"]),
-            _pod_step("shape", "Shape pass (statures held)", "pod-gpu", ["people", "camera"], 20, 30,
-                      basis="measured 20 min (fit 1202 s)"),
-            _pod_step("fits", f"MAMMA_MONO + prior, {K} chunk(s) of ~22 s, one pod each", "pod-gpu",
-                      ["shape"] + (["sam3d_body"] if o["realism"] else []), 23, 40, lanes=K, extra_mb=MA2D_CKPT_MB,
-                      basis="measured 40 min for 46 s, scaled per chunk; trial: front 46 s + fit 1080 s + refine 52 s "
-                      "for 20 s"),
-            _pod_step("post", "Stitch, facing repair, foot locking", "pod-cpu", ["fits"], 2 if K == 1 else 4,
-                      6 if K == 1 else 8, price="gpu" if K == 1 else "cpu", overhead="same_pod" if K == 1 else "session",
-                      basis="seconds to minutes of CPU (trial: 2 s on the fit pod, one chunk)"),
-            _pod_step("analyses", "Timing, physics, counterbalance, floorcraft", "pod-cpu", ["post", "beats"], ana50,
-                      ana50 * 2, price="cpu_mem", basis="measured 9 min for 2643 frames (J4), 66 s for 599 (trial); "
-                      "one pod"),
-            _pod_step("avatars", "LHM++ avatars, renders, encode on the pod", "pod-gpu", ["people", "post"], 10, 18,
-                      basis="measured 380 s install + 143 s render (prebuilt env: ~3 min); encode on the pod",
-                      optional=not o["realism"]),
-            _step("export", "Export the Unity capture", "local", ["analyses", "avatars"], 2, 4, basis="minutes",
-                  price="local"),
+            mono("beats", "The video's sound + beat grid (beats, heat_beats)", "local", ["intake"], 1, 3,
+                 basis="measured 26 s on this PC (2026-10-21 trial); light, a pod session would cost 6+ min"),
+            mono("camera", "Camera: PTZ track + MoGe-2, one pod", "pod-gpu", ["intake"], cam50, cam50 * 1.8,
+                 basis="measured 2.2 min of pod commands for 599 frames (lk03_mono20, 2026-10-22), scaled by frames; "
+                 "cameras.mono_cam"),
+            mono("people", "The couple: detect, lead / follow, SAM 2.1, whole-body pose, one pod", "pod-gpu", ["intake"],
+                 people50, people50 * 1.8, basis="measured 5.6 min of pod commands for 599 frames (lk03_mono20, "
+                 "2026-10-22: two SAM 2.1 rounds), scaled by frames; people_mono (no bibs)"),
+            mono("world", "World frame: focal, gravity, camera height from the statures", "local", ["camera", "people"],
+                 1.5, 4, basis="CPU: the skeleton re-solved at one focal + the track refine (2 min for 2643 frames, J2)"),
+            mono("sam3d_body", "SAM 3D Body pose prior, one pod (frames decoded on the pod)", "pod-gpu", ["world"], sam50,
+                 sam50 * 1.6, basis="measured 1785 s infer + 306 s convert for 2643 frames; trial 0.355 s per person-frame "
+                 "on a 4090; + import / QA / prior here (43 s)", optional=not o["realism"]),
+            mono("fits", f"MAMMA_MONO + prior, {K} chunk(s) of <= {CHUNK_MAX_S:g} s, one pod each", "pod-gpu",
+                 ["world"] + realism, fit50, fit50 * 1.6, lanes=K, extra_mb=MA2D_CKPT_MB,
+                 basis="trial: front 46 s + fit 1080 s (1.8 s per frame) + refine 52 s for 599 frames; betas pinned from the "
+                 "statures (no shape pass)"),
+            mono("post", "Stitch the chunks + depth-spike repair", "local", ["fits"], 0.5, 2,
+                 basis="stitch 0.4-8 s, jl_repair 0.6-1.8 s (trial)"),
+            mono("analyses", "Timing, physics, counterbalance, floorcraft, one CPU pod", "pod-cpu", ["post", "beats"],
+                 ana50, ana50 * 2, price="cpu", basis="measured 9 min for 2643 frames (J4), 66 s for 599 (trial); a CPU "
+                 "runner pod (the trial's analyses: 50 s on 8 vCPUs against 70 s on a 4090, 2026-10-22)"),
+            mono("avatars", "LHM++ splat avatars from the take's own crops, one pod", "pod-gpu", ["post"], 8, 15,
+                 optional=True, basis="crops chosen here 20-50 s (lhmpp_generic); pod: LHM++ venv install 2-7.5 min "
+                 "(john_lula), both avatars 2.3 min, LBS export ~2 min; nothing in the export reads them"),
+            mono("export", "Export the Unity capture (work/<take>/export/, Unity untouched)", "local", ["analyses"], 0.5, 2,
+                 basis="measured 4.5-5 s (trial, round 2)"),
         ]
+        if o["film"]:
+            steps.append(mono("film", "Film render (needs the Unity editor: skipped here)", "local", ["export"], 0.1, 0.3,
+                              optional=True, basis="the Unity editor belongs to another workflow"))
+        return steps
     if o["film"]:
         steps.append(_step("film", "Film render (Unity, 1080p)", "local", ["export"], Dm * 1.1 + 0.5, Dm * 1.6 + 2,
                            basis="measured about 28 frames/s", price="local", optional=True))
     return steps
+
+
+# The multi-view route's steps without a generic executor (2026-10-22): the exact reason, shown when the run waits there
+MULTI_BLOCKERS = {
+    "room": "no generic room-map executor: each room map was built for its take (room.py / room_two_cams / room_single_cam)",
+    "cameras": "no generic multi-phone camera executor: a shared world frame needs every phone localised against a solved room "
+               "map, and that code is take-specific (cameras/newcam.py WORK paths, recap_cameras for the recap); "
+               "cameras.mono_cam solves one phone in its own frame only",
+    "people": "no generic multi-view people executor: the dancers are picked by triangulating across phones (recap_people, "
+              "carlos_aline_people are take-specific); people_mono handles one phone",
+    "fronts": "the volume farm's chunk profiles are per take (farm/recap_profile, ca_profile, jl_profile): no generic profile yet",
+    "shape": "the volume farm's chunk profiles are per take: no generic profile yet",
+    "fits": "the volume farm's chunk profiles are per take: no generic profile yet",
+    "stitch": "the volume farm's chunk profiles are per take: no generic profile yet",
+    "analyses": "farm/recap_analysis and ca_analysis are per take: no generic multi-view analysis job yet",
+    "avatars": "the LHM++ avatar job is take-specific",
+    "speech": "the speech jobs (dancecap/speech) are set up per take",
+    "export": "recap_export / carlos_aline_export are per take: no generic multi-view export yet",
+}
+CHUNK_MAX_S = 26.0       # mono fit windows (mono_route.CHUNK_MAX_S): <= 26 s overlapping by 4 s, cores of ~22 s
+
+
+def mono_chunks(duration_s: float, fps: float = 30.0) -> int:
+    """How many fit chunks mono_route.plan_chunks makes for a video (farm.chunks.equal_windows arithmetic, no imports)."""
+    n = max(2, int(round(float(duration_s) * float(fps or 30.0))))
+    N = int(math.floor((n - 1) / float(fps or 30.0) * 30.0 + 1e-6)) + 1
+    cap, o = CHUNK_MAX_S * 30.0, 4.0 * 30.0
+    k = 1
+    while N > cap and (N + k * o) / (k + 1) > cap + 1e-9 and k < 200:
+        k += 1
+    return 1 if N <= cap else k + 1
 
 
 def step_cost(st: dict, minutes: float | None = None) -> float:
@@ -337,12 +401,24 @@ def residual_min(p50, p90, el) -> tuple[float, float]:
     return l50, l90
 
 
+def session_covers_step(s: dict) -> bool:
+    """A running step's live session ETA is the whole step's: measured progress (`eta_basis` "measured": every live
+    session's ETA from progress_eta, no generic prior, no timeout, no stall), the step is one session per lane
+    (`whole_step`, true unless the plan says otherwise) and every lane has a live session (`live_lanes`)."""
+    return (s.get("eta_basis") == "measured" and s.get("whole_step", True) is not False
+            and int(s.get("live_lanes") or 0) >= int(s.get("lanes") or 1))
+
+
 def schedule(steps: list[dict], now: float = 0.0, which: str = "p50") -> dict:
     """Earliest finish of every step (minutes from `now` for open ones; real times for finished ones) and the critical
     path. Each step: its own start/end when known (`started`/`ended` epoch seconds, `status`), else its p50/p90. A running
-    step has residual_min() left; its live pod sessions' ETA (`eta_s`, `eta_s_p90`) can push that out but never pull it
-    in (a session covers part of a step: the trial's front session said 5 min while the step had 83 to go), and a
-    session ETA made from a job's timeout (`eta_basis` names it) is not used.
+    step has residual_min() left. Its live pod sessions' ETA (`eta_s`, `eta_s_p90`):
+    - covers the whole step (session_covers_step: measured progress of every lane): it IS the time left, in or out. The
+      push-out-only rule made the run ETA 3x the step's at p50 and 9x at p90 (2026-10-21 20:59: the analyses session said
+      92 s from measured phases, the run said 396 s / 1188 s, 127 s were left; 2026-10-22 review);
+    - covers part of the step or is not measured: it can push the time left out, never pull it in (a session covers part
+      of a step: the trial's front session said 5 min while the step had 83 to go);
+    - made from a job's timeout (`eta_basis` "timeout"): not used.
     Returns {finish: {id: epoch}, end, total_min, critical: [ids], left: {running id: seconds}}."""
     by = {s["id"]: s for s in steps}
     fin: dict[str, float] = {}
@@ -369,7 +445,9 @@ def schedule(steps: list[dict], now: float = 0.0, which: str = "p50") -> dict:
             l50, l90 = residual_min(s.get("p50_min"), s.get("p90_min"), el)
             lft = (l90 if which == "p90" else l50) * 60
             eta = s.get("eta_s_p90") if which == "p90" and s.get("eta_s_p90") is not None else s.get("eta_s")
-            if eta is not None and "timeout" not in str(s.get("eta_basis") or ""):
+            if eta is not None and session_covers_step(s):
+                lft = float(eta)
+            elif eta is not None and "timeout" not in str(s.get("eta_basis") or ""):
                 lft = max(lft, float(eta))
             left[sid] = lft
             fin[sid] = now + lft
@@ -463,6 +541,9 @@ def live(doc: dict, now: float | None = None) -> dict:
             "eta_s": {"p50": round(s50["end"] - now) if open_ else 0, "p90": round(s90["end"] - now) if open_ else 0},
             "finish_at": {"p50": round(s50["end"]) if open_ else None, "p90": round(s90["end"]) if open_ else None},
             "critical": s50["critical"], "ended": round(end, 1) if end else None,
+            # each running step's time left as the ETA counts it (the step rows show this, not the raw session ETA)
+            "left": {k: {"p50": round(v), "p90": round(s90["left"].get(k, v))} for k, v in s50["left"].items()}
+            if open_ else {},
             "elapsed_s": round((end if end else now) - float(doc.get("created") or now)),
             "cost_usd": cost}
 
@@ -901,6 +982,39 @@ def _upload(doc: dict, report) -> str:
 
 # ------------------------------------------------------------------------------------------------ the driver
 
+SKIP_RC = 3    # pipeline/mono_route's exit code for a step that cannot run here for a stated reason (avatars, film)
+
+
+def run_cmd_step(run: str, doc: dict, st: dict) -> tuple[str, str]:
+    """A cmd step: `python <cmd>` with {take} / {run} filled in, its output to logs/<step>.log -> (done | skipped | failed,
+    message). The message is the command's last "RESULT: " line (mono_route prints what the step produced), "SKIP: " with rc
+    SKIP_RC marks an optional step skipped, a failure carries the log's last lines."""
+    sid = st["id"]
+    argv = [sys.executable] + [a.replace("{take}", doc["take"]).replace("{run}", run) for a in st["cmd"]]
+    logf = run_dir(run) / "logs" / f"{sid}.log"
+    logf.parent.mkdir(parents=True, exist_ok=True)
+    start = logf.stat().st_size if logf.exists() else 0
+    with open(logf, "a", encoding="utf-8") as fh:
+        fh.write(f"\n[analyze {time.strftime('%Y-%m-%d %H:%M:%S')}] {' '.join(argv[1:])}\n")
+        fh.flush()
+        rc = subprocess.run(argv, cwd=str(paths.root()), stdout=fh, stderr=subprocess.STDOUT,
+                            stdin=subprocess.DEVNULL, creationflags=NO_WINDOW).returncode
+    try:
+        with open(logf, encoding="utf-8", errors="replace") as fh:
+            fh.seek(start)
+            lines = fh.read().splitlines()
+    except OSError:
+        lines = []
+    tagged = lambda tag: next((x[len(tag):].strip() for x in reversed(lines) if x.startswith(tag)), None)  # noqa: E731
+    where = f"(log {paths.rel_display(logf)})"
+    if rc == SKIP_RC and tagged("SKIP:") is not None and st.get("optional"):
+        return "skipped", f"{tagged('SKIP:')} {where}"[:600]
+    if rc != 0:
+        tail = " | ".join(x.strip() for x in lines[-6:] if x.strip())
+        return "failed", f"rc={rc}: {tail} {where}"[:600]
+    return "done", f"{tagged('RESULT:') or 'rc 0'} {where}"[:600]
+
+
 def _ready(doc: dict, st: dict) -> bool | None:
     """A pending step: True = its deps are satisfied (it can start or wait for an agent now), None = a dep failed (it is
     blocked), False = not yet."""
@@ -933,14 +1047,17 @@ def _unblock(doc: dict) -> list[str]:
 
 
 def _final_status(doc: dict) -> str:
-    """done / failed / waiting. A step still running (an agent's) keeps the run open: a builtin step failing beside it
-    used to end the run as failed (ELAPSED frozen, ETA 0, the heartbeat gone) while the agent worked on."""
+    """done / failed / running / waiting, when a driver ends. A step still running (an agent's) keeps the run open: a
+    builtin step failing beside it used to end the run as failed (ELAPSED frozen, ETA 0, the heartbeat gone) while the
+    agent worked on, and the run read "waiting" while that step ran (2026-10-22 review): it is "running" then. "waiting"
+    = nothing runs and the open steps wait for an agent or a pod limit."""
     st_all = [s["status"] for s in doc["steps"]]
     req = [s for s in doc["steps"] if not s.get("optional")]
     if all(s["status"] in DONE for s in req):
         return "done"
-    if (any(s in ("failed", "blocked") for s in st_all)
-            and not any(s in ("waiting_agent", "running") for s in st_all)):
+    if "running" in st_all:
+        return "running"
+    if any(s in ("failed", "blocked") for s in st_all) and "waiting_agent" not in st_all:
         return "failed"
     return "waiting"
 
@@ -1016,20 +1133,14 @@ class Driver:
                                                                       "ts": time.time()})
                     msg = _upload(doc, report)
                 elif st.get("executor") == "cmd" and st.get("cmd"):
-                    argv = [sys.executable] + [a.replace("{take}", doc["take"]) for a in st["cmd"]]
-                    logf = run_dir(self.run) / "logs" / f"{sid}.log"
-                    logf.parent.mkdir(parents=True, exist_ok=True)
-                    with open(logf, "a", encoding="utf-8") as fh:
-                        rc = subprocess.run(argv, cwd=str(paths.root()), stdout=fh, stderr=subprocess.STDOUT,
-                                            stdin=subprocess.DEVNULL, creationflags=NO_WINDOW).returncode
-                    if rc != 0:
-                        raise RuntimeError(f"{' '.join(st['cmd'])} rc={rc} (log {paths.rel_display(logf)})")
-                    msg = f"rc 0 (log {paths.rel_display(logf)})"
+                    res, msg = run_cmd_step(self.run, doc, st)
+                    self.results[sid] = (res, msg)
+                    return
                 else:
                     raise RuntimeError("no executor")
                 self.results[sid] = ("done", msg)
             except Exception as e:  # noqa: BLE001
-                self.results[sid] = ("failed", f"{type(e).__name__}: {e}"[:400])
+                self.results[sid] = ("failed", f"{type(e).__name__}: {e}"[:600])
         t = threading.Thread(target=work, daemon=True, name=f"analyze-{sid}")
         self.threads[sid] = t
         t.start()
@@ -1077,10 +1188,11 @@ class Driver:
                 if not ok or st["id"] in self.threads:
                     continue
                 runnable = st["executor"] in ("builtin", "cmd")
-                if st["id"] == "upload" and not self.allow_pods:
-                    update_step(self.run, "upload", status="waiting_agent", parked="yes",
-                                message=f"needs --yes (it starts a CPU gateway pod, about $0.01-0.05): "
-                                        f"`analysis resume {self.run} --yes`")
+                if runnable and st["where"] != "local" and not self.allow_pods:
+                    pods = ("a CPU gateway pod, about $0.01-0.05" if st["id"] == "upload" else
+                            f"{st.get('lanes', 1)} Runpod pod(s), about ${step_cost(st):.2f} (p50)")
+                    update_step(self.run, st["id"], status="waiting_agent", parked="yes",
+                                message=f"needs --yes (it starts {pods}): `analysis resume {self.run} --yes`")
                     changed = True
                     continue
                 left = budget_left(self.run) if st["where"] != "local" else None
@@ -1101,7 +1213,8 @@ class Driver:
                            f"--max-cost is capped at it)" if left > 0 else "; the run's pod limit is used up: "
                            f"`analysis limit {self.run} USD` before its sessions can start")
                     update_step(self.run, st["id"], status="waiting_agent",
-                                message=f"needs an agent: take-specific code today ({st['executor']} step){lim}")
+                                message=f"needs an agent: {st.get('blocker') or 'take-specific code today'} "
+                                        f"({st['executor']} step){lim}")
                     event(self.run, "waiting_agent", st["id"], st["label"])
                     changed = True
             if changed:
@@ -1130,7 +1243,7 @@ class Driver:
                 self._snap("final" if status == "done" else "failed", f"analysis {status}", final=True)
             print(f"[analyze] {self.run}: {status}" + ("; the waiting steps need an agent (the monitor lists them)"
                                                        if status == "waiting" else ""), flush=True)
-            return 0 if status in ("done", "waiting", "cancelled") else 1
+            return 0 if status in ("done", "running", "waiting", "cancelled") else 1
 
 
 # ------------------------------------------------------------------------------------------------ heartbeat
@@ -1144,19 +1257,42 @@ def heartbeat_alive(run: str) -> bool:
     return bool(hb.get("pid") and not hb.get("ended") and pid_alive(hb["pid"], hb.get("create_time")))
 
 
-def ensure_heartbeat(run: str) -> bool:
-    """Start the run's heartbeat process (detached, no window) unless one lives. Never in tests or on a temp root, never
-    raises. The driver calls it when it starts, every agent mark calls it."""
+HB_SPAWN_GRACE_S = 60.0   # a heartbeat spawned this recently that has not registered yet still counts as running
+
+
+def _hb_spawning(hb: dict, now: float) -> bool:
+    sp = hb.get("spawn") or {}
+    return bool(sp.get("pid") and now - float(sp.get("ts") or 0) < HB_SPAWN_GRACE_S and pid_alive(sp["pid"]))
+
+
+def ensure_heartbeat(run: str, spawn=None) -> bool:
+    """Start the run's heartbeat process (detached, no window) unless one lives or is starting. Never in tests or on a temp
+    root (unless `spawn` is given: the tests' stand-in for Popen), never raises. The driver calls it when it starts, every
+    agent mark calls it. Decided under the run lock with a spawn marker in heartbeat.json: two marks 2 s apart both saw no
+    heartbeat yet (the first child had not registered) and started two (2026-10-21); the second only printed 'another
+    heartbeat runs', into the same log at the same offset. The log is opened with a true append handle (util.append_fd)."""
     try:
-        if (not paths.is_real_root() or os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("DANCECAP_SNAPSHOTS") == "0"
-                or heartbeat_alive(run)):
+        if spawn is None and (not paths.is_real_root() or os.environ.get("PYTEST_CURRENT_TEST")
+                              or os.environ.get("DANCECAP_SNAPSHOTS") == "0"):
             return False
-        logf = run_dir(run) / "logs" / "heartbeat.log"
-        logf.parent.mkdir(parents=True, exist_ok=True)
-        with open(logf, "a", encoding="utf-8") as fh:
-            subprocess.Popen([sys.executable, "-m", "dancecap.pipeline", "analysis", "heartbeat", run],
-                             cwd=str(paths.root()), stdin=subprocess.DEVNULL, stdout=fh, stderr=subprocess.STDOUT,
-                             creationflags=NO_WINDOW | DETACHED, close_fds=True)
+        with _RunLock(run):
+            hb = read_json(_hb_path(run), None) or {}
+            now = time.time()
+            if heartbeat_alive(run) or _hb_spawning(hb, now):
+                return False
+            argv = [sys.executable, "-m", "dancecap.pipeline", "analysis", "heartbeat", run]
+            if spawn is not None:
+                pid = spawn(argv)
+            else:
+                fd = append_fd(run_dir(run) / "logs" / "heartbeat.log")
+                try:
+                    pid = subprocess.Popen(argv, cwd=str(paths.root()), stdin=subprocess.DEVNULL, stdout=fd,
+                                           stderr=subprocess.STDOUT, creationflags=NO_WINDOW | DETACHED,
+                                           close_fds=True).pid
+                finally:
+                    os.close(fd)
+            write_json_atomic(_hb_path(run), {**({} if hb.get("pid") and not hb.get("ended") else hb),
+                                              "spawn": {"pid": pid, "ts": now}})
         return True
     except Exception:  # noqa: BLE001
         return False
@@ -1276,8 +1412,8 @@ def print_plan(doc: dict) -> None:
     print(f"  pods: ${t['cost_usd']['p50']:.2f} expected, ${t['cost_usd']['p90']:.2f} p90; up to {t['pods_max']} pods at "
           f"once; on Runpod: {', '.join(t['on_runpod'])}; on this PC: {', '.join(t['local'])}")
     print(f"  every pod step includes its start-up: a runner session {SESSION_OVERHEAD_MIN['p50']:g} min p50 / "
-          f"{SESSION_OVERHEAD_MIN['p90']:g} min p90 (bundle, pod start, upload, bootstrap, installs, download; 32 sessions "
-          f"2026-10-19..21), a farm job {FARM_OVERHEAD_MIN['p50']:g}-{FARM_OVERHEAD_MIN['p90']:g} min")
+          f"{SESSION_OVERHEAD_MIN['p90']:g} min p90 (bundle, pod start, upload, bootstrap, installs, download; live sessions "
+          f"2026-10-22), a farm job {FARM_OVERHEAD_MIN['p50']:g}-{FARM_OVERHEAD_MIN['p90']:g} min")
     if doc.get("max_cost_usd") is not None:
         lim = float(doc["max_cost_usd"])
         print(f"  run pod limit: ${lim:.2f}" + (f" (below the p90 ${t['cost_usd']['p90']:.2f}: the run may stop at it; "
@@ -1380,10 +1516,13 @@ def spawn_driver(run: str) -> int:
         if (sp.get("pid") and time.time() - float(sp.get("ts") or 0) < 60 and pid_alive(sp["pid"])
                 and float((doc.get("driver") or {}).get("started") or 0) < float(sp.get("ts") or 0)):
             return 0
-        with open(logf, "a", encoding="utf-8") as fh:
+        fd = append_fd(logf)   # several drivers of one run append to this log over its life (util.append_fd)
+        try:
             p = subprocess.Popen([sys.executable, "-m", "dancecap.pipeline", "analysis", "resume", run],
-                                 cwd=str(paths.root()), stdin=subprocess.DEVNULL, stdout=fh, stderr=subprocess.STDOUT,
+                                 cwd=str(paths.root()), stdin=subprocess.DEVNULL, stdout=fd, stderr=subprocess.STDOUT,
                                  creationflags=NO_WINDOW | DETACHED, close_fds=True)
+        finally:
+            os.close(fd)
         if doc:
             doc["driver_spawn"] = {"pid": p.pid, "ts": time.time()}
             save(doc)

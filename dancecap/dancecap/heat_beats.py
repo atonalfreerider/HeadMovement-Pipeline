@@ -60,6 +60,12 @@ BANDS = C.BANDS  # bass_30_150, mid_1_4k, hi_4_9k
 CONTRAST_WIN_S = 6.0
 Z_LO, Z_HI = 1.5, 4.5  # music presence ramp on the best lattice-contrast z (0 at <= Z_LO, 1 at >= Z_HI)
 MUSIC_Z = 3.0  # a stretch is "music" where the bass lattice contrast exceeds this
+# A phone in a studio often hears little bass (lk03_mono20, 2026-10-22: bass z <= 1.9 over a clip that is music all through, the
+# 1-4 kHz band 2-3): when the bass band shows no music at all, the band with the clearest lattice decides at this lower bar, if
+# it holds for at least FALLBACK_SHARE of the clip and the pulse lattice itself is well supported (FALLBACK_MIN_SUPPORT beats)
+FALLBACK_Z = 2.0
+FALLBACK_SHARE = 0.5
+FALLBACK_MIN_SUPPORT = 12
 DROP_DB = 8.0  # the music's bass envelope (peak over 0.6 s) stays above (its median - DROP_DB) inside the music span
 ENV_FRAMES = 7  # 0.7 s of 0.1 s frames: the peak envelope
 
@@ -203,6 +209,12 @@ def analyse(x: np.ndarray, sr: int, tr: dict, duration: float, phase: int | None
     # music = bass lattice contrast above MUSIC_Z ... then the span edges are refined on the bass level step
     zb = z["bass_30_150"]
     music_c = centres[np.nan_to_num(zb, nan=0.0) >= MUSIC_Z]
+    music_band = "bass_30_150"
+    if not len(music_c) and len(centres) and int(model.get("n_support") or 0) >= FALLBACK_MIN_SUPPORT:
+        best = max(BANDS, key=lambda n: float(np.nanmedian(z[n])) if np.isfinite(z[n]).any() else -9.0)
+        zf = np.nan_to_num(z[best], nan=0.0)
+        if (zf >= FALLBACK_Z).mean() >= FALLBACK_SHARE:
+            music_c, music_band = centres[zf >= FALLBACK_Z], best
     span = None
     level_floor = None
     if len(music_c):
@@ -275,7 +287,7 @@ def analyse(x: np.ndarray, sr: int, tr: dict, duration: float, phase: int | None
     return {"model": model, "dt": dt, "flux": flux, "centres": centres, "z": z, "z_best": z_best, "t_bass": t_bass, "bass_db": bass_db,
             "level_floor_db": level_floor, "span": span, "edges_k": edges_k, "decision": decision, "k": ks, "t_pulse": tk,
             "p_track": p_track, "tracked": tracked, "aud": aud, "conf": conf_pulse, "support": support, "rows_all": rows_all,
-            "gov": gov, "phase": chosen, "duration": duration}
+            "gov": gov, "phase": chosen, "duration": duration, "music_band": music_band if span is not None else None}
 
 
 def _support(F: np.ndarray, dt: float, t: float, half_s: float = 0.02, neigh_s: float = 1.0) -> float:
@@ -434,7 +446,7 @@ def write_outputs(take: Take, a: dict, val: dict, tr: dict, dev: str, extra: dic
                                  "away: the lattice continues in the mid / high bands (applause / filtered fade) but is not evidence of the "
                                  "music's beat. No beat is written in beats_heat.json there; beats_merged.json keeps them with their confidence."),
                 "danced_span": [float(v) for v in take.window], "music_span": None if span is None else [round(span[0], 3), round(span[1], 3)],
-                "speech": extra.get("speech", [])}
+                "music_band": a.get("music_band"), "speech": extra.get("speech", [])}
     w("segments.json", segments)
     w("presence.json", {"t": _r(a["centres"], 2), "win_s": CONTRAST_WIN_S, "z": {n: [None if not np.isfinite(v) else round(float(v), 2) for v in zz]
                                                                                 for n, zz in a["z"].items()},

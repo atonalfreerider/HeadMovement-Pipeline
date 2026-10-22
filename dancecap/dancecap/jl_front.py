@@ -32,7 +32,18 @@ from . import recap_front as RF            # noqa: E402  (reads the env above)
 from .take import PACKAGE_ROOT              # noqa: E402
 
 CAM = "01"
-PEOPLE = PACKAGE_ROOT / "work" / "john_lula" / "people"
+
+
+def people_dir():
+    """work/<dance>/people of the dance being fitted (HM_FRONT_DANCE): the people stage's masks and 2D tracks (J3a for john_lula,
+    dancecap.people_mono for any other one-camera take). Was work/john_lula/people for every take (the 2026-10-21 trial patched it)."""
+    return RF.dance_work() / "people"
+
+
+def dance_cfg() -> dict:
+    """takes/<dance>.toml of the dance being fitted: its statures and soles (mono-init read john_lula.toml for every take: the trial's
+    stature.json carried john_lula's statures and soles)."""
+    return tomllib.loads((PACKAGE_ROOT / "takes" / f"{RF.DANCE}.toml").read_text(encoding="utf-8"))
 
 
 def log(msg: str) -> None:
@@ -50,7 +61,7 @@ def step_masks(chunk: dict) -> dict:
     idx = RF.frame_range(np.asarray(z["t"], float), chunk["t0"], chunk["t1"])
     fi = np.asarray(z["frame_index"], int)[idx]
     tt = np.asarray(z["t"], float)[idx]
-    mk = np.load(PEOPLE / f"masks_{CAM}.npz", allow_pickle=True)
+    mk = np.load(people_dir() / f"masks_{CAM}.npz", allow_pickle=True)
     out = work / "dancers" / CAM / "masks"
     out.mkdir(parents=True, exist_ok=True)
     frames, miss = [], {0: 0, 1: 0}
@@ -65,7 +76,7 @@ def step_masks(chunk: dict) -> dict:
                 miss[slot] += 1
         frames.append(row)
     (work / "dancers").mkdir(parents=True, exist_ok=True)
-    (work / "dancers" / "roles.json").write_text(json.dumps({"cams": {CAM: {"frames": frames}}, "source": "J3a people/masks_01.npz (SAM 2.1, bib identity)"}))
+    (work / "dancers" / "roles.json").write_text(json.dumps({"cams": {CAM: {"frames": frames}}, "source": f"work/{RF.DANCE}/people/masks_01.npz (SAM 2.1)"}))
     log(f"masks: {len(fi)} frames, missing lead {miss[0]} / follow {miss[1]}")
     return {"frames": int(len(fi)), "missing": miss}
 
@@ -105,11 +116,11 @@ def step_mono_init(chunk: dict) -> dict:
     cam = np.load(work / "cameras" / f"{CAM}.npz", allow_pickle=True)           # the chunk's cameras (the focal variant included)
     tc = np.asarray(cam["t"], float)
     fidx = np.asarray(cam["frame_index"], int)
-    tp = np.load(PEOPLE / f"teachers_{CAM}.npz", allow_pickle=True)
+    tp = np.load(people_dir() / f"teachers_{CAM}.npz", allow_pickle=True)
     j = np.clip(np.searchsorted(tc, tg), 1, len(tc) - 1)
     j = np.where(np.abs(tc[j - 1] - tg) < np.abs(tc[j] - tg), j - 1, j)
     jt = fidx[j]                                                                  # the dance-wide frame (row of the teacher tracks)
-    cfg = tomllib.loads((PACKAGE_ROOT / "takes" / "john_lula.toml").read_text(encoding="utf-8"))
+    cfg = dance_cfg()
     stat = [float(cfg["dancers"]["lead"]["stature_m"]), float(cfg["dancers"]["follow"]["stature_m"])]
     T = len(tg)
     pos, conf, depth, src = np.zeros((T, 2, 3)), np.zeros((T, 2)), np.zeros((T, 2)), np.zeros((T, 2), int)
@@ -150,7 +161,7 @@ def step_hair(chunk: dict) -> dict:
     z = np.load(RF.dance_work() / "cameras" / f"{CAM}.npz", allow_pickle=True)
     idx = RF.frame_range(np.asarray(z["t"], float), chunk["t0"], chunk["t1"])
     fi = np.asarray(z["frame_index"], int)[idx]
-    kp = np.load(PEOPLE / f"teachers_{CAM}.npz", allow_pickle=True)["kp"][:, 1]
+    kp = np.load(people_dir() / f"teachers_{CAM}.npz", allow_pickle=True)["kp"][:, 1]
     for sub in ("body", "hair"):
         (dd / sub).mkdir(parents=True, exist_ok=True)
     cfg = DH.HairConfig()

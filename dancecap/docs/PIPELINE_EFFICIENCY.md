@@ -430,6 +430,411 @@ farm_view}.py`, `pipeline/monitor/`, `progress_eta.py`. Tests: `tests/test_runne
 
 ---
 
+## 7d. Round 3 (2026-10-22): ready pods
+
+Task: cut the remote runner's per-session overhead. In the trial run `20261021-202809-trial_mono_jl20` the SAM 3D Body
+session (`20261021-203248-batch`) spent **443 s** from pod ready to compute start (upload 24 s, bootstrap 143 s of which
+`base` 138 s, the tool install 264 s) and the analyses session (`20261021-205148-batch`) **361 s** (upload of 146 MB 68 s,
+bootstrap 285 s of which `base` 152 s and `open3d` 102 s), all one step after the other.
+
+"Pod ready" below = the CUDA check passed and the kill switch is armed (the moment `pod_session` hands the pod over);
+"compute start" = the first job command that is not a setup command (`SETUP_COMMANDS`: install, setup, weights, ...).
+Every session now records it: `state.json` `ready_to_compute_s` and a runner.log line `pod ready -> compute`.
+
+### 7d.1 What the candidates measured
+
+A probe session (`20261022-003300-batch`, one 4090, $0.075) timed each candidate on a fresh pod, cold caches:
+
+| Step | Seconds |
+|---|---|
+| `pip install uv` | 1.3 |
+| uv, ONE call: torch 2.5.1+cu124 + every `base`, `mamma` and `open3d` pin (the trial's pip: 138 + 24 + 102 s) | **11.2** |
+| uv, SAM 3D Body's venv in ONE call: Python 3.12, torch 2.8+cu126, all deps, pymomentum (the trial: 237 s) | **14.0** |
+| the same install again from the warm uv cache | 0.6 |
+| the three repos (sam-3d-body, MHR, dinov3) fetched by commit with `--depth 1`, side by side | 0.7 |
+| apt (EGL / GL / OpenMP libs, pigz) | 9.3 |
+| packing that venv as an env tar (3.75 GB) / unpacking it | 127 / 44 |
+
+What follows for the four candidates:
+- **A prebuilt container image**: not built. The environments it would hold install in 11-14 s with uv, which is less than
+  unpacking the same environment from a tar (44 s) and far less than pulling a multi-GB image onto a host that has not
+  cached it (FARM.md: an uncached image adds its pull time). It would also need a registry account and a build host (this
+  PC has no Docker by owner decision). With the bootstrap now running next to the upload (below) the environment is off the
+  critical path anyway.
+- **Environments and weights on a network volume**: the environments, no (same reason). The weights, yes, built as the
+  **volume route** on the existing `hm-farm` volume (EU-RO-1): it already holds the gated body models and the ma_2d
+  checkpoint's state_dict copy (`farm.volume.sync_models`). No volume was created in another data center: that is a standing
+  charge (~$0.07/GB-month) and the pods that miss EU-RO-1 still work (they get those files in a side bundle).
+- **Public weights fetched on the pod**: the ma_2d checkpoint and the SMPL-X / MAMMA body models are NOT public (the MAMMA
+  download needs an account login, the SMPL-X models a licence), so they cannot be fetched by the pod. SAM 2.1, YOLO and
+  the gated SAM 3D Body checkpoint (with the HF token secret) were already fetched on the pod; the 2.8 GB 3DB checkpoint came
+  down in 5-11 s.
+- **Warm pods with a job queue**: not built. With pod create to ready at 30-60 s and ready to compute now 1-2 min, a warm
+  pod would save about 1.5-3 min per session while billing every idle minute and needing an adopt/claim protocol and an
+  extendable kill switch. Left as a follow-up for chained analyze steps.
+
+### 7d.2 What changed
+
+- **Parallel boot** (`remote_jobs.start_boot` / `wait_boot`): one ssh call sends the boot kit (`dancecap/remote/`, 108 KB,
+  through stdin) and starts `bootstrap.sh` in the background the moment the pod is ready; the bundle uploads next to it.
+  Steps that need a bundle file (the cached CUDA wheels) wait for a marker the runner touches after the extract
+  (`DANCECAP_WAIT_BUNDLE`). The runner then waits only for what is left (`state.json` `boot`: total vs waited). If the start
+  fails, the bootstrap runs after the extract as before; a failed bootstrap is still retried once in the foreground.
+- **Setup commands at pod-ready** (`early_commands` / `start_early` / `wait_early`): the leading setup commands
+  (`install`, `setup`, ...; or `"early": true`) of a job that brings its own environment start right after the boot kit, with
+  their secrets pushed first, in a thread next to the upload. When the job reaches the command it follows its log to the
+  end; the command's `.done` marker makes the normal run a no-op (or runs it again if the early one failed).
+- **uv in `bootstrap.sh`**: every install tries uv first (pip is the fallback, `DANCECAP_NO_UV=1` forces pip); one
+  `prefetch` uv call installs every requested feature's pins at once (`PINS_<feature>`); apt runs in the background and only
+  the features that load GL / EGL / OpenMP libs wait for it (open3d, room, check); `apt-get update` reads only Ubuntu's own
+  lists (one update took ~90 s on a host whose image also lists NVIDIA's CUDA repo).
+- **Jobs with their own environment** (`"base": false`): no `base` / `check` bootstrap (SAM 3D Body's 143 s), and no
+  implied ffmpeg for a video input unless a command names ffmpeg / ffprobe (its venv's cv2 decodes; the static build's
+  GitHub download competed with the install). The SAM 3D Body job writers and `remote/cand_sam3d_body/pod_job*.json` set it.
+- **SAM 3D Body install** (`remote/cand_sam3d_body/install.sh`): one uv call (step-by-step as the fallback), the uv cache next
+  to the venv (hardlinks), the repos fetched by commit with `--depth 1` in the background, the four import checks side by side.
+- **The volume route** (`remote.with_volume` / `VOL_CLOUD`, `remote_jobs.volume_split` / `place_served`): bundle files the
+  farm volume holds (MAMMA locked-head and `smplx/` models, the ma_2d state_dict copy; >= 8 MB) leave the bundle. Each GPU
+  type (and every CPU flavor) is tried first in the volume's data center with the volume mounted at `/hmvol`; there the files
+  are linked after an on-pod sha256 check. Any other pod, or a file whose hash differs, gets them in a side bundle (uploaded
+  and extracted in place). `DANCECAP_RUNNER_VOLUME=0` turns it off.
+- **The ma_2d checkpoint** goes up as its 540 MB state_dict copy whenever a job lists the 1.6 GB file (`slim_input`; the copy's
+  json note says the tensors are identical, sizes are checked). The trial's agent-written front job uploaded the 1.6 GB file.
+- **Slim body models for the analyses** (`job_models`): a job whose commands are all analyses (timing, physics,
+  counterbalance, floorcraft, quality, stitch) and whose fits are neutral gets SMPLX_NEUTRAL only (`"models"` overrides).
+- **CPU pods** (`"cpu": true`, `remote run --cpu [--vcpu N]`, and automatically for analysis-only jobs unless the caller
+  passes GPUs or the job says `"cpu": false`): Secure-Cloud CPU pods through the REST API, the flavor and size picked from the
+  v2 catalog (`/v2/catalog/cpus`: at 16 vCPUs only EUR-IS-1 had stock, at 8 the cpu3 flavors were in EU-RO-1), the CPU torch
+  wheels, no CUDA extension, no CUDA check. GPU-only features (room, gsplat, dancers) are refused.
+- **Host RAM / vCPUs** (`"min_ram_gb"`, `"min_vcpu"`, and front_pod / front_full by kind: 24 vCPUs, 96 GB; two A100 PCIe
+  sessions with 9 vCPUs ended rc=137, the 28-vCPU ones passed): such a GPU pod is created through REST with `minRAMPerGPU` /
+  `minVCPUPerGPU`; every pod's record (`vcpuCount`, `memoryInGb`) is kept in `state.json` `pod.machine` and a host under the
+  minimums is deleted and the next option tried.
+- Smaller things: bundles are striped over 4 streams from 2 MB (a 6.9 MB bundle took 30.8 s over one), the pywheels dir goes
+  up only on request (uv fetches the wheels), no `wheels_back` without a CUDA-wheel feature or on a CPU pod, check.json and
+  timings.tsv come back in one round trip and the bootstrap log in the background.
+- The round-2 hand-off leftovers: `front_full` no longer apt-installs ffmpeg (it declares the `ffmpeg` feature: the static
+  8.1 build); `remote run --gpus` help names the ladder; the progress puller tails the MAMMA log of the take each
+  `mamma fit <take>` names, under the real job name; `face_pod` runs in Secure Cloud only; two marks seconds apart start
+  ONE run heartbeat (a spawn marker under the run lock) and the heartbeat / driver logs are opened with a true append handle
+  on Windows (`util.append_fd`: before, a child wrote at its inherited offset and overwrote other lines).
+- The `analyze` plan: session start-up 3.0 min p50 / 7.0 p90 (was 6.3 / 15) and 540 MB of checkpoint per fit lane (was 1600).
+- Tests: `tests/test_pod_start.py` (new); no test sees the real `remote run` processes of this PC any more (conftest: with
+  another worktree's two sessions running, `test_pipeline_orchestrator` waited on them for more than 20 min, each process
+  scan taking 3.5 s); `test_dashboard_round2`'s session ids follow today's date (its times were read on 2026-10-21's date and
+  failed from the next day on).
+
+### 7d.3 Measured live (2026-10-22, through `remote run`, every pod deleted)
+
+The jobs are the trial's (`work/trial_mono_jl20/jobs/pod_job_sam3db_r2.json` on 100 frames, `pod_job_analyses_r2.json`),
+written to the session directory only (`work/podstart_probe/`). The home uplink was slow and shared with another session's
+uploads during most of these runs (0.29-1.8 MB/s; the 2026-10-19..21 median was 2.1).
+
+| Session | Job, route | Pod | Bundle | Upload | Ready -> compute | Notes |
+|---|---|---|---|---|---|---|
+| trial `20261021-203248-batch` | SAM 3D Body | 4090 | 44 MB | 24 s | **443 s** | bootstrap 143 + install 264, in series |
+| `20261022-012506-batch` | SAM 3D Body, parallel boot | 4090 | 44 MB | 37 s | 154 s | install 88 s after the extract (52 s uv sharing the link with the checkpoint, 30 s of checks one by one) |
+| `20261022-013955-batch` | + install at pod-ready | 4090 | 44 MB | 152 s (0.29 MB/s) | 193 s | slow uplink and slow GitHub on that host (the uv Python download 75 s) |
+| `20261022-021723-batch` | all changes | 4090 | 44 MB | 93 s (0.47 MB/s) | **106 s** | install done on the pod in 37 s (venv 3, uv 17, imports 7, checkpoint 5 s): the upload is the whole wait |
+| trial `20261021-205148-batch` | analyses | 4090 | 146 MB | 68 s | **361 s** | bootstrap 285 s after the upload |
+| `20261022-014750-batch` | analyses, GPU, parallel boot | 4090 | 146 MB | 81 s | 121 s | bootstrap 118 s on the pod (apt ~90 s), 32 s of it after the upload |
+| `20261022-020607-batch` | analyses, CPU | cpu3c x16, EUR-IS-1 | 18 MB + 108 MB side | 32 + 76 s | 133 s | the catalog had no EU-RO-1 offer at that moment: the models came in the side bundle |
+| `20261022-021114-batch` | analyses, CPU, volume | cpu3c x8, EU-RO-1 | 18 MB | 45 s | **62 s** | models linked from the volume in 4 s; compute 50 s ($0.24/h) |
+| `20261022-022151-batch` | analyses, GPU, volume | 4090, EU-RO-1 | 37 MB | 82 s (0.45 MB/s) | **101 s** | models linked in 3 s; bootstrap 96 s on the pod, 5 s after the upload |
+
+- Both targets are met with all changes in: SAM 3D Body 106 s and the analyses 62 s (CPU) / 101 s (GPU) from pod ready to
+  compute start, against 443 s and 361 s, with the uplink at a quarter of its median. At the median uplink the uploads
+  above take a quarter of the time: about 25 s (SAM 3D Body) and 10-20 s (analyses).
+- Whole-session overhead (pod lifetime minus compute): 2.3-4.1 min over these 7 sessions (median 2.8), against 6.3 min p50 /
+  15 p90 in the 2026-10-19..21 round.
+- The analyses ran faster on 8 CPU vCPUs (50 s) than on the 4090 pods (70 s and 41 s on two hosts) at a quarter of the price.
+- Spend: 8 pods (the probe and 7 sessions; the first CPU attempt got none), $0.46 in all from their ledger rows; every
+  pod deleted and every row closed.
+- The first CPU attempt (`20261022-015929-batch`) asked for 16 vCPUs in every flavor blind and got "no longer any
+  instances" 8 times; the catalog read was added after it, plus two blind tries in the volume's data center when the
+  catalog lists none there (its per-data-center stock changed between 02:01, 02:06 and 02:08).
+
+### 7d.4 Still open
+
+- The bundle upload itself is now the wait: the code part (~5 MB compressed) and each job's own inputs go through the home
+  uplink every session. A content-addressed input cache on the volume (`src/` already holds the source videos) would take
+  the inputs off it for volume-route pods.
+- Pods outside EU-RO-1 still upload the body models and the checkpoint copy (side bundle). A relay through a CPU gateway
+  pod on the volume (pod to pod) would serve them in any data center; more volumes would too, at a standing charge.
+- Warm pods for chained analyze steps (above).
+- Agent-written job specs of tools with their own venv must say `"base": false` (the runner cannot tell from the commands);
+  the SAM 3D Body writers in the repo do.
+- `test_mono4d_atlas` fails when other test files import cv2 first (its `OPENCV_IO_ENABLE_OPENEXR` is set at import time);
+  it passes alone and on HEAD alone.
+
+## 7e. Generic round (2026-10-22): one video in, a finished analysis out
+
+The round-2 verdict was "a good planner, tracker and uploader, not video in / analysis out": camera, people, avatars and every
+mono job spec were take-specific. This round makes every mono step a generic executor and fixes the four dashboard leftovers of
+the round-2 final review. Code: `pipeline/mono_route.py` (new), `people_mono.py` (new), `cameras/mono_cam.py` (new),
+`pipeline/{analyze,activity,snapshots,farm_view}.py`, `monitor/static/components/stepmap.js`, `mono4d/jl_sam3db.py`,
+`jl_front.py`, `jl_export.py`, `jl_lowconf.py`, `heat_beats.py`, `pipeline/intake.py` (source_dir no longer follows a junction),
+`remote/cand_sam3d_body/decode_frames.py`. Tests: `tests/test_analyze_generic.py` (17, new), `test_people_mono.py` (9, new),
+`test_mono_cam.py` (8, new), `test_heat_beats.py` (+1), `test_pipeline_intake.py` (+1), the plan tests of
+`test_analyze_round2.py` / `test_analyze_monitor.py` updated to the generic plan, and `test_dashboard_round2.py`'s no-history
+ETA test, which failed on every day but 2026-10-21 (a hard-coded session id dated the runner log's clock times), now builds its
+session ids from the clock (test-only).
+
+**What each mono step runs now** (`python -m dancecap.pipeline.mono_route <step> --take T --run R`; the driver runs it as a
+`cmd` step, its `RESULT:` line becomes the step's message):
+
+| Step | Where | What | Replaces |
+|---|---|---|---|
+| beats | this PC | `dancecap beats` (the video's own sound) + `heat_beats` (the grid); a bass-less phone clip that is music all through now gets its grid from the clearest band | the trial's hand-added TOML + local run |
+| camera | 1 pod | `cameras.mono_cam pod`: PTZ skeleton (every fps/2-th frame) + per-frame track in 2 shards + MoGe-2 on 14 wide frames | `room_single_cam` (john_lula constants) / the parent's solve |
+| people | 1 pod | `people_mono run`: yolo11x-pose, the couple without bibs (tracklets, dancer-likeness, colour self-training), lead / follow from `people/roles_override.json` > the TOML descriptions > the statures, SAM 2.1 both ways, RTMW, a second round where the runs disagree | `jl_people` (bibs 124 / 116, zoom table) / the parent's tables |
+| world | this PC | `cameras.mono_cam world`: focal from MoGe-2 (wide frames), gravity from MoGe-2 floor normals through the track, camera height from the dancers' head / feet rays and statures, origin at the couple, Z towards the camera -> `cameras/` | J2's `room_single_cam solve` |
+| sam3d_body | 1 pod | `jl_sam3db` configured for the take: frames decoded ON the pod from the video (no JPEG upload), 4090 first, mask thresholds scaled to the frame; import, `qa_nofit`, `prior_nofit` here | `trial_sam3db.py` glue (constants overridden, T = 599 hard-coded) |
+| fits | 1 pod per chunk of <= 26 s, side by side | per chunk: the farm job json + chunk TOML + prior slice written here; pod: the chunk front (frames, cameras, masks, ma_2d, sync, prepare, mono-init, qa-mask), `fit-build` (MAMMA_MONO configs + prior), the fit with the betas PINNED from the statures (beta0 solved for the rest height: no shape pass), select, refine | `trial_front.py` / `trial_fit.py`, the parent's pinned betas |
+| post | this PC | the stitcher over the chunks (the per-frame flags the export needs; the trial's copy lacked them) + `jl_repair` | the trial's copy |
+| analyses | 1 GPU pod | timing, physics, counterbalance, floorcraft (base env + open3d + the locked-head model: no mamma bootstrap) | `pod_job_analyses*.json` by hand |
+| export | this PC | `jl_export --take T --no-install` -> `work/T/export/Mono_<Take>/` (the Unity project is never touched) | `trial_export.py` |
+| avatars | 1 pod, beside the analyses (optional) | `mono4d.lhmpp_generic`: here, 8 reference crops per dancer chosen from the people tables (own mask, whole-body pose, role confidence, partner in front, head covered, sharpness, pose speed) and the fit's facing, spread over the facing angles, and a contact sheet; pod: LHM++'s own venv, `lhmpp_render_pod.py` with no render passes (canonical PLY + turntable per dancer), LHM++'s LBS export; imported to `work/T/avatar_lhmpp/` | `jl_lhmpp_preview` (john_lula zoom steps, held-out windows, a photo crop) |
+| film | - | skipped with its reason (it needs the Unity editor) | |
+
+Every pod step needs `--yes` and runs as one tagged `remote run` (DANCECAP_ANALYSIS / DANCECAP_ANALYSIS_STEP): a session that
+failed for pod reasons (no pod, upload, bootstrap, ssh, a network install) is started again, up to 3 times; a command that failed
+on its own fails the step with its log tail. Only the sessions that run this call's jobs count (the first pod check took a
+sibling workflow's "no GPU pod" session for its own).
+
+**Dashboard leftovers (round-2 final review), fixed**
+- **Run ETA vs step ETA**: a live session ETA from measured progress that covers the whole step (one session per lane, every lane
+  live, no generic prior, no stall) IS the step's time left, in or out; anything else can only push out; a timeout-based one is
+  ignored. The step row shows the time left the run ETA counts. The review's 20:59:02 case now reads 212 s / 350 s (it read
+  396 s / 1188 s; 127 s were left; the row said 92 s).
+- **Snapshots at their event**: `request()` captures the monitor's data (`gather`, about 0.1 s warm) into
+  `<run>/pending/<ms>_<event>.json` and the detached renderer draws that file; the index has `ts` (data time), `rendered`, `frozen`.
+- **Badge**: "running" while any step runs (driver end status, the analysis card, the Farm page line).
+- **pod-cpu**: the mono plan has no pod-cpu step left: beats, world and post run here (seconds to a minute of CPU), the analyses
+  on a GPU runner pod (`remote run` has no CPU route; a CPU route is the ready-pods session's work).
+- The multi-view steps that still need an agent say exactly why (`MULTI_BLOCKERS`).
+
+**Validated offline before any pod** (no Runpod cost)
+- `people_mono` on john_lula's real detections, no bibs: torso joints inside the right truth mask 88.2 % (lead) / 79.9 % (follow)
+  against 85.5 % / 79.5 % for the bib-based `jl_people.solve`; lead / follow by the descriptions, confidence 0.999; anchors 25.9 s
+  wall for 2643 frames.
+- `mono_cam world` from J2's john_lula intermediates: focal 806 vs 808 px, gravity within 0.015 deg, camera height 1.44 m vs 1.43
+  (J2's convention), J2's origin reprojects 0.66 px median from ours; 188 s wall for 2643 frames.
+
+**Pod checks on the trial clip, step by step** (lk03_mono20 = a fresh 20-s cut of `Larissa-Kadu-demo/03-Demo-Mao.mp4`,
+source 34.6-54.6 s, 480x848, 30 fps, 599 frames, 11 MB; not john_lula):
+
+| Step | Result | Wall | Pod cost |
+|---|---|---|---|
+| camera (3 tries) | try 1: a duplicate keyword in `mono_cam.record()` (fixed); try 2: MoGe-2 needs `huggingface_hub` (its weights come from the Hub; the `--no-deps` recipe skipped it; fixed); try 3 ok: skeleton 0.85 px median on 40 frames, track 0.96 px median / 1.17 p90 over all 599 frames, none bad, MoGe-2 on 14 frames | session 430 s: bundle 2 s, upload 13-147 s (the home uplink was shared), bootstrap 64-144 s, installs 30 s, probe 3 s, skeleton 22-38 s, track 75-198 s (2 shards), MoGe-2 9-12 s | $0.10 (+ $0.36 for the failed tries and one wrong retry, below) |
+| people | ok on the first try: masks of both dancers on 599 / 599 frames, both pose-confident (>= 0.5) on 74 %, the right dancers in every review frame (seated and standing bystanders ignored), lead / follow by the TOML descriptions (confidence 0.998) | session 535 s: detect 30 s, couple + anchors 4.5 s, SAM 2.1 82 s, fuse 8 s, RTMW 38 s, second round 126 s, finalize 7.5 s | $0.13 |
+| world | focal 780 px (MoGe-2 wide median 779), camera height 1.76 m, the couple 5.0 m away (p5-p95 4.25-6.13), track residual 0.97 px; the review grid lies on the floor, the stature poles end at the heads | 45 s on this PC | - |
+| sam3d_body | ok on the first try: prompted 551 / 564 of 599 frames, QA-ok 547 / 560, prior on 547 / 560 of the 599 lattice instants | step 887 s: session 856 s (upload 28 s, bootstrap 102 s, venv install 88 s, decode ON the pod 2.8 s, infer 513 s = 0.46 s per person-frame, convert 64 s), import + QA + prior here 30 s | $0.21 |
+| fits (2 tries) | try 1: the job excluded `mamma/data/weights/ma_2d/mamma_mask_full_cvpr.ckpt`, the very path the stripped checkpoint is mapped to, so ma_2d found no weights (fixed; a test guards it); try 2: the whole chunk front passed (frames 4 s, cameras 3 s, masks 3 s, ma_2d 28 s, sync, prepare 3.5 s, mono-init 3 s, qa-mask 3 s: 62 s), then `fit-build` refused the chunk: the cut's first frame is at 0.033 s and the window ends at 19.93 s, so prepare kept lattice instants 1..597, not the planned 0..598 (fixed: the chunks are planned on the instants that have frames inside the window, and fit-build follows prepare's grid; checked here on the pod's prepare.json) | try 2: upload of the 632 MB bundle 860 s (0.74 MB/s: the uplink was shared), bootstrap (base + mamma + ma2d) 262 s | $0.12 + $0.31 |
+| analyses (scratch copy of the 2026-10-21 trial's motion) | ok on the first try with the base env + open3d + the locked-head model (no mamma bootstrap): timing 25 s, physics 22 s, counterbalance 8 s, floorcraft 8 s | session 668 s: upload of 127 MB 320 s (0.40 MB/s), bootstrap 216 s, commands 70 s | $0.16 |
+| post, export (scratch copy) | the stitcher over one chunk + jl_repair: 6 s, gate passed; `jl_export --take --no-install`: 25 checks passed, 0 failed, 5 s | this PC | - |
+
+The wrong retry: the step took a sibling workflow's concurrent session (the ready-pods session's CPU-route test, "no GPU pod") for its
+own and started the camera session again although its command had failed on its own. Fixed: a step counts only the sessions whose
+`runner.json` lists its jobs.
+
+**Measured run 1: the video in, a finished analysis out, no manual marks** (run `20261022-025023-lk03_cut20`, take
+`lk03_cut20` made by intake from the clip alone: `analyze <clip> --take lk03_cut20 --spec spec.json --yes --max-cost 4
+--detach`; the spec carries the two statures and descriptions). It reached **done in 64.4 min for $1.03** (the plan said
+73 min p50, $1.18). Nobody touched it after the command.
+
+| Step | Where | Wall | Plan p50 | Inside the pod session | Pod cost |
+|---|---|---|---|---|---|
+| intake | this PC | 2 s | 0.5 min | - | - |
+| upload | CPU pod -> volume | 62 s | 1.0 min | 11 MB in 34 s | $0.001 |
+| beats | this PC | 95 s | 1.0 min | - | - |
+| camera | 4090 | 548 s | 9.3 min | upload 29 s, bootstrap 100 s, installs 23 s, skeleton 40 s, track 257 s, MoGe-2 17 s | $0.13 |
+| people | 4090 (beside camera) | 634 s | 11.9 min | upload 28 s, bootstrap 174 s, installs 23 s, detect 33 s, SAM 2.1 83 s, RTMW 56 s, second round 121 s | $0.15 |
+| world | this PC | 53 s | 1.5 min | focal 780 px, camera 1.76 m high, the couple 5.0 m away | - |
+| sam3d_body | 4090 | 740 s | 17.2 min | upload 28 s, bootstrap 105 s, venv 43 s, decode 3 s, infer 378 s, convert 80 s | $0.17 |
+| fits | 4090, 1 chunk (k 1..597) | 1922 s | 32.6 min | bundle 48 s, upload 248 s, bootstrap 530 s, chunk front 65 s, fit 858 s, select + refine 59 s | $0.46 |
+| post | this PC | 8 s | 0.5 min | stitch gate passed | - |
+| analyses | 4090 | 485 s | 8.3 min | upload 50 s, bootstrap 312 s, timing 24 s, physics 18 s, counterbalance 8 s, floorcraft 8 s | $0.12 |
+| avatars | - | skipped | - | not built yet at run 1 (built for run 2, below) | - |
+| export | this PC | 8 s | 0.5 min | `Mono_Lk03Cut20`: 25 checks passed, 0 failed | - |
+| film | - | skipped | - | needs the Unity editor | - |
+
+The critical path is camera / people side by side (10.6 min), world (0.9), SAM 3D Body (12.3), the fit (32), post, the analyses
+(8.1), export. **Upload + bootstrap are 1604 s of the 4145 pod-session seconds (39 %)**, 778 s of them in the fit session alone
+(the 630 MB bundle and the mamma + ma2d features): the ready-pods route (volume inputs, uv installs) takes most of that off the
+critical path, about 13 min of this run.
+
+**Quality against the 8-phone fit of the same moment** (`larissa_kadu_38`, phone 03's source 34.6-54.6 s mapped through the
+studio alignment; SMPL-X body joints 0..21; one global yaw between the two worlds):
+
+| Run 1 | Lead | Follow |
+|---|---|---|
+| PA-MPJPE, per-frame median | 39.7 mm | 43.3 mm |
+| root-relative after one yaw, median / p90 | 54.7 / 81.6 mm | 60.4 / 377 mm |
+| pelvis height, median difference | -10 mm | -1 mm |
+| pelvis floor track, 0-16 s, median, scale 1 / best scale | 64 / 42 mm (scale 0.90) | 78 / 36 mm (scale 0.93) |
+| pelvis floor track, whole clip | no match (best scale -0.03) | no match (0.10) |
+
+Up to 16 s the floor track agrees within 4-8 cm, and the leftover scale (0.90-0.93) is the focal's +-10 %. From 17 s the couple
+embraces and the detector gives the two of them one box. The people stage's reference height (per frame, the second-tallest
+moving person) then followed a spectator a third of their size, the tracker locked onto two spectators for the last 3.5 s, and
+the fit put them 18-20 m away. Fixed in `people_mono` (ef1827a): when the second-tallest is under 0.6 of the tallest, the
+reference is the tallest alone, and the couple's own reference never drops under 0.75 of the scene's. Offline on run 1's own
+detections, the couple is kept through to the end; john_lula's scores are unchanged (both roles right 63.5 %). The people job now also downloads the raw detections
+(`in/pose.npz`), so such a check needs no pod.
+
+**Measured run 2: the same clip on a fresh take, with the people fix and the avatars step** (run
+`20261022-035649-lk03_cut20b`, take `lk03_cut20b`, the same command; nothing reused from run 1). It reached **done in
+74.6 min for $1.32**, again with no manual marks; the analysis itself (the export) was done at 69.1 min, and the LHM++ avatars,
+built beside the analyses, took the last 5.5 min ($0.16). The avatars step was wired while the run was on its fit, so the run's
+plan still showed it as a skipped local step; the step ran the new code on its own pod.
+
+| Step | Wall run 2 | Wall run 1 | Inside the pod session (run 2) | Pod cost run 2 |
+|---|---|---|---|---|
+| intake, upload, beats | 2 s, 51 s, 39 s | 2 s, 62 s, 95 s | 11 MB to the volume in 20 s | $0.001 |
+| camera | 839 s | 548 s | upload 18 s, **bootstrap 600 s**, installs 23 s, skeleton 25 s, track 83 s, MoGe-2 14 s | $0.20 |
+| people (beside camera) | 722 s | 634 s | upload 20 s, bootstrap 354 s, installs 23 s, detect 27 s, SAM 2.1 66 s, RTMW 40 s, second round 85 s | $0.18 |
+| world | 38 s | 53 s | focal 780 px, camera 1.77 m high, the couple 4.9 m away | - |
+| sam3d_body | 677 s | 740 s | upload 25 s, bootstrap 75 s, venv 40 s, decode 3 s, infer 389 s, convert 51 s; prior on 595 / 589 of 599 instants (run 1: 547 / 560) | $0.16 |
+| fits | 2226 s | 1922 s | bundle 36 s, upload 250 s, bootstrap 584 s, chunk front 67 s, **fit 1120 s** (run 1: 858 s), select + refine 59 s; 2D residual median 7.7 / 5.2 px | $0.54 |
+| post | 6 s | 8 s | stitch gate passed | - |
+| analyses | 345 s | 485 s | upload 72 s, bootstrap 135 s, the four analyses 60 s | $0.08 |
+| avatars (beside the analyses) | 683 s | skipped | crops here 20 s; upload 26 s, bootstrap 141 s, LHM++ venv 275 s, both avatars 64 s, LBS export 51 s | $0.16 |
+| export | 6 s | 8 s | `Mono_Lk03Cut20b`: 25 checks passed, 0 failed | - |
+| film | skipped | skipped | needs the Unity editor | - |
+
+Run 2's analysis (the export at 69.1 min) was 5 min slower than run 1's (64.2 min), for two reasons. The camera and people
+pods bootstrapped at the same moment and slowly (600 s and 354 s against 100 s and 174 s: the same features from PyPI). And the
+fit had more to fit: both dancers on every frame with a prior on 98-99 % of them, against a lead lost to spectators in the last
+seconds of run 1. Upload + bootstrap were 2300 of the 5328 pod-session seconds (43 %), plus the 275-s LHM++ venv: the ready-pods
+route is the next speed-up, as for run 1.
+
+**Quality against the 8-phone fit, run 2** (the same comparison as run 1):
+
+| | Lead run 2 | Follow run 2 | Lead run 1 | Follow run 1 |
+|---|---|---|---|---|
+| frames compared | 597 | 597 | 530 | 597 |
+| PA-MPJPE, per-frame median | **36.8 mm** | **39.0 mm** | 39.7 mm | 43.3 mm |
+| root-relative after one yaw, median / p90 | 51.0 / 70.1 mm | 55.7 / 87.6 mm | 54.7 / 81.6 mm | 60.4 / 377 mm |
+| pelvis height, median difference | +4.5 mm | +17 mm | -10 mm | -1 mm |
+| pelvis floor track, whole clip, scale 1 / best scale | **82 / 39 mm** (0.90) | **96 / 46 mm** (0.91) | no match | no match |
+
+The whole clip now tracks on the floor within 8-10 cm at scale 1 (4-5 cm once the focal's 10 % scale is taken out), and every
+pose figure improved but the follow's pelvis height (+17 mm, from -1 mm). The people step's identity on the pod's own detections holds the couple through the embrace at 17 s
+(one merged box; both dancers pose-confident on 80 % of the frames against 74 %).
+
+**Avatars**: 8 + 8 crops chosen from the take's own masks, pose and fit facing (front, back and both sides, the right dancer in
+every crop: `realism/lhmpp_generic/refs_sheet.jpg`), two 160k-Gaussian canonical avatars, turntables (front / side / back /
+side: the whole body, the right clothes and hair; the follow's white top reads a little washed out) and LHM++'s LBS export, in
+`work/lk03_cut20b/avatar_lhmpp/`. Nothing in the Unity export reads them yet.
+
+**Folder trial** (run `20261022-020110-trial_mv_lk15`: the 8-phone, 15-s stream-copy cuts of larissa_kadu, 76 MB, a known
+room, `--room-known --yes`). It does **not** reach done; the exact blocking step is `cameras` (and `people` beside it):
+- unattended: intake 2.1 s (the take reused), the volume upload 95 s (a CPU gateway pod; the 8 files were already on the volume:
+  hash check only), the audio clocks 8.4 s on this PC; the driver then parked the rest and the run read "waiting" 2 min 16 s
+  after it started, pod cost $0.0007;
+- `cameras`: "no generic multi-phone camera executor: a shared world frame needs every phone localised against a solved room map,
+  and that code is take-specific (cameras/newcam.py WORK paths, recap_cameras for the recap); cameras.mono_cam solves one phone in
+  its own frame only";
+- `people`: "no generic multi-view people executor: the dancers are picked by triangulating across phones (recap_people,
+  carlos_aline_people are take-specific); people_mono handles one phone";
+- behind them, fronts / shape / fits / stitch / analyses wait on the farm's per-take profiles (recap_profile, ca_profile,
+  jl_profile) and the export on recap_export / carlos_aline_export. Each waiting step now carries that reason in its message.
+
+**Still open**
+- **Multi-view folders**: no generic executor for cameras (a shared world frame against a solved room map), people (triangulated
+  dancers), the farm's chunk profiles, the multi-view analyses and export: a folder runs intake, upload and clocks, then waits with
+  the exact reason (above).
+- **The fit session uploads ~630 MB** (the 540 MB stripped ma_2d checkpoint + the locked-head model) through the home uplink, in
+  every chunk session: 860 s at 0.74 MB/s today, and the pod bills while it waits. K chunk lanes share the one uplink. The
+  ready-pods session (the volume route, slim inputs) is the fix; until then the fits step is upload-bound on a slow day.
+- **Bootstraps of 75-600 s** per session (base, mamma, ma2d features from PyPI / wheels; two pods booting at once were the slowest,
+  run 2) and the LHM++ venv (275 s); the same ready-pods work (uv installs measured at 11-14 s on 2026-10-22) is the fix.
+- **LHM++ avatars** are built for a new take (run 2) but nothing in the Unity export reads them yet: the capture carries plain
+  bodies. The film needs the Unity editor and is skipped with that reason.
+- **people_mono on a crowded heat** (john_lula, 3-5 couples, no bibs): both roles right on 63.5 % of the frames by box IoU (the
+  bib tracker scores about the same on the torso-in-mask test); a follow hidden behind the lead is the main miss. On the demo
+  clip (one couple, a seated audience) the review sheets are right in every sampled frame.
+- **Camera models**: a fixed-centre phone only (pan / tilt / zoom); a walking phone now gets a warning in the world step
+  (background residuals over 2 px / 4 px), not a solver. A video with a rotation tag is refused with the ffmpeg command for an
+  upright copy. The focal is MoGe-2's (+-10 %): distances scale with it, the camera height does not.
+
+## 7f. Combined round (2026-10-22): the generic route on the ready pods
+
+Both branches merged (`claude/vigilant-almeida-162366`: the generic analyze of 7e and the ready pods of 7d), then the
+generic route adapted:
+- SAM 3D Body (`jl_sam3db`) and the LHM++ avatars (`lhmpp_generic`) say `"base": false`. They bring their own venvs, so their
+  sessions bootstrap nothing and their `install` starts at pod-ready, next to the upload.
+- The mono analyses job says `"cpu": true`. The plan's analyses step is `pod-cpu` at the CPU price.
+- The fit chunk's inputs needed no change. The front job maps the ma_2d copy to `mamma/data/weights/...`, and the fit reads the
+  locked-head model under `mamma/data/body_models/...`, both arcs the volume route serves. On the `lk03_cut20b` fit jobs the
+  merged runner builds a 41 MB bundle and serves 670 MB from the volume: the 540 MB ma_2d copy, the 109 MB locked-head
+  SMPLX_NEUTRAL and the 21.5 MB verts_512 (`smplx/SMPLX_NEUTRAL` is the same file). A pod outside EU-RO-1 gets those
+  670 MB in a side bundle. `MA2D_CKPT_MB` is 670 (ready pods had 540, which left out the body models) and the plan keeps
+  the side bundle.
+- Tests (`pytest tests` from `dancecap/`): 2328 passed, 59 skipped. Five failed, all known and unrelated: carlos_aline window
+  drift, two worktree-junction paths (hair_reference, hand_mano) and two OpenEXR (mono4d_atlas). Run from `dancecap/`
+  without a path, pytest also collects old test copies under `work/` through the junction.
+
+**Measured run 3** (run `20261022-111105-lk03_cut20c`, take `lk03_cut20c`, the same clip and command as runs 1 and 2, nothing
+reused). It reached **done in 65.2 min for $1.10** with no manual marks, against a plan of 65 min p50 and $1.04. The export
+was done at **56.0 min**, against 64.3 min in run 1 and 69.1 min in run 2. Another workflow's runner sessions (job
+`zc_final`) shared the home uplink from 11:43.
+
+| Step | Run 3 | Run 2 | Run 1 | Inside the pod session (run 3) |
+|---|---|---|---|---|
+| intake, upload, beats | 2, 54, 74 s | 2, 51, 39 s | 2, 62, 95 s | 11 MB to the volume in 20 s |
+| camera | 539 s | 839 s | 548 s | upload 26 s, bootstrap 53 s in the background (20 s waited), installs 35 s, skeleton 53 s, track 269 s, MoGe-2 24 s |
+| people (beside camera) | 576 s | 722 s | 634 s | upload 16 s, bootstrap 114 s (93 s waited), detect 36 s, SAM 2.1 96 s, RTMW 73 s, second round 134 s |
+| world | 73 s | 38 s | 52 s | focal 780 px, camera 1.77 m high, the couple 4.9 m away |
+| sam3d_body | 662 s | 677 s | 740 s | no bootstrap; install 40 s from pod-ready, beside the upload (31 s); decode 3 s, infer 395 s, convert 51 s; prior on 595 / 589 of 599 |
+| fits | 1843 s | 2226 s | 1922 s | **pod 441 s** (below), upload 16 s, **side bundle 670 MB in 330 s**, bootstrap 395 s behind it (1 s waited), front 45 s, fit 866 s (RTX 6000 Ada), refine 32 s; 2D residual 7.9 / 5.3 px |
+| post | 12 s | 6 s | 8 s | stitch gate passed |
+| analyses | **180 s** | 345 s | 485 s | **CPU pod** (cpu5c x 8, EU-RO-1), body models linked from the volume in 3 s, bootstrap 43 s (3 s waited), the four analyses 43 s, $0.01 |
+| avatars (beside the analyses) | 738 s | 683 s | skipped | no bootstrap; LHM++ install from pod-ready **521 s** (CUDA extensions built on the pod: 515 s; run 2's venv: 275 s), both avatars 56 s, LBS export 48 s |
+| export | 8 s | 6 s | 8 s | `Mono_Lk03Cut20c`: 25 checks passed, 0 failed |
+
+Session start-up (pod ready to the first compute command; in brackets the upload and the bootstrap the runner waited for):
+
+| Session | Run 3 | Run 2 | Run 1 |
+|---|---|---|---|
+| camera | **91 s** (26 + 20) | 656 s (18 + 600) | 164 s (29 + 100) |
+| people | **140 s** (16 + 93) | 413 s (20 + 354) | 238 s (28 + 174) |
+| sam3d_body | **78 s** (31 + 0) | 150 s (25 + 75) | 189 s (28 + 105) |
+| fits | **426 s** (16 + 330 side + 1) | 862 s (250 + 584) | 807 s (248 + 530) |
+| analyses | **49 s** (30 + 3) | 217 s (72 + 135) | 371 s (50 + 312) |
+| avatars | 537 s (12 + 0; the install is the wait) | 458 s (26 + 141, + the 275-s venv) | - |
+| **all sessions** | upload + bootstrap 579 of 4348 pod-session s (**13 %**) | 2299 of 5372 (43 %) | 1604 of 4209 (38 %) |
+
+What it shows:
+- With uv and the parallel boot the bootstrap is no longer a wait. Run 3 waited 117 s for it over six sessions, against
+  1221 s (run 1, five sessions) and 1889 s (run 2, six). Two pods booting at once (camera and people) no longer slow each
+  other: 53 s and 114 s on the pods, against run 2's 600 s and 354 s.
+- **The fit session missed the volume route.** At 11:33 no RTX 4090 had stock anywhere, and EU-RO-1 had no L40S or
+  RTX 6000 Ada. The first pod, an L40S, never reported a container: 6 min and $0.11 before it was deleted. The second, an
+  RTX 6000 Ada, was a plain Secure Cloud pod without the volume, so the 670 MB came through the home uplink in 330 s (2.0 MB/s). Pod acquisition was
+  441 s in this session, against 80-92 s in runs 1 and 2. On a volume pod with stock at once, the side bundle becomes a 3-s
+  link and the export would land near 44 min (estimate: 330 + ~380 s less on the critical path).
+- **The analyses take 3 min** on the CPU route with the volume (pod ready to compute 49 s), against 5.8-8.1 min on 4090 pods.
+- **The LHM++ install is now the longest start-up** (521 s, its CUDA extensions compiled on the pod; host-dependent: run 2
+  took 275 s). It runs beside the analyses, so it moves the run's end, not the analysis's.
+- The plan was right this time (65 min p50 against 65.2), because it assumes the side bundle (`MA2D_CKPT_MB` 670). On a volume
+  pod the fit lane is about 5 min shorter.
+
+**Found during the run** (left as follow-ups, `remote_jobs.py` is being changed on another branch):
+- Camera and people start `remote run` in the same second, and both runners took the same session id
+  (`20261022-111116-batch`, a stamp to the second) and wrote to one session folder. Both also built the same bundle into the
+  same `.tar.part`, and the camera's `os.replace` failed (`WinError 32`). `mono_route` started the camera again in a new
+  session 6 s later, so the run lost nothing more. The runner needs a unique session folder (exclusive create) and a
+  per-process `.part` name.
+- Pod placement for the fit: the runner tries each GPU type through the volume route, then that type's plain options,
+  before the next type. A 670 MB side bundle (about 5.3 min at the median uplink) costs more than the speed gap to a slower
+  card in EU-RO-1, so a job with a large side bundle should try every volume option before any plain one.
+- The LHM++ CUDA extensions (diff-gaussian-rasterization, pointops) could be built once per GPU arch and cached (the
+  volume or the runner's wheelhouse) instead of compiled in every session.
+
+---
+
 ## 8. Sources
 
 - Session records: `dancecap/work/runpod/sessions/*/result.json`, `state.json`, `runner.log`,

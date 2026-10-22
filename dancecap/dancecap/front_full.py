@@ -1032,14 +1032,15 @@ def write_job(max_minutes: float = 330.0, front_minutes: float = 240.0) -> Path:
     whl = "/workspace/HeadMovement/dancecap/work/runpod/pywheels/cp311-linux"
     job = {
         "schema": "dancecap.pod_job/1", "name": "front_full", "take": FULL, "max_minutes": max_minutes,
-        "needs": ["dancers", "cameras", "ma2d"],
+        # ffmpeg: the bootstrap's static 8.1 build (remote/bootstrap.sh feature_ffmpeg, Ubuntu's apt 4.4 only as its
+        # fallback); the setup line used to apt-install 4.4 on top of it (an apt update per session, 2026-10-21 hand-off)
+        "needs": ["dancers", "cameras", "ma2d", "ffmpeg"],
         "inputs": uniq,
         "exclude": ["*.db", "*.db-shm", "*.db-wal"],
         "env": {"TORCH_HOME": f"/workspace/HeadMovement/{fp.TORCH_HOME_REL}", "PYOPENGL_PLATFORM": "egl",
                 "YOLO_CONFIG_DIR": "/tmp/Ultralytics"},
         "setup": [
-            "(apt-get install -y -qq --no-install-recommends ffmpeg > /dev/null 2>&1 || (apt-get update -qq && "
-            "apt-get install -y -qq --no-install-recommends ffmpeg > /dev/null)) && ffmpeg -hide_banner -version | head -1",
+            "ffmpeg -hide_banner -version | head -1 && ffprobe -hide_banner -version | head -1",
             # bundled wheels first (pywheels/cp311-linux: ultralytics, opencv-python, polars, httpx closure; some hosts
             # stall on large PyPI pages - memory runpod-first-compute), PyPI only as the fallback
             f"(python -m pip install -q --no-index --find-links {whl} {ULTRALYTICS} opencv-python==4.11.0.86 numpy==1.26.4"

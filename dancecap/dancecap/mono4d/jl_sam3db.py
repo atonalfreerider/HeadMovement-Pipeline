@@ -90,12 +90,54 @@ BONES = [(0, 1), (0, 2), (0, 3), (1, 4), (2, 5), (3, 6), (4, 7), (5, 8), (6, 9),
          (9, 13), (9, 14), (13, 16), (14, 17), (16, 18), (17, 19), (18, 20), (19, 21)]
 
 
+JOB_NAME = "jl_sam3d_body"
+REF_SIZE = (538, 960)                      # the frame size MIN_MASK_PX / MIN_BOX_H were set for (john_lula)
+
+
+def configure(take: str, cam: str = "01") -> None:
+    """Point the stage at another one-camera take (pipeline/mono_route; the 2026-10-21 trial overrode these constants from a
+    glue script): its work folder, outputs, pod job (work/<take>/jobs/pod_job_sam3db.json, job name <take>_sam3d_body) and
+    the dancers' names from its TOML. Everything else (the recipe, thresholds) is the same."""
+    import tomllib
+    global TAKE, CAM, WORK, REAL, OUT, INPUT, POD_OUT, SHEETS, JOB_DIR, JOB, JOB_NAME, NAME
+    TAKE, CAM = take, cam
+    WORK = PACKAGE_ROOT / "work" / take
+    REAL = WORK / "realism"
+    OUT = REAL / "sam3db"
+    INPUT = OUT / "input"
+    POD_OUT = OUT / "pod_out"
+    SHEETS = OUT / "sheets"
+    JOB_DIR = WORK / "jobs"
+    JOB = JOB_DIR / "pod_job_sam3db.json"
+    JOB_NAME = f"{take}_sam3d_body"[:60]
+    try:
+        cfg = tomllib.loads((PACKAGE_ROOT / "takes" / f"{take}.toml").read_text(encoding="utf-8"))
+        NAME = {r: str((cfg.get("dancers") or {}).get(r, {}).get("name") or r) for r in ROLES}
+    except (OSError, ValueError):
+        NAME = {r: r for r in ROLES}
+
+
+def has_fit() -> bool:
+    """The take has a first-pass MAMMA fit (smplx/ on the 30 Hz lattice): john_lula's realism route was a REFIT. A new take
+    (pipeline analyze) has none yet, so qa() and prior() use their no-fit forms (qa_nofit, prior_nofit)."""
+    return (WORK / "smplx" / "lead.npz").exists() and (WORK / "smplx" / "follow.npz").exists()
+
+
+def size_rules(W: int, H: int) -> tuple[int, float]:
+    """(min mask px, min box height px) for a W x H frame: john_lula's 1500 px / 80 px scaled by area / height."""
+    return int(round(MIN_MASK_PX * (W * H) / (REF_SIZE[0] * REF_SIZE[1]))), float(MIN_BOX_H * H / REF_SIZE[1])
+
+
 def log(msg: str) -> None:
     print(f"[jl_sam3db {time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
 def _ws(p: Path) -> str:
-    return Path(p).resolve().relative_to(WORKSPACE.resolve()).as_posix()
+    import os   # no resolve(): a worktree reaches work/ through a junction, which resolve() would follow out of the workspace
+    r = Path(os.path.relpath(os.path.abspath(p), os.path.abspath(WORKSPACE))).as_posix()
+    if r.startswith(".."):
+        raise ValueError(f"{p} is outside the workspace {WORKSPACE}")
+    return r
 
 
 def _rel(p: Path) -> str:                  # relative to <ws>/dancecap, the pod commands' cwd
@@ -111,7 +153,9 @@ def _decode(z, key: str):
 
 
 # ================================================================================================ prep + job
-def prep() -> dict:
+def prep(decode_on_pod: bool = False) -> dict:
+    """realism/sam3db/input/{meta.json, prep.json, smplx/}. decode_on_pod: the frames are decoded on the pod from the video
+    (job(video=...)), so the JPEGs need not exist here (frames.json does: its file names are what the pod writes)."""
     from .cand_sam3d_body import _mask_box
     fj = json.loads((WORK / "frames" / CAM / "frames.json").read_text())
     frames = fj["frames"]
@@ -123,7 +167,7 @@ def prep() -> dict:
         raise SystemExit("cameras/01.npz and frames.json are not index-aligned")
     if np.asarray(cam["frame_index"]).tolist() != list(range(F)):
         raise SystemExit("cameras/01.npz frame_index is not the video frame index")
-    miss = [f["file"] for f in frames if not (WORK / "frames" / CAM / f["file"]).exists()]
+    miss = [] if decode_on_pod else [f["file"] for f in frames if not (WORK / "frames" / CAM / f["file"]).exists()]
     if miss:
         raise SystemExit(f"{len(miss)} frames missing on disk, e.g. {miss[:3]} (jl_lhmpp_preview frames)")
     mz = np.load(WORK / "people" / f"masks_{CAM}.npz")
@@ -132,6 +176,7 @@ def prep() -> dict:
     K = np.asarray(cam["K"], float)
     ok = np.asarray(cam["ok"], bool)
     zoom = np.asarray(cam["zoom_2x"], bool) if "zoom_2x" in cam.files else np.zeros(F, bool)
+    min_px, min_box = size_rules(W, H)
     rows, skipped = [], {r: [] for r in ROLES}
     t0 = time.time()
     for i, fr in enumerate(frames):
@@ -151,10 +196,10 @@ def prep() -> dict:
                 box = _mask_box(m)
             vis = float(tp["visible"][i, o])
             if reason is None:
-                if box is None or px < MIN_MASK_PX:
-                    reason = f"area {px} px < {MIN_MASK_PX}"
-                elif box[3] - box[1] < MIN_BOX_H:
-                    reason = f"box height {box[3] - box[1]:.0f} px < {MIN_BOX_H}"
+                if box is None or px < min_px:
+                    reason = f"area {px} px < {min_px}"
+                elif box[3] - box[1] < min_box:
+                    reason = f"box height {box[3] - box[1]:.0f} px < {min_box:.0f}"
                 elif vis < MIN_VISIBLE:
                     reason = f"visible {vis:.3f} < {MIN_VISIBLE}"
             row["mask_boxes"][role] = None if reason else box
@@ -169,8 +214,8 @@ def prep() -> dict:
         rows.append(row)
     meta = {"take": TAKE, "cam": CAM, "width": W, "height": H, "role_pid": ROLE_PID, "role_who": WHO,
             "mask_npz_key": "m_{i}_{who}", "clock": "identity (frames.json t = video pts = cameras/01.npz t)",
-            "rules": {"min_mask_px": MIN_MASK_PX, "min_box_h_px": MIN_BOX_H, "min_visible": MIN_VISIBLE},
-            "frames": rows}
+            "rules": {"min_mask_px": min_px, "min_box_h_px": round(min_box, 1), "min_visible": MIN_VISIBLE},
+            "decode_on_pod": bool(decode_on_pod), "frames": rows}
     INPUT.mkdir(parents=True, exist_ok=True)
     (INPUT / "meta.json").write_text(json.dumps(meta), newline="\n")
     dst = INPUT / "smplx" / "SMPLX_NEUTRAL.npz"
@@ -192,21 +237,34 @@ def prep() -> dict:
     return info
 
 
-def job(max_minutes: float = 75, chunk: int = CHUNK, reserve_min: float = 30.0) -> Path:
+def job(max_minutes: float = 75, chunk: int = CHUNK, reserve_min: float = 30.0, video: Path | None = None,
+        video_pod: str | None = None) -> Path:
+    """The pod job. video: decode the frames ON THE POD from the source video (13 MB instead of 349 MB of JPEGs, audit rank 4;
+    the 2026-10-21 trial's recipe), mapped to `video_pod` (workspace-relative); without it the take's frames/01 JPEGs are
+    uploaded (john_lula's run). 4090 first (min_vram_gb 24): the default 80 GB list put the trial on an A100 at 2.0 s per
+    person-frame against 0.355 on a 4090."""
     py = f"{POD_ROOT}/venv/bin/python"
     pod = "remote/cand_sam3d_body/sam3db_pod.py"
     io_ = f"--input {_rel(INPUT)} --out {_rel(POD_OUT)} --variants {VAR}"
     frames_dir = _rel(WORK / "frames" / CAM)
     masks = _rel(WORK / "people" / f"masks_{CAM}.npz")
-    d = {"schema": "dancecap.pod_job/1", "name": "jl_sam3d_body", "take": TAKE, "max_minutes": max_minutes, "needs": [],
-         "inputs": [_ws(INPUT) + "/", _ws(WORK / "frames" / CAM) + "/", _ws(WORK / "people" / f"masks_{CAM}.npz")],
+    if video is not None:
+        video_pod = video_pod or f"dances/{TAKE}/{Path(video).name}"
+        frames_in = [{"local": str(Path(video).resolve()), "pod": video_pod}]
+    else:
+        frames_in = [_ws(WORK / "frames" / CAM) + "/"]
+    d = {"schema": "dancecap.pod_job/1", "name": JOB_NAME, "take": TAKE, "max_minutes": max_minutes, "needs": [],
+         "min_vram_gb": 24,
+         # its own uv venv (install.sh): no bootstrap base / check for the image python
+         "base": False,
+         "inputs": [_ws(INPUT) + "/", *frames_in, _ws(WORK / "people" / f"masks_{CAM}.npz")],
          "exclude": ["dancecap/work/runpod/pywheels", "dancecap/work/runpod/wheelhouse", "mamma-turing"],
          "secrets": {"HF_TOKEN": "C:/Users/johnb/Desktop/sam3d-body-key-hf.txt"},
          "env": {"S3DB_ROOT": POD_ROOT, "S3DB_COMMIT": "b5c765a0d89d789985e186d396315e7590887b94",
                  "S3DB_HF_REPO": "facebook/sam-3d-body-dinov3", "S3DB_HF_REV": "11aaa346c7204874a1cbafe3d39a979080b2c55a",
                  "DINOV3_COMMIT": "5aa7e93ab42ae3526291f6b4e3fcd22637e03326",
                  "MHR_COMMIT": "877cba5ee61a5f77d1457bf4de93a66695132bd9", "MHR_ASSETS_RELEASE": "v1.0.1",
-                 "TORCH_HOME": f"{POD_ROOT}/torch_home", "HF_HOME": f"{POD_ROOT}/hf_home", "UV_LINK_MODE": "copy",
+                 "TORCH_HOME": f"{POD_ROOT}/torch_home", "HF_HOME": f"{POD_ROOT}/hf_home", "UV_LINK_MODE": "hardlink",
                  "TQDM_DISABLE": "1", "HF_HUB_DISABLE_PROGRESS_BARS": "1"},
          "commands": [
              {"name": "install", "timeout_min": 10, "cmd": "bash remote/cand_sam3d_body/install.sh"},
@@ -218,7 +276,7 @@ def job(max_minutes: float = 75, chunk: int = CHUNK, reserve_min: float = 30.0) 
              # the vertices leave pod_out only when the conversion succeeded (else they come home for a local convert)
              {"name": "convert", "timeout_min": 35,
               "cmd": f"{py} {pod} convert {io_} --force-stub && mkdir -p {POD_ROOT}/chunks_done && "
-                     f"mv {_rel(POD_OUT)}/chunks {POD_ROOT}/chunks_done/jl_$(date +%s)"}],
+                     f"mv {_rel(POD_OUT)}/chunks {POD_ROOT}/chunks_done/{TAKE}_$(date +%s)"}],
          "outputs": [_ws(POD_OUT) + "/"],
          "verify": [_ws(POD_OUT / "sam3db_pod.json"), _ws(POD_OUT / f"mhr_{VAR}.npz"), _ws(POD_OUT / f"smplx_{VAR}.npz")],
          "after_download": ["python -m dancecap.mono4d.jl_sam3db import --session <sid>",
@@ -228,6 +286,14 @@ def job(max_minutes: float = 75, chunk: int = CHUNK, reserve_min: float = 30.0) 
                    "its tight box and the per-frame K of cameras/01.npz; official MHR->SMPL-X converter (pytorch, "
                    "--force-stub) on the pod. Checkpoints stay on the pod; the dancers' frames go to our own pod only "
                    "(owner consent 2026-10-19); the bundle holds a trimmed SMPL-X neutral model (owner's licence)."]}
+    if video is not None:   # decode the frames the input lists (meta.json file names, in decode order) from the video
+        d["commands"].insert(1, {"name": "decode", "timeout_min": 10,
+                                 "cmd": f"{py} remote/cand_sam3d_body/decode_frames.py ../{video_pod} {_rel(INPUT)}/meta.json "
+                                        f"{frames_dir}"})
+        d["after_download"] = [f"python -m dancecap.mono4d.jl_sam3db --take {TAKE} {c}" for c in ("import", "qa", "prior")]
+        d["notes"] = [f"SAM 3D Body on the {TAKE} frames (decoded on the pod from the source video), each dancer prompted with "
+                      "the people stage's SAM 2.1 mask (0/255) + its tight box and the per-frame K of cameras/01.npz; as "
+                      "jl_sam3d_body otherwise (pipeline/mono_route)"]
     JOB_DIR.mkdir(parents=True, exist_ok=True)
     JOB.write_text(json.dumps(d, indent=1), newline="\n")
     log(f"pod job -> {JOB}")
@@ -239,7 +305,7 @@ def _session_meta(sid: str | None) -> dict:
     root = PACKAGE_ROOT / "work" / "runpod" / "sessions"
     if sid is None:
         cands = sorted((p for p in root.glob("*") if (p / "result.json").exists()
-                        and '"jl_sam3d_body"' in (p / "result.json").read_text(errors="ignore")),
+                        and f'"{JOB_NAME}"' in (p / "result.json").read_text(errors="ignore")),
                        key=lambda p: p.stat().st_mtime)
         if not cands:
             return {}
@@ -249,7 +315,7 @@ def _session_meta(sid: str | None) -> dict:
         return {"session": sid}
     r = json.loads(p.read_text())
     pod = r.get("pod") or {}
-    jb = (r.get("jobs") or {}).get("jl_sam3d_body") or {}
+    jb = (r.get("jobs") or {}).get(JOB_NAME) or {}
     return {"session": sid, "gpu": pod.get("gpu"), "cost_per_hr": pod.get("cost_per_hr"),
             "cost_usd": pod.get("ledger_cost"), "pod_minutes": round((pod.get("lifetime_s") or 0) / 60, 1),
             "job_status": jb.get("status"), "commands_rc": jb.get("commands"), "job_seconds": jb.get("seconds"),
@@ -435,6 +501,8 @@ def tpose_heights(betas: np.ndarray, batch: int = 256) -> np.ndarray:
 
 
 def qa(sheets: bool = True) -> dict:
+    if not has_fit():
+        return qa_nofit()
     import cv2
     from . import candidates as C
     from .. import mamma_dyn as md
@@ -702,6 +770,84 @@ def contact_sheet(s, rows, uv_all, valid, Q, flags) -> list[Path]:
     return out
 
 
+def qa_nofit() -> dict:
+    """QA without a first-pass fit (a new take: pipeline analyze runs SAM 3D Body BEFORE the fit; the 2026-10-21 trial's lite
+    QA): the checks that need no MAMMA fit - valid output, the converter's fit error, joints on the partner's mask instead of
+    the dancer's own, a 2D duplicate of the partner, facing flips. Writes <role>_qa_ok into smplx_3db.npz and qa.json."""
+    import cv2
+    s = np.load(OUT / "smplx_3db.npz", allow_pickle=True)
+    meta = json.loads((INPUT / "meta.json").read_text())
+    rows = meta["frames"]
+    F = len(rows)
+    K = np.array([r["K"] for r in rows], float)
+    mz = np.load(WORK / "people" / f"masks_{CAM}.npz")
+    kern = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * DILATE_PX + 1, 2 * DILATE_PX + 1))
+    valid = {r: np.asarray(s[f"{r}_valid"], bool) for r in ROLES}
+    Jc = {r: np.asarray(s[f"{r}_joints"], float)[:, :22] for r in ROLES}
+    own, part = {r: np.full(F, np.nan) for r in ROLES}, {r: np.full(F, np.nan) for r in ROLES}
+    uv = {r: np.full((F, 22, 2), np.nan) for r in ROLES}
+    W, H = int(meta["width"]), int(meta["height"])
+    for i in range(F):
+        if not any(valid[r][i] for r in ROLES):
+            continue
+        ms = {r: _decode(mz, f"m_{i}_{WHO[r]}") for r in ROLES}
+        dil = {r: (cv2.dilate(ms[r].astype(np.uint8), kern) > 0) if ms[r] is not None else None for r in ROLES}
+        for r in ROLES:
+            if not valid[r][i]:
+                continue
+            q = _project(Jc[r][i], K[i])
+            uv[r][i] = q
+            o = [x for x in ROLES if x != r][0]
+            ok = np.isfinite(q).all(1)
+            xi = np.clip(np.round(np.nan_to_num(q[:, 0])).astype(int), 0, W - 1)
+            yi = np.clip(np.round(np.nan_to_num(q[:, 1])).astype(int), 0, H - 1)
+            a = (dil[r][yi, xi] & ok) if dil[r] is not None else np.zeros(22, bool)
+            b = (dil[o][yi, xi] & ok) if dil[o] is not None else np.zeros(22, bool)
+            own[r][i], part[r][i] = a.mean(), (b & ~a).mean()
+    box_h = {r: np.array([((rw["mask_box_all"][r] or [0, 0, 0, 1])[3] - (rw["mask_box_all"][r] or [0, 0, 0, 0])[1])
+                          for rw in rows], float) for r in ROLES}
+    both = valid["lead"] & valid["follow"]
+    d2 = np.full(F, np.nan)
+    d2[both] = np.nanmean(np.linalg.norm(uv["lead"][both] - uv["follow"][both], axis=-1), 1) / np.maximum(
+        np.maximum(box_h["lead"][both], box_h["follow"][both]), 1)
+    dup = both & (np.nan_to_num(d2, nan=1.0) < DUP_2D)
+    rep = {"roles": {}, "duplicate_frames": np.flatnonzero(dup).tolist(), "mode": "no first-pass fit (qa_nofit)",
+           "note": "no MAMMA comparison: the take has no smplx/ yet"}
+    arrays = {k: np.asarray(s[k]) for k in s.files}
+    for r in ROLES:
+        err = np.asarray(s[f"{r}_fit_err_cm"], float)
+        fw = facing(np.asarray(s[f"{r}_joints_world"], float))
+        flips = np.nan_to_num(facing_flips(fw, valid[r]), nan=0.0) > FLIP_DEG
+        flags = {"fit_err": valid[r] & (np.nan_to_num(err, nan=99.0) > MAX_FIT_ERR_CM),
+                 "on_partner": valid[r] & (np.nan_to_num(part[r]) > ON_PARTNER_SHARE) & (np.nan_to_num(own[r], nan=1.0) < ON_PARTNER_OWN),
+                 "duplicate": valid[r] & dup, "facing_flip": valid[r] & flips}
+        bad = np.zeros(F, bool)
+        for v in flags.values():
+            bad |= v
+        arrays[f"{r}_qa_ok"] = valid[r] & ~bad
+        rep["roles"][r] = {"frames": F, "valid": int(valid[r].sum()), "coverage": round(float(valid[r].mean()), 4),
+                           "flags": {k: int(v.sum()) for k, v in flags.items()}, "qa_ok": int(arrays[f"{r}_qa_ok"].sum()),
+                           "own_mask_share_median": round(float(np.nanmedian(own[r])), 3) if np.isfinite(own[r]).any() else None,
+                           "fit_err_cm_median": round(float(np.nanmedian(err[valid[r]])), 3) if valid[r].any() else None,
+                           "jitter_accel_rr_mm_per_frame2": None}
+    ok_share = min(rep["roles"][r]["qa_ok"] / max(1, F) for r in ROLES)
+    rep["verdict"] = {"usable_as_prior": bool(ok_share > 0.3), "qa_ok_share_min": round(ok_share, 3)}
+    np.savez_compressed(OUT / "smplx_3db.npz", **arrays)
+    (OUT / "qa.json").write_text(json.dumps(rep, indent=1))
+    log(f"qa (no fit): {json.dumps({r: rep['roles'][r]['flags'] for r in ROLES})}, qa_ok "
+        f"{[rep['roles'][r]['qa_ok'] for r in ROLES]} of {F}")
+    return rep
+
+
+def fit_lattice() -> np.ndarray:
+    """The take's 30 Hz fit lattice t_k = k / 30 over the camera track's frames (k = 0 .. floor(30 t_last)): what mamma
+    prepare --grid-anchor 0 grids a one-camera take on (prior_nofit; the trial hard-coded T = 599)."""
+    from .. import mamma_dyn as md
+    tr = md.load_tracks(WORK, [CAM])[CAM]
+    T = int(np.floor(float(np.max(tr.t)) * 30.0 + 1e-6)) + 1
+    return np.arange(T) / 30.0
+
+
 # ================================================================================================ prior (MAMMA_POSE_PRIOR)
 def prior(smooth: float | None = None) -> dict:
     """realism/sam3db/prior_3db_full.npz: the SAM 3D Body prior (cand_fitb.prior_interp) on the take's fit lattice (the
@@ -711,6 +857,8 @@ def prior(smooth: float | None = None) -> dict:
     from . import candidates as C
     from .cand_fitb import PRIOR_SIGMA_M, PRIOR_SMOOTH, mask_conf, prior_interp
     smooth = PRIOR_SMOOTH if smooth is None else smooth
+    if not has_fit():
+        return prior_nofit(smooth)
     s = np.load(OUT / "smplx_3db.npz", allow_pickle=True)
     if "lead_qa_ok" not in s.files:
         raise SystemExit("run qa first (it writes <role>_qa_ok)")
@@ -754,6 +902,46 @@ def prior(smooth: float | None = None) -> dict:
     return rep
 
 
+def prior_nofit(smooth: float | None = None) -> dict:
+    """prior() for a take without a first-pass fit: the same prior (cand_fitb.prior_interp) on the take's own 30 Hz lattice
+    (fit_lattice), with no comparison against a fit. The 2026-10-21 trial's prior_nofit, the lattice from the track."""
+    from .. import mamma_dyn as md
+    from . import candidates as C
+    from .cand_fitb import PRIOR_SIGMA_M, PRIOR_SMOOTH, mask_conf, prior_interp
+    smooth = PRIOR_SMOOTH if smooth is None else smooth
+    s = np.load(OUT / "smplx_3db.npz", allow_pickle=True)
+    if "lead_qa_ok" not in s.files:
+        raise SystemExit("run qa first (it writes <role>_qa_ok)")
+    tr = md.load_tracks(WORK, [CAM])[CAM]
+    tg = fit_lattice()
+    T = len(tg)
+    res, rep = {}, {"T": T, "smooth_frames": smooth, "sigma_m": PRIOR_SIGMA_M, "roles": {}, "mode": "no first-pass fit"}
+    for r in ROLES:
+        ok = np.asarray(s[f"{r}_qa_ok"], bool)
+        vis = np.asarray(s[f"{r}_visible"], float)
+        conf = np.zeros(len(vis))
+        conf[ok] = mask_conf(vis[ok])
+        res[r] = g = prior_interp(np.asarray(s[f"{r}_joints"], float)[:, :22], np.asarray(s[f"{r}_smplx_global_orient"], float),
+                                  np.asarray(s[f"{r}_smplx_body_pose"], float), tr.R, tr.tvec, tr.t, ok, conf, tg, smooth)
+        acc = C.accel_rr_mm(tg, g["joints"])
+        rep["roles"][r] = {"grid_frames_with_prior": int(g["ok"].sum()),
+                           "conf_mean": round(float(g["conf"][g["ok"]].mean()), 3) if g["ok"].any() else None,
+                           "dt_nearest_ms_max": round(float(g["dt_nearest_ms"].max()), 2),
+                           "jitter_accel_rr_median": round(float(np.nanmedian(acc)), 2) if np.isfinite(acc).any() else None}
+        log(f"prior (no fit) {r}: {rep['roles'][r]}")
+    P = OUT / "prior_3db_full.npz"
+    np.savez_compressed(P, joints=np.stack([res[r]["joints"] for r in ROLES], 1).astype(np.float32),
+                        conf=np.stack([res[r]["conf"] for r in ROLES], 1).astype(np.float32),
+                        global_orient=np.stack([res[r]["global_orient"] for r in ROLES], 1).astype(np.float32),
+                        body_pose=np.stack([res[r]["body_pose"] for r in ROLES], 1).astype(np.float32),
+                        sigma_m=PRIOR_SIGMA_M, rotate=False, scale=True, t=tg, k=np.arange(T),
+                        frame_a=np.stack([res[r]["frame_a"] for r in ROLES], 1), frame_w=np.stack([res[r]["frame_w"] for r in ROLES], 1),
+                        smooth_frames=smooth, source=str(OUT / "smplx_3db.npz"))
+    rep["path"] = str(P)
+    (OUT / "prior_3db_full.json").write_text(json.dumps(rep, indent=1))
+    return rep
+
+
 def prior_slice(k0: int, k1: int, out: Path) -> Path:
     """The full-lattice prior cut to a chunk's fit grid k0..k1 (inclusive; mamma prepare --grid-anchor 0 --grid-k=k0:k1)."""
     z = np.load(OUT / "prior_3db_full.npz", allow_pickle=True)
@@ -772,13 +960,16 @@ def prior_slice(k0: int, k1: int, out: Path) -> Path:
 
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(prog="python -m dancecap.mono4d.jl_sam3db")
+    ap.add_argument("--take", default="john_lula", help="the one-camera take (default john_lula: this stage's first take)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("check-access")
-    sub.add_parser("prep")
+    pp = sub.add_parser("prep")
+    pp.add_argument("--decode-on-pod", action="store_true", help="the frames are decoded on the pod (job --video)")
     j = sub.add_parser("job")
     j.add_argument("--max-minutes", type=float, default=75)
     j.add_argument("--chunk", type=int, default=CHUNK)
     j.add_argument("--reserve-min", type=float, default=30.0)
+    j.add_argument("--video", help="decode the frames on the pod from this video (not uploaded as JPEGs)")
     im = sub.add_parser("import")
     im.add_argument("--session")
     q = sub.add_parser("qa")
@@ -790,14 +981,16 @@ def main(argv=None) -> None:
     ps.add_argument("--k1", type=int, required=True)
     ps.add_argument("--out", required=True)
     a = ap.parse_args(argv)
+    if a.take != TAKE:
+        configure(a.take)
     if a.cmd == "check-access":
         from .cand_sam3d_body import check_access
         print(json.dumps(check_access(), indent=1))
     elif a.cmd == "prep":
-        info = prep()
+        info = prep(a.decode_on_pod)
         print(json.dumps({k: v for k, v in info.items() if k != "skipped_frames"}, indent=1))
     elif a.cmd == "job":
-        print(job(a.max_minutes, a.chunk, a.reserve_min))
+        print(job(a.max_minutes, a.chunk, a.reserve_min, video=Path(a.video) if a.video else None))
     elif a.cmd == "import":
         print(json.dumps(do_import(a.session), indent=1, default=str))
     elif a.cmd == "qa":
