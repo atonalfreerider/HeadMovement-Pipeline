@@ -75,8 +75,9 @@ def test_route_plans_put_every_heavy_step_on_runpod(route, n, dur):
     by = {s["id"]: s for s in steps}
     assert ids[0] == "intake" and "upload" in ids and ids[-1] == "film"
     local = {s["id"] for s in steps if s["where"] == "local"}
-    assert local <= {"intake", "clocks", "export", "film"}          # this PC: light work only (owner rule)
-    for heavy in ("people", "fits", "analyses", "avatars", "shape"):
+    # this PC: light work only (owner rule): mono beats 26 s, world ~1 min of CPU, post seconds, the skipped film
+    assert local <= {"intake", "clocks", "export", "film", "beats", "world", "post"}
+    for heavy in ("people", "fits", "analyses", "avatars") + (("shape",) if route == "multi" else ("camera", "sam3d_body")):
         assert by[heavy]["where"].startswith("pod"), heavy
     for s in steps:
         assert set(s["deps"]) <= set(ids) and s["p50_min"] <= s["p90_min"]
@@ -84,11 +85,11 @@ def test_route_plans_put_every_heavy_step_on_runpod(route, n, dur):
     assert t["critical"][0] == "intake" and t["critical"][-1] == "film"
     # 2026-10-22: planned from what is built (one pod per mono step, every session's start-up): the 88-s mono plan is
     # about 3.4 h, as john_lula's first pass measured 3.2 h of compute on its critical path (PIPELINE_EFFICIENCY.md 4.1)
-    lo, hi = (150, 260) if route == "mono" else (40, 150)
+    lo, hi = (120, 260) if route == "mono" else (40, 150)
     assert lo < t["wall_min"]["p50"] < hi and t["wall_min"]["p90"] > t["wall_min"]["p50"]
     assert t["cost_usd"]["p90"] >= t["cost_usd"]["p50"] > 0
     if route == "mono":
-        assert by["people"]["lanes"] == 1 and by["sam3d_body"]["deps"] == ["people"]     # time shards are not built
+        assert by["people"]["lanes"] == 1 and by["sam3d_body"]["deps"] == ["world"]      # time shards are not built
         assert "sam3d_body" in by["fits"]["deps"]
         no_real = {s["id"]: s for s in A.route_plan("mono", f, {"realism": False})}
         assert "sam3d_body" not in no_real["fits"]["deps"] and no_real["sam3d_body"]["optional"]

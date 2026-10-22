@@ -82,12 +82,16 @@ def request(run: str, event: str, label: str = "", sid: str | None = None, final
         last = read_json(d / "requested.json", None) or {}
         if not final and time.time() - float(last.get("ts") or 0) < MIN_GAP_S and last.get("event") == event:
             return False
-        write_json_atomic(d / "requested.json", {"ts": time.time(), "event": event})
+        at = time.time()
+        write_json_atomic(d / "requested.json", {"ts": at, "event": event})
+        frozen = freeze(run, event, sid, at)
         py = _python()
         argv = [py, "-m", "dancecap.pipeline", "snapshot", run, "--event", event[:60], "--label", (label or "")[:160],
-                "--at", f"{time.time():.1f}"]
+                "--at", f"{at:.1f}"]
         if sid:
             argv += ["--sid", sid]
+        if frozen:
+            argv += ["--data", str(frozen)]
         flags = (NO_WINDOW | 0x00000200) if os.name == "nt" else 0
         with open(d / "snapshot.log", "a", encoding="utf-8") as fh:
             subprocess.Popen(argv, cwd=str(paths.root()), stdin=subprocess.DEVNULL, stdout=fh, stderr=subprocess.STDOUT,
@@ -95,6 +99,42 @@ def request(run: str, event: str, label: str = "", sid: str | None = None, final
         return True
     except Exception:  # noqa: BLE001
         return False
+
+
+def freeze(run: str, event: str, sid: str | None = None, at: float | None = None) -> Path | None:
+    """The monitor's data AT THE EVENT (gather), written to <snapshots>/<run>/pending/<ms>_<event>.json for the detached
+    renderer. Renders queue behind one lock and take 1-30 s each, so a snapshot that gathered at render time showed the
+    state of seconds to minutes later (2026-10-22 review: "snapshots render the state at render time, not at their
+    event"). None when gathering fails: the renderer then gathers itself, as before. Never raises."""
+    try:
+        at = time.time() if at is None else float(at)
+        data = gather(run, sid, at)
+        ev = EVENT_RE.sub("_", (event or "snap").lower()).strip("_")[:40] or "snap"
+        pend = snap_dir(run) / "pending"
+        p = pend / f"{int(at * 1000)}_{ev}.json"
+        write_json_atomic(p, {"v": 1, "run": run, "event": event, "at": at, "sid": sid, "data": data}, indent=None)
+        for old in pend.glob("*.json"):   # a renderer that never started leaves its file: gone after an hour
+            try:
+                if at - old.stat().st_mtime > 3600:
+                    old.unlink()
+            except OSError:
+                pass
+        return p
+    except Exception:  # noqa: BLE001 - a snapshot never breaks the work it records
+        return None
+
+
+def load_frozen(path: str | Path | None, run: str) -> dict | None:
+    """The data freeze() wrote for this run, or None (missing, unreadable, another run's)."""
+    if not path:
+        return None
+    try:
+        doc = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(doc, dict) or doc.get("run") != run or not isinstance(doc.get("data"), dict):
+        return None
+    return doc["data"]
 
 
 def _python() -> str:
@@ -386,7 +426,12 @@ def step_line(st: dict, now: float) -> str:
     if st.get("started") and st.get("ended"):
         return f"took {fmt_dur(float(st['ended']) - float(st['started']))}"
     if st.get("started") and st.get("status") == "running":
-        return f"running {fmt_dur(now - float(st['started']))} of ~{float(st.get('p50_min') or 0):.0f} min"
+        eta = ""
+        if st.get("eta_s") is not None:
+            p90 = st.get("eta_s_p90")
+            eta = (f" · ETA {fmt_dur(st['eta_s'])}" + (f" (p90 {fmt_dur(p90)})" if p90 is not None and p90 > st["eta_s"] else "")
+                   + (" · measured" if st.get("eta_basis") == "measured" else ""))
+        return f"running {fmt_dur(now - float(st['started']))} of ~{float(st.get('p50_min') or 0):.0f} min{eta}"
     if st.get("status") == "stopped":
         return "stopped when the run ended"
     return f"plan {float(st.get('p50_min') or 0):.0f} min (p90 {float(st.get('p90_min') or 0):.0f})"
@@ -652,41 +697,59 @@ def _pil_card(html_path: Path, png_path: Path) -> None:
 
 # ------------------------------------------------------------------------------------------------ take
 
-def take(run: str, event: str, label: str = "", sid: str | None = None, requested: float | None = None) -> dict:
+def take(run: str, event: str, label: str = "", sid: str | None = None, requested: float | None = None,
+         data_file: str | Path | None = None) -> dict:
+    """Render one snapshot. data_file: the data freeze() captured at the event (request()); without it (or when it is
+    unreadable) the data are gathered now. The shot's ts is the time its data are from; `rendered` when it was drawn."""
     d = snap_dir(run)
     d.mkdir(parents=True, exist_ok=True)
-    with _Lock(d / "render.lock"):
-        ix = index(run)
-        last = (ix.get("shots") or [{}])[-1] if ix.get("shots") else {}
-        now = time.time()
-        data = gather(run, sid, now)
-        page = {"analysis": render_analysis, "farm": render_farm}.get(data["kind"], render_session)(data, event, label)
-        i = len(ix.get("shots") or []) + 1
-        ev = EVENT_RE.sub("_", (event or "snap").lower()).strip("_")[:40] or "snap"
-        base = f"{i:02d}_{ev}"
-        hp, pp = d / f"{base}.html", d / f"{base}.png"
-        write_text_atomic(hp, page)
-        method, ms, err = render_png(hp, pp, page_height(data))
-        shot = {"i": i, "ts": round(now, 1), "requested": round(requested or now, 1), "event": ev, "label": label,
-                "html": hp.name,
-                "png": pp.name if pp.exists() else None, "method": method, "ms": ms, "error": err,
-                "kind": data["kind"], "sid": sid}
-        if data["kind"] == "analysis":
-            lv = data["a"].get("live") or {}
-            shot.update({"done": lv.get("done"), "total": lv.get("total"), "eta_s": (lv.get("eta_s") or {}).get("p50"),
-                         "cost_so_far": (lv.get("cost_usd") or {}).get("so_far")})
-        elif data["kind"] == "farm":
-            f = data["f"]
-            shot.update({"dance": f.get("dance"), "complete_pct": ((f.get("coverage") or {}).get("percent") or {}).get("complete"),
-                         "chunks_done": sum(1 for c in f.get("chunks") or [] if c.get("status") in ("done", "pulled", "stitched")),
-                         "chunks": len(f.get("chunks") or [])})
-        ix = index(run)      # re-read: another process may have appended meanwhile (the lock serialises renders only)
-        ix.setdefault("shots", []).append(shot)
-        # renders queue behind one lock and finish in any order: the index is kept in the order they were asked for
-        ix["shots"].sort(key=lambda x: (x.get("requested") or x.get("ts") or 0, x.get("i") or 0))
-        ix.update({"run": run, "kind": data["kind"], "updated": time.time()})
-        write_json_atomic(d / "index.json", ix)
-        return shot
+    try:
+        with _Lock(d / "render.lock"):
+            ix = index(run)
+            now = time.time()
+            data = load_frozen(data_file, run)
+            frozen = data is not None
+            if data is None:
+                data = gather(run, sid, now)
+            at = float(data.get("now") or now)
+            page = {"analysis": render_analysis, "farm": render_farm}.get(data["kind"], render_session)(data, event, label)
+            i = len(ix.get("shots") or []) + 1
+            ev = EVENT_RE.sub("_", (event or "snap").lower()).strip("_")[:40] or "snap"
+            base = f"{i:02d}_{ev}"
+            hp, pp = d / f"{base}.html", d / f"{base}.png"
+            write_text_atomic(hp, page)
+            method, ms, err = render_png(hp, pp, page_height(data))
+            shot = {"i": i, "ts": round(at, 1), "rendered": round(time.time(), 1), "requested": round(requested or at, 1),
+                    "frozen": frozen, "event": ev, "label": label, "html": hp.name,
+                    "png": pp.name if pp.exists() else None, "method": method, "ms": ms, "error": err,
+                    "kind": data["kind"], "sid": sid}
+            return _index_shot(run, d, data, shot)
+    finally:
+        if data_file:
+            try:
+                Path(data_file).unlink()
+            except OSError:
+                pass
+
+
+def _index_shot(run: str, d: Path, data: dict, shot: dict) -> dict:
+    """Append a rendered shot to index.json (with the run's live figures of the data it was drawn from)."""
+    if data["kind"] == "analysis":
+        lv = data["a"].get("live") or {}
+        shot.update({"done": lv.get("done"), "total": lv.get("total"), "eta_s": (lv.get("eta_s") or {}).get("p50"),
+                     "cost_so_far": (lv.get("cost_usd") or {}).get("so_far")})
+    elif data["kind"] == "farm":
+        f = data["f"]
+        shot.update({"dance": f.get("dance"), "complete_pct": ((f.get("coverage") or {}).get("percent") or {}).get("complete"),
+                     "chunks_done": sum(1 for c in f.get("chunks") or [] if c.get("status") in ("done", "pulled", "stitched")),
+                     "chunks": len(f.get("chunks") or [])})
+    ix = index(run)      # re-read: another process may have appended meanwhile (the lock serialises renders only)
+    ix.setdefault("shots", []).append(shot)
+    # renders queue behind one lock and finish in any order: the index is kept in the order they were asked for
+    ix["shots"].sort(key=lambda x: (x.get("requested") or x.get("ts") or 0, x.get("i") or 0))
+    ix.update({"run": run, "kind": data["kind"], "updated": time.time()})
+    write_json_atomic(d / "index.json", ix)
+    return shot
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -696,9 +759,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--label", default="")
     ap.add_argument("--sid")
     ap.add_argument("--at", type=float, help="when the snapshot was asked for (epoch s)")
+    ap.add_argument("--data", help="the monitor's data captured at the event (request() -> freeze())")
     a = ap.parse_args(argv)
     try:
-        shot = take(a.run, a.event, a.label, a.sid, requested=a.at)
+        shot = take(a.run, a.event, a.label, a.sid, requested=a.at, data_file=a.data)
     except Exception as e:  # noqa: BLE001
         print(f"[snapshot] {a.run} {a.event}: {type(e).__name__}: {e}", flush=True)
         return 1

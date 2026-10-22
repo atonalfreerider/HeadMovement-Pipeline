@@ -66,7 +66,9 @@ export function stepLine(st, now) {
   else if (st.started && status === "running") dur = `running ${fmtDur(now - st.started)} of ~${Math.round(st.p50_min)} min`;
   else if (status === "stopped") dur = "stopped when the run ended";
   else dur = `plan ${Math.round(st.p50_min)} min (p90 ${Math.round(st.p90_min)})`;
-  if (status === "running" && st.eta_s != null) dur += ` · ETA ${fmtDur(st.eta_s)}`;
+  // the time left the run's ETA counts for this step (activity.analysis_card writes it back from analyze.live), so the
+  // step row and the run KPI agree; "measured" = its pod session's measured progress covers the whole step
+  if (status === "running" && st.eta_s != null) dur += ` · ETA ${fmtDur(st.eta_s)}${st.eta_s_p90 != null && st.eta_s_p90 > st.eta_s ? ` (p90 ${fmtDur(st.eta_s_p90)})` : ""}${st.eta_basis === "measured" ? " · measured" : ""}`;
   return dur;
 }
 

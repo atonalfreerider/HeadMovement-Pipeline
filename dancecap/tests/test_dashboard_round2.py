@@ -403,13 +403,19 @@ def _running_cmd_session(tmp_path, sid, rates_keys=None, frames=None, warnings=N
     return E.snapshot(d, now=now, rates={"keys": rates_keys or {}}, ledger_rows=rows)
 
 
+def _sid_now(dt_s: float = 700.0) -> str:
+    """A session id of `dt_s` ago: the runner log's HH:MM:SS are dated by the session id, so a fixed 20261021 id put today's
+    log lines 24 h after the session's start on any other day (the test failed on every day but 2026-10-21)."""
+    return time.strftime("%Y%m%d-%H%M%S", time.localtime(time.time() - dt_s)) + "-batch"
+
+
 def test_no_history_eta_is_a_prior_not_the_timeout_and_history_labels(tmp_path):
-    snap = _running_cmd_session(tmp_path, "20261021-160000-batch", rates_keys={
+    snap = _running_cmd_session(tmp_path, _sid_now(710), rates_keys={
         "cmd/a.b/s": {"n": 3, "p10": 100, "p50": 180, "p90": 300}, "cmd/c.d/s": {"n": 2, "p10": 50, "p50": 60, "p90": 90}})
     ph = {p["name"]: p for p in snap["phases"]}["j/run"]
     assert "timeout" not in (ph["detail"] or "") and "generic prior" in ph["detail"]
     assert ph["remaining"]["p50"] < 0.3 * 3600                     # the 60-min timeout said 18 min of 0.3 x timeout
-    snap = _running_cmd_session(tmp_path, "20261021-160100-batch", rates_keys={
+    snap = _running_cmd_session(tmp_path, _sid_now(705), rates_keys={
         "cmd/j.run/s": {"n": 4, "p10": 50, "p50": 60, "p90": 80, "sigma": 0.2}})
     ph = {p["name"]: p for p in snap["phases"]}["j/run"]
     assert ph["detail"].startswith("history n=4") and "history history" not in ph["detail"]

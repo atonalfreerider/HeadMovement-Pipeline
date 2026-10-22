@@ -64,6 +64,11 @@ def _toml_str(s: str) -> str:
     return json.dumps(str(s), ensure_ascii=False)
 
 
+def _abs(p: Path) -> Path:
+    """Absolute without following links: in a worktree whose work/ is a junction, resolve() would climb out of the checkout."""
+    return Path(os.path.abspath(p))
+
+
 def _rel(p: Path, base: Path) -> str:
     try:
         return Path(os.path.relpath(p, base)).as_posix()
@@ -127,7 +132,7 @@ def validate(req: dict, probe_fn=probe.probe_file) -> tuple[dict, list[dict], li
         sug = v.get("suggestion") if isinstance(v.get("suggestion"), dict) else None
         if sug is not None and (sug.get("mount") not in camtypes.MOUNTS or not isinstance(sug.get("zoom"), bool)):
             sug = None
-        vids.append({"cam": cam, "path": path.resolve(), "probe": pr, "excluded": bool(v.get("excluded")),
+        vids.append({"cam": cam, "path": _abs(path), "probe": pr, "excluded": bool(v.get("excluded")),
                      "reason": "excluded by you" if v.get("excluded") else None,
                      "type": {"mount": mount, "zoom": zoom} if mount and zoom is not None else None,
                      "suggestion": sug})
@@ -167,7 +172,7 @@ def validate(req: dict, probe_fn=probe.probe_file) -> tuple[dict, list[dict], li
                 spr = s_in.get("probe") or probe_fn(sp)
                 if not spr.get("audio"):
                     bad("soundtrack", "no audio stream")
-                snd = {"path": sp.resolve(), "probe": spr}
+                snd = {"path": _abs(sp), "probe": spr}
             except Exception as e:  # noqa: BLE001
                 bad("soundtrack", f"cannot read: {str(e)[:160]}")
     ct = req.get("capture_type") or "auto"
@@ -204,7 +209,7 @@ def validate(req: dict, probe_fn=probe.probe_file) -> tuple[dict, list[dict], li
             if not pp.is_file() or pp.suffix.lower() not in takes.IMAGE_EXT:
                 bad(f"dancers.{role}.portrait", "an existing .jpg/.png image")
             else:
-                port = pp.resolve()
+                port = _abs(pp)
         dancers[role] = {"name": name, "pid": pid, "stature_m": st, "stature_in": str(d.get("stature_m", d.get("stature")) or ""),
                          "shoe_sole_m": sole, "description": str(d.get("description") or "").strip(), "portrait": port}
     dance = dict(req.get("dance") or {})

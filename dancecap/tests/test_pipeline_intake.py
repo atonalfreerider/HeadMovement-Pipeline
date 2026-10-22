@@ -136,3 +136,28 @@ def test_real_media_probe_and_create(root, tmp_path):
     assert res["variant"] == "two" and cfg["dance"]["song_file"].endswith("song.mp3")
     out = probe.run("couple_demo", suggest=False)
     assert set(out) == {"01", "02"} and out["02"]["fps"] > 59
+
+
+def _link_dir(link: Path, target: Path):
+    if sys.platform == "win32":
+        import _winapi
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+def test_source_dir_does_not_follow_a_junction(root, tmp_path):
+    """A worktree whose work/ is a junction to the main checkout: source_dir names the path as given, not the link's target
+    (resolve() made it climb five levels out of the checkout)."""
+    real = tmp_path / "elsewhere"
+    vids_real = files(real)
+    link = tmp_path / "linked"
+    try:
+        _link_dir(link, real)
+    except OSError as e:
+        pytest.skip(f"cannot make a directory link here: {e}")
+    vids = [link / p.relative_to(real) for p in vids_real]
+    intake.create(request(vids), probe_fn=fake_probe())
+    cfg = tomllib.loads(paths.take_toml("couple_demo").read_text(encoding="utf-8"))
+    assert "linked" in cfg["source_dir"] and "elsewhere" not in cfg["source_dir"]
+    assert (paths.takes_dir() / cfg["source_dir"] / "01-cam.mp4").is_file()
