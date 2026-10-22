@@ -255,3 +255,325 @@ def test_local_rotation_speed_and_gate_constants():
     assert np.allclose(sp, 5.0, atol=1e-6)
     g = zc.GATE
     assert g["twist_deg"] == 90.0 and g["hyper_deg"] == -5.0 and g["add_mps"] == 0.55 and g["coco_worse_px"] == 3.0
+
+
+# ---------------------------------------------------------------------------------------------- the final pass (2026-10-22): new guards + targets
+
+def test_whip_frames_new_whip_fast_and_calmed_flick():
+    """a whip = new added speed AND faster than the input / reference there, or faster than max(p99, input, reference) + margin; a fix that
+    only calms a flick of the input (slower than the input, though 'added' against it) is not a whip"""
+    z = np.zeros(4)
+    v_in = np.array([2.5, 0.3, 0.3, 0.3])
+    v0 = v_in.copy()
+    a0 = z.copy()
+    v1 = np.array([1.2, 0.95, 0.3, 2.2])                # 0: calmed flick; 1: a new whip; 2: nothing; 3: faster than p99
+    a1 = np.array([1.5, 0.7, 0.1, 0.2])
+    w = zc.whip_frames(a0, a1, v_in, v0, v1, p99=1.8)
+    assert w.tolist() == [False, True, False, True]
+    # added speed the reference already had is not new
+    assert not zc.whip_frames(np.array([0.7]), np.array([0.75]), np.array([0.3]), np.array([0.9]), np.array([0.95]), 2.0)[0]
+
+
+def test_new_fold_flag():
+    """a wrist folded past 85 deg that neither the reference nor the input folds as far (+10 deg) is new"""
+    bc = np.array([90.0, 120.0, 120.0, 80.0])
+    br = np.array([40.0, 115.0, 40.0, 10.0])
+    bi = np.array([40.0, 40.0, 40.0, 10.0])
+    assert zc.new_fold(bc, br, bi).tolist() == [True, False, True, False]
+
+
+def test_window_check_vetoes_coco_elbow_and_mamma():
+    """per-window 2D checks: the COCO wrist (> 3 px worse), the COCO elbow (> 4 px), MAMMA's hand points (> 6 px), each with enough data"""
+    wins = [{"id": f"r4:{i}", "t_span": [i, i + 1.0]} for i in range(5)]
+    chk = {"r4:0": {"n": 50, "v3_px": 10.0, "v4_px": 13.5},
+           "r4:1": {"n": 50, "v3_px": 10.0, "v4_px": 10.0, "elbow_n": 40, "elbow_v3_px": 9.0, "elbow_v4_px": 13.5},
+           "r4:2": {"n": 50, "v3_px": 10.0, "v4_px": 10.0, "mamma_n": 30, "mamma_v3_px": 12.0, "mamma_v4_px": 18.5},
+           "r4:3": {"n": 5, "v3_px": 10.0, "v4_px": 30.0, "elbow_n": 3, "elbow_v3_px": 9.0, "elbow_v4_px": 30.0},
+           "r4:4": {"n": 50, "v3_px": 10.0, "v4_px": 12.0, "elbow_n": 40, "elbow_v3_px": 9.0, "elbow_v4_px": 12.0,
+                    "mamma_n": 30, "mamma_v3_px": 12.0, "mamma_v4_px": 17.0}}
+    v = zc.window_check_vetoes(chk, wins)
+    assert sorted(v) == ["r4:0", "r4:1", "r4:2"]
+    assert "COCO wrist" in v["r4:0"]["why"] and "COCO elbow" in v["r4:1"]["why"] and "MAMMA" in v["r4:2"]["why"]
+    assert all(x["gate"] for x in v.values())
+
+
+def test_exact_window_checks_new_penetration_and_floating():
+    """exact (her mesh): a window whose hand goes > 1 cm deeper on >= 3 frames, or floats > 2.5 cm off her back where the reference touched
+    her on >= 10 frames, is vetoed; coming out of her onto her surface is not"""
+    T = 100
+    names = np.array(["upper_back"] * T)
+    p0 = np.zeros(T)
+    g0 = np.zeros(T)
+    p0[10:20] = 0.08                                     # the reference 8 cm inside her ...
+    g0[10:20] = -0.08
+    p1, g1 = np.zeros(T), np.full(T, 0.002)             # ... the candidate on her surface: fine
+    p1[40:44] = 0.03                                     # 4 frames 3 cm deeper: new penetration
+    g1[60:75] = 0.04                                     # 15 frames 4 cm off her where the reference touched her: floating
+    wins = [{"id": "a", "span": [5, 25], "t_span": [0, 1]}, {"id": "b", "span": [35, 50], "t_span": [1, 2]},
+            {"id": "c", "span": [55, 80], "t_span": [2, 3]}]
+    v, nums = zc.exact_window_checks(p0, p1, g0, g1, names, wins)
+    assert sorted(v) == ["b", "c"]
+    assert nums["a"]["pen_frames_gt2cm"] == [10, 0] and nums["b"]["deeper_frames"] == 4 and nums["c"]["float_frames"] == 15
+
+
+def test_despike_poses_slerps_the_glitch_frames_only():
+    """the right arm + finger rotations on [a, b] become the slerp between the frames just outside; other joints / frames untouched"""
+    from scipy.spatial.transform import Rotation as Ro
+    T = 40
+    P = np.zeros((T, 55, 3))
+    for k in range(T):
+        P[k, zc.ELBOW["right"]] = Ro.from_euler("x", 2.0 * k, degrees=True).as_rotvec()
+        P[k, zc.ELBOW["left"]] = Ro.from_euler("x", 1.0 * k, degrees=True).as_rotvec()
+    P[20:23, zc.ELBOW["right"]] = Ro.from_euler("y", 80.0, degrees=True).as_rotvec()       # 3-frame glitch at 20..22 (0.667-0.733 s)
+    Q, done = zc.despike_poses(P, [[20 / 30.0, 22 / 30.0]])
+    assert done == [[round(20 / 30, 3), round(22 / 30, 3)]]
+    ang = Ro.from_rotvec(Q[18:25, zc.ELBOW["right"]]).as_euler("xyz", degrees=True)[:, 0]
+    assert np.allclose(ang, 2.0 * np.arange(18, 25), atol=1e-6)
+    assert np.array_equal(Q[:, zc.ELBOW["left"]], P[:, zc.ELBOW["left"]]) and np.array_equal(Q[:20], P[:20])
+
+
+def test_visible_side_targets_bring_an_inside_palm_out_toward_the_phone():
+    """a box 'torso'; the phone in front of its +z face: a palm inside comes out onto the +z side near the phone's ray; a palm outside stays"""
+    import torch
+    from dancecap import hand_contact as hc
+    import trimesh
+    m = trimesh.creation.box(extents=(0.4, 0.5, 0.3))
+    m = m.subdivide().subdivide().subdivide()
+    V = np.asarray(m.vertices, np.float32)
+    F = np.asarray(m.faces, np.int64)
+    surf = hc.GpuSurface(F, len(V), "cpu")
+    pc0 = np.array([[0.02, 0.05, 0.08], [0.02, 0.05, 0.30]])          # inside (7 cm under the +z face), outside (15 cm in front of it)
+    C = np.array([[0.0, 0.0, 3.0], [0.0, 0.0, 3.0]])
+    Vt = torch.as_tensor(np.repeat(V[None], 2, 0))
+    r = zc.visible_side_targets(surf, Vt, pc0, C, np.ones(len(V), bool), lift_m=0.015, alpha=2.0)
+    assert r["pushed"].tolist() == [True, False]
+    assert abs(r["target"][0, 2] - (0.15 + 0.015)) < 0.01                        # on the +z face, lifted
+    assert np.linalg.norm(r["target"][0, :2] - pc0[0, :2]) < 0.03                 # close to the phone's ray
+    assert np.allclose(r["target"][1], pc0[1])
+
+
+def test_window_check_vetoes_curation_keep_exempts_only_the_named_check():
+    """a curation "keep" (decided by looking) waives only the checks it names for that window"""
+    wins = [{"id": "r4:5", "t_span": [83.3, 88.3]}]
+    chk = {"r4:5": {"n": 50, "v3_px": 10.0, "v4_px": 10.0, "mamma_n": 30, "mamma_v3_px": 14.7, "mamma_v4_px": 22.1,
+                    "elbow_n": 40, "elbow_v3_px": 9.0, "elbow_v4_px": 9.0}}
+    assert "r4:5" in zc.window_check_vetoes(chk, wins)
+    assert zc.window_check_vetoes(chk, wins, exempt={"r4:5": ["mamma"]}) == {}
+    chk["r4:5"]["v4_px"] = 14.0                                      # the COCO wrist 4 px worse: still vetoed
+    v = zc.window_check_vetoes(chk, wins, exempt={"r4:5": ["mamma"]})
+    assert "COCO wrist" in v["r4:5"]["why"] and "MAMMA" not in v["r4:5"]["why"]
+
+
+# ------------------------------------------------------------------------------------------------ the closing pass
+
+def test_despike_hermite_keeps_the_motion_s_velocity_and_only_the_named_joints():
+    """a constant-speed rotation with a 3-frame glitch: the Hermite despike restores the straight motion exactly (no dead stop at the
+    ends); "arm" leaves his other joints and the root alone, "body" also interpolates the root translation"""
+    from scipy.spatial.transform import Rotation as Ro
+    T = 40
+    P = np.zeros((T, 55, 3))
+    tr = np.zeros((T, 3))
+    for k in range(T):
+        P[k, zc.ELBOW["right"]] = Ro.from_euler("x", 3.0 * k, degrees=True).as_rotvec()
+        P[k, zc.SPINE3] = Ro.from_euler("y", 1.0 * k, degrees=True).as_rotvec()
+        tr[k] = [0.02 * k, 0, 0]
+    clean_P, clean_tr = P.copy(), tr.copy()
+    P[20:23, zc.ELBOW["right"]] = Ro.from_euler("y", 80.0, degrees=True).as_rotvec()
+    P[20:23, zc.SPINE3] = Ro.from_euler("x", 30.0, degrees=True).as_rotvec()
+    tr[20:23] += [0, 0.1, 0]
+    Q, trq, done = zc.despike_hermite(P, tr, [[20 / 30.0, 22 / 30.0, "arm"]])
+    assert done == [[round(20 / 30, 3), round(22 / 30, 3), "arm"]]
+    assert np.allclose(Q[:, zc.ELBOW["right"]], clean_P[:, zc.ELBOW["right"]], atol=1e-6)
+    assert np.array_equal(Q[:, zc.SPINE3], P[:, zc.SPINE3]) and np.array_equal(trq, tr)
+    Q2, trq2, _ = zc.despike_hermite(P, tr, [[20 / 30.0, 22 / 30.0, "body"]])
+    assert np.allclose(Q2[:, zc.SPINE3], clean_P[:, zc.SPINE3], atol=1e-6) and np.allclose(trq2, clean_tr, atol=1e-9)
+    # too close to the film's ends: not applied
+    assert zc.despike_hermite(P, tr, [[1 / 30.0, 2 / 30.0, "arm"]])[2] == []
+
+
+def _box_torso(n_sub: int = 3):
+    import trimesh
+    m = trimesh.creation.box(extents=(0.4, 0.5, 0.3))
+    for _ in range(n_sub):
+        m = m.subdivide()
+    return np.asarray(m.vertices, np.float32), np.asarray(m.faces, np.int64)
+
+
+def test_ray_hit_targets_slide_along_the_phone_s_ray():
+    """a box 'torso' (front face z = +0.15), the phone at z = 3 m: an inside palm slides along the phone's ray onto the face (its pixels in
+    that phone kept), a palm 3 cm in front is laid onto it, one 20 cm in front is kept, the observed ray moves it on the surface"""
+    V, F = _box_torso()
+    C = np.array([[0.1, 0.0, 3.0]] * 4)
+    pc0 = np.array([[0.02, 0.05, 0.05], [0.0, 0.0, 0.18], [0.0, 0.0, 0.35], [0.0, 0.0, 0.10]])
+    thru = pc0.copy()
+    thru[3] = [0.10, 0.08, 0.10]                                          # the phone shows the hand 10 cm to the side
+    mode = np.array([zc.RAY_INSIDE, zc.RAY_FLOAT, zc.RAY_FLOAT, zc.RAY_OBS])
+    r = zc.ray_hit_targets(np.repeat(V[None], 4, 0), F, C, thru, pc0, mode, lift_m=0.015)
+    assert r["pushed"].tolist() == [True, True, False, True] and r["on_surface"].tolist() == [True, True, False, True]
+    for i in (0, 1, 3):
+        assert r["target"][i, 2] == pytest.approx(0.15 + 0.015, abs=2e-3)
+    d = (pc0[0] - C[0]) / np.linalg.norm(pc0[0] - C[0])
+    off = (r["target"][0] - C[0]) - ((r["target"][0] - C[0]) @ d) * d
+    assert np.linalg.norm(off) < 0.016                                   # on the phone's ray (up to the lift along the face normal)
+    assert np.allclose(r["target"][2], pc0[2])
+    assert r["target"][3, 0] > 0.08
+    # a slide longer than max_slide_m is not taken
+    r2 = zc.ray_hit_targets(V[None], F, C[:1], pc0[:1], pc0[:1], mode[:1], lift_m=0.015, max_slide_m=0.05)
+    assert not r2["pushed"][0]
+
+
+def test_unfold_wrist_compresses_only_the_fold():
+    from scipy.spatial.transform import Rotation as Ro
+    a, n, _ = zc._rest_axes("right")
+    flex_axis = np.cross(a, n)
+    P = np.zeros((3, 55, 3))
+    P[0, zc.WRIST["right"]] = np.radians(170) * flex_axis
+    P[1, zc.WRIST["right"]] = np.radians(40) * flex_axis
+    P[2, zc.WRIST["right"]] = np.radians(170) * flex_axis
+    Q, b = zc.unfold_wrist(P, weight=np.array([1.0, 1.0, 0.0]))
+    b1 = zc.wrist_angles(Q, "right")["bend"]
+    assert b[0] == pytest.approx(170, abs=0.1)
+    assert b1[0] == pytest.approx(75 + 0.1 * 95, abs=0.5)
+    assert np.allclose(Q[1], P[1]) and np.allclose(Q[2], P[2])
+
+
+class _FakeObs:
+    """one or two phones at fixed places (pinhole, f = 1000 px, 1920 x 1080), every frame ok"""
+
+    def __init__(self, centres, T=5):
+        self.cams = [str(i) for i in range(len(centres))]
+        self.z = {}
+        for c, C in zip(self.cams, centres):
+            C = np.asarray(C, float)
+            fwd = -C / np.linalg.norm(C)
+            right = np.cross(fwd, [0, 1.0, 0])
+            right /= np.linalg.norm(right)
+            down = np.cross(fwd, right)
+            R = np.stack([right, down, fwd])
+            K = np.array([[1000.0, 0, 960], [0, 1000.0, 540], [0, 0, 1]])
+            self.z[c] = {"R": np.repeat(R[None], T, 0), "t": np.repeat((-R @ C)[None], T, 0), "K": np.repeat(K[None], T, 0),
+                         "ok": np.ones(T, bool)}
+
+    def project(self, cam, X, ks):
+        z = self.z[cam]
+        Xc = np.einsum("kij,kpj->kpi", z["R"][ks], X) + z["t"][ks][:, None]
+        uv = np.einsum("kij,kpj->kpi", z["K"][ks], Xc)
+        return uv[..., :2] / uv[..., 2:], Xc[..., 2]
+
+
+def test_joint_visible_and_coco_errors_vis(monkeypatch):
+    """a capsule between phone 1 and the wrist hides it from phone 1 only; the COCO errors then count only phone 0's detections"""
+    obs = _FakeObs([[0, 0, 3.0], [3.0, 0, 0]])
+    ks = np.arange(2)
+    X = np.zeros((2, 3))
+    A = np.array([[[1.5, -0.2, 0]]] * 2)
+    B = np.array([[[1.5, 0.2, 0]]] * 2)
+    monkeypatch.setattr(zc, "occluders", lambda bodies, kl, kf: (A, B, np.array([0.1])))
+    vis = zc.joint_visible(obs, ks, X, None, None, None)
+    assert vis.tolist() == [[True, False], [True, False]]
+
+    class Judge:
+        def joint(self, c, role, side, k, which):
+            uv, _ = obs.project(c, X[:1, None], np.array([k]))
+            return uv[0, 0] + (np.array([5.0, 0]) if c == "0" else np.array([50.0, 0])), True
+    e = zc.coco_errors_vis(Judge(), obs, X, ks, "wrist", vis)
+    assert np.allclose(e, [5.0, 5.0])
+
+
+def test_observed_thru_moves_the_palm_to_the_observed_hand_at_its_depth(monkeypatch):
+    """MAMMA shows the hand 30 px right of the motion's: the palm moves so that it projects 30 px right, at the same depth"""
+    from dancecap import hand_contact as hc
+    T = 6
+    obs = _FakeObs([[0, 0, 3.0]], T)
+    ks = np.arange(T)
+    nlm = 12
+    lm_model = np.random.default_rng(0).normal(0, 0.03, (T, nlm, 3))
+    uv, _ = obs.project("0", lm_model, ks)
+    monkeypatch.setattr(hc, "landmark_parts", lambda: {"right_hand": np.arange(nlm)})
+    monkeypatch.setattr(hc, "PIDX", {"lead": 0, "follow": 1})
+    obs.z["0"]["lm"] = np.zeros((T, 2, nlm, 2))
+    obs.z["0"]["lm"][:, 0] = uv + [30.0, 0]
+    obs.z["0"]["vis"] = np.ones((T, 2, nlm))
+    pc = np.zeros((T, 3))
+    X, used = zc.observed_thru(obs, "0", ks, lm_model, pc, np.ones(T, bool), zc.HoldCfg(), min_lm=6)
+    assert used.all()
+    u1, d1 = obs.project("0", X[:, None], ks)
+    u0, d0 = obs.project("0", pc[:, None], ks)
+    assert np.allclose(u1[:, 0] - u0[:, 0], [30.0, 0], atol=1e-6) and np.allclose(d1, d0)
+
+
+def test_rate_limit_spreads_a_push_and_bounds_its_change():
+    d = np.zeros((20, 3))
+    d[10] = [0.10, 0, 0]                                                  # a 10 cm push on one frame
+    r = zc.rate_limit(d, 0.015)
+    assert np.linalg.norm(np.diff(r, axis=0), axis=1).max() <= 0.015 + 1e-9
+    assert r[10, 0] > 0.05 and r[7, 0] > 0.0 and r[13, 0] > 0.0          # kept large where needed, spread to the neighbours
+
+
+def test_unfold_and_smooth_wrist_stay_continuous_through_180_degrees():
+    """a fold passing 180 deg flips the shortest arc between frames; the unfolded / smoothed wrist must not flick (2026-10-22, 348.1 s)"""
+    from scipy.spatial.transform import Rotation as Ro
+    a, n, _ = zc._rest_axes("right")
+    flex_axis = np.cross(a, n)
+    T = 12
+    P = np.zeros((T, 55, 3))
+    for k in range(T):
+        ang = np.radians(170 + 2.0 * k)                                   # 170 -> 192 deg about one axis
+        P[k, zc.WRIST["right"]] = Ro.from_rotvec(ang * flex_axis).as_rotvec()   # scipy wraps it: the axis flips past 180
+    Q, _ = zc.unfold_wrist(P)
+    assert zc._local_rot_speed(Q, zc.WRIST["right"]).max() < 5.0
+    S = zc.smooth_wrist(P, 2.0)
+    assert zc._local_rot_speed(S, zc.WRIST["right"]).max() < 5.0
+
+
+def test_whip_frames_added_needs_the_window_s_own_motion_and_speed():
+    """the closing pass's whip: added against the input AND against the start AND moving at least whip_min_mps; a fast frame stays a whip"""
+    n = 5
+    a0 = np.zeros(n)
+    a1 = np.full(n, 0.7)
+    v_in = np.full(n, 0.3)
+    v0 = np.full(n, 0.3)
+    v1 = np.array([0.5, 0.9, 0.9, 0.9, 3.0])
+    a_start = np.array([0.7, 0.7, 0.2, 0.7, 0.7])
+    b = zc.whip_frames_added(a0, a1, a_start, v_in, v0, v1, p99=2.0)
+    assert b.tolist() == [False, True, False, True, True]
+
+
+def test_mamma_swapped_when_the_right_hand_is_nearer_his_left():
+    from dancecap import hand_contact as hc
+
+    class O:
+        cams = ["0"]
+        z = {"0": {"lm": None, "vis": None}}
+
+        def project(self, c, X, ks):
+            return X[..., :2] * 100.0, X[..., 2]
+    o = O()
+    nlm = 8
+    old = (hc.landmark_parts, hc.PIDX)
+    try:
+        hc.landmark_parts = lambda: {"right_hand": np.arange(nlm)}
+        hc.PIDX = {"lead": 0, "follow": 1}
+        lm_r = np.zeros((2, nlm, 3))
+        lm_r[..., 2] = 3
+        lm_l = lm_r.copy()
+        lm_l[..., 0] = 1.0                                                # his left hand 100 px to the right
+        obs_lm = np.zeros((2, 2, nlm, 2))
+        obs_lm[0, 0] = [5.0, 0]                                           # frame 0: MAMMA's right hand at the right hand
+        obs_lm[1, 0] = [95.0, 0]                                          # frame 1: at his left hand (swapped)
+        o.z["0"]["lm"] = obs_lm + 1e-3
+        o.z["0"]["vis"] = np.ones((2, 2, nlm))
+        sw = zc.mamma_swapped(o, "0", np.arange(2), [lm_r], lm_l, zc.HoldCfg())
+        assert sw.tolist() == [False, True]
+    finally:
+        hc.landmark_parts, hc.PIDX = old
+
+
+def test_window_check_vetoes_relative_coco_threshold():
+    """the closing pass: where the motion already misses the COCO wrist by 30 px, 6 px worse is within 0.3 x 30; 12 px worse is not"""
+    wins = [{"id": "a", "t_span": [0, 1]}]
+    chk = {"a": {"n": 50, "v3_px": 30.0, "v4_px": 36.0}}
+    assert zc.window_check_vetoes(chk, wins) != {}
+    assert zc.window_check_vetoes(chk, wins, coco_rel=0.3) == {}
+    chk["a"]["v4_px"] = 42.0
+    assert zc.window_check_vetoes(chk, wins, coco_rel=0.3) != {}

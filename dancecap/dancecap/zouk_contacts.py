@@ -46,7 +46,24 @@ judge, surface queries, the arm Actor of the optimiser, the speed audit and the 
 
 The 2026-10-22 run (pod jobs in v4/contacts/jobs/): pass 1 = plan.json from the installed motion (runs/all2), pass 2 = plan_pass2.json on the
 pass-1 result with the 2D / COCO elbow weighted up (runs/pass2), the curation (curation.json), pass 3 = the folded wrists only
-(plan_pass3.json, wrist_only, runs/pass3); every window adopted only when its guards pass.
+(plan_pass3.json, wrist_only, runs/pass3); every window adopted only when its guards pass. After the independent check
+(review_check-hands.json): the re-solve r1-r3 with twist / elbow limits and the post-hoc gate (gate.json) -> installed (smplx_lead.bin
+5ccf839e..., kept as v4/smplx_contact_installed + runs/inst).
+
+The final pass (follow the phones over the hold prior; jobs/zc_final.json):
+    python -m dancecap.zouk_contacts plan --base inst --out plan_r4.json --problems exact --follow-phones --max-core-s 5 --merge-s 0.5
+    python -m dancecap.zouk_contacts refine --parts 5 --tag r4 --cfg '{"base": "inst", "plan": "plan_r4.json", "follow_phones": true, ...}'  (pod)
+    python -m dancecap.zouk_contacts gate --tag r4 --tags r4 --base-tag inst --exact    # curation.json["stages"]["r4"], gate_r4.json
+    python -m dancecap.zouk_contacts measure --fit v4 && python -m dancecap.zouk_contacts validate-final   # -> validate_final.md
+
+The closing pass (after the check of the final pass, final_check/; jobs/zc_close.json; see the section "the closing pass"):
+    python -m dancecap.zouk_contacts make-base --src inst2 --out fin2        # the installed d034e0b7 motion + Hermite despikes
+    python -m dancecap.zouk_contacts exact --fit fin2 --changed-vs inst2 && python -m dancecap.zouk_contacts measure --fit fin2
+    python -m dancecap.zouk_contacts plan --base fin2 --out plan_r6.json --problems exact,fold,off_phone,float --follow-phones --max-core-s 5 --merge-s 0.5
+    python -m dancecap.zouk_contacts refine --parts 5 --tag r6 --cfg '{"base": "fin2", "plan": "plan_r6.json", "follow_phones": true,
+        "ray_mode": "hit", "unfold": true, "wrist_sigma": 2.0, "vis_guards": true, "gate_guards": true, ...}'          (pod)
+    python -m dancecap.zouk_contacts gate --tag r6 --tags r6 --base-tag fin2 --exact --vis    # curation.json["stages"]["r6"], gate_r6.json
+    python -m dancecap.zouk_contacts validate-final --fits input,v3,inst2,v4
 
 Everything is written under work/larissa_kadu_recap/v4/ (git-ignored likeness data); the input fits are never touched.
 """
@@ -73,7 +90,9 @@ ROLES = hc.ROLES
 SIDES = hc.SIDES
 HZ = hc.HZ
 SX = {"left": "L", "right": "R"}
-FITS = {"input": hc.SRC_FIT, "v3": hc.FIT_OUT, "v4": FIT_OUT}
+FIT_INST = V4 / "smplx_contact_installed"           # the v4 motion installed 2026-10-22 (smplx_lead.bin 5ccf839e...): the final pass's base
+FIT_FIN1 = V4 / "smplx_contact_fin1"                 # the final pass r4 (curated + gated): the base of its second round r5
+FITS = {"input": hc.SRC_FIT, "v3": hc.FIT_OUT, "v4": FIT_OUT, "inst": FIT_INST, "fin1": FIT_FIN1}
 
 # SMPL-X joints
 PELVIS, SPINE1, SPINE2, SPINE3, NECK, HEAD = 0, 3, 6, 9, 12, 15
@@ -1590,6 +1609,8 @@ class ZoukCfg:
     wrist_only: bool = False             # the wrist pass: no hold target / surface / site terms, the palm kept where it is (keep_slack_m), the
     w_keep: float = 3.0e3                #   fingers as they are; only the wrist limits, the collisions, the 2D, the elbow, speed and smoothness
     keep_slack_m: float = 0.025
+    freeze_arm_unfold: bool = False      # unfold_only windows: the shoulder and elbow frozen (hc.Actor.freeze_arm), only the wrist turns
+    keep_joint: str = "palm"             # the wrist pass keeps this where it is: "palm" (pass 3) or "wrist" (the closing pass's unfold_only windows)
     pad_s: float = 0.3                   # a window = a run of problem frames + this on each side (its core)
     merge_s: float = 0.6                 # problem runs closer than this are one window
     max_core_s: float = 12.0             # longer runs are solved as consecutive chunks (each from the previous result)
@@ -1616,6 +1637,31 @@ class ZoukCfg:
     twist_soft_deg: float = 85.0
     w_elbow_lim: float = 0.0             # per rad^2 of elbow hyperextension beyond min(-5, start) and off-hinge beyond max(35, |start| + 5)
     gate_guards: bool = False            # the post-hoc gate's tests as window guards (twist, elbow, elbow / fingertip whips, wrist flick, COCO wrist)
+    # the final pass (2026-10-22, after the independent check: "follow the phones over the hold prior"): no hold sites / region; where the
+    # palm is inside her, its target is the nearest point of her torso surface on the side the window's ray phone sees (the phone that sees
+    # the hand and agrees with the motion), a move across that phone's ray costing more than one along it (visible_side_targets); elsewhere
+    # the palm stays where it is; the fingers are kept, no forearm-twist start
+    follow_phones: bool = False
+    ray_alpha: float = 2.0               # the target: a move across the ray phone's ray costs (1 + ray_alpha) x a move along it
+    ray_region_scale: float = 10.0       # w_region x this in the final pass (the target leads)
+    ray_slack_m: float = 0.02            # stage 2: the palm within this of its target (pushed frames: on her surface; others: where it is)
+    ray_sigma_frames: float = 3.0        # the push (target - palm) smoothed over time
+    ray_rate_mps: float = 0.0            # > 0 (the closing pass): ... and its change limited to this speed (both ways in time: it rises before)
+    exact_pen_cm: float = 1.0            # plan problem "exact": the motion's hand inside her torso / shoulders (exact_<base>.npz) deeper than this
+    despike: tuple = ()                  # [[a_s, b_s], ...]: input glitches; his right arm + fingers slerped across them in the base before solving
+    # the closing pass (2026-10-22, after the check of the final pass; see the section "the closing pass")
+    ray_mode: str = "side"               # "side": visible_side_targets; "hit": the first hit of the ray phone's ray on her torso (ray_hit_targets)
+    max_slide_m: float = 0.25            # "hit": the farthest the palm may slide along the ray out of her (or toward the observed hand)
+    float_pull_m: float = 0.06           # "hit": a palm this close in front of her back (back holds) along the ray is laid onto it
+    float_from_m: float = 0.035          # ... when its centre is further than this from her surface (the palm's half thickness + 2 cm)
+    spike_interp: bool = False           # round r8 spike windows: the palm interpolated in her frame (spike_targets) instead of the ray hit
+    unfold: bool = False                 # folded wrists start unfolded (unfold_wrist) and the 2D places the hand
+    unfold_knee_deg: float = 80.0        # ... bends above this compressed (slope 0.1)
+    wrist_sigma: float = 0.0             # ... and the start's wrist rotation low-passed over this many frames (smooth_wrist; with unfold)
+    vis_guards: bool = False             # the COCO wrist / elbow guards count only the phones that see the candidate's joint (joint_visible)
+    fold_plan_deg: float = 120.0         # plan problem "fold": the wrist bend past this
+    off_phone_m: float = 0.08            # plan problem "off_phone": the back-view phone shows the hand further than this (image plane)
+    float_plan_cm: float = 2.0           # plan problem "float": back holds with the hand further than this off her (exact gap)
     w_bend: float = 300.0                # per rad^2 beyond bend_soft_deg (the whole wrist bend) ...
     bend_soft_deg: float = 78.0
     w_comp: float = 150.0                # ... and per rad^2 of flexion / extension / radial / ulnar beyond their limits - 3 deg
@@ -1625,10 +1671,12 @@ class ZoukCfg:
     w_elbow: float = 8.0                 # COCO elbow (triangulated, bias-corrected, smoothed), robust: the elbow is seen, the hand is not
     w_elbow2d: float = 3.0               # ... and per phone: every confident COCO elbow detection (single views too), robust sigma_elbow2d_px
     sigma_elbow2d_px: float = 15.0
+    w_wrist2d: float = 0.0               # the closing pass: the COCO wrist per phone that sees it (visibility + swap filtered), robust
     site_seen_scale: float = 0.15        # the site attractor where a usable phone sees the hand (the 2D leads there)
     w_fingers_up: float = 40.0           # back holds: fingers pointing up her back more than 30 deg above her horizontal cost this (zouk: the
                                          #   leader's hand on her back lies across it, the fingers toward her spine / round her far side)
     w_speed: float = 2000.0              # the added motion beyond 0.3 m/s (hand_contact's term, 600 there: the moves here are larger)
+    w_speed_tips: float = 0.0            # the same for the elbow and the five fingertips (the final pass: the gate's whip test)
     agree_px: float = 25.0               # a usable phone agrees with the hand when its median hand-point error is below this
     iters1: int = 120
     iters2: int = 110
@@ -1640,6 +1688,9 @@ class ZoukCfg:
     guard_agree_drop: float = 0.30       # the phones that agree with the hand (agree_px), summed over the core, may not drop by more ...
     guard_ma2d_slack_px: float = 6.0     # ... and the median hand-point error over the usable phones may not grow by more
     guard_coco_slack_px: float = 4.0
+    guard_coco_rel: float = 0.0          # the closing pass: a COCO guard allows max(slack, this x the motion's median px before) - where the
+                                         #   motion already misses the detector by 25-40 px (his hand behind her: the detector guesses) a 3-4 px
+                                         #   change is noise
     guard_pen_slack_cm: float = 0.2      # exact penetration p90 (0.5 where the hand was not on her before: it now lies on her surface)
 
 
@@ -1694,6 +1745,673 @@ def region_distance(fit: dict, H: dict, ks: np.ndarray, bodies: dict, sites: dic
     return out
 
 
+# ------------------------------------------------------------------------------------------------ the final pass: follow the phones
+#
+# The independent check (review_check-hands.json) found that the hold prior (the zouk sites) moved the hand to where the hold says, not where
+# the phones show it (87.8, 133.5, 177.5, 180.5 s), and that the clearest closed-hold frames (106.6 s: cam 06 shows the hand flat on her back)
+# stayed ~10 cm inside her. The motion installed then (v3 there) has the hand where the phones show it in 2D, only too deep. The final pass
+# keeps that 2D as far as it can: per window ONE phone (the ray phone: MAMMA sees the hand there and agrees with the motion), and on each
+# frame where the palm centre is inside her, the target is the nearest point of her torso surface whose outward side faces that phone (a
+# move across its ray costs 3 x a move along it), lifted by the hand's half thickness: the hand comes out of her onto her back (or front)
+# close to where that phone shows it. The hold detector's sites are not used.
+
+TORSO_JOINTS = (PELVIS, SPINE1, SPINE2, SPINE3, NECK, COLLAR["left"], COLLAR["right"])
+
+
+def exact_torso_pen(name: str) -> np.ndarray:
+    """(T,) deepest point of his right hand inside her torso / shoulders (m, exact_<name>.npz)"""
+    with np.load(OUT / f"exact_{name}.npz") as z:
+        parts = [str(x) for x in z["parts"]]
+        hp = z["hand_pen_part"]
+        ks = z["ks"]
+        T = int(ks.max()) + 1
+        out = np.zeros(max(T, len(ks)))
+        out[ks] = hp[:, [parts.index(p) for p in ("torso", "shoulder_L", "shoulder_R")]].max(1)
+    return out
+
+
+RAY_AGREE_PX = 35.0
+
+
+def cam_agreement(fit: dict, ks: np.ndarray, obs, hcfg: HoldCfg, cams=None) -> dict:
+    """per phone: (MAMMA sees his right hand (n,), the median px of the motion's hand points against MAMMA's visible ones (n,), NaN unseen)"""
+    import warnings
+    hp = hc.hand_points_np(fit["lead"], hc.full_pose(fit["lead"]), ks, "right")
+    hid = hc.landmark_parts()["right_hand"]
+    out = {}
+    for c in (cams or obs.cams):
+        z = obs.z[c]
+        see, _ = hand_2d(obs, c, ks, hcfg)
+        uv, dep = obs.project(c, hp["lm"], ks)
+        o = z["lm"][ks, hc.PIDX["lead"]][:, hid]
+        vv = (z["vis"][ks, hc.PIDX["lead"]][:, hid] > hcfg.vis) & (np.abs(o).sum(-1) > 0) & (dep > 0.1)
+        e = np.where(vv, np.linalg.norm(uv - o, axis=-1), np.nan)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            med = np.nanmedian(e, 1)
+        out[c] = (see & np.isfinite(med), med)
+    return out
+
+
+def choose_ray_cam(fit: dict, ks: np.ndarray, obs, hcfg: HoldCfg, agree_px: float = RAY_AGREE_PX) -> dict:
+    """the window's ray phone: most frames where MAMMA sees his right hand AND the motion's hand points agree with it (median < agree_px),
+    + a quarter of the frames it merely sees it; no phone at all -> the phone most behind her (her back toward it)"""
+    score = {}
+    for c, (ok, med) in cam_agreement(fit, ks, obs, hcfg).items():
+        score[c] = {"seen": int(ok.sum()), "agree": int((ok & (med < agree_px)).sum()),
+                    "median_px": round(float(np.median(med[ok])), 1) if ok.any() else None}
+    best = max(obs.cams, key=lambda c: (score[c]["agree"] + 0.25 * score[c]["seen"], -(score[c]["median_px"] or 1e9)))
+    basis = "phones"
+    if score[best]["agree"] + score[best]["seen"] == 0:
+        kf = posed(fit["follow"], ks[len(ks) // 2:len(ks) // 2 + 1])
+        fwd = torso_frame(kf["J"])[0, :, 2]
+        back = []
+        k = int(ks[len(ks) // 2])
+        for c in obs.cams:
+            z = obs.z[c]
+            if not z["ok"][k]:
+                continue
+            C = -z["R"][k].T @ z["t"][k] - kf["J"][0, SPINE3]
+            C[1] = 0
+            back.append((float(C @ fwd / max(np.linalg.norm(C), 1e-9)), c))
+        best = min(back)[1] if back else best
+        basis = "her back (no phone sees the hand)"
+    return {"ray_cam": best, "ray_cam_basis": basis, "ray_cam_scores": score}
+
+
+def visible_side_targets(surf, V, pc0: np.ndarray, C: np.ndarray, vmask: np.ndarray, lift_m: float, alpha: float = 2.0,
+                         min_facing: float = 0.3, ok: np.ndarray | None = None, bs: int = 16) -> dict:
+    """per frame where the palm centre pc0 (W,3) is INSIDE her (winding numbers, her posed mesh V (W,nv,3) torch): the point of her torso
+    surface (vertices vmask) on the side the ray phone (camera centre C (W,3)) sees - its outward normal toward the phone - nearest to the
+    palm, where a move across that phone's ray (which changes the hand's 2D there) costs (1 + alpha) x a move along it; the target = that
+    point lifted lift_m along its normal (the palm lies on her surface, close to where that phone shows it); elsewhere the palm itself.
+    2026-10-22: the first version slid the palm along the ray to where it enters her; from a phone at her side that is 30-40 cm away and
+    the arm could not follow (106.07-107.43 s)."""
+    torch = surf.torch
+    dev = surf.dev
+    W = len(pc0)
+    P = torch.as_tensor(np.asarray(pc0, np.float32)[:, None], device=dev)
+    q = hc.query_batched(surf, P, V, bs=8, wn_within=0.03)
+    sd = q["sd"][:, 0].cpu().numpy().astype(float)
+    tgt = np.asarray(pc0, float).copy()
+    nrm = np.zeros((W, 3))
+    cost = np.full(W, np.inf)
+    vm = torch.as_tensor(np.asarray(vmask, bool), device=dev)
+    Ct = torch.as_tensor(np.asarray(C, np.float32), device=dev)
+    pct = torch.as_tensor(np.asarray(pc0, np.float32), device=dev)
+    with torch.no_grad():
+        for a in range(0, W, bs):
+            Vb = V[a:a + bs].float()
+            Nb = surf.vertex_normals(Vb)
+            toC = Ct[a:a + bs, None] - Vb
+            facing = (Nb * toC).sum(-1) / toC.norm(dim=-1).clamp_min(1e-6) > min_facing
+            u = pct[a:a + bs] - Ct[a:a + bs]
+            u = u / u.norm(dim=-1, keepdim=True).clamp_min(1e-9)
+            d = Vb - pct[a:a + bs, None]
+            along = (d * u[:, None]).sum(-1)
+            perp = (d - along[..., None] * u[:, None]).norm(dim=-1)
+            c = torch.sqrt(along ** 2 + ((1 + alpha) * perp) ** 2)
+            c = torch.where(facing & vm[None], c, torch.full_like(c, float("inf")))
+            cm, i = c.min(1)
+            ar = torch.arange(len(Vb), device=dev)
+            X, n = Vb[ar, i], Nb[ar, i]
+            tgt[a:a + bs] = (X + lift_m * n).cpu().numpy()
+            nrm[a:a + bs] = n.cpu().numpy()
+            cost[a:a + bs] = cm.cpu().numpy()
+    push = (sd < 0) & np.isfinite(cost) & (np.ones(W, bool) if ok is None else np.asarray(ok, bool))
+    tgt = np.where(push[:, None], tgt, pc0)
+    nrm = np.where(push[:, None], nrm, 0.0)
+    return {"target": tgt, "normal": nrm, "pushed": push, "palm_sd_m": sd, "push_m": np.linalg.norm(tgt - pc0, axis=1)}
+
+
+def despike_poses(P: np.ndarray, ranges, joints=None) -> tuple[np.ndarray, list]:
+    """input glitches (2-4 frames where his right palm runs at 2-3 m/s and back): his right arm + finger rotations on [a, b] (seconds)
+    slerped between the frames just outside -> (a copy of P, the ranges applied as [a_s, b_s])"""
+    from .hand_kin import SHOULDER as HS, ELBOW as HE, WRIST as HW, FINGER_JOINTS
+    joints = joints or [HS["right"], HE["right"], HW["right"], *FINGER_JOINTS["right"]]
+    P = P.copy()
+    T = len(P)
+    done = []
+    for d in ranges or ():
+        a, b = int(round(float(d[0]) * HZ)), int(round(float(d[1]) * HZ))
+        k0, k1 = a - 1, b + 1
+        if k0 < 0 or k1 >= T or b < a:
+            continue
+        x = np.arange(a, b + 1)
+        tt = (x - k0) / float(k1 - k0)
+        for j in joints:
+            P[x, j] = _slerp_rotvec(np.repeat(P[k0:k0 + 1, j], len(x), 0), np.repeat(P[k1:k1 + 1, j], len(x), 0), tt)
+        done.append([round(a / HZ, 3), round(b / HZ, 3)])
+    return P, done
+
+
+# ------------------------------------------------------------------------------------------------ the closing pass (second independent check)
+#
+# The check of the final pass (final_check/, 2026-10-22) found: his hand still ~10 cm inside her on the clearest closed holds (74.5, 106.6 s:
+# cam 06 shows the hand flat on her back and the mesh hand sits on the same pixels - only its depth along cam 06's ray is wrong; cam 01, her
+# left profile, puts the mesh's back edge on her real back edge, so her body is not too deep), the wrist folded back 150-179 deg onto his
+# forearm (12.3 s of the film, untouched), the hand 11-25 cm from where the back-view phone shows it (153.8, 244.0, 310.7 s), and two
+# despikes that stop dead (165.73 s: the burst is in his pelvis / spine too) or interpolate straight through her (347.43-347.63 s).
+# The earlier passes' 2D guards vetoed the depth fixes in phones that cannot see his right hand: at 106.6 s the COCO "right wrist" of cam 03 is
+# the clasped hand-hold and cam 02's MAMMA hand is at her shoulder - his right hand is behind her back there. The closing pass:
+#   - the target: the FIRST HIT of the ray phone's ray through the palm on her torso (a pure slide along that ray: the hand stays on its
+#     pixels in that phone) - out of her where it is inside, onto her where it floats a few cm off her back, and along the ray through MAMMA's
+#     observed hand where the back-view phone shows the hand elsewhere (off_phone);
+#   - folded wrists start unfolded (the wrist's rotation compressed above 75 deg) and the 2D of the ray phone places the hand;
+#   - the despikes are cubic Hermite curves matching the motion's velocity at both ends, his whole body at 165.73-166.00 s;
+#   - every COCO / MAMMA guard (window and post-hoc gate) counts only the phones from which the candidate's joint is not hidden behind her
+#     body or his own (capsule rays): a detector cannot vouch for a hand it cannot see.
+
+FIT_INST2 = V4 / "smplx_contact_installed_d034"      # the final pass installed 2026-10-22 (smplx_lead.bin d034e0b7...): the closing pass's base
+FIT_FIN2 = V4 / "smplx_contact_fin2"                 # ... with the Hermite despikes (the closing pass r6 starts from it)
+FIT_FIN3 = V4 / "smplx_contact_fin3"                 # ... round r6 curated + gated (round r7 starts from it)
+FIT_FIN4 = V4 / "smplx_contact_fin4"                 # ... r6 + r7 gated together against fin2 (stage r67; round r8 starts from it)
+FIT_FIN5 = V4 / "smplx_contact_fin5"                 # ... + round r8 (the final assembly; round r9, the folds, starts from it)
+FITS.update({"inst2": FIT_INST2, "fin2": FIT_FIN2, "fin3": FIT_FIN3, "fin4": FIT_FIN4, "fin5": FIT_FIN5})
+BACK_HOLDS = ("upper_back", "wrap_back", "behind_back")
+
+
+def despike_hermite(P: np.ndarray, tr: np.ndarray, ranges, h: int = 3) -> tuple[np.ndarray, np.ndarray, list]:
+    """input glitches: on each range [a_s, b_s, kind] the rotations (kind "arm": his right shoulder / elbow / wrist + fingers; "body": every
+    joint and the root translation) become a cubic Hermite curve between the frames just outside it whose end velocities are the motion's own
+    (h-frame differences outside the range): no dead stop at the ends (2026-10-22 check: the slerp stopped the palm at 165.73 s); "body"
+    keeps the legs' global rotations (the feet follow the hips only, <= 2 cm, instead of a reshaped step); kind
+    "arm0": the arm with zero end velocities (where the wrist outside the range itself flails, its velocity makes the curve overshoot).
+    Rotations are interpolated in the tangent space of the first outside frame. -> (P copy, transl copy, the ranges applied)"""
+    from scipy.spatial.transform import Rotation as Ro
+    from .hand_kin import SHOULDER as HS, ELBOW as HE, WRIST as HW, FINGER_JOINTS
+    arm = [HS["right"], HE["right"], HW["right"], *FINGER_JOINTS["right"]]
+    P, tr = P.copy(), np.asarray(tr, float).copy()
+    P_orig = P.copy()
+    T = len(P)
+    done = []
+    for d in ranges or ():
+        a, b = int(round(float(d[0]) * HZ)), int(round(float(d[1]) * HZ))
+        kind = str(d[2]) if len(d) > 2 and str(d[2]) in ("arm", "body", "arm0") else "arm"
+        vel = 0.0 if kind == "arm0" else 1.0             # "arm0": zero end velocities (a smoothstep) where the motion outside flails
+        k0, k1 = a - 1, b + 1
+        if k0 - h < 0 or k1 + h >= T or b < a:
+            continue
+        n = float(k1 - k0)
+        s = (np.arange(a, b + 1) - k0) / n
+        h10, h01, h11 = s ** 3 - 2 * s ** 2 + s, -2 * s ** 3 + 3 * s ** 2, s ** 3 - s ** 2
+        h00 = 2 * s ** 3 - 3 * s ** 2 + 1
+        joints = list(range(P.shape[1])) if kind == "body" else arm
+        for j in joints:
+            R0 = Ro.from_rotvec(P[k0, j])
+            loc = lambda k: (R0.inv() * Ro.from_rotvec(P[k, j])).as_rotvec()  # noqa: E731
+            r1 = loc(k1)
+            v0 = -loc(k0 - h) / h * n * vel                             # loc(k0) = 0
+            v1 = (loc(k1 + h) - r1) / h * n * vel
+            r = h10[:, None] * v0 + h01[:, None] * r1 + h11[:, None] * v1
+            P[a:b + 1, j] = (R0 * Ro.from_rotvec(r)).as_rotvec()
+        if kind == "body":
+            # the legs keep their ORIGINAL global rotations (a cubic through a step's leg rotations moved the stepping foot 7 cm, the
+            # 2026-10-22 export check): the hip's local rotation re-expressed under the despiked pelvis, knee / ankle / foot unchanged
+            x = np.arange(a, b + 1)
+            Rp_new, Rp_old = Ro.from_rotvec(P[x, PELVIS]), Ro.from_rotvec(P_orig[x, PELVIS])
+            for s_ in SIDES:
+                hj = HIP[s_]
+                P[x, hj] = (Rp_new.inv() * Rp_old * Ro.from_rotvec(P_orig[x, hj])).as_rotvec()
+                for jj in (KNEE[s_], ANKLE[s_], FOOT[s_]):
+                    P[x, jj] = P_orig[x, jj]
+            p0, p1 = tr[k0], tr[k1]
+            v0, v1 = (tr[k0] - tr[k0 - h]) / h * n, (tr[k1 + h] - tr[k1]) / h * n
+            tr[a:b + 1] = h00[:, None] * p0 + h10[:, None] * v0 + h01[:, None] * p1 + h11[:, None] * v1
+        done.append([round(a / HZ, 3), round(b / HZ, 3), kind])
+    return P, tr, done
+
+
+def make_base(src: str = "inst2", out: str = "fin2", ranges=None) -> dict:
+    """the closing pass's base: the fit `src` with the Hermite despikes -> FITS[out] (+ runs/<out>/poses_merged.npz for the curation)"""
+    base = load_fit(src)
+    PL = hc.full_pose(base["lead"])
+    P, tr, done = despike_hermite(PL, base["lead"]["transl"], ranges or ())
+    b2 = {r: dict(base[r]) for r in ROLES}
+    b2["lead"]["transl"] = tr
+    ch = np.flatnonzero((np.abs(P - PL).max((1, 2)) > 0) | (np.abs(tr - np.asarray(base["lead"]["transl"], float)).max(1) > 0))
+    out_dir = FITS[out]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    d = dict(b2["lead"])
+    T = len(P)
+    d["global_orient"] = P[:, 0].copy()
+    d["body_pose"] = P[:, 1:22].reshape(T, 63).copy()
+    d["left_hand_pose"] = P[:, 25:40].reshape(T, 45).copy()
+    d["right_hand_pose"] = P[:, 40:55].reshape(T, 45).copy()
+    J = np.asarray(base["lead"]["joints"], float).copy()
+    if len(ch):
+        J[ch] = posed(b2["lead"], ch, P[ch])["J"]
+    d["joints"] = J
+    np.savez(out_dir / "lead.npz", **d)
+    np.savez(out_dir / "follow.npz", **dict(base["follow"]))
+    (OUT / "runs" / out).mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(OUT / "runs" / out / "poses_merged.npz", lead=P)
+    rep = {"what": f"{src} + Hermite despikes (zouk_contacts.despike_hermite)", "src": str(FITS.get(src, src)), "despiked": done,
+           "frames_changed": int(len(ch)), "fk_check_mm": fk_check_v4(out_dir)}
+    write_json(out_dir / "zouk_contacts.json", rep)
+    log(f"base {out}: {rep}")
+    return rep
+
+
+def joint_visible(obs, ks: np.ndarray, X: np.ndarray, bodies: dict, kl: dict, kf: dict, margin: float = 0.035,
+                  r_scale: float = 0.92) -> np.ndarray:
+    """(W, C) phone c sees the point X[i] (W,3) of his right arm at frame ks[i]: the phone has the frame, the point is in front of it, and the
+    ray from the phone (stopped `margin` short of the point) passes through no capsule of her torso / head / arms / shoulders or of his torso /
+    head / left arm (occluders)"""
+    OA, OB, Orad = occluders(bodies, kl, kf)
+    out = np.zeros((len(ks), len(obs.cams)), bool)
+    for ci, c in enumerate(obs.cams):
+        z = obs.z[c]
+        Cc = -np.einsum("kji,kj->ki", z["R"][ks], z["t"][ks])
+        occ = ray_occluded(Cc, X[:, None], OA, OB, Orad * r_scale, margin)[:, 0]
+        _, dep = obs.project(c, X[:, None], ks)
+        out[:, ci] = z["ok"][ks] & (dep[:, 0] > 0.1) & ~occ
+    return out
+
+
+def coco_errors_vis(judge, obs, X: np.ndarray, ks: np.ndarray, which: str, vis: np.ndarray, X_left: np.ndarray | None = None,
+                    X_alt: np.ndarray | None = None) -> np.ndarray:
+    """hc._coco_errors restricted to the phones that see the point (vis (W, C), joint_visible). X_left (his LEFT wrist / elbow): a detection
+    nearer to it than to the right joint (X, or X_alt: the other motion compared, so that both keep the same detections) is the detector
+    swapping his arms - in the closed hold his left hand holds hers in front of her while the right one is behind her back (2026-10-22:
+    the COCO 'right wrist' of cams 01 / 03 at 106.6 and 293.3 s sits on the clasped hands) - and is not counted"""
+    es = []
+    for ci, c in enumerate(obs.cams):
+        z = obs.z[c]
+        uv, d = obs.project(c, X[:, None], ks)
+        ul = obs.project(c, X_left[:, None], ks)[0] if X_left is not None else None
+        ua = obs.project(c, X_alt[:, None], ks)[0] if X_alt is not None else None
+        for i, k in enumerate(ks):
+            if not vis[i, ci]:
+                continue
+            u, ok = judge.joint(c, "lead", "right", int(k), which)
+            if not (ok and z["ok"][k] and d[i, 0] > 0.1):
+                continue
+            e = float(np.linalg.norm(uv[i, 0] - u))
+            if ul is not None:
+                dl = float(np.linalg.norm(ul[i, 0] - u))
+                da = float(np.linalg.norm(ua[i, 0] - u)) if ua is not None else e
+                if dl < min(e, da):
+                    continue
+            es.append(e)
+    return np.array(es)
+
+
+def mamma_swapped(obs, c: str, ks: np.ndarray, lm_right: list, lm_left: np.ndarray, hcfg: HoldCfg) -> np.ndarray:
+    """(W,) MAMMA's 'right hand' in phone c is nearer (median of its visible points) to the motion's LEFT hand than to its right hand (any of
+    lm_right: the motions compared) - MAMMA swapped his hands there"""
+    import warnings
+    z = obs.z[c]
+    hid = hc.landmark_parts()["right_hand"]
+    o = z["lm"][ks, hc.PIDX["lead"]][:, hid]
+    vv = (z["vis"][ks, hc.PIDX["lead"]][:, hid] > hcfg.vis) & (np.abs(o).sum(-1) > 0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        mo = np.stack([np.nanmedian(np.where(vv, o[..., d], np.nan), 1) for d in range(2)], -1)
+        ml = np.nanmedian(obs.project(c, lm_left, ks)[0], 1)
+        dl = np.linalg.norm(mo - ml, axis=-1)
+        dr = np.min([np.linalg.norm(mo - np.nanmedian(obs.project(c, L, ks)[0], 1), axis=-1) for L in lm_right], 0)
+    return np.nan_to_num(dl, nan=np.inf) < np.nan_to_num(dr, nan=np.inf)
+
+
+def hand_2d_errors_vis(fit: dict, ks: np.ndarray, obs, hcfg: HoldCfg, vis: np.ndarray | None, swap_with: list | None = None) -> np.ndarray:
+    """hand_2d_errors (per frame: the median px of the fit's right-hand MAMMA points against MAMMA's visible ones over the phones that see the
+    hand) counting only the phones with vis[i, c] (the candidate's palm not hidden from them; None: every phone); swap_with (the motions
+    compared, fits): a phone-frame where MAMMA's right hand is nearer to his left hand than to the right hand of every one of them is skipped
+    (mamma_swapped)"""
+    import warnings
+    hid = hc.landmark_parts()["right_hand"]
+    hp = hc.hand_points_np(fit["lead"], hc.full_pose(fit["lead"]), ks, "right")
+    if swap_with:
+        lm_r = [hc.hand_points_np(f["lead"], hc.full_pose(f["lead"]), ks, "right")["lm"] for f in swap_with]
+        lm_l = hc.hand_points_np(fit["lead"], hc.full_pose(fit["lead"]), ks, "left")["lm"]
+    out = np.full((len(ks), len(obs.cams)), np.nan)
+    for ci, c in enumerate(obs.cams):
+        z = obs.z[c]
+        see, _ = hand_2d(obs, c, ks, hcfg)
+        uv, dep = obs.project(c, hp["lm"], ks)
+        o = z["lm"][ks, hc.PIDX["lead"]][:, hid]
+        vv = (z["vis"][ks, hc.PIDX["lead"]][:, hid] > hcfg.vis) & (np.abs(o).sum(-1) > 0) & (dep > 0.1)
+        e = np.where(vv, np.linalg.norm(uv - o, axis=-1), np.nan)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            med = np.nanmedian(e, 1)
+        ok = see if vis is None else (see & vis[:, ci])
+        if swap_with:
+            ok = ok & ~mamma_swapped(obs, c, ks, lm_r, lm_l, hcfg)
+        out[:, ci] = np.where(ok, med, np.nan)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        return np.nanmedian(out, 1)
+
+
+def face_normals_np(V: np.ndarray, F: np.ndarray, fi: np.ndarray) -> np.ndarray:
+    """(W,3) unit normals of face fi[i] of mesh V[i] (W,nv,3)"""
+    ar = np.arange(len(fi))
+    A, B, C = V[ar, F[fi, 0]], V[ar, F[fi, 1]], V[ar, F[fi, 2]]
+    n = np.cross(B - A, C - A)
+    return n / np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-12)
+
+
+RAY_KEEP, RAY_INSIDE, RAY_FLOAT, RAY_OBS = 0, 1, 2, 3
+
+
+def ray_hit_targets(V: np.ndarray, faces: np.ndarray, C: np.ndarray, thru: np.ndarray, pc0: np.ndarray, mode: np.ndarray, lift_m: float,
+                    max_slide_m: float = 0.25, float_pull_m: float = 0.06, device: str = "cpu", obs_free: bool = False) -> dict:
+    """per frame: the ray from the phone centre C (W,3) through `thru` (W,3: the palm, or the palm moved to MAMMA's observed hand) and its
+    FIRST hit on her torso (V (W,nv,3) posed, faces: her torso faces); mode per frame:
+      RAY_INSIDE (the palm inside her): the hit before the palm, within max_slide_m of it -> target = hit + lift_m x normal (a slide along the
+                 ray: the hand keeps its pixels in that phone and lies on the side of her the phone sees);
+      RAY_FLOAT  (the palm a few cm off her back): the hit at most float_pull_m BEYOND the palm -> target on her surface;
+      RAY_OBS    (the phone shows the hand elsewhere): the hit within max_slide_m of the palm -> on her surface (obs_free: else `thru`
+                 itself, the 2D fix at the palm's depth, when within max_slide_m; off by default - a back hold's hand lies on her);
+      RAY_KEEP   the palm.
+    -> {"target", "normal", "pushed" (target differs), "on_surface" (target on her surface), "push_m", "t_hit", "L"}"""
+    W = len(C)
+    D = thru - C
+    L = np.linalg.norm(D, axis=1)
+    D = D / np.maximum(L, 1e-9)[:, None]
+    t, fi = hc.ray_first_hit(C, D, V, faces, device)
+    hit = np.isfinite(t) & (fi >= 0)
+    X = C + np.where(hit, t, 0.0)[:, None] * D
+    n = np.zeros((W, 3))
+    if hit.any():
+        n[hit] = face_normals_np(np.asarray(V[hit], float), np.asarray(faces), fi[hit])
+        flip = (n * D).sum(1) > 0
+        n[flip] *= -1                                     # toward the phone (the side of her it sees)
+    Xl = X + lift_m * n
+    dist = np.linalg.norm(Xl - pc0, axis=1)
+    tgt = pc0.copy()
+    on = np.zeros(W, bool)
+    m_in = (mode == RAY_INSIDE) & hit & (t < L + 0.01) & (dist <= max_slide_m)
+    m_fl = (mode == RAY_FLOAT) & hit & (t > L) & (t <= L + float_pull_m)
+    m_ob = (mode == RAY_OBS) & hit & (dist <= max_slide_m) & (t <= L + float_pull_m)
+    m_ob2 = (mode == RAY_OBS) & ~m_ob & (np.linalg.norm(thru - pc0, axis=1) <= max_slide_m) & bool(obs_free)
+    surf = m_in | m_fl | m_ob
+    tgt[surf] = Xl[surf]
+    tgt[m_ob2] = thru[m_ob2]
+    on[surf] = True
+    pushed = surf | m_ob2
+    return {"target": tgt, "normal": np.where(on[:, None], n, 0.0), "pushed": pushed, "on_surface": on,
+            "push_m": np.linalg.norm(tgt - pc0, axis=1), "t_hit": t, "L": L}
+
+
+def observed_thru(obs, cam: str, ks: np.ndarray, lm_model: np.ndarray, pc: np.ndarray, frames: np.ndarray, hcfg: HoldCfg,
+                  min_lm: int = 6) -> tuple[np.ndarray, np.ndarray]:
+    """the palm moved to where phone `cam` shows the hand, at the palm's depth: per frame of ks in `frames` (bool) where MAMMA sees >= min_lm of
+    the hand points, the shift (median of MAMMA's visible points - median of the motion's same points, px; median-filtered and smoothed over
+    time, interpolated across short gaps) applied to the palm's projection and back-projected at its depth -> (points (W,3), used (W,))"""
+    from scipy.ndimage import gaussian_filter1d, median_filter
+    z = obs.z[cam]
+    hid = hc.landmark_parts()["right_hand"]
+    o = z["lm"][ks, hc.PIDX["lead"]][:, hid]
+    vv = (z["vis"][ks, hc.PIDX["lead"]][:, hid] > hcfg.vis) & (np.abs(o).sum(-1) > 0)
+    uv, dep = obs.project(cam, lm_model, ks)
+    ok = z["ok"][ks] & (vv.sum(1) >= min_lm) & frames
+    W = len(ks)
+    du = np.zeros((W, 2))
+    for i in np.flatnonzero(ok):
+        du[i] = np.median(o[i][vv[i]], 0) - np.median(uv[i][vv[i]], 0)
+    if ok.sum() < 3:
+        return pc.copy(), np.zeros(W, bool)
+    idx = np.flatnonzero(ok)
+    for d in range(2):
+        du[:, d] = np.interp(np.arange(W), idx, du[idx, d])
+    du = gaussian_filter1d(median_filter(du, size=(5, 1), mode="nearest"), 2.0, axis=0, mode="nearest")
+    used = frames & (np.arange(W) >= idx[0]) & (np.arange(W) <= idx[-1])
+    R, t, K = z["R"][ks], z["t"][ks], z["K"][ks]
+    Xc = np.einsum("kij,kj->ki", R, pc) + t
+    u = np.einsum("kij,kj->ki", K, Xc)
+    u = u[:, :2] / u[:, 2:] + du
+    ray = np.einsum("kij,kj->ki", np.linalg.inv(K), np.concatenate([u, np.ones((W, 1))], 1))
+    Xn = ray * (Xc[:, 2] / ray[:, 2])[:, None]
+    X = np.einsum("kji,kj->ki", R, Xn - t)
+    return np.where(used[:, None], X, pc), used
+
+
+def window_ray_hits(win: dict, ks: np.ndarray, pc: np.ndarray, Ccam: np.ndarray, side_t: dict, VO: np.ndarray, faces: np.ndarray,
+                    names: np.ndarray, cfg, cam_ok: np.ndarray, device: str, thru_obs: tuple | None = None) -> dict:
+    """the closing pass's targets of one window (ray_mode "hit"): per frame the mode (inside her -> RAY_INSIDE, a back hold with the palm more
+    than float_from_m off her -> RAY_FLOAT, the window's off_phone frames -> RAY_OBS through MAMMA's observed hand (thru_obs)), the first hit
+    of the ray phone's ray on her torso (ray_hit_targets); an inside frame whose ray finds no hit within max_slide_m falls back to
+    visible_side_targets (the nearest point of her surface facing the phone)"""
+    sd = np.asarray(side_t["palm_sd_m"], float)
+    W = len(ks)
+    mode = np.full(W, RAY_KEEP)
+    mode[np.isin(names, BACK_HOLDS) & (sd > cfg.float_from_m)] = RAY_FLOAT
+    mode[sd < 0] = RAY_INSIDE
+    thru = pc.copy()
+    if thru_obs is not None:
+        X, used = thru_obs
+        mode[used] = RAY_OBS
+        thru = np.where(used[:, None], X, pc)
+    mode[~np.asarray(cam_ok, bool)] = RAY_KEEP
+    tf = faces[np.isin(hc.vertex_joint(), TORSO_JOINTS)[faces].all(1)]
+    r = ray_hit_targets(np.asarray(VO, np.float32), tf, Ccam, thru, pc, mode, HoldCfg().palm_lift_m, cfg.max_slide_m, cfg.float_pull_m, device)
+    fb = (mode == RAY_INSIDE) & ~r["pushed"] & np.asarray(side_t["pushed"], bool)
+    if fb.any():
+        r["target"][fb] = side_t["target"][fb]
+        r["normal"][fb] = side_t["normal"][fb]
+        r["pushed"][fb] = True
+        r["on_surface"][fb] = True
+        r["push_m"] = np.linalg.norm(r["target"] - pc, axis=1)
+    r["modes"] = {nm: int((mode == v).sum()) for nm, v in (("inside", RAY_INSIDE), ("float", RAY_FLOAT), ("obs", RAY_OBS))}
+    r["fallback_side"] = int(fb.sum())
+    r["palm_sd_m"] = sd
+    return r
+
+
+def rate_limit(d: np.ndarray, step: float, iters: int = 3) -> np.ndarray:
+    """a (W,3) displacement track whose frame-to-frame change is at most `step` (m): the larger pushes are kept and spread over the
+    neighbouring frames (each frame takes the largest of its own push and its neighbours' pushes reduced by step per frame of distance, in
+    the push's direction)"""
+    d = np.asarray(d, float).copy()
+    W = len(d)
+    if W < 2:
+        return d
+    for _ in range(iters):
+        for rng_ in (range(1, W), range(W - 2, -1, -1)):
+            for i in rng_:
+                pv = d[i - 1] if rng_.step == 1 else d[i + 1]
+                diff = d[i] - pv
+                n = np.linalg.norm(diff)
+                if n > step:
+                    # keep the larger of the two pushes: shrink toward the neighbour only if this frame's push is the smaller one
+                    if np.linalg.norm(d[i]) >= np.linalg.norm(pv):
+                        continue
+                    d[i] = pv + diff * (step / n)
+    # a final pass guaranteeing the bound
+    for i in range(1, W):
+        diff = d[i] - d[i - 1]
+        n = np.linalg.norm(diff)
+        if n > step:
+            d[i] = d[i - 1] + diff * (step / n)
+    return d
+
+
+def smooth_wrist(P: np.ndarray, sigma: float = 2.0, weight: np.ndarray | None = None) -> np.ndarray:
+    """the right wrist's local rotation low-passed over time (quaternions kept in one hemisphere, gaussian sigma frames, renormalised), blended
+    in by weight: the input's wrist flails 50-100 deg within 0.2-0.3 s in the closed holds (69-75, 94-97, 106.3-107.0 s)"""
+    from scipy.ndimage import gaussian_filter1d
+    from scipy.spatial.transform import Rotation as Ro
+    P = P.copy()
+    j = WRIST["right"]
+    if len(P) < 3:
+        return P
+    q = Ro.from_rotvec(P[:, j]).as_quat()
+    for i in range(1, len(q)):
+        if (q[i] * q[i - 1]).sum() < 0:
+            q[i] *= -1
+    qs = gaussian_filter1d(q, sigma, axis=0, mode="nearest")
+    qs /= np.linalg.norm(qs, axis=1, keepdims=True)
+    wq = np.ones(len(P)) if weight is None else np.asarray(weight, float)
+    P[:, j] = _slerp_rotvec(P[:, j], Ro.from_quat(qs).as_rotvec(), wq)
+    return P
+
+
+def spike_targets(win: dict, ks: np.ndarray, pc: np.ndarray, Jf: np.ndarray, surf, VOt, Ccam: np.ndarray, hcfg: HoldCfg,
+                  ok: np.ndarray) -> dict:
+    """the closing pass, round r8, a spike window (the input's hand passing through her for 2-8 frames in a fast transition): on the run's
+    frames the palm's target is its position relative to HER torso (spine-3 frame) interpolated between the frames just outside the run
+    (the hand stays where it was before and after, as the phones show), laid onto her surface where that is still inside her
+    (visible_side_targets); elsewhere the palm"""
+    a, b = (int(x) for x in win["run"])
+    i0, i1 = int(np.searchsorted(ks, a - 1)), int(np.searchsorted(ks, b + 1))
+    tgt = pc.copy()
+    pushed = np.zeros(len(ks), bool)
+    if 0 <= i0 < len(ks) and i1 < len(ks) and ks[i0] == a - 1 and ks[i1] == b + 1:
+        Fr = torso_frame(Jf)
+        loc = np.einsum("kji,kj->ki", Fr, pc - Jf[:, SPINE3])
+        for i in range(i0 + 1, i1):
+            u = (i - i0) / float(i1 - i0)
+            l = (1 - u) * loc[i0] + u * loc[i1]
+            tgt[i] = Fr[i] @ l + Jf[i, SPINE3]
+            pushed[i] = True
+    side = visible_side_targets(surf, VOt, tgt, Ccam, np.isin(hc.vertex_joint(), TORSO_JOINTS), hcfg.palm_lift_m, 0.0, ok=ok)
+    on = np.asarray(side["pushed"], bool)
+    tgt = np.where(on[:, None], side["target"], tgt)
+    return {"target": tgt, "normal": np.where(on[:, None], side["normal"], 0.0), "pushed": pushed | on, "on_surface": on,
+            "push_m": np.linalg.norm(tgt - pc, axis=1), "palm_sd_m": side["palm_sd_m"], "modes": {"spike": int(pushed.sum())},
+            "fallback_side": int(on.sum())}
+
+
+def unfold_wrist(P: np.ndarray, knee_deg: float = 75.0, slope: float = 0.1, weight: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """a start for folded wrists (2026-10-22 check: 150-179 deg bends, the hand folded back onto the forearm): the right wrist's local rotation
+    scaled toward the identity so that a bend b above knee_deg becomes knee_deg + slope (b - knee_deg) (continuous; below the knee untouched),
+    times weight (the window's blend) -> (P copy, the bend before (deg))"""
+    from scipy.spatial.transform import Rotation as Ro
+    P = P.copy()
+    j = WRIST["right"]
+    b = wrist_angles(P[:, :55], "right")["bend"]
+    tgt = np.where(b > knee_deg, knee_deg + slope * (b - knee_deg), b)
+    s = np.where(b > 1e-6, 1.0 - tgt / np.maximum(b, 1e-6), 0.0)
+    if weight is not None:
+        s = s * np.asarray(weight, float)
+    if (s > 0).any():
+        # the rotation scaled along a path CONTINUOUS in time: quaternions kept in one hemisphere frame to frame (a fold near 180 deg flips
+        # the shortest arc to the identity between frames: a 177 deg/frame wrist flick, 2026-10-22 smoke test at 348.1 s)
+        q = Ro.from_rotvec(P[:, j]).as_quat()
+        if q[0, 3] < 0:
+            q[0] *= -1
+        for i in range(1, len(q)):
+            if (q[i] * q[i - 1]).sum() < 0:
+                q[i] *= -1
+        xyz = q[:, :3]
+        nx = np.linalg.norm(xyz, axis=1)
+        ang = 2 * np.arctan2(nx, q[:, 3])                             # [0, 2 pi): continuous through 180 deg
+        axis = xyz / np.maximum(nx, 1e-12)[:, None]
+        sel = (s > 0) & (nx > 1e-9)
+        P[sel, j] = axis[sel] * (ang[sel] * (1.0 - s[sel]))[:, None]
+    return P, b
+
+
+def off_phone_frames(fit: dict, H: dict, obs, hcfg: HoldCfg, min_m: float = 0.08, min_lm: int = 6, back_fv: float = 0.1,
+                     min_run: int = 8) -> dict:
+    """the frames where the phone that sees most of HER BACK (her front away from it: the most negative facing below back_fv - not a phone in
+    front of her, where MAMMA reports the hand-hold hand for a right hand hidden behind her) and sees his right hand (>= min_lm MAMMA hand
+    points) shows the hand more than min_m (in its image plane) from where the motion puts it, in the back holds, runs of >= min_run frames
+    -> {"mask" (T,), "cam" (T,) str, "err_m" (T,)}"""
+    T = len(H["names"])
+    ks = np.arange(T)
+    kf_J = posed(fit["follow"], ks)["J"]
+    fwd = torso_frame(kf_J)[:, :, 2]
+    pc = hand_site(posed(fit["lead"], ks)["J"], "right", "palm")[0]
+    hid = hc.landmark_parts()["right_hand"]
+    best = np.full(T, 1e9)
+    cam = np.array([""] * T, dtype=object)
+    flag = np.zeros(T, bool)
+    err_m = np.full(T, np.nan)
+    back = np.isin(H["names"], BACK_HOLDS)
+    for a in range(0, T, 2000):
+        kk = ks[a:a + 2000]
+        hp = hc.hand_points_np(fit["lead"], hc.full_pose(fit["lead"]), kk, "right")
+        hl = hc.hand_points_np(fit["lead"], hc.full_pose(fit["lead"]), kk, "left")["lm"]
+        for c in obs.cams:
+            z = obs.z[c]
+            swapped = mamma_swapped(obs, c, kk, [hp["lm"]], hl, hcfg)
+            Cc = -np.einsum("kji,kj->ki", z["R"][kk], z["t"][kk]) - kf_J[kk, SPINE3]
+            Cc[:, 1] = 0
+            fv = (Cc * fwd[kk]).sum(1) / np.maximum(np.linalg.norm(Cc, axis=1), 1e-9)
+            o = z["lm"][kk, hc.PIDX["lead"]][:, hid]
+            vv = (z["vis"][kk, hc.PIDX["lead"]][:, hid] > hcfg.vis) & (np.abs(o).sum(-1) > 0)
+            uv, dep = obs.project(c, hp["lm"], kk)
+            e = np.where(vv, np.linalg.norm(uv - o, axis=-1), np.nan)
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                med = np.nanmedian(e, 1)
+            _, dpc = obs.project(c, pc[kk][:, None], kk)
+            px_m = z["K"][kk][:, 0, 0] / np.maximum(dpc[:, 0], 0.3)
+            ok = z["ok"][kk] & (vv.sum(1) >= min_lm) & (fv < back_fv) & back[kk] & ~swapped
+            better = ok & (fv < best[kk])
+            best[kk] = np.where(better, fv, best[kk])
+            cam[kk] = np.where(better, c, cam[kk])
+            flag[kk] = np.where(better, np.nan_to_num(med / px_m, nan=0.0) > min_m, flag[kk])
+            err_m[kk] = np.where(better, med / px_m, err_m[kk])
+    runs = _runs(flag, 3)
+    mask = np.zeros(T, bool)
+    for a, b in runs:
+        if b - a + 1 >= min_run:
+            mask[a:b + 1] = True
+    return {"mask": mask & (cam != ""), "cam": cam, "err_m": err_m}
+
+
+def plan_spikes_folds(base: str, out: str = "plan_r8.json", spike_cm: float = 4.0, spike_max_frames: int = 8, fold_deg: float = 120.0,
+                      pad: int = 3, ramp: int = 12, min_fold_frames: int = 3) -> dict:
+    """the closing pass, round r8: two kinds of short windows in the motion `base` (exact_<base>.npz):
+      spikes - runs of at most spike_max_frames frames with his hand > spike_cm inside her (the input's fast transitions through her body:
+               87.87, 310.33, 347.53, 280.57 s), core = the run +- pad, the ray-hit solve;
+      folds  - runs of the wrist bent past fold_deg (unfold_only: the wrist and elbow stay, the hand unfolds, the ray phone's 2D turns it),
+               trimmed so that no fold window overlaps a spike window's span
+    -> v4/contacts/<out> (plan_windows' format; windows carry "kind" and, for the folds, "unfold_only")"""
+    fit = load_fit(base)
+    T = len(fit["lead"]["t"])
+    with np.load(OUT / f"exact_{base}.npz") as z:
+        pen = np.zeros(T)
+        pen[z["ks"]] = z["hand_pen"]
+    obs = hc.Obs()
+    hcfg = HoldCfg()
+    H = load_holds()
+    wins = []
+    taken = np.zeros(T, bool)
+    from scipy.ndimage import median_filter
+    base_pen = median_filter(pen, size=21, mode="nearest")          # a spike rises > 3 cm above the depth around it (310.33 s: 2.5 -> 10.4 -> 4)
+    for a, b in _runs((pen > spike_cm / 100) & (pen - base_pen > 0.03), 2):
+        if b - a + 1 > spike_max_frames:
+            continue
+        c0, c1 = max(0, a - pad), min(T - 1, b + pad)
+        w = {"core": [c0, c1], "t": [round(c0 / HZ, 2), round(c1 / HZ, 2)], "chunk": [0, 1], "run": [a, b], "ramp": ramp, "kind": "spike",
+             "why_frames": {"spike": int(b - a + 1)}, "pen_cm_max": round(float(pen[a:b + 1].max()) * 100, 1),
+             "holds": {h: int((H["names"][c0:c1 + 1] == h).sum()) for h in np.unique(H["names"][c0:c1 + 1])}}
+        w.update(choose_ray_cam(fit, np.arange(c0, c1 + 1), obs, hcfg))
+        wins.append(w)
+        taken[max(0, c0 - 2 * ramp):c1 + 2 * ramp + 1] = True
+    bend = wrist_angles(hc.full_pose(fit["lead"]), "right")["bend"]
+    for a, b in _runs(bend > fold_deg, 3):
+        c0, c1 = max(0, a - pad), min(T - 1, b + pad)
+        free = np.flatnonzero(~taken[c0:c1 + 1])
+        if len(free) < min_fold_frames + 2 * pad or not (bend[c0:c1 + 1][free] > fold_deg).sum() >= min_fold_frames:
+            continue
+        for x0, x1 in _runs(~taken[c0:c1 + 1], 0):
+            x0, x1 = c0 + x0, c0 + x1
+            if (bend[x0:x1 + 1] > fold_deg).sum() < min_fold_frames:
+                continue
+            w = {"core": [x0, x1], "t": [round(x0 / HZ, 2), round(x1 / HZ, 2)], "chunk": [0, 1], "run": [a, b], "ramp": ramp, "kind": "fold",
+                 "unfold_only": True, "why_frames": {"fold": int((bend[x0:x1 + 1] > fold_deg).sum())},
+                 "bend_max": round(float(bend[x0:x1 + 1].max()), 1),
+                 "holds": {h: int((H["names"][x0:x1 + 1] == h).sum()) for h in np.unique(H["names"][x0:x1 + 1])}}
+            w.update(choose_ray_cam(fit, np.arange(x0, x1 + 1), obs, hcfg))
+            wins.append(w)
+            taken[max(0, x0 - 2 * ramp):x1 + 2 * ramp + 1] = True
+    wins.sort(key=lambda w: w["core"][0])
+    rep = {"what": f"closing pass round r8: short spike windows + unfold-only fold windows in the motion {base}", "base": base,
+           "windows": wins, "window_seconds": round(sum(w["core"][1] - w["core"][0] + 1 for w in wins) / HZ, 1),
+           "kinds": {k: sum(1 for w in wins if w["kind"] == k) for k in ("spike", "fold")}}
+    write_json(OUT / out, rep)
+    log(f"plan r8: {rep['kinds']}, {rep['window_seconds']} s")
+    return rep
+
+
 def plan_windows(cfg: ZoukCfg | None = None) -> dict:
     """the windows the resolution refines (installed motion, holds.npz) -> v4/contacts/plan.json"""
     cfg = cfg or ZoukCfg()
@@ -1705,10 +2423,28 @@ def plan_windows(cfg: ZoukCfg | None = None) -> dict:
     T = len(m["facing"])
     rd = region_distance(fit, H, np.arange(T), bodies, sites)
     P = problem_frames(m, H, cfg, rd)
+    if "exact" in cfg.problems:
+        P["exact"] = exact_torso_pen(cfg.base) > cfg.exact_pen_cm / 100
+    off = None
+    if "fold" in cfg.problems:                          # the closing pass: the wrist folded back onto his forearm
+        P["fold"] = wrist_angles(hc.full_pose(fit["lead"]), "right")["bend"] > cfg.fold_plan_deg
+    if "float" in cfg.problems:                         # ... the hand a few cm off her back in a back hold (exact gap)
+        with np.load(OUT / f"exact_{cfg.base}.npz") as z:
+            gap = np.zeros(T)
+            gap[z["ks"]] = z["hand_gap"]
+        P["float"] = (gap > cfg.float_plan_cm / 100) & np.isin(H["names"], BACK_HOLDS)
+    if "off_phone" in cfg.problems:                     # ... the back-view phone shows the hand elsewhere
+        off = off_phone_frames(fit, H, hc.Obs(), HoldCfg(), cfg.off_phone_m)
+        P["off_phone"] = off["mask"]
     if cfg.problems:
         P["any"] = np.any(np.stack([P[k] for k in cfg.problems], 1), 1)
     runs0 = _runs(P["any"], int(round(cfg.merge_s * HZ)))
     has_region = np.isin(H["names"], list(TORSO_HOLD_SITES))
+    if cfg.follow_phones:
+        has_region = np.zeros(T, bool)                  # the final pass ignores the holds: one window per run of problem frames
+        pen_base = exact_torso_pen(cfg.base)
+        obs = hc.Obs()
+        hcfg = HoldCfg()
     runs = []
     for a, b in runs0:
         cut = [a] + [k for k in range(a + 1, b + 1) if has_region[k] != has_region[k - 1]] + [b + 1]
@@ -1733,10 +2469,21 @@ def plan_windows(cfg: ZoukCfg | None = None) -> dict:
             why = {k: int(v[c0:c1 + 1].sum()) for k, v in P.items() if k != "any" and v[c0:c1 + 1].any()}
             # the blend ramps: long enough for the move the hand makes at the run's ends (its distance to the hold's region there)
             ends = [x for x, at_end in ((c0, ci == 0), (c1, ci == n - 1)) if at_end]
-            move = max([min(0.3, float(rd[x])) if np.isfinite(rd[x]) else 0.0 for x in ends] + [0.0])
+            if cfg.follow_phones:                       # the move at an end = how deep the hand is inside her there (the push)
+                move = max([min(0.3, float(pen_base[x]) + 0.02) for x in ends] + [0.0])
+            else:
+                move = max([min(0.3, float(rd[x])) if np.isfinite(rd[x]) else 0.0 for x in ends] + [0.0])
             ramp = hc.ramp_for(move, cfg.v_ramp_mps, cfg.ramp_min, cfg.ramp_max)
-            wins.append({"core": [c0, c1], "t": [round(c0 / HZ, 2), round(c1 / HZ, 2)], "chunk": [ci, n], "run": [a, b], "ramp": int(ramp),
-                         "holds": {h: int((names == h).sum()) for h in np.unique(names)}, "why_frames": why})
+            win = {"core": [c0, c1], "t": [round(c0 / HZ, 2), round(c1 / HZ, 2)], "chunk": [ci, n], "run": [a, b], "ramp": int(ramp),
+                   "holds": {h: int((names == h).sum()) for h in np.unique(names)}, "why_frames": why}
+            if cfg.follow_phones:
+                win.update(choose_ray_cam(fit, np.arange(c0, c1 + 1), obs, hcfg))
+                if off is not None and off["mask"][c0:c1 + 1].sum() >= 8:
+                    # on these frames the back-view phone that shows the hand elsewhere leads (its ray through MAMMA's observed hand, its 2D)
+                    fr = np.flatnonzero(off["mask"][c0:c1 + 1]) + c0
+                    win["off_phone_frames"] = [int(x) for x in fr]
+                    win["off_phone_cams"] = [str(off["cam"][x]) for x in fr]
+            wins.append(win)
     # windows of one run are solved in order in one process; runs are spread over the parts
     rep = {"what": "windows of the leader's right hand to refine (zouk_contacts.plan_windows) in the motion " + cfg.base,
            "config": asdict(cfg), "frames_with_problems": {k: int(v.sum()) for k, v in P.items()},
@@ -1808,7 +2555,10 @@ class CocoElbow2D:
     """the owner's COCO elbow detections of the leader's right arm in every phone (conf >= 0.5, undistorted) over the window: a robust 2D
     term on the bias-corrected SMPL-X elbow (single-view detections constrain the elbow where no phone pair triangulates it)"""
 
-    def __init__(self, torch, obs, judge, ks: np.ndarray, bias: dict, device):
+    def __init__(self, torch, obs, judge, ks: np.ndarray, bias: dict, device, keep: np.ndarray | None = None,
+                 X_right: np.ndarray | None = None, X_left: np.ndarray | None = None, which: str = "elbow"):
+        """keep (W, C) (the closing pass): only these phone-frames (the phones that see the elbow); X_right / X_left (W,3): a detection
+        nearer to his left elbow than to the right one is the detector swapping his arms and is dropped"""
         self.torch = torch
         C = len(obs.cams)
         W = len(ks)
@@ -1816,10 +2566,14 @@ class CocoElbow2D:
         M = np.zeros((W, C), np.float32)
         for ci, c in enumerate(obs.cams):
             z = obs.z[c]
+            ur = obs.project(c, X_right[:, None], ks)[0][:, 0] if X_right is not None else None
+            ul = obs.project(c, X_left[:, None], ks)[0][:, 0] if X_left is not None else None
             for i, k in enumerate(ks):
-                if not z["ok"][k]:
+                if not z["ok"][k] or (keep is not None and not keep[i, ci]):
                     continue
-                u, ok = judge.joint(c, "lead", "right", int(k), "elbow")
+                u, ok = judge.joint(c, "lead", "right", int(k), which)
+                if ok and ur is not None and np.linalg.norm(u - ul[i]) < np.linalg.norm(u - ur[i]):
+                    ok = False
                 if ok:
                     U[i, ci], M[i, ci] = u, 1.0
         f32 = dict(dtype=torch.float32, device=device)
@@ -1827,7 +2581,8 @@ class CocoElbow2D:
         self.K = torch.tensor(np.stack([obs.z[c]["K"][ks] for c in obs.cams], 1), **f32)       # (W,C,3,3)
         self.R = torch.tensor(np.stack([obs.z[c]["R"][ks] for c in obs.cams], 1), **f32)
         self.t = torch.tensor(np.stack([obs.z[c]["t"][ks] for c in obs.cams], 1), **f32)
-        self.b = torch.tensor(np.asarray(bias.get("lead_right_elbow", [0, 0, 0]), float), **f32)
+        self.b = torch.tensor(np.asarray(bias.get(f"lead_right_{which}", [0, 0, 0]), float), **f32)
+        self.j = WRIST["right"] if which == "wrist" else ELBOW["right"]          # the closing pass also uses the COCO wrist (CocoJoint2D)
         self.n = float(M.sum())
 
     def point(self, J):
@@ -1838,7 +2593,7 @@ class CocoElbow2D:
         nrm = nrm - (nrm * ax).sum(-1, keepdim=True) * ax
         nrm = nrm / nrm.norm(dim=-1, keepdim=True).clamp_min(1e-9)
         cr = torch.cross(ax, nrm, dim=-1)
-        return J[:, ELBOW["right"]] + ax * self.b[0] + nrm * self.b[1] + cr * self.b[2]
+        return J[:, self.j] + ax * self.b[0] + nrm * self.b[1] + cr * self.b[2]
 
     def residual(self, J):
         torch = self.torch
@@ -1856,8 +2611,11 @@ class CocoElbow2D:
         return (((r * ok).sum(1) / n) * w).sum()
 
 
-def window_inputs(fit_base: dict, H: dict, ks: np.ndarray, bodies: dict, sites: dict, obs, cfg: ZoukCfg, hcfg: HoldCfg) -> dict:
-    """per window frame: the hold, the site track (her frame, smoothed), the region sites, the phones usable for the 2D, her capsules"""
+def window_inputs(fit_base: dict, H: dict, ks: np.ndarray, bodies: dict, sites: dict, obs, cfg: ZoukCfg, hcfg: HoldCfg,
+                  ray: dict | None = None) -> dict:
+    """per window frame: the hold, the site track (her frame, smoothed), the region sites, the phones usable for the 2D, her capsules.
+    ray (the final pass, cfg.follow_phones): {"cam", "target", "normal", "pushed"} (visible_side_targets) -> the site track and the region
+    are those targets (smoothed) instead of the hold's sites"""
     from scipy.ndimage import gaussian_filter1d
     kl = posed(fit_base["lead"], ks)
     kf = posed(fit_base["follow"], ks)
@@ -1898,20 +2656,44 @@ def window_inputs(fit_base: dict, H: dict, ks: np.ndarray, bodies: dict, sites: 
             if s in cands:
                 reg[i, j] = cands[s][0][i] + hcfg.palm_lift_m * cands[s][1][i]
                 reg_ok[i, j] = True
+    occ_test = has_site
+    ray_info = None
+    if ray is not None:
+        pc0 = hand_site(kl["J"], "right", "palm")[0]
+        rt = ray
+        d = gaussian_filter1d(rt["target"] - pc0, cfg.ray_sigma_frames, axis=0, mode="nearest") if W > 3 else rt["target"] - pc0
+        if getattr(cfg, "ray_rate_mps", 0.0) > 0:
+            d = rate_limit(d, cfg.ray_rate_mps / HZ)
+        site_pt = pc0 + d
+        nl = gaussian_filter1d(rt["normal"], cfg.ray_sigma_frames, axis=0, mode="nearest") if W > 3 else rt["normal"]
+        nn_ = np.linalg.norm(nl, axis=1, keepdims=True)
+        site_n = np.where(nn_ > 0.3, nl / np.maximum(nn_, 1e-9), 0.0)
+        has_site = np.ones(W, bool)
+        reg = site_pt[:, None].copy()
+        reg_ok = np.ones((W, 1), bool)
+        occ_test = np.linalg.norm(d, axis=1) > 0.01             # the phones' view of the target is tested where the hand was pushed
+        ray_info = {"cam": ray["cam"], "pushed": rt["pushed"], "push_m": np.linalg.norm(d, axis=1),
+                    "on_surface": np.asarray(rt.get("on_surface", np.linalg.norm(d, axis=1) > 0.005), bool)}
     # the phones usable for the 2D: MAMMA sees the hand, and (in a hold with a site) the site is not hidden from that phone
     C = len(obs.cams)
     usable = np.zeros((W, C), bool)
     OA, OB, Orad = occluders(bodies, kl, kf)
+    lm_sw = None
+    if getattr(cfg, "vis_guards", False):              # the closing pass: phone-frames where MAMMA swapped his hands are not used
+        PL = hc.full_pose(fit_base["lead"])
+        lm_sw = (hc.hand_points_np(fit_base["lead"], PL, ks, "right")["lm"], hc.hand_points_np(fit_base["lead"], PL, ks, "left")["lm"])
     for ci, c in enumerate(obs.cams):
         see, _ = hand_2d(obs, c, ks, hcfg)
+        if lm_sw is not None:
+            see = see & ~mamma_swapped(obs, c, ks, [lm_sw[0]], lm_sw[1], hcfg)
         z = obs.z[c]
         Cc = -np.einsum("kji,kj->ki", z["R"][ks], z["t"][ks])
         X = np.where(has_site[:, None], site_pt, hand_site(kl["J"], "right", "palm")[0])[:, None]
         occ = ray_occluded(Cc, X, OA, OB, Orad * hcfg.occl_r_scale, hcfg.occl_margin_m)[:, 0]
-        usable[:, ci] = see & (~occ | ~has_site)                 # no site (free / hand hold): every phone that sees the hand
+        usable[:, ci] = see & (~occ | ~occ_test)                 # no site (free / hand hold): every phone that sees the hand
     Af, Bf = capsule_points(bodies["follow"], kf["J"], kf["R"], kf["tips"])
     return {"names": names, "site_pt": site_pt, "site_n": site_n, "has_site": has_site, "region": reg, "region_ok": reg_ok, "usable": usable,
-            "her_A": Af, "her_B": Bf, "kf": kf, "kl": kl}
+            "her_A": Af, "her_B": Bf, "kf": kf, "kl": kl, "ray": ray_info}
 
 
 def _window_gate(fit_in: dict, ks: np.ndarray, M0: dict, M1: dict, core_np: np.ndarray, ref: dict, cfg) -> tuple[list, int]:
@@ -1947,7 +2729,7 @@ def _window_gate(fit_in: dict, ks: np.ndarray, M0: dict, M1: dict, core_np: np.n
         p99 = p99_elbow if k == "elbow" else max(float(ref.get("palm", 2.2)), 1.5)
         a0, a1 = hc.speeds(x0 - xi), hc.speeds(x1 - xi)
         v0, v1, vi = hc.speeds(x0), hc.speeds(x1), hc.speeds(xi)
-        bad = ((a1 > g["add_mps"]) & (a1 > a0 + g["add_new_mps"])) | (v1 > np.maximum.reduce([np.full_like(v1, p99), vi, v0]) + g["fast_margin_mps"])
+        bad = whip_frames_added(a0, a1, hc.speeds(x1 - x0), vi, v0, v1, p99) if getattr(cfg, "vis_guards", False) else             whip_frames(a0, a1, vi, v0, v1, p99)
         if bad.any():
             j = int(np.flatnonzero(bad)[np.argmax(a1[bad])])
             why.append(f"whip {k} at {ks[j] / HZ:.2f} s added {a1[j]:.2f} m/s (speed {v1[j]:.2f})")
@@ -1967,7 +2749,12 @@ def refine_window(fit_in: dict, poses: dict, win: dict, H: dict, obs, judge, bia
     """one window of the leader's right hand (see the section's comment). poses = {role: (T,55,3)} current poses (the installed motion with
     the windows adopted so far); fit_in = the INPUT fit (the speed guards compare with it)."""
     import torch
+    from dataclasses import replace as _replace
     from .hand_kin import WRIST as HW, ELBOW as HE
+    if win.get("unfold_only"):
+        # the closing pass, round r8: a folded wrist alone - the wrist and the elbow stay where they are (keep_joint), the hand unfolds and
+        # the ray phone's 2D turns it; no target / surface terms (wrist_only)
+        cfg = _replace(cfg, wrist_only=True, keep_joint="wrist", unfold=True)
     T = len(fit_in["lead"]["t"])
     c0, c1 = win["core"]
     ramp = int(win.get("ramp", cfg.ramp_min))
@@ -1978,20 +2765,76 @@ def refine_window(fit_in: dict, poses: dict, win: dict, H: dict, obs, judge, bia
     w = torch.tensor(w_np, dtype=torch.float32, device=device)
     wsum = w.sum()
     f32 = dict(dtype=torch.float32, device=device)
-    wi = window_inputs({r: {**fit_in[r], **_pose_fields(poses[r])} for r in ROLES}, H, ks, bodies, sites, obs, cfg, hcfg)
-    names = wi["names"]
-    hold_core = names[(ks >= c0) & (ks <= c1)]
-    main_hold = max(set(hold_core.tolist()), key=hold_core.tolist().count) if len(hold_core) else "free"
-    tmpl = TEMPLATE_OF_ZHOLD.get(main_hold) if (main_hold in TORSO_HOLD_SITES and not cfg.wrist_only) else None
-    actor = hc.Actor(fit_in["lead"], "lead", "right", ks, poses["lead"], device, tmpl)
-    _ce = np.flatnonzero(w_np > 0.99)
-    actor.core = (int(_ce[0]), int(_ce[-1])) if len(_ce) else None
-    usable = wi["usable"]
-    twod = VisTwoD(torch, obs, actor, device, list(obs.cams), usable)
-    # her mesh (fixed) for the planes + exact checks
+    # her mesh (fixed) for the planes + exact checks (+ the ray targets of the final pass)
     bF = hc.Body(fit_in["follow"], device)
     VO = bF.forward_np(poses["follow"][ks], np.asarray(fit_in["follow"]["transl"], float)[ks], verts=True, batch=256)["verts"]
     VOt = torch.as_tensor(VO, device=device)
+    poses_in = poses
+    unf = None
+    if cfg.unfold:
+        # the closing pass: folded wrists start unfolded (the guards below still compare with the motion as it was, poses_in)
+        P_u, bend_in = unfold_wrist(poses["lead"][ks], knee_deg=cfg.unfold_knee_deg, weight=w_np)
+        if cfg.wrist_sigma > 0:
+            P_u = smooth_wrist(P_u, cfg.wrist_sigma, w_np)
+        if (bend_in[w_np > 0] > 85.0).any() or cfg.wrist_sigma > 0:
+            poses = dict(poses)
+            poses["lead"] = poses["lead"].copy()
+            poses["lead"][ks] = P_u
+            unf = {"frames_unfolded": int(((bend_in > 85.0) & (w_np > 0)).sum()), "bend_max_before": round(float(bend_in.max()), 1)}
+    ray = None
+    if cfg.follow_phones:
+        cam = win.get("ray_cam") or choose_ray_cam({r: {**fit_in[r], **_pose_fields(poses[r])} for r in ROLES}, ks, obs, hcfg)["ray_cam"]
+        # the ray phone per frame: the window's, or on its off_phone frames the back-view phone that shows the hand elsewhere
+        cam_f = np.array([cam] * len(ks), dtype=object)
+        offf = dict(zip(win.get("off_phone_frames") or [], win.get("off_phone_cams") or []))
+        if cfg.ray_mode == "hit":
+            for i, k in enumerate(ks):
+                if int(k) in offf and offf[int(k)]:
+                    cam_f[i] = offf[int(k)]
+        Ccam = np.zeros((len(ks), 3))
+        ok_f = np.zeros(len(ks), bool)
+        for c in set(cam_f.tolist()):
+            ii = np.flatnonzero(cam_f == c)
+            zc_ = obs.z[c]
+            Ccam[ii] = -np.einsum("kji,kj->ki", zc_["R"][ks[ii]], zc_["t"][ks[ii]])
+            ok_f[ii] = zc_["ok"][ks[ii]]
+        kl0 = posed(fit_in["lead"], ks, poses["lead"][ks])
+        pc_start = hand_site(kl0["J"], "right", "palm")[0]
+        side_t = visible_side_targets(surf, VOt, pc_start, Ccam, np.isin(hc.vertex_joint(), TORSO_JOINTS), hcfg.palm_lift_m, cfg.ray_alpha,
+                                      ok=ok_f)
+        if cfg.ray_mode == "hit" and win.get("kind") == "spike" and cfg.spike_interp:
+            ray = {"cam": cam, "cam_f": cam_f, **spike_targets(win, ks, pc_start, posed(fit_in["follow"], ks, poses["follow"][ks])["J"], surf, VOt,
+                                                               Ccam, hcfg, ok_f)}
+        elif cfg.ray_mode == "hit":
+            thru_obs = None
+            if offf:
+                lm_m = hc.hand_points_np(fit_in["lead"], poses["lead"], ks, "right")["lm"]
+                X_o, used_o = pc_start.copy(), np.zeros(len(ks), bool)
+                for c in set(offf.values()):
+                    fr = np.array([offf.get(int(k)) == c for k in ks])
+                    X_c, u_c = observed_thru(obs, c, ks, lm_m, pc_start, fr, hcfg)
+                    X_o[u_c], used_o[u_c] = X_c[u_c], True
+                thru_obs = (X_o, used_o)
+            ray = {"cam": cam, "cam_f": cam_f, **window_ray_hits(win, ks, pc_start, Ccam, side_t, VO, bF.faces, H["names"][ks], cfg, ok_f,
+                                                                 device, thru_obs)}
+        else:
+            ray = {"cam": cam, "cam_f": cam_f, **side_t}
+    wi = window_inputs({r: {**fit_in[r], **_pose_fields(poses[r])} for r in ROLES}, H, ks, bodies, sites, obs, cfg, hcfg, ray)
+    names = wi["names"]
+    hold_core = names[(ks >= c0) & (ks <= c1)]
+    main_hold = max(set(hold_core.tolist()), key=hold_core.tolist().count) if len(hold_core) else "free"
+    tmpl = TEMPLATE_OF_ZHOLD.get(main_hold) if (main_hold in TORSO_HOLD_SITES and not cfg.wrist_only and not cfg.follow_phones) else None
+    actor = hc.Actor(fit_in["lead"], "lead", "right", ks, poses["lead"], device, tmpl)
+    if win.get("unfold_only") and cfg.freeze_arm_unfold:
+        actor.freeze_arm()                              # round r9: only the wrist turns (the shoulder / elbow deltas stay 0)
+    _ce = np.flatnonzero(w_np > 0.99)
+    actor.core = (int(_ce[0]), int(_ce[-1])) if len(_ce) else None
+    usable = wi["usable"]
+    if cfg.follow_phones:
+        # MAMMA's hand in the other phones is often inconsistent with the ray phone (the input fit is already their compromise): the 2D term
+        # keeps the ray phone's view only; the independent COCO elbow (every phone) still holds the arm
+        usable = usable & (np.asarray(obs.cams, dtype=object)[None, :] == np.asarray(ray["cam_f"], dtype=object)[:, None])
+    twod = VisTwoD(torch, obs, actor, device, list(obs.cams), usable)
     planes = hc.Planes(torch, surf)
     # capsules: his right hand / forearm / upper arm (from the actor's FK); hers (fixed)
     capL = bodies["lead"]
@@ -2028,16 +2871,37 @@ def refine_window(fit_in: dict, poses: dict, win: dict, H: dict, obs, judge, bia
         from scipy.ndimage import uniform_filter1d
         hr = np.minimum(hr, uniform_filter1d(hr, 13, mode="nearest") ** 2)          # fades over ~0.2 s on each side of a hold change
     has_reg = torch.tensor(hr.astype(np.float32), device=device)
+    surf_on = has_reg
+    w_region = cfg.w_region
+    if cfg.follow_phones:
+        # the palm flat on her surface only where it was pushed out of her (else it stays where it is: the region = the palm's own place);
+        # the target outweighs the push-out to her NEAREST surface (which may be her side, away from where the ray phone shows the hand)
+        from scipy.ndimage import uniform_filter1d
+        so = np.asarray(wi["ray"].get("on_surface", wi["ray"]["push_m"] > 0.005), float)
+        surf_on = torch.tensor(np.minimum(1.0, uniform_filter1d(so, 7, mode="nearest") * 2).astype(np.float32), device=device)
+        w_region = cfg.w_region * cfg.ray_region_scale
     ct = hc.coco_targets(fit_in["lead"], "lead", "right", ks, judge, obs, list(obs.cams), bias)
     Xe, ve, nve = ct["elbow"]
     e0 = posed(fit_in["lead"], ks, poses["lead"][ks])["J"][:, HE["right"]]
     ve = ve & (np.linalg.norm(np.nan_to_num(Xe) - e0, axis=1) < 0.25) & (nve >= 2)
     Xe_t = torch.tensor(np.nan_to_num(Xe), **f32)
     ve_t = torch.tensor(ve.astype(np.float32), device=device)
-    el2d = CocoElbow2D(torch, obs, judge, ks, bias, device)
+    if cfg.vis_guards:
+        kls = posed(fit_in["lead"], ks, poses["lead"][ks])
+        keep_e = joint_visible(obs, ks, kls["J"][:, HE["right"]], bodies, kls, wi["kf"])
+        el2d = CocoElbow2D(torch, obs, judge, ks, bias, device, keep_e, kls["J"][:, HE["right"]], kls["J"][:, ELBOW["left"]])
+        wr2d = None
+        if cfg.w_wrist2d > 0:
+            # ... and the COCO wrist in the phones that see it (the depth fix may not drag the wrist off what a phone that sees it shows)
+            keep_w = joint_visible(obs, ks, kls["J"][:, HW["right"]], bodies, kls, wi["kf"])
+            wr2d = CocoElbow2D(torch, obs, judge, ks, bias, device, keep_w, kls["J"][:, HW["right"]], kls["J"][:, WRIST["left"]], which="wrist")
+    else:
+        el2d = CocoElbow2D(torch, obs, judge, ks, bias, device)
+        wr2d = None
     # the site attractor is weak where a usable phone sees the hand (the 2D leads there)
     seen = usable.any(1)
-    site_w_t = torch.tensor(np.where(seen, cfg.site_seen_scale, 1.0) * wi["has_site"], **f32)
+    site_w_t = torch.tensor(np.where(seen & (not cfg.follow_phones), cfg.site_seen_scale, 1.0) * wi["has_site"], **f32)
+    reg_slack = cfg.ray_slack_m if cfg.follow_phones else cfg.region_slack_m
     # speed caps (hand_contact's): the input's p99 of the hand or its own speed there, + 0.1
     J_in = np.asarray(fit_in["lead"]["joints"], float)[ks]
     ref = (speed_ref or {}).get("lead_right", {"wrist": 2.0, "palm": 2.2})
@@ -2045,6 +2909,8 @@ def refine_window(fit_in: dict, poses: dict, win: dict, H: dict, obs, judge, bia
     caps_sp = [torch.tensor(np.maximum(ref[k], hc.speeds(tr_in[k])) + 0.1, **f32) for k in ("wrist", "palm")]
     wr_rot = torch.tensor((3.0, 3.0, 3.0) if main_hold in TORSO_HOLD_SITES else (8.0, 8.0, 4.0), **f32)
     rc = hc.RefineCfg()
+    with torch.no_grad():
+        tips0 = actor.forward(torch.zeros_like(w))["tips5"].clone()       # the start's fingertips (w = 0: the start pose)
 
     def capsule_losses(o):
         J, R, tips = o["joints"], o["R"], o["tips"]
@@ -2071,8 +2937,11 @@ def refine_window(fit_in: dict, poses: dict, win: dict, H: dict, obs, judge, bia
     _wa0 = wrist_angles(poses["lead"][ks][:, :55], "right")
     _ea0 = elbow_angles(poses["lead"][ks][:, :55], "right")
     tw_lim_t = torch.tensor(np.radians(np.maximum(cfg.twist_soft_deg, np.abs(_wa0["twist"]) + 5.0)), **f32)
-    hyp_lim_t = torch.tensor(np.radians(np.minimum(-5.0, _ea0["flexion"])), **f32)
-    off_lim_t = torch.tensor(np.radians(np.maximum(35.0, np.abs(_ea0["off_hinge"]) + 5.0)), **f32)
+    # the closing pass (vis_guards): the limits in the loss with a margin inside the gate's (-5 / 35 deg): round r6 lost 13 windows to
+    # elbows at -5.5..-7 deg / 35-36 deg off the hinge
+    hyp_m, off_m, off_add = (-2.0, 31.0, 2.0) if cfg.vis_guards else (-5.0, 35.0, 5.0)
+    hyp_lim_t = torch.tensor(np.radians(np.minimum(hyp_m, _ea0["flexion"])), **f32)
+    off_lim_t = torch.tensor(np.radians(np.maximum(off_m, np.abs(_ea0["off_hinge"]) + off_add)), **f32)
 
     def wrist_loss(wt):
         Rc = actor.chain_R(wt)
@@ -2117,7 +2986,7 @@ def refine_window(fit_in: dict, poses: dict, win: dict, H: dict, obs, judge, bia
             dd = (pc[:, None] - reg_t).norm(dim=-1)
             dd = torch.where(reg_ok_t, dd, torch.full_like(dd, 9.0))
             soft = -cfg.region_tau_m * torch.logsumexp(-dd / cfg.region_tau_m, dim=1)
-            lr = cfg.w_region * ((torch.relu(soft - cfg.region_slack_m) ** 2) * has_reg * w).sum() / wsum
+            lr = w_region * ((torch.relu(soft - reg_slack) ** 2) * has_reg * w).sum() / wsum
             loss = loss + lr
             terms["region"] = lr.detach()
             # her surface: hand / arm points vs the planes (penetration), the palm patch on the surface for the holds with a region
@@ -2133,7 +3002,7 @@ def refine_window(fit_in: dict, poses: dict, win: dict, H: dict, obs, judge, bia
             loss = loss + lp
             terms["pen"] = lp.detach()
             pd = sd[:, nh + na + nu + 5:]
-            near = (planes.near[:, nh + na + nu + 5:].sum(1) > 0).float() * has_reg
+            near = (planes.near[:, nh + na + nu + 5:].sum(1) > 0).float() * surf_on
             p8 = pd.topk(min(8, pd.shape[1]), dim=1, largest=False).values.mean(1)
             lf = rc.w_flat * (((p8 - rc.palm_offset_m) ** 2) * near * w).sum() / wsum
             lf = lf + rc.w_flat_patch * (((torch.relu(pd - rc.flat_patch_m) ** 2).mean(1)) * near * w).sum() / wsum * (1.0 if tmpl == "open" else 0.3)
@@ -2170,6 +3039,8 @@ def refine_window(fit_in: dict, poses: dict, win: dict, H: dict, obs, judge, bia
         le = cfg.w_elbow * (hc._rho(torch, ((J[:, HE["right"]] - Xe_t) ** 2).sum(-1), rc.sigma_elbow_m) * ve_t * w).sum() / wsum
         if el2d.n > 0:
             le = le + cfg.w_elbow2d * el2d.loss(J, cfg.sigma_elbow2d_px, w) / wsum
+        if wr2d is not None and wr2d.n > 0:
+            le = le + cfg.w_wrist2d * wr2d.loss(J, cfg.sigma_elbow2d_px, w) / wsum
         loss = loss + le
         terms["elbow"] = le.detach()
         if len(ks) > 2:
@@ -2180,6 +3051,11 @@ def refine_window(fit_in: dict, poses: dict, win: dict, H: dict, obs, judge, bia
                 lsp = lsp + cfg.w_speed * (torch.relu(torch.sqrt((dv ** 2).sum(-1) + 1e-10) - rc.v_free_mps) ** 2).sum() / HZ
                 v = (X[1:] - X[:-1]) * HZ
                 lsp = lsp + cfg.w_speed * (torch.relu(torch.sqrt((v ** 2).sum(-1) + 1e-10) - cap) ** 2).sum() / HZ
+            if cfg.w_speed_tips > 0:
+                # the elbow and the five fingertips too (the gate's whip test): their added motion against the start beyond v_free_mps
+                for X, X0 in ((o["tips5"], tips0), (J[:, HE["right"]][:, None], actor.elbow0[:, None])):
+                    dv = ((X - X0)[1:] - (X - X0)[:-1]) * HZ
+                    lsp = lsp + cfg.w_speed_tips * (torch.relu(torch.sqrt((dv ** 2).sum(-1) + 1e-10) - rc.v_free_mps) ** 2).sum() / HZ
             loss = loss + lsp
             terms["speed"] = lsp.detach()
             acc = actor.delta[2:] - 2 * actor.delta[1:-1] + actor.delta[:-2]
@@ -2193,7 +3069,10 @@ def refine_window(fit_in: dict, poses: dict, win: dict, H: dict, obs, judge, bia
         loss = loss + lrot
         terms["rot"] = lrot.detach()
         if cfg.wrist_only:
-            lk = cfg.w_keep * ((torch.relu((pc - actor.palm_c0).norm(dim=-1) - cfg.keep_slack_m) ** 2) * w).sum() / wsum
+            if cfg.keep_joint == "wrist":
+                lk = cfg.w_keep * ((torch.relu((J[:, HW["right"]] - actor.wrist0).norm(dim=-1) - cfg.keep_slack_m) ** 2) * w).sum() / wsum
+            else:
+                lk = cfg.w_keep * ((torch.relu((pc - actor.palm_c0).norm(dim=-1) - cfg.keep_slack_m) ** 2) * w).sum() / wsum
             loss = loss + lk
             terms["keep"] = lk.detach()
         terms_last.clear()
@@ -2242,11 +3121,16 @@ def refine_window(fit_in: dict, poses: dict, win: dict, H: dict, obs, judge, bia
                 "tips": kl_["tips"][:, 5:10], "pose": o_np_pose}
 
     core_np = w_np > 0.99
-    pose0 = poses["lead"][ks].copy()
+    core_np_ = core_np
+    pose0 = poses_in["lead"][ks].copy()                 # the motion as it was (before an unfolded start)
     M0 = measures(pose0)
     with torch.no_grad():
         o0 = actor.forward(w)
-    res = {"core": [int(c0), int(c1)], "frames": [int(a0), int(a1)], "ramp": ramp, "hold": main_hold, "template": tmpl,
+        if unf is not None:                             # the 'before' measures (exact, 2D) of the motion as it was, not the unfolded start
+            a0_ = hc.Actor(fit_in["lead"], "lead", "right", ks, poses_in["lead"], device, None)
+            o0 = a0_.forward(torch.zeros_like(w))
+            del a0_
+    res = {"core": [int(c0), int(c1)], "frames": [int(a0), int(a1)], "ramp": ramp, "hold": main_hold, "template": tmpl, "unfold": unf,
            "holds": {h: int((hold_core == h).sum()) for h in np.unique(hold_core)}, "elbow_coco_share": float(ve.mean()),
            "phones_usable_2d_mean": float(usable.sum(1).mean())}
     # stage 1 (holds with a site)
@@ -2261,7 +3145,14 @@ def refine_window(fit_in: dict, poses: dict, win: dict, H: dict, obs, judge, bia
         ang = np.degrees(np.arccos(np.clip((n1 * -np.nan_to_num(wi["site_n"])).sum(1), -1, 1)))
         res["palm_angle_deg_stage1"] = float(np.median(ang[core_np & wi["has_site"]])) if (core_np & wi["has_site"]).any() else None
     starts = [actor.snapshot()]
-    if res.get("palm_angle_deg_stage1") is not None and res["palm_angle_deg_stage1"] > rc.flip_deg:
+    if wi["ray"] is not None:
+        rr = wi["ray"]
+        res["ray"] = {"cam": rr["cam"], "pushed_core_frames": int((rr["pushed"] & core_np_).sum()),
+                      "push_cm_max": round(float(rr["push_m"][core_np_].max() * 100), 1) if core_np_.any() else 0.0,
+                      "push_cm_median_pushed": round(float(np.median(rr["push_m"][rr["pushed"]]) * 100), 1) if rr["pushed"].any() else 0.0}
+        if ray is not None and "modes" in ray:
+            res["ray"].update({"modes": ray["modes"], "fallback_side": ray["fallback_side"], "on_surface_core": int((ray["on_surface"] & core_np_).sum())})
+    if res.get("palm_angle_deg_stage1") is not None and res["palm_angle_deg_stage1"] > rc.flip_deg and not cfg.follow_phones:
         hc.twist_start(actor, w, np.nan_to_num(wi["site_n"]))
         starts.append(actor.snapshot())
     actor.fingers_on = actor.u is not None
@@ -2325,11 +3216,31 @@ def refine_window(fit_in: dict, poses: dict, win: dict, H: dict, obs, judge, bia
     res["agreeing_phone_frames"] = [na0, na1]
     res["ma2d_per_phone_px"] = {"before": pc0, "after": pc1}
 
+    vis_j = {}
+    if cfg.vis_guards:
+        # the closing pass: a detector vouches only for a joint the phone can see - the CANDIDATE's wrist / elbow not hidden behind her
+        # body or his own (capsule rays); the same phones for the motion before
+        kl1 = posed(fit_in["lead"], ks, pose1)
+        for nm_, jj_ in (("elbow", HE["right"]), ("wrist", HW["right"])):
+            vis_j[nm_] = joint_visible(obs, ks[core_np], kl1["J"][core_np, jj_],
+                                       bodies, {k_: v_[core_np] for k_, v_ in kl1.items()}, {k_: v_[core_np] for k_, v_ in wi["kf"].items()})
+        res["vis_phone_frames"] = {k_: int(v_.sum()) for k_, v_ in vis_j.items()}
+
+    def coco_joint_px(J, which):
+        jj_ = HE["right"] if which == "elbow" else HW["right"]
+        b = np.asarray(bias.get(f"lead_right_{which}", [0, 0, 0]), float)
+        X = J[:, jj_] + np.einsum("kij,j->ki", hc._forearm_frame(J, "right"), b)
+        if which in vis_j:
+            Jo = M1["J"] if J is M0["J"] else M0["J"]
+            Xo = Jo[:, jj_] + np.einsum("kij,j->ki", hc._forearm_frame(Jo, "right"), b)
+            Xl = M0["J"][:, WRIST["left"] if which == "wrist" else ELBOW["left"]]
+            e = coco_errors_vis(judge, obs, X[core_np], ks[core_np], which, vis_j[which], Xl[core_np], Xo[core_np])
+        else:
+            e = hc._coco_errors(judge, obs, X[core_np], ks[core_np], "lead", "right", which, obs.cams)
+        return (float(np.median(e)), len(e)) if len(e) else (None, 0)
+
     def coco_elbow_px(J):
-        b = np.asarray(bias.get("lead_right_elbow", [0, 0, 0]), float)
-        X = J[:, HE["right"]] + np.einsum("kij,j->ki", hc._forearm_frame(J, "right"), b)
-        e = hc._coco_errors(judge, obs, X[core_np], ks[core_np], "lead", "right", "elbow", obs.cams)
-        return float(np.median(e)) if len(e) else None
+        return coco_joint_px(J, "elbow")[0]
     res["coco_elbow_px"] = [coco_elbow_px(M0["J"]), coco_elbow_px(M1["J"])]
     # guards
     why = []
@@ -2354,7 +3265,7 @@ def refine_window(fit_in: dict, poses: dict, win: dict, H: dict, obs, judge, bia
     if b2 is not None and a2 is not None and np.isfinite(b2) and np.isfinite(a2) and a2 > b2 + cfg.guard_ma2d_slack_px:
         why.append(f"MAMMA hand points (usable phones) {b2:.1f} -> {a2:.1f} px")
     b3, a3 = res["coco_elbow_px"]
-    if b3 is not None and a3 is not None and a3 > b3 + cfg.guard_coco_slack_px:
+    if b3 is not None and a3 is not None and a3 > b3 + max(cfg.guard_coco_slack_px, cfg.guard_coco_rel * b3):
         why.append(f"COCO elbow {b3:.1f} -> {a3:.1f} px")
     # speed against the INPUT fit (hand_contact's audit rule)
     J_new = M1["J"]
@@ -2365,10 +3276,15 @@ def refine_window(fit_in: dict, poses: dict, win: dict, H: dict, obs, judge, bia
         sv = hc.speed_violations(ti, tn, ref[k], rc.add_speed_max_mps, rc.speed_margin_mps)
         res["speed"][k] = {"max_added_mps": round(sv["max_add"], 3), "jumps": int(len(sv["jump"])), "fast": int(len(sv["fast"]))}
         bad = np.union1d(sv["jump"], sv["fast"])
+        tb = hc.hand_tracks(M0["J"], "right")[k]
+        if cfg.gate_guards:
+            # against the START too (the final pass starts from a despiked motion: taking an input glitch out is 'added' speed against the
+            # input, not a jump): the gate's whip rule (whip_frames) with the start as the reference
+            bad = np.flatnonzero(whip_frames_added(hc.speeds(tb - ti), sv["add"], hc.speeds(tn - tb), sv["v_in"], hc.speeds(tb), sv["v_new"],
+                                                   ref[k]))
         if len(bad):
             j = int(bad[np.argmax(sv["add"][bad])])
             why.append(f"{'jump' if len(sv['jump']) else 'whip'} {k} at {ks[j] / HZ:.2f} s added {sv['add'][j]:.2f} m/s (speed {sv['v_new'][j]:.2f})")
-        tb = hc.hand_tracks(M0["J"], "right")[k]
         ce = np.flatnonzero(core_np)
         if len(ce):
             ends = np.concatenate([ce[:3], ce[-3:]])
@@ -2378,16 +3294,19 @@ def refine_window(fit_in: dict, poses: dict, win: dict, H: dict, obs, judge, bia
         why += g_why
         ramp_need = max(ramp_need, g_ramp)
 
-        def coco_wrist_px(J):
-            b = np.asarray(bias.get("lead_right_wrist", [0, 0, 0]), float)
-            X = J[:, HW["right"]] + np.einsum("kij,j->ki", hc._forearm_frame(J, "right"), b)
-            e = hc._coco_errors(judge, obs, X[core_np], ks[core_np], "lead", "right", "wrist", obs.cams)
-            return (float(np.median(e)), len(e)) if len(e) else (None, 0)
-        (cw0, n0), (cw1, n1) = coco_wrist_px(M0["J"]), coco_wrist_px(M1["J"])
+        (cw0, n0), (cw1, n1) = coco_joint_px(M0["J"], "wrist"), coco_joint_px(M1["J"], "wrist")
         res["coco_wrist_px"] = [cw0, cw1]
-        if cw0 is not None and cw1 is not None and min(n0, n1) >= GATE["coco_min_n"] and cw1 > cw0 + GATE["coco_worse_px"]:
+        if cw0 is not None and cw1 is not None and min(n0, n1) >= GATE["coco_min_n"] and                 cw1 > cw0 + max(GATE["coco_worse_px"], cfg.guard_coco_rel * cw0):
             why.append(f"COCO wrist {cw0:.1f} -> {cw1:.1f} px")
     res["ramp_needed"] = int(ramp_need)
+    import os as _os
+    if _os.environ.get("DANCECAP_ZC_DEBUG") and wi.get("ray") is not None:
+        dd = OUT / "runs" / "_debug"
+        dd.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(dd / f"win_{c0}_{c1}.npz", ks=ks, w=w_np, site_pt=wi["site_pt"], pc0=hand_site(posed(fit_in["lead"], ks, poses["lead"][ks])["J"], "right", "palm")[0],
+                            pc1=hand_site(M1["J"], "right", "palm")[0], pushed=wi["ray"]["pushed"], on_surface=wi["ray"]["on_surface"],
+                            push_m=wi["ray"]["push_m"], cam_f=np.asarray(ray["cam_f"], str) if ray is not None and "cam_f" in ray else np.zeros(0),
+                            tips0=M0["tips"], tips1=M1["tips"], pe0=pe0, pe1=pe1)
     res["adopted"] = not why
     res["guard"] = why
     res["new_pose"] = (ks, pose1, list(actor.chain) + list(actor.fj))
@@ -2442,6 +3361,8 @@ def run_refine(part: tuple[int, int] | None = None, device: str = "cuda", only: 
     fit_in = load_fit("input")
     base = load_fit(cfg.base)
     poses = {r: hc.full_pose(base[r]).copy() for r in ROLES}
+    if cfg.despike:                                  # input glitches out of the base before solving (the final pass)
+        poses["lead"], _ = despike_poses(poses["lead"], cfg.despike)
     H = load_holds()
     bodies = capsule_bodies(fit_in)
     sites = site_bodies(fit_in)
@@ -2524,6 +3445,8 @@ def merge_parts(n: int, tag: str = "all", seconds: float | None = None, write: b
     cfg = ZoukCfg(**(cfg_over or {}))
     base = load_fit(cfg.base)
     P0 = hc.full_pose(base["lead"])
+    if cfg.despike:                     # every part solved from the despiked base: a part's change = against THAT (else the last part's
+        P0, _ = despike_poses(P0, cfg.despike)      # despiked-but-unsolved frames would overwrite another part's solved ones)
     P = P0.copy()
     results, conflicts = [], 0
     owner = np.full(P.shape[:2], -1)
@@ -2851,6 +3774,188 @@ def table_text(rows: list) -> str:
     return "\n".join(r[0].ljust(w0) + " | " + " | ".join(str(c).ljust(w) for c, w in zip(r[1:], ws)) for r in rows)
 
 
+def arm_speed_checks(fit_in: dict, fit: dict, P: np.ndarray | None = None) -> dict:
+    """his right elbow, wrist, palm centre and five fingertips against the input fit, the whole film: frames whose ADDED speed (the motion's
+    own change against the input) exceeds 0.55 m/s, frames faster than max(input p99, input there) + 0.25 m/s, and frames where the wrist's
+    local rotation turns more than 8 deg / frame faster than the input's"""
+    Pin = hc.full_pose(fit_in["lead"])
+    P = hc.full_pose(fit["lead"]) if P is None else P
+    oi, o1 = posed(fit_in["lead"], None, Pin), posed(fit["lead"], None, P)
+    pts = {"elbow": (oi["J"][:, ELBOW["right"]], o1["J"][:, ELBOW["right"]]), "wrist": (oi["J"][:, WRIST["right"]], o1["J"][:, WRIST["right"]]),
+           "palm": (hc.palm_centre(oi["J"], "right"), hc.palm_centre(o1["J"], "right"))}
+    for fi in FINGERS:
+        pts[f"tip_{fi}"] = (oi["tips"][:, tip_index("right", fi)], o1["tips"][:, tip_index("right", fi)])
+    out = {}
+    for k, (xi, x1) in pts.items():
+        a = hc.speeds(x1 - xi)
+        v, vi = hc.speeds(x1), hc.speeds(xi)
+        p99 = float(np.percentile(vi, 99))
+        out[k] = {"added_gt_0.55": int((a > 0.55).sum()), "fast": int((v > np.maximum(p99, vi) + 0.25).sum()), "max_added_mps": round(float(a.max()), 2)}
+    out["fingertips_added_gt_0.55"] = int(np.max([out[f"tip_{fi}"]["added_gt_0.55"] for fi in FINGERS]))
+    out["wrist_rotation_faster_than_input_8deg"] = int((_local_rot_speed(P, WRIST["right"]) > _local_rot_speed(Pin, WRIST["right"]) + 8.0).sum())
+    return out
+
+
+def validate_final(fits=("input", "v3", "v4"), changed_vs: str = "v3", path: Path | None = None, notes: dict | None = None) -> dict:
+    """the final numbers over the whole film, input | v3 | final (v4/smplx_contact): exact penetration of his right hand / forearm into her,
+    wrist folds, wrist twist, elbow hyperextension / off-hinge, the hold on-target rate, MAMMA's hand points and the COCO wrist / elbow (all
+    frames and the frames the final changed against v3), the speed audit (hand_contact's, + the elbow, fingertips and wrist rotation)
+    -> v4/contacts/validate_final.json + validate_final.md (the table)"""
+    t0 = time.time()
+    H = load_holds()
+    fl = {f: load_fit(f) for f in fits}
+    bodies = capsule_bodies(fl["input"])
+    sites = site_bodies(fl["input"])
+    obs = hc.Obs()
+    judge = hc.CocoJudge()
+    bias = hc.calibrate_coco_bias(fl["input"], obs, judge)
+    hcfg = HoldCfg()
+    T = len(H["names"])
+    P = {f: hc.full_pose(fl[f]["lead"]) for f in fits}
+    last = fits[-1]
+    changed = np.flatnonzero(np.abs(P[last] - P[changed_vs]).max((1, 2)) > 0)
+    torso_holds = [h for h in TORSO_HOLD_SITES if (H["names"] == h).sum() >= 15]
+    hold_frames = np.flatnonzero(np.isin(H["names"], torso_holds))
+    allk = np.arange(T)
+    rep = {"what": "zouk_contacts final validation, the leader's right hand over the whole film (input = smplx_rf2_noslip, v3 = the v3 hand-"
+                   "contact motion, final = v4/smplx_contact)", "frames": T, "frames_changed_final_vs_v3": int(len(changed)), "fits": {},
+           "notes": dict(notes or {})}
+    for f in fits:
+        fit = fl[f]
+        r = {}
+        with np.load(OUT / f"exact_{f}.npz") as z:
+            hp, ap, gap = z["hand_pen"], z["arm_pen"], z["hand_gap"]
+            parts = [str(x) for x in z["parts"]]
+            hpp = z["hand_pen_part"]
+        r["exact_hand"] = [int((hp > 0.005).sum()), int((hp > 0.02).sum()), round(float(np.percentile(hp[hp > 0.005], 90)) * 100, 2) if (hp > 0.005).any() else 0.0]
+        r["exact_hand_gt5_gt8"] = [int((hp > 0.05).sum()), int((hp > 0.08).sum())]
+        tp = hpp[:, [parts.index(p) for p in ("torso", "shoulder_L", "shoulder_R")]].max(1)
+        r["exact_hand_torso"] = [int((tp > 0.005).sum()), int((tp > 0.02).sum())]
+        r["exact_hand_neck_head"] = int((hpp[:, parts.index("neck_head")] > 0.005).sum())
+        r["exact_forearm"] = [int((ap > 0.005).sum()), int((ap > 0.02).sum())]
+        back = np.isin(H["names"], ("upper_back", "wrap_back", "behind_back"))
+        r["floating_back_holds_gt2cm"] = int(((gap > 0.02) & back).sum())
+        Wa, Ea = wrist_angles(P[f], "right"), elbow_angles(P[f], "right")
+        lo = Wa["bend"] < 60
+        r["wrist_fold_gt85"] = int((Wa["bend"] > 85).sum())
+        r["twist_gt90_gt120_bend_lt60"] = [int(((np.abs(Wa["twist"]) > 90) & lo).sum()), int(((np.abs(Wa["twist"]) > 120) & lo).sum())]
+        r["twist_gt90_all"] = int((np.abs(Wa["twist"]) > 90).sum())
+        r["twist_gt120_any_bend"] = int((np.abs(Wa["twist"]) > 120).sum())
+        r["bend_gt120_150_170"] = [int((Wa["bend"] > 120).sum()), int((Wa["bend"] > 150).sum()), int((Wa["bend"] > 170).sum())]
+        r["bend120_and_twist120"] = int(((Wa["bend"] > 120) & (np.abs(Wa["twist"]) > 120)).sum())
+        op = off_phone_frames(fit, H, obs, hcfg, 0.08, min_run=1)
+        r["off_phone_gt8cm"] = int(op["mask"].sum())
+        r["elbow_hyper_lt_m5_m10"] = [int((Ea["flexion"] < -5).sum()), int((Ea["flexion"] < -10).sum())]
+        r["elbow_off_hinge_gt35"] = int((np.abs(Ea["off_hinge"]) > 35).sum())
+        m = load_measure(f) if (OUT / f"measure_{f}.npz").exists() else run_measure(f)
+        r["capsule_hand_vs_own_forearm"] = _depth_stats(m["lead_R_self_forearm"])
+        ex = {"ks": allk, "hand_pen": hp, "hand_gap": gap}
+        ot = on_target(fit, H, hold_frames, bodies, sites, ex)
+        r["on_target_torso_holds"] = round(float(ot.mean()), 3)
+        r["on_target_upper_back"] = round(float(ot[H["names"][hold_frames] == "upper_back"].mean()), 3)
+        e_all = hand_2d_errors(fit, allk, obs, hcfg)
+        r["mamma_hand_px_all"] = [round(float(np.nanmedian(e_all)), 2), int(np.isfinite(e_all).sum())]
+        r["mamma_hand_px_changed"] = [round(float(np.nanmedian(e_all[changed])), 2), int(np.isfinite(e_all[changed]).sum())] if len(changed) else None
+        for which in ("wrist", "elbow"):
+            ce = coco_px(fit, allk, obs, judge, bias, which)
+            cc = coco_px(fit, changed, obs, judge, bias, which) if len(changed) else np.zeros(0)
+            r[f"coco_{which}_px_all"] = [round(float(np.median(ce)), 2), int(len(ce))]
+            r[f"coco_{which}_px_changed"] = [round(float(np.median(cc)), 2), int(len(cc))] if len(cc) else None
+            # the phones that see the joint in THIS motion (joint_visible: not hidden behind her body or his own)
+            kl_, kf_ = posed(fit["lead"], allk), posed(fit["follow"], allk)
+            jj = WRIST["right"] if which == "wrist" else ELBOW["right"]
+            vis = joint_visible(obs, allk, kl_["J"][:, jj], bodies, kl_, kf_)
+            b_ = np.asarray(bias.get(f"lead_right_{which}", [0, 0, 0]), float)
+            X_ = kl_["J"][:, jj] + np.einsum("kij,j->ki", hc._forearm_frame(kl_["J"], "right"), b_)
+            ev = coco_errors_vis(judge, obs, X_, allk, which, vis)
+            r[f"coco_{which}_px_all_vis"] = [round(float(np.median(ev)), 2), int(len(ev))]
+        if f != "input":
+            au = hc.speed_audit(fl["input"], fit)
+            r["speed_audit_incidents"] = au["n_incidents"]
+            r["speed_audit_lead_right"] = au["lead_right"]["incidents"][:12]
+            r["arm_speed"] = arm_speed_checks(fl["input"], fit, P[f])
+        rep["fits"][f] = r
+        log(f"validate_final {f} ({time.time() - t0:.0f} s)")
+    rep["table"] = validate_final_table(rep)
+    write_json(OUT / "validate_final.json", rep)
+    (path or (OUT / "validate_final.md")).write_text(validate_final_md(rep), encoding="utf-8")
+    return rep
+
+
+def validate_final_table(rep: dict) -> list:
+    fits = list(rep["fits"])
+    F = rep["fits"]
+
+    def col(fn):
+        out = []
+        for f in fits:
+            try:
+                out.append(fn(F[f]))
+            except (KeyError, TypeError, IndexError):
+                out.append("-")
+        return out
+    rows = [["measure"] + [{"v4": "final", "inst2": "installed before (d034e0b7)", "inst": "installed (5ccf839e)"}.get(f, f) for f in fits]]
+    rows.append(["his right hand inside her (exact, her mesh): frames > 0.5 cm / > 2 cm / p90 depth cm"]
+                + col(lambda r: f"{r['exact_hand'][0]} / {r['exact_hand'][1]} / {r['exact_hand'][2]}"))
+    rows.append(["... frames > 5 cm / > 8 cm"] + col(lambda r: f"{r['exact_hand_gt5_gt8'][0]} / {r['exact_hand_gt5_gt8'][1]}"))
+    rows.append(["... inside her torso / shoulders: frames > 0.5 cm / > 2 cm"] + col(lambda r: f"{r['exact_hand_torso'][0]} / {r['exact_hand_torso'][1]}"))
+    rows.append(["... inside her neck / head: frames > 0.5 cm"] + col(lambda r: f"{r['exact_hand_neck_head']}"))
+    rows.append(["his right forearm inside her (exact): frames > 0.5 cm / > 2 cm"] + col(lambda r: f"{r['exact_forearm'][0]} / {r['exact_forearm'][1]}"))
+    rows.append(["hand more than 2 cm off her in the back holds (exact gap): frames"] + col(lambda r: f"{r['floating_back_holds_gt2cm']}"))
+    rows.append(["wrist folded past 85 deg: frames"] + col(lambda r: f"{r['wrist_fold_gt85']}"))
+    rows.append(["wrist bent past 120 / 150 / 170 deg (folded back onto his forearm): frames"]
+                + col(lambda r: f"{r['bend_gt120_150_170'][0]} / {r['bend_gt120_150_170'][1]} / {r['bend_gt120_150_170'][2]}"))
+    rows.append(["wrist |twist| > 120 deg at any bend / together with a bend past 120 deg: frames"]
+                + col(lambda r: f"{r['twist_gt120_any_bend']} / {r['bend120_and_twist120']}"))
+    rows.append(["fingers into his own forearm (capsules): frames > 0.5 cm / > 2 cm"]
+                + col(lambda r: f"{r['capsule_hand_vs_own_forearm']['frames_gt_0.5cm']} / {r['capsule_hand_vs_own_forearm']['frames_gt_2.0cm']}"))
+    rows.append(["wrist |twist| > 90 / > 120 deg (frames with bend < 60 deg)"]
+                + col(lambda r: f"{r['twist_gt90_gt120_bend_lt60'][0]} / {r['twist_gt90_gt120_bend_lt60'][1]}"))
+    rows.append(["elbow hyperextension: frames bent backward > 5 / > 10 deg"] + col(lambda r: f"{r['elbow_hyper_lt_m5_m10'][0]} / {r['elbow_hyper_lt_m5_m10'][1]}"))
+    rows.append(["elbow off its hinge > 35 deg: frames"] + col(lambda r: f"{r['elbow_off_hinge_gt35']}"))
+    rows.append(["hold on-target rate, all torso holds / upper_back (circular: the hold detector's own sites)"]
+                + col(lambda r: f"{r['on_target_torso_holds']} / {r['on_target_upper_back']}"))
+    rows.append(["MAMMA hand points (phones that see the hand), median px: all frames"] + col(lambda r: f"{r['mamma_hand_px_all'][0]}"))
+    rows.append([f"MAMMA hand points, median px: the {rep['frames_changed_final_vs_v3']} frames the final changed vs v3"]
+                + col(lambda r: f"{r['mamma_hand_px_changed'][0]}"))
+    rows.append(["the back-view phone shows the hand > 8 cm (image plane) from the motion's, back holds: frames"]
+                + col(lambda r: f"{r['off_phone_gt8cm']}"))
+    for which in ("wrist", "elbow"):
+        rows.append([f"COCO {which} (independent detector), median px: all frames"] + col(lambda r, w=which: f"{r[f'coco_{w}_px_all'][0]}"))
+        rows.append([f"COCO {which}, median px: changed frames"] + col(lambda r, w=which: f"{r[f'coco_{w}_px_changed'][0]}"))
+        rows.append([f"COCO {which}, median px: all frames, only the phones that see the joint in that motion (n detections)"]
+                    + col(lambda r, w=which: f"{r[f'coco_{w}_px_all_vis'][0]} ({r[f'coco_{w}_px_all_vis'][1]})"))
+    rows.append(["speed audit vs the input (hand_contact: wrist / palm jumps > 0.55 m/s, whips): incidents"]
+                + col(lambda r: f"{r['speed_audit_incidents']}"))
+    rows.append(["added speed vs the input > 0.55 m/s: elbow / fingertips (worst finger) frames"]
+                + col(lambda r: f"{r['arm_speed']['elbow']['added_gt_0.55']} / {r['arm_speed']['fingertips_added_gt_0.55']}"))
+    rows.append(["wrist turning > 8 deg / frame faster than the input: frames"] + col(lambda r: f"{r['arm_speed']['wrist_rotation_faster_than_input_8deg']}"))
+    return rows
+
+
+def validate_final_md(rep: dict) -> str:
+    rows = rep["table"]
+    out = ["# Leader's right hand: final numbers (input | v3 | final)", "",
+           f"Whole film, {rep['frames']} frames at 30 Hz. The final motion changed {rep['frames_changed_final_vs_v3']} frames against v3. "
+           "Exact = his hand / forearm against her posed SMPL-X mesh (closest points + winding numbers). MAMMA = the hand landmarks the fit "
+           "used, in the phones that see the hand; COCO = an independent detector the fit never saw (bias-corrected joint).", "",
+           "| " + " | ".join(rows[0]) + " |", "|" + "|".join(["---"] * len(rows[0])) + "|"]
+    for r in rows[1:]:
+        out.append("| " + " | ".join(str(c) for c in r) + " |")
+    last = list(rep["fits"])[-1]
+    inc = rep["fits"][last].get("speed_audit_lead_right") or []
+    if inc:
+        out += ["", f"Speed audit incidents of the {'final' if last == 'v4' else last} motion (hand_contact's rule: the motion's own change against "
+                    "the input faster than 0.55 m/s):", ""]
+        for x in inc:
+            slower = x["speed_mps"] < x["input_mps"]
+            out.append(f"- {x['t']} s, {x['track']}: added {x['added_mps']} m/s; the hand moves at {x['speed_mps']} m/s where the input moves at "
+                       f"{x['input_mps']} m/s" + (" (slower than the input: a despiked input glitch, not a whip)" if slower else ""))
+    for k, v in (rep.get("notes") or {}).items():
+        out += ["", f"{k}: {v}"]
+    return "\n".join(out) + "\n"
+
+
 # ------------------------------------------------------------------------------------------------ before / after sheets
 
 KEY_EVENT_TIMES = {118: (226.6, 232.0, 237.4), 47: (133.5, 140.2), 155: (325.8, 327.2)}
@@ -2970,11 +4075,18 @@ def _write_install_script() -> Path:
     s = s.replace("# put the backed-up (pre-v3) files back", "# put the backed-up (installed before v4) files back")
     s = s.replace("# Version: the 2026-10-21 safety pass (dancecap.hand_contact; decisions in v3/hand_contact/curation.json, numbers in\n"
                   "# v3/hand_contact/validate.json, the export and the sha256 of each file in v3/unity_motion/unity_motion.json).",
-                  "# Version: the v4 zouk contacts (dancecap.zouk_contacts; decisions in v4/contacts/curation.json + the post-hoc gate\n"
-                  "# v4/contacts/gate.json, numbers in v4/contacts/validate.json, the export and the sha256 of each file in\n"
-                  "# v4/contacts/unity_motion/unity_motion.json).")
+                  "# Version: the v4 zouk contacts with the final pass and the closing pass (dancecap.zouk_contacts; decisions in\n"
+                  "# v4/contacts/curation.json incl. its stages r4 / r5 / r6 / r7 / r67 / r8 + the post-hoc gates v4/contacts/gate.json,\n"
+                  "# gate_r4.json, gate_r5.json, gate_r6.json, gate_r7.json, gate_r67.json, gate_r8.json (the final assembly:\n"
+                  "# v4/contacts/runs/r8/final_assembly.json), numbers in v4/contacts/validate_final.md, the export and the sha256 of each\n"
+                  "# file in\n"
+                  "# v4/contacts/unity_motion/unity_motion.json). Earlier installs are kept: v4/contacts/unity_motion_installed_5ccf/\n"
+                  "# (smplx_lead.bin 5ccf839e..., before the final pass) and v4/contacts/unity_motion_installed_d034/ (d034e0b7..., before\n"
+                  "# the closing pass).")
     s = s.replace("# never overwrite the first backup (that is the pre-v3 motion)",
-                  "# never overwrite the first backup (that is the motion installed before v4: the v3 hand-contact motion)")
+                  "# never overwrite the first backup (that is the motion installed before v4: the v3 hand-contact motion; --restore puts that\n"
+                  "                                                              # back - the 5ccf839e / d034e0b7 motions are in\n"
+                  "                                                              # ../unity_motion_installed_5ccf/ and ../unity_motion_installed_d034/)")
     p = UNITY_MOTION / "install_motion.sh"
     p.write_bytes(s.replace("\r\n", "\n").encode("utf-8"))
     return p
@@ -3067,7 +4179,7 @@ def load_curation() -> dict:
     else:
         c = {}
     return {"veto": {str(k): v for k, v in (c.get("veto") or {}).items()}, "blend_s": float(c.get("blend_s", 0.7)),
-            "notes": c.get("notes", {}), "despike": list(c.get("despike") or [])}
+            "notes": c.get("notes", {}), "despike": list(c.get("despike") or []), "stages": c.get("stages") or {}}
 
 
 def _slerp_rotvec(a: np.ndarray, b: np.ndarray, t: np.ndarray) -> np.ndarray:
@@ -3090,12 +4202,30 @@ def _slerp_rotvec(a: np.ndarray, b: np.ndarray, t: np.ndarray) -> np.ndarray:
 def apply_curation(tag: str = "pass2", write: bool = True, base_tag: str | None = None) -> dict:
     """the adopted result (runs/<tag>/poses_merged.npz) with the vetoed windows put back to the installed motion: on each vetoed window's
     core the installed pose, blended in / out over blend_s by a raised cosine (slerp per joint of the leader's right arm and fingers, so the
-    neighbouring windows keep their correction and nothing jumps) -> v4/smplx_contact/"""
+    neighbouring windows keep their correction and nothing jumps) -> v4/smplx_contact/.
+    base_tag (a STAGE, the final pass): the pass `tag` was solved from runs/<base_tag>/poses_merged.npz (e.g. "inst", the motion installed
+    2026-10-22); only curation.json["stages"][tag] applies (its vetoes go back to that motion, its despike ranges are taken out of it), the
+    earlier vetoes are already inside it"""
     from .hand_kin import SHOULDER as HS, ELBOW as HE, WRIST as HW, FINGER_JOINTS
     cur = load_curation()
-    base = load_fit("v3")                                   # the installed motion
-    P3 = hc.full_pose(base["lead"])
+    desp_back = []
+    if base_tag:
+        st = cur["stages"].get(tag) or {}
+        cur = {"veto": {str(k): v for k, v in (st.get("veto") or {}).items()}, "blend_s": float(st.get("blend_s", cur["blend_s"])),
+               "despike": []}
+        base = load_fit(base_tag) if base_tag in FITS else load_fit("v3")
+        P3, desp_back = despike_poses(np.load(OUT / "runs" / base_tag / "poses_merged.npz")["lead"], st.get("despike") or [])
+    else:
+        base = load_fit("v3")                               # the installed motion
+        P3 = hc.full_pose(base["lead"])
     P = np.load(OUT / "runs" / tag / "poses_merged.npz")["lead"].copy()
+    if base_tag:
+        # the frames no adopted window of the pass changed take the back motion (with THIS stage's despike: the pass may have been solved
+        # with other despike ranges)
+        rc_ = json.loads((OUT / "runs" / tag / "refine.json").read_text(encoding="utf-8")).get("config") or {}
+        Pb_run, _ = despike_poses(np.load(OUT / "runs" / base_tag / "poses_merged.npz")["lead"], rc_.get("despike") or [])
+        unsolved = np.abs(P - Pb_run).max((1, 2)) == 0
+        P[unsolved] = P3[unsolved]
     T = len(P)
     m = np.zeros(T)
     nb = int(round(cur["blend_s"] * HZ))
@@ -3129,7 +4259,7 @@ def apply_curation(tag: str = "pass2", write: bool = True, base_tag: str | None 
             P[x, j] = _slerp_rotvec(np.repeat(P[k0:k0 + 1, j], len(x), 0), np.repeat(P[k1:k1 + 1, j], len(x), 0), tt)
         desp.append([round(a / HZ, 3), round(b / HZ, 3)])
     rep = {"vetoed_windows": cur["veto"], "frames_put_back": int(full.sum()), "frames_blended": int(((m > 0) & ~full).sum()),
-           "despiked": desp}
+           "despiked": desp or desp_back, "base_tag": base_tag}
     if write:
         rep["written"] = write_fit_v4(base, {"lead": P, "follow": hc.full_pose(base["follow"])}, FIT_OUT)
     write_json(OUT / "runs" / tag / "curated.json", rep)
@@ -3146,8 +4276,43 @@ def apply_curation(tag: str = "pass2", write: bool = True, base_tag: str | None 
 # every adopted window whose span (core + ramps) holds a NEW problem; curation is applied again until no flagged frame is left.
 
 GATE = {"twist_deg": 90.0, "twist_new_deg": 10.0, "twist_bend_max_deg": 60.0, "hyper_deg": -5.0, "off_hinge_deg": 35.0, "off_hinge_new_deg": 10.0,
-        "add_mps": 0.55, "add_new_mps": 0.15, "fast_margin_mps": 0.25, "wrist_rot_new_deg_frame": 8.0, "coco_worse_px": 3.0, "coco_min_n": 8}
+        "add_mps": 0.55, "add_new_mps": 0.15, "fast_margin_mps": 0.25, "wrist_rot_new_deg_frame": 8.0, "coco_worse_px": 3.0, "coco_min_n": 8,
+        # the final pass (2026-10-22) adds: a NEW wrist fold, the COCO elbow and MAMMA's hand points per window, and (exact, her mesh) new
+        # penetration and a hand that now floats off her where it touched her
+        "fold_deg": 85.0, "fold_new_deg": 10.0, "coco_elbow_worse_px": 4.0, "mamma_worse_px": 6.0, "mamma_min_n": 8,
+        "pen_new_cm": 1.0, "pen_new_frames": 3, "float_cm": 2.5, "float_ref_cm": 0.5, "float_frames": 10, "whip_slower_mps": -0.1,
+        # the closing pass: a whip moves at least this fast (whip_frames_added); a COCO check allows max(px, this x the reference's px)
+        "whip_min_mps": 0.8, "coco_rel_vis": 0.3}
 GATE_TAGS = ("all2", "pass2", "pass3")
+
+
+def new_fold(bend_cand: np.ndarray, bend_ref: np.ndarray, bend_in: np.ndarray) -> np.ndarray:
+    """a NEW wrist fold: the candidate's whole wrist bend past fold_deg and fold_new_deg more than both the reference and the input"""
+    g = GATE
+    return (bend_cand > g["fold_deg"]) & (bend_cand > np.maximum(bend_ref, bend_in) + g["fold_new_deg"])
+
+
+def whip_frames(a0: np.ndarray, a1: np.ndarray, v_in: np.ndarray, v0: np.ndarray, v1: np.ndarray, p99: float) -> np.ndarray:
+    """(T-1,) bool: a point of his arm whips in the candidate. a = the speed of the motion's own change against the input (added), v = the
+    speed; 0 = the reference (installed) motion, 1 = the candidate. A whip: the candidate's added speed is over add_mps, add_new_mps more than
+    the reference's, AND the candidate is faster there than the input / the reference (+ whip_slower_mps) - a fix that only calms a flick of
+    the input (the fingertips at 2.5 m/s, 106.4-106.7 s) adds 'speed' against it without whipping; or the candidate is faster than
+    max(p99 of the input, the input, the reference) + fast_margin_mps"""
+    g = GATE
+    added = (a1 > g["add_mps"]) & (a1 > a0 + g["add_new_mps"]) & (v1 > np.maximum(v_in, v0) + g["whip_slower_mps"])
+    return added | (v1 > np.maximum.reduce([np.full_like(v1, p99), v_in, v0]) + g["fast_margin_mps"])
+
+
+def whip_frames_added(a0: np.ndarray, a1: np.ndarray, a_start: np.ndarray, v_in: np.ndarray, v0: np.ndarray, v1: np.ndarray,
+                      p99: float) -> np.ndarray:
+    """whip_frames where the candidate also ADDS more than add_mps against its own start (a_start = the speed of candidate - start): a
+    despiked base already differs from the input by a glitch's speed there (165.73-166.00 s), which is not the window's whip; the
+    'faster than everything' rule stays"""
+    g = GATE
+    fast = v1 > np.maximum.reduce([np.full_like(v1, p99), v_in, v0]) + g["fast_margin_mps"]
+    # and the point itself moves fast enough to be seen as a whip: where the input flails (106.3-107.0 s: the wrist 101 -> 18 -> 112 deg in
+    # 0.3 s, fingertips 3 m/s) a calm candidate differs from it by > 0.55 m/s at frames where it moves at 0.4-0.5 m/s
+    return (whip_frames(a0, a1, v_in, v0, v1, p99) & (a_start > g["add_mps"]) & (v1 > g["whip_min_mps"])) | fast
 
 
 def _local_rot_speed(P: np.ndarray, j: int) -> np.ndarray:
@@ -3157,9 +4322,11 @@ def _local_rot_speed(P: np.ndarray, j: int) -> np.ndarray:
     return np.degrees((R[:-1].inv() * R[1:]).magnitude())
 
 
-def gate_flags(fits: dict | None = None) -> dict:
-    """per frame of the leader's right arm: the problems v4 has that neither v3 (installed) nor the input has -> {name: bool (T,)}"""
+def gate_flags(fits: dict | None = None, ref: str = "v3", cand: str = "v4", added_vs_ref: bool = False) -> dict:
+    """per frame of the leader's right arm: the problems the candidate (fits[cand], v4) has that neither the reference (fits[ref]: the installed
+    v3, or the motion installed before the final pass) nor the input has -> {name: bool (T,)}"""
     fits = fits or {f: load_fit(f) for f in ("input", "v3", "v4")}
+    fits = {"input": fits["input"], "v3": fits[ref], "v4": fits[cand]}              # below "v3" = the reference, "v4" = the candidate
     g = GATE
     P = {f: hc.full_pose(fits[f]["lead"]) for f in ("input", "v3", "v4")}
     T = len(P["v4"])
@@ -3171,6 +4338,7 @@ def gate_flags(fits: dict | None = None) -> dict:
     flags["twist"] = (tw["v4"] > g["twist_deg"]) & (W["v4"]["bend"] < g["twist_bend_max_deg"]) & \
                      (tw["v4"] > np.maximum(tw["v3"], tw["input"]) + g["twist_new_deg"])
     flags["elbow_hyperextension"] = (E["v4"]["flexion"] < g["hyper_deg"]) & (E["v3"]["flexion"] >= g["hyper_deg"])
+    flags["wrist_fold"] = new_fold(W["v4"]["bend"], W["v3"]["bend"], W["input"]["bend"])
     off = {f: np.abs(E[f]["off_hinge"]) for f in P}
     flags["elbow_off_hinge"] = (off["v4"] > g["off_hinge_deg"]) & (off["v4"] > np.maximum(off["v3"], off["input"]) + g["off_hinge_new_deg"])
     # speeds: the elbow, the wrist, the palm centre and the five fingertips (FK of the stored poses)
@@ -3188,7 +4356,12 @@ def gate_flags(fits: dict | None = None) -> dict:
         p99 = float(np.percentile(hc.speeds(xin), 99))
         a3, a4 = hc.speeds(x3 - xin), hc.speeds(x4 - xin)
         v_in, v3, v4 = hc.speeds(xin), hc.speeds(x3), hc.speeds(x4)
-        bad = ((a4 > g["add_mps"]) & (a4 > a3 + g["add_new_mps"])) | (v4 > np.maximum.reduce([np.full_like(v4, p99), v_in, v3]) + g["fast_margin_mps"])
+        # the closing pass (added_vs_ref): a whip must also ADD > add_mps against the reference (its despikes are not the candidate's)
+        bad = whip_frames_added(a3, a4, hc.speeds(x4 - x3), v_in, v3, v4, p99) if added_vs_ref else whip_frames(a3, a4, v_in, v3, v4, p99)
+        if added_vs_ref and k in ("wrist", "palm"):
+            # the wrist and the palm keep hand_contact's speed-audit rule (the owner-facing one: added > 0.55 m/s against the input while
+            # faster than the input) wherever the candidate itself added it against the reference (not the reference's despikes)
+            bad = bad | ((a4 > g["add_mps"]) & (hc.speeds(x4 - x3) > g["add_mps"]) & (v4 > v_in))
         b = np.zeros(T, bool)
         b[:-1] |= bad
         b[1:] |= bad
@@ -3226,69 +4399,220 @@ def adopted_windows(tags=None) -> list[dict]:
     return out
 
 
-def coco_window_check(fits: dict, wins: list[dict]) -> dict:
-    """per window: the independent COCO wrist (median px over the core, every phone with a detection) of v3 and v4"""
+def coco_window_check(fits: dict, wins: list[dict], ref: str = "v3", cand: str = "v4", mamma: bool = False, vis: bool = False) -> dict:
+    """per window: the independent COCO wrist (median px over the core, every phone with a detection) of the reference and the candidate
+    (keys v3_px / v4_px); the final pass (mamma=True) adds the COCO elbow and MAMMA's hand points (phones that see the hand) per window.
+    vis (the closing pass): every check counts only the phones that see the CANDIDATE's joint / palm (joint_visible: not hidden behind her body
+    or his own), the same phones for the reference"""
     obs = hc.Obs()
     judge = hc.CocoJudge()
     bias = hc.calibrate_coco_bias(fits["input"], obs, judge)
+    hcfg = HoldCfg()
     out = {}
+    if vis:
+        bodies = capsule_bodies(fits["input"])
+
+        def joint_x(fit, ks, which):
+            J = posed(fit["lead"], ks)["J"]
+            jj = WRIST["right"] if which == "wrist" else ELBOW["right"]
+            b = np.asarray(bias.get(f"lead_right_{which}", [0, 0, 0]), float)
+            return J[:, jj] + np.einsum("kij,j->ki", hc._forearm_frame(J, "right"), b)
+
+        def med(a):
+            a = np.asarray(a, float)
+            a = a[np.isfinite(a)]
+            return (round(float(np.median(a)), 2) if len(a) else None), int(len(a))
+        for w in wins:
+            ks = np.arange(w["core"][0], w["core"][1] + 1)
+            kl, kf = posed(fits[cand]["lead"], ks), posed(fits[cand]["follow"], ks)
+            r = {}
+            for which, key in (("wrist", ""), ("elbow", "elbow_")):
+                v = joint_visible(obs, ks, kl["J"][:, WRIST["right"] if which == "wrist" else ELBOW["right"]], bodies, kl, kf)
+                Xl = kl["J"][:, WRIST["left"] if which == "wrist" else ELBOW["left"]]
+                X3, X4 = joint_x(fits[ref], ks, which), joint_x(fits[cand], ks, which)
+                a3, n3 = med(coco_errors_vis(judge, obs, X3, ks, which, v, Xl, X4))
+                a4, n4 = med(coco_errors_vis(judge, obs, X4, ks, which, v, Xl, X3))
+                if which == "wrist":
+                    r.update({"n": min(n3, n4), "v3_px": a3, "v4_px": a4})
+                else:
+                    r.update({"elbow_n": min(n3, n4), "elbow_v3_px": a3, "elbow_v4_px": a4})
+            if mamma:
+                vp = joint_visible(obs, ks, hand_site(kl["J"], "right", "palm")[0], bodies, kl, kf)
+                (m3, k3), (m4, k4) = (med(hand_2d_errors_vis(fits[f], ks, obs, hcfg, vp, [fits[ref], fits[cand]])) for f in (ref, cand))
+                r.update({"mamma_n": min(k3, k4), "mamma_v3_px": m3, "mamma_v4_px": m4})
+            r["vis"] = True
+            out[w["id"]] = r
+        return out
+
+    def med(a):
+        a = np.asarray(a, float)
+        a = a[np.isfinite(a)]
+        return (round(float(np.median(a)), 2) if len(a) else None), int(len(a))
     for w in wins:
         ks = np.arange(w["core"][0], w["core"][1] + 1)
-        e3, e4 = coco_px(fits["v3"], ks, obs, judge, bias, "wrist"), coco_px(fits["v4"], ks, obs, judge, bias, "wrist")
+        e3, e4 = coco_px(fits[ref], ks, obs, judge, bias, "wrist"), coco_px(fits[cand], ks, obs, judge, bias, "wrist")
         out[w["id"]] = {"n": int(min(len(e3), len(e4))), "v3_px": round(float(np.median(e3)), 2) if len(e3) else None,
                         "v4_px": round(float(np.median(e4)), 2) if len(e4) else None}
+        if mamma:
+            (a3, n3), (a4, n4) = med(coco_px(fits[ref], ks, obs, judge, bias, "elbow")), med(coco_px(fits[cand], ks, obs, judge, bias, "elbow"))
+            out[w["id"]].update({"elbow_n": min(n3, n4), "elbow_v3_px": a3, "elbow_v4_px": a4})
+            (m3, k3), (m4, k4) = med(hand_2d_errors(fits[ref], ks, obs, hcfg)), med(hand_2d_errors(fits[cand], ks, obs, hcfg))
+            out[w["id"]].update({"mamma_n": min(k3, k4), "mamma_v3_px": m3, "mamma_v4_px": m4})
     return out
 
 
-def run_gate(tag: str = "pass3", rounds: int = 4, coco: bool = True, extra_veto: dict | None = None, tags=None) -> dict:
+def window_check_vetoes(chk: dict, wins: list[dict], skip=(), exempt: dict | None = None, coco_rel: float = 0.0) -> dict:
+    """the per-window 2D checks -> vetoes: the COCO wrist more than coco_worse_px worse, the COCO elbow more than coco_elbow_worse_px, MAMMA's
+    hand points more than mamma_worse_px (each with enough detections). exempt {window id: ["mamma" | "coco_wrist" | "coco_elbow"]}: checks a
+    curation "keep" (decided by looking at the phone crops, with its reason) waives for that window"""
+    g = GATE
+    out = {}
+    exempt = exempt or {}
+    for w in wins:
+        c = chk.get(w["id"])
+        if c is None or w["id"] in skip:
+            continue
+        why = []
+        ex = set(exempt.get(w["id"], ()))
+        if "coco_wrist" not in ex and c["n"] >= g["coco_min_n"] and c["v3_px"] is not None and c["v4_px"] is not None and                 c["v4_px"] - c["v3_px"] > max(g["coco_worse_px"], coco_rel * c["v3_px"]):
+            why.append(f"the independent COCO wrist {c['v3_px']} -> {c['v4_px']} px (n {c['n']})")
+        if "coco_elbow" not in ex and c.get("elbow_n", 0) >= g["coco_min_n"] and c.get("elbow_v4_px") is not None and c.get("elbow_v3_px") is not None and \
+                c["elbow_v4_px"] - c["elbow_v3_px"] > max(g["coco_elbow_worse_px"], coco_rel * c["elbow_v3_px"]):
+            why.append(f"the COCO elbow {c['elbow_v3_px']} -> {c['elbow_v4_px']} px (n {c['elbow_n']})")
+        if "mamma" not in ex and c.get("mamma_n", 0) >= g["mamma_min_n"] and c.get("mamma_v4_px") is not None and c.get("mamma_v3_px") is not None and \
+                c["mamma_v4_px"] - c["mamma_v3_px"] > g["mamma_worse_px"]:
+            why.append(f"MAMMA hand points {c['mamma_v3_px']} -> {c['mamma_v4_px']} px (n {c['mamma_n']})")
+        if why:
+            out[w["id"]] = {"core_s": w["t_span"], "why": "gate: " + "; ".join(why), "gate": True}
+    return out
+
+
+def exact_update(name: str = "v4", ref: str = "inst", device: str = "cuda") -> dict:
+    """exact_<name>.npz over the whole film, computed only where the leader's pose differs from the reference fit (the rest copied from
+    exact_<ref>.npz: the follower and his other frames are the reference's)"""
+    f1, f0 = load_fit(name), load_fit(ref)
+    if np.abs(hc.full_pose(f1["follow"]) - hc.full_pose(f0["follow"])).max() > 0:
+        raise ValueError("the follower differs from the reference: run exact on every frame")
+    ks = np.flatnonzero(np.abs(hc.full_pose(f1["lead"]) - hc.full_pose(f0["lead"])).max((1, 2)) > 0)
+    with np.load(OUT / f"exact_{ref}.npz") as z:
+        d = {k: z[k].copy() for k in z.files}
+    if len(ks):
+        new = exact_measure(name, device, ks=ks)
+        pos = np.searchsorted(d["ks"], ks)
+        for k in ("hand_pen", "arm_pen", "hand_gap", "hand_pen_part"):
+            d[k][pos] = new[k]
+    np.savez_compressed(OUT / f"exact_{name}.npz", **d)
+    log(f"exact {name}: {len(ks)} frames recomputed against {ref}")
+    return {"frames": int(len(ks))}
+
+
+def exact_window_vetoes(name: str, ref: str, wins: list[dict], H: dict, skip=()) -> tuple[dict, dict]:
+    """per window span, from exact_<name>.npz vs exact_<ref>.npz: NEW penetration (deeper by > pen_new_cm on >= pen_new_frames frames) and a
+    hand that now floats off her (gap > float_cm where the reference touched or was inside her, gap <= float_ref_cm, >= float_frames frames,
+    torso holds) -> (vetoes, per-window numbers)"""
+    with np.load(OUT / f"exact_{name}.npz") as z1, np.load(OUT / f"exact_{ref}.npz") as z0:
+        p1, p0, g1, g0 = z1["hand_pen"], z0["hand_pen"], z1["hand_gap"], z0["hand_gap"]
+    return exact_window_checks(p0, p1, g0, g1, H["names"], wins, skip)
+
+
+def exact_window_checks(p0: np.ndarray, p1: np.ndarray, g0: np.ndarray, g1: np.ndarray, names: np.ndarray, wins: list[dict],
+                        skip=()) -> tuple[dict, dict]:
+    """exact_window_vetoes on arrays (reference p0 / g0, candidate p1 / g1: depth inside her >= 0 and signed gap, m; names: the hold per frame)"""
+    g = GATE
+    back = np.isin(names, ("upper_back", "wrap_back", "behind_back", "shoulder_top", "chest", "side"))
+    out, nums = {}, {}
+    for w in wins:
+        a, b = w["span"]
+        sl = slice(a, b + 1)
+        deeper = int((p1[sl] > p0[sl] + g["pen_new_cm"] / 100).sum())
+        floats = int(((g1[sl] > g["float_cm"] / 100) & (g0[sl] <= g["float_ref_cm"] / 100) & back[sl]).sum())
+        nums[w["id"]] = {"deeper_frames": deeper, "float_frames": floats,
+                         "pen_cm_p90": [round(float(np.percentile(p0[sl], 90)) * 100, 2), round(float(np.percentile(p1[sl], 90)) * 100, 2)],
+                         "pen_frames_gt2cm": [int((p0[sl] > 0.02).sum()), int((p1[sl] > 0.02).sum())]}
+        if w["id"] in skip:
+            continue
+        why = []
+        if deeper >= g["pen_new_frames"]:
+            why.append(f"new penetration (exact): {deeper} frames deeper by > {g['pen_new_cm']} cm")
+        if floats >= g["float_frames"]:
+            why.append(f"the hand now floats off her (exact gap > {g['float_cm']} cm) on {floats} frames")
+        if why:
+            out[w["id"]] = {"core_s": w.get("t_span", w.get("t")), "why": "gate: " + "; ".join(why), "gate": True}
+    return out, nums
+
+
+def run_gate(tag: str = "pass3", rounds: int = 4, coco: bool = True, extra_veto: dict | None = None, tags=None, base_tag: str | None = None,
+             exact: bool = False, device: str = "cuda", vis: bool = False) -> dict:
     """apply the curation, flag NEW problems frame by frame, veto every adopted window whose span holds one (and, with coco, every window whose
     independent COCO wrist got more than GATE["coco_worse_px"] worse than v3), apply again; repeat until nothing is flagged -> gate.json,
-    curation.json (the gate's vetoes marked "gate"), v4/smplx_contact/"""
+    curation.json (the gate's vetoes marked "gate"), v4/smplx_contact/.
+    base_tag (the final pass, a stage): the reference is that motion (runs/<base_tag>/, e.g. "inst", the motion installed before it), the vetoes
+    go to curation.json["stages"][tag]; the window checks add the COCO elbow and MAMMA's hand points, and with exact the exact mesh check of
+    the candidate (exact_update on the changed frames) adds new penetration / a newly floating hand -> gate_<tag>.json"""
     cur_raw = json.loads(CURATION.read_text(encoding="utf-8")) if CURATION.exists() else {}
     cur_raw.setdefault("veto", {})
+    if base_tag:
+        stage = cur_raw.setdefault("stages", {}).setdefault(tag, {})
+        stage["base_tag"] = base_tag
+        vetoes = stage.setdefault("veto", {})
+    else:
+        vetoes = cur_raw["veto"]
     for k, v in (extra_veto or {}).items():
-        cur_raw["veto"][k] = v
+        vetoes[k] = v
     CURATION.write_text(json.dumps(cur_raw, indent=1, ensure_ascii=False), encoding="utf-8")
-    wins = adopted_windows(tags)
+    wins = adopted_windows(tags or ([tag] if base_tag else None))
+    ref = base_tag or "v3"
     hist = []
     coco_rep = None
+    exact_rep = None
+    exact_done = not exact
+    H = load_holds()
     for rnd in range(rounds):
-        apply_curation(tag)
-        fits = {f: load_fit(f) for f in ("input", "v3", "v4")}
-        gf = gate_flags(fits)
+        apply_curation(tag, base_tag=base_tag)
+        fits = {"input": load_fit("input"), "ref": load_fit(ref), "cand": load_fit("v4")}
+        gf = gate_flags(fits, ref="ref", cand="cand", added_vs_ref=vis)
         fl = gf["flags"]
         anyf = np.zeros(len(gf["changed"]), bool)
         for v in fl.values():
             anyf |= v
-        vetoed = {k for k in cur_raw["veto"]}
+        vetoed = set(vetoes)
         new = {}
+        keep_ex = {k: set(v.get("exempt", [])) for k, v in ((cur_raw.get("stages", {}).get(tag, {}).get("keep") or {}) if base_tag else {}).items()}
         for w in wins:
             if w["id"] in vetoed:
                 continue
             a, b = w["span"]
-            hit = {k: int(v[a:b + 1].sum()) for k, v in fl.items() if v[a:b + 1].any()}
+            # a curation keep (decided by looking, with its reason) may waive a named frame check for that window
+            hit = {k: int(v[a:b + 1].sum()) for k, v in fl.items() if v[a:b + 1].any() and k not in keep_ex.get(w["id"], ())}
             if hit:
                 new[w["id"]] = {"core_s": w["t_span"], "why": f"gate round {rnd + 1}: new problems in its span: {hit}", "gate": True}
-        if coco and rnd == 0:
+        if coco and coco_rep is None:
             live = [w for w in wins if w["id"] not in vetoed and w["id"] not in new]
-            coco_rep = coco_window_check(fits, live)
-            for w in live:
-                c = coco_rep[w["id"]]
-                if c["n"] >= GATE["coco_min_n"] and c["v3_px"] is not None and c["v4_px"] - c["v3_px"] > GATE["coco_worse_px"]:
-                    new[w["id"]] = {"core_s": w["t_span"], "why": f"gate: the independent COCO wrist {c['v3_px']} -> {c['v4_px']} px (n {c['n']})", "gate": True}
+            coco_rep = coco_window_check(fits, live, ref="ref", cand="cand", mamma=bool(base_tag), vis=vis)
+            keep = (cur_raw.get("stages", {}).get(tag, {}).get("keep") or {}) if base_tag else {}
+            new.update(window_check_vetoes(coco_rep, live, exempt={k: v.get("exempt", []) for k, v in keep.items()},
+                                           coco_rel=GATE["coco_rel_vis"] if vis else 0.0))
+        if not new and not exact_done:
+            exact_update("v4", ref, device)
+            live = [w for w in wins if w["id"] not in vetoed]
+            keep_ = (cur_raw.get("stages", {}).get(tag, {}).get("keep") or {}) if base_tag else {}
+            ev, exact_rep = exact_window_vetoes("v4", ref, live, H, skip=[k for k, v in keep_.items() if "exact" in v.get("exempt", [])])
+            new.update(ev)
+            exact_done = True
         hist.append({"round": rnd + 1, "flagged_frames": {k: int(v.sum()) for k, v in fl.items()}, "flagged_any": int(anyf.sum()),
                      "flagged_times_s": [round(x / HZ, 2) for x in np.flatnonzero(anyf)[:60]], "new_vetoes": sorted(new),
-                     "frames_changed_vs_v3": int(gf["changed"].sum())})
+                     "frames_changed_vs_reference": int(gf["changed"].sum())})
         log(f"gate round {rnd + 1}: flagged {hist[-1]['flagged_frames']}, new vetoes {sorted(new)}")
         if not new:
             break
-        cur_raw["veto"].update(new)
+        vetoes.update(new)
         CURATION.write_text(json.dumps(cur_raw, indent=1, ensure_ascii=False), encoding="utf-8")
-    rep = {"what": "zouk_contacts post-hoc gate: NEW problems of v4 vs the installed v3 and the input (twist, elbow hyperextension / off-hinge, "
-                   "elbow / wrist / palm / fingertip whips, wrist flicks) and the independent COCO wrist per window", "gate": GATE,
-           "windows_adopted": len(wins), "windows_vetoed": sorted(k for k in cur_raw["veto"]), "rounds": hist, "coco_per_window": coco_rep,
-           "windows_kept": [w for w in wins if w["id"] not in cur_raw["veto"]]}
-    write_json(OUT / "gate.json", rep)
+    rep = {"what": "zouk_contacts post-hoc gate: NEW problems of the candidate vs the reference and the input (twist, elbow hyperextension / "
+                   "off-hinge, wrist fold, elbow / wrist / palm / fingertip whips, wrist flicks) and per window the independent COCO wrist "
+                   "(+ COCO elbow, MAMMA hand points, exact new penetration / floating in the final pass)", "gate": GATE, "tag": tag,
+           "reference": ref, "windows_adopted": len(wins), "windows_vetoed": sorted(k for k in vetoes), "rounds": hist,
+           "coco_per_window": coco_rep, "exact_per_window": exact_rep, "windows_kept": [w for w in wins if w["id"] not in vetoes]}
+    write_json(OUT / ("gate.json" if not base_tag else f"gate_{tag}.json"), rep)
     return rep
 
 
@@ -3317,10 +4641,15 @@ def main(argv=None) -> int:
     p = sub.add_parser("exact")
     p.add_argument("--fit", default="input,v3")
     p.add_argument("--device", default="cuda")
+    p.add_argument("--changed-vs", default=None, help="only the frames where the fit's leader differs from this fit (the rest copied)")
     p = sub.add_parser("plan")
     p.add_argument("--base", default="v3")
     p.add_argument("--out", default="plan.json")
-    p.add_argument("--problems", default=None, help="comma list: plan only these kinds (e.g. wrist,self_forearm)")
+    p.add_argument("--problems", default=None, help="comma list: plan only these kinds (e.g. wrist,self_forearm; exact = the hand inside "
+                                                    "her torso / shoulders in exact_<base>.npz)")
+    p.add_argument("--follow-phones", action="store_true", help="the final pass: one window per run, each with its ray phone")
+    p.add_argument("--max-core-s", type=float, default=None)
+    p.add_argument("--merge-s", type=float, default=None)
     for nm in ("refine", "refine-part"):
         p = sub.add_parser(nm)
         if nm == "refine-part":
@@ -3341,11 +4670,23 @@ def main(argv=None) -> int:
     sub.add_parser("validate")
     p = sub.add_parser("curate")
     p.add_argument("--tag", default="all")
+    p.add_argument("--base-tag", default=None, help="a stage: curation.json['stages'][tag], back to runs/<base-tag>/")
     p = sub.add_parser("gate")
     p.add_argument("--tag", default="pass3")
     p.add_argument("--rounds", type=int, default=4)
     p.add_argument("--no-coco", action="store_true")
     p.add_argument("--tags", default=None, help="comma list of the passes whose adopted windows the gate tests (default all2,pass2,pass3)")
+    p.add_argument("--base-tag", default=None, help="the final pass: the reference motion runs/<base-tag>/ (e.g. inst); vetoes in stages")
+    p.add_argument("--exact", action="store_true", help="also the exact mesh check of the candidate (GPU)")
+    p.add_argument("--device", default="cuda")
+    p.add_argument("--vis", action="store_true", help="the closing pass: the 2D checks count only the phones that see the candidate's joint")
+    p = sub.add_parser("make-base")
+    p.add_argument("--src", default="inst2")
+    p.add_argument("--out", default="fin2")
+    p.add_argument("--despike", default="[[165.73, 166.0, \"body\"], [347.43, 347.63, \"arm\"]]", help="json [[a_s, b_s, arm|body], ...]")
+    p = sub.add_parser("validate-final")
+    p.add_argument("--fits", default="input,v3,v4")
+    p.add_argument("--changed-vs", default="v3")
     p = sub.add_parser("before-after")
     p.add_argument("--n", type=int, default=20)
     p.add_argument("--extra", default="118,47,155")
@@ -3371,9 +4712,17 @@ def main(argv=None) -> int:
                    a.cams.split(",") if a.cams else None))
     elif a.cmd == "exact":
         for f in a.fit.split(","):
-            exact_measure(f, a.device)
+            if a.changed_vs:
+                exact_update(f, a.changed_vs, a.device)
+            else:
+                exact_measure(f, a.device)
     elif a.cmd == "plan":
-        plan_windows(ZoukCfg(base=a.base, plan=a.out, problems=tuple(a.problems.split(",")) if a.problems else ()))
+        kw = {"base": a.base, "plan": a.out, "problems": tuple(a.problems.split(",")) if a.problems else (), "follow_phones": a.follow_phones}
+        if a.max_core_s:
+            kw["max_core_s"] = a.max_core_s
+        if a.merge_s is not None:
+            kw["merge_s"] = a.merge_s
+        plan_windows(ZoukCfg(**kw))
     elif a.cmd in ("refine", "refine-part"):
         cfg = ZoukCfg(**json.loads(a.cfg)) if a.cfg else ZoukCfg()
         only = [int(x) for x in a.only.split(",")] if a.only else None
@@ -3386,10 +4735,16 @@ def main(argv=None) -> int:
     elif a.cmd == "merge":
         merge_parts(a.n, a.tag, write=a.write, cfg_over=json.loads(a.cfg) if a.cfg else None)
     elif a.cmd == "curate":
-        print(json.dumps(py_json(apply_curation(a.tag)), indent=1)[:3000])
+        print(json.dumps(py_json(apply_curation(a.tag, base_tag=a.base_tag)), indent=1)[:3000])
     elif a.cmd == "gate":
-        r = run_gate(a.tag, a.rounds, not a.no_coco, tags=a.tags.split(",") if a.tags else None)
+        r = run_gate(a.tag, a.rounds, not a.no_coco, tags=a.tags.split(",") if a.tags else None, base_tag=a.base_tag, exact=a.exact,
+                     device=a.device, vis=a.vis)
         print(json.dumps(py_json({"vetoed": r["windows_vetoed"], "rounds": r["rounds"]}), indent=1)[:6000])
+    elif a.cmd == "make-base":
+        print(json.dumps(py_json(make_base(a.src, a.out, json.loads(a.despike))), indent=1))
+    elif a.cmd == "validate-final":
+        v = validate_final(tuple(a.fits.split(",")), a.changed_vs)
+        print(validate_final_md(v))
     elif a.cmd == "validate":
         v = validate()
         print(json.dumps(py_json(v["table"]), indent=1)[:8000])
