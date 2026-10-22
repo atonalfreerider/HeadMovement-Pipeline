@@ -436,11 +436,12 @@ The round-2 verdict was "a good planner, tracker and uploader, not video in / an
 mono job spec were take-specific. This round makes every mono step a generic executor and fixes the four dashboard leftovers of
 the round-2 final review. Code: `pipeline/mono_route.py` (new), `people_mono.py` (new), `cameras/mono_cam.py` (new),
 `pipeline/{analyze,activity,snapshots,farm_view}.py`, `monitor/static/components/stepmap.js`, `mono4d/jl_sam3db.py`,
-`jl_front.py`, `jl_export.py`, `jl_lowconf.py`, `heat_beats.py`, `remote/cand_sam3d_body/decode_frames.py`. Tests:
-`tests/test_analyze_generic.py` (15, new), `test_people_mono.py` (8, new), `test_mono_cam.py` (8, new), `test_heat_beats.py`
-(+1), the plan tests of `test_analyze_round2.py` / `test_analyze_monitor.py` updated to the generic plan, and
-`test_dashboard_round2.py`'s no-history ETA test, which failed on every day but 2026-10-21 (a hard-coded session id
-dated the runner log's clock times), now builds its session ids from the clock (test-only).
+`jl_front.py`, `jl_export.py`, `jl_lowconf.py`, `heat_beats.py`, `pipeline/intake.py` (source_dir no longer follows a junction),
+`remote/cand_sam3d_body/decode_frames.py`. Tests: `tests/test_analyze_generic.py` (17, new), `test_people_mono.py` (9, new),
+`test_mono_cam.py` (8, new), `test_heat_beats.py` (+1), `test_pipeline_intake.py` (+1), the plan tests of
+`test_analyze_round2.py` / `test_analyze_monitor.py` updated to the generic plan, and `test_dashboard_round2.py`'s no-history
+ETA test, which failed on every day but 2026-10-21 (a hard-coded session id dated the runner log's clock times), now builds its
+session ids from the clock (test-only).
 
 **What each mono step runs now** (`python -m dancecap.pipeline.mono_route <step> --take T --run R`; the driver runs it as a
 `cmd` step, its `RESULT:` line becomes the step's message):
@@ -456,7 +457,8 @@ dated the runner log's clock times), now builds its session ids from the clock (
 | post | this PC | the stitcher over the chunks (the per-frame flags the export needs; the trial's copy lacked them) + `jl_repair` | the trial's copy |
 | analyses | 1 GPU pod | timing, physics, counterbalance, floorcraft (base env + open3d + the locked-head model: no mamma bootstrap) | `pod_job_analyses*.json` by hand |
 | export | this PC | `jl_export --take T --no-install` -> `work/T/export/Mono_<Take>/` (the Unity project is never touched) | `trial_export.py` |
-| avatars, film | - | skipped with their reason (LHM++ reference crops for a new take are not written; the film needs the Unity editor) | |
+| avatars | 1 pod, beside the analyses (optional) | `mono4d.lhmpp_generic`: here, 8 reference crops per dancer chosen from the people tables (own mask, whole-body pose, role confidence, partner in front, head covered, sharpness, pose speed) and the fit's facing, spread over the facing angles, and a contact sheet; pod: LHM++'s own venv, `lhmpp_render_pod.py` with no render passes (canonical PLY + turntable per dancer), LHM++'s LBS export; imported to `work/T/avatar_lhmpp/` | `jl_lhmpp_preview` (john_lula zoom steps, held-out windows, a photo crop) |
+| film | - | skipped with its reason (it needs the Unity editor) | |
 
 Every pod step needs `--yes` and runs as one tagged `remote run` (DANCECAP_ANALYSIS / DANCECAP_ANALYSIS_STEP): a session that
 failed for pod reasons (no pod, upload, bootstrap, ssh, a network install) is started again, up to 3 times; a command that failed
@@ -499,7 +501,95 @@ The wrong retry: the step took a sibling workflow's concurrent session (the read
 own and started the camera session again although its command had failed on its own. Fixed: a step counts only the sessions whose
 `runner.json` lists its jobs.
 
-{FINAL_RUN}
+**Measured run 1: the video in, a finished analysis out, no manual marks** (run `20261022-025023-lk03_cut20`, take
+`lk03_cut20` made by intake from the clip alone: `analyze <clip> --take lk03_cut20 --spec spec.json --yes --max-cost 4
+--detach`; the spec carries the two statures and descriptions). It reached **done in 64.4 min for $1.03** (the plan said
+73 min p50, $1.18). Nobody touched it after the command.
+
+| Step | Where | Wall | Plan p50 | Inside the pod session | Pod cost |
+|---|---|---|---|---|---|
+| intake | this PC | 2 s | 0.5 min | - | - |
+| upload | CPU pod -> volume | 62 s | 1.0 min | 11 MB in 34 s | $0.001 |
+| beats | this PC | 95 s | 1.0 min | - | - |
+| camera | 4090 | 548 s | 9.3 min | upload 29 s, bootstrap 100 s, installs 23 s, skeleton 40 s, track 257 s, MoGe-2 17 s | $0.13 |
+| people | 4090 (beside camera) | 634 s | 11.9 min | upload 28 s, bootstrap 174 s, installs 23 s, detect 33 s, SAM 2.1 83 s, RTMW 56 s, second round 121 s | $0.15 |
+| world | this PC | 53 s | 1.5 min | focal 780 px, camera 1.76 m high, the couple 5.0 m away | - |
+| sam3d_body | 4090 | 740 s | 17.2 min | upload 28 s, bootstrap 105 s, venv 43 s, decode 3 s, infer 378 s, convert 80 s | $0.17 |
+| fits | 4090, 1 chunk (k 1..597) | 1922 s | 32.6 min | bundle 48 s, upload 248 s, bootstrap 530 s, chunk front 65 s, fit 858 s, select + refine 59 s | $0.46 |
+| post | this PC | 8 s | 0.5 min | stitch gate passed | - |
+| analyses | 4090 | 485 s | 8.3 min | upload 50 s, bootstrap 312 s, timing 24 s, physics 18 s, counterbalance 8 s, floorcraft 8 s | $0.12 |
+| avatars | - | skipped | - | not built yet at run 1 (built for run 2, below) | - |
+| export | this PC | 8 s | 0.5 min | `Mono_Lk03Cut20`: 25 checks passed, 0 failed | - |
+| film | - | skipped | - | needs the Unity editor | - |
+
+The critical path is camera / people side by side (10.6 min), world (0.9), SAM 3D Body (12.3), the fit (32), post, the analyses
+(8.1), export. **Upload + bootstrap are 1604 s of the 4145 pod-session seconds (39 %)**, 778 s of them in the fit session alone
+(the 630 MB bundle and the mamma + ma2d features): the ready-pods route (volume inputs, uv installs) takes most of that off the
+critical path, about 13 min of this run.
+
+**Quality against the 8-phone fit of the same moment** (`larissa_kadu_38`, phone 03's source 34.6-54.6 s mapped through the
+studio alignment; SMPL-X body joints 0..21; one global yaw between the two worlds):
+
+| Run 1 | Lead | Follow |
+|---|---|---|
+| PA-MPJPE, per-frame median | 39.7 mm | 43.3 mm |
+| root-relative after one yaw, median / p90 | 54.7 / 81.6 mm | 60.4 / 377 mm |
+| pelvis height, median difference | -10 mm | -1 mm |
+| pelvis floor track, 0-16 s, median, scale 1 / best scale | 64 / 42 mm (scale 0.90) | 78 / 36 mm (scale 0.93) |
+| pelvis floor track, whole clip | no match (best scale -0.03) | no match (0.10) |
+
+Up to 16 s the floor track agrees within 4-8 cm, and the leftover scale (0.90-0.93) is the focal's +-10 %. From 17 s the couple
+embraces and the detector gives the two of them one box. The people stage's reference height (per frame, the second-tallest
+moving person) then followed a spectator a third of their size, the tracker locked onto two spectators for the last 3.5 s, and
+the fit put them 18-20 m away. Fixed in `people_mono` (ef1827a): when the second-tallest is under 0.6 of the tallest, the
+reference is the tallest alone, and the couple's own reference never drops under 0.75 of the scene's. Offline on run 1's own
+detections, the couple is kept through to the end; john_lula's scores are unchanged (both roles right 63.5 %). The people job now also downloads the raw detections
+(`in/pose.npz`), so such a check needs no pod.
+
+**Measured run 2: the same clip on a fresh take, with the people fix and the avatars step** (run
+`20261022-035649-lk03_cut20b`, take `lk03_cut20b`, the same command; nothing reused from run 1). It reached **done in
+74.6 min for $1.32**, again with no manual marks; the analysis itself (the export) was done at 69.1 min, and the LHM++ avatars,
+built beside the analyses, took the last 5.5 min ($0.16). The avatars step was wired while the run was on its fit, so the run's
+plan still showed it as a skipped local step; the step ran the new code on its own pod.
+
+| Step | Wall run 2 | Wall run 1 | Inside the pod session (run 2) | Pod cost run 2 |
+|---|---|---|---|---|
+| intake, upload, beats | 2 s, 51 s, 39 s | 2 s, 62 s, 95 s | 11 MB to the volume in 20 s | $0.001 |
+| camera | 839 s | 548 s | upload 18 s, **bootstrap 600 s**, installs 23 s, skeleton 25 s, track 83 s, MoGe-2 14 s | $0.20 |
+| people (beside camera) | 722 s | 634 s | upload 20 s, bootstrap 354 s, installs 23 s, detect 27 s, SAM 2.1 66 s, RTMW 40 s, second round 85 s | $0.18 |
+| world | 38 s | 53 s | focal 780 px, camera 1.77 m high, the couple 4.9 m away | - |
+| sam3d_body | 677 s | 740 s | upload 25 s, bootstrap 75 s, venv 40 s, decode 3 s, infer 389 s, convert 51 s; prior on 595 / 589 of 599 instants (run 1: 547 / 560) | $0.16 |
+| fits | 2226 s | 1922 s | bundle 36 s, upload 250 s, bootstrap 584 s, chunk front 67 s, **fit 1120 s** (run 1: 858 s), select + refine 59 s; 2D residual median 7.7 / 5.2 px | $0.54 |
+| post | 6 s | 8 s | stitch gate passed | - |
+| analyses | 345 s | 485 s | upload 72 s, bootstrap 135 s, the four analyses 60 s | $0.08 |
+| avatars (beside the analyses) | 683 s | skipped | crops here 20 s; upload 26 s, bootstrap 141 s, LHM++ venv 275 s, both avatars 64 s, LBS export 51 s | $0.16 |
+| export | 6 s | 8 s | `Mono_Lk03Cut20b`: 25 checks passed, 0 failed | - |
+| film | skipped | skipped | needs the Unity editor | - |
+
+Run 2's analysis (the export at 69.1 min) was 5 min slower than run 1's (64.2 min), for two reasons. The camera and people
+pods bootstrapped at the same moment and slowly (600 s and 354 s against 100 s and 174 s: the same features from PyPI). And the
+fit had more to fit: both dancers on every frame with a prior on 98-99 % of them, against a lead lost to spectators in the last
+seconds of run 1. Upload + bootstrap were 2300 of the 5328 pod-session seconds (43 %), plus the 275-s LHM++ venv: the ready-pods
+route is the next speed-up, as for run 1.
+
+**Quality against the 8-phone fit, run 2** (the same comparison as run 1):
+
+| | Lead run 2 | Follow run 2 | Lead run 1 | Follow run 1 |
+|---|---|---|---|---|
+| frames compared | 597 | 597 | 530 | 597 |
+| PA-MPJPE, per-frame median | **36.8 mm** | **39.0 mm** | 39.7 mm | 43.3 mm |
+| root-relative after one yaw, median / p90 | 51.0 / 70.1 mm | 55.7 / 87.6 mm | 54.7 / 81.6 mm | 60.4 / 377 mm |
+| pelvis height, median difference | +4.5 mm | +17 mm | -10 mm | -1 mm |
+| pelvis floor track, whole clip, scale 1 / best scale | **82 / 39 mm** (0.90) | **96 / 46 mm** (0.91) | no match | no match |
+
+The whole clip now tracks on the floor within 8-10 cm at scale 1 (4-5 cm once the focal's 10 % scale is taken out), and every
+pose figure improved but the follow's pelvis height (+17 mm, from -1 mm). The people step's identity on the pod's own detections holds the couple through the embrace at 17 s
+(one merged box; both dancers pose-confident on 80 % of the frames against 74 %).
+
+**Avatars**: 8 + 8 crops chosen from the take's own masks, pose and fit facing (front, back and both sides, the right dancer in
+every crop: `realism/lhmpp_generic/refs_sheet.jpg`), two 160k-Gaussian canonical avatars, turntables (front / side / back /
+side: the whole body, the right clothes and hair; the follow's white top reads a little washed out) and LHM++'s LBS export, in
+`work/lk03_cut20b/avatar_lhmpp/`. Nothing in the Unity export reads them yet.
 
 **Folder trial** (run `20261022-020110-trial_mv_lk15`: the 8-phone, 15-s stream-copy cuts of larissa_kadu, 76 MB, a known
 room, `--room-known --yes`). It does **not** reach done; the exact blocking step is `cameras` (and `people` beside it):
@@ -521,18 +611,16 @@ room, `--room-known --yes`). It does **not** reach done; the exact blocking step
 - **The fit session uploads ~630 MB** (the 540 MB stripped ma_2d checkpoint + the locked-head model) through the home uplink, in
   every chunk session: 860 s at 0.74 MB/s today, and the pod bills while it waits. K chunk lanes share the one uplink. The
   ready-pods session (the volume route, slim inputs) is the fix; until then the fits step is upload-bound on a slow day.
-- **Bootstraps of 100-320 s** per session (base, mamma, ma2d features from PyPI / wheels); the same ready-pods work (uv installs
-  measured at 11-14 s on 2026-10-22) is the fix.
-- **LHM++ avatars for a new take**: the reference crops (chosen from the masks and the fit) are not written, so the step is skipped
-  and the export carries plain bodies. The film needs the Unity editor and is skipped with that reason.
+- **Bootstraps of 75-600 s** per session (base, mamma, ma2d features from PyPI / wheels; two pods booting at once were the slowest,
+  run 2) and the LHM++ venv (275 s); the same ready-pods work (uv installs measured at 11-14 s on 2026-10-22) is the fix.
+- **LHM++ avatars** are built for a new take (run 2) but nothing in the Unity export reads them yet: the capture carries plain
+  bodies. The film needs the Unity editor and is skipped with that reason.
 - **people_mono on a crowded heat** (john_lula, 3-5 couples, no bibs): both roles right on 63.5 % of the frames by box IoU (the
   bib tracker scores about the same on the torso-in-mask test); a follow hidden behind the lead is the main miss. On the demo
   clip (one couple, a seated audience) the review sheets are right in every sampled frame.
 - **Camera models**: a fixed-centre phone only (pan / tilt / zoom); a walking phone now gets a warning in the world step
   (background residuals over 2 px / 4 px), not a solver. A video with a rotation tag is refused with the ffmpeg command for an
   upright copy. The focal is MoGe-2's (+-10 %): distances scale with it, the camera height does not.
-- In a git worktree whose `dancecap/work` is a junction, intake writes `source_dir` through the junction (five `..`); harmless on
-  the pods (the video is mapped), and the main checkout has no junction.
 
 ---
 

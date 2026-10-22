@@ -170,7 +170,7 @@ python -m dancecap.pipeline analysis limit RUN USD|none  # change it (a step par
   run side by side share the home uplink (every fit lane uploads the 540 MB stripped ma_2d checkpoint + the body models, and
   the pods bill while they wait for them) and `remote run --parallel` starts at most 6 pods at once (8 phones = 2 rounds).
   Since 2026-10-22 an 88-s mono video plans at about 2.4 h p50 (4 fit chunks; p90 4.8 h, about $5 p50), a 20-s one at about
-  73 min ($1.18); "up to N pods at once" counts the steps that overlap.
+  78 min ($1.39 with the avatars; measured 64-75 min, $1.03-1.32); "up to N pods at once" counts the steps that overlap.
 - **ETA** (2026-10-22): a running step that is past its estimate pushes the ETA out (the plan's spread, at least 0.3x / 1x
   its elapsed time past p90). A pod session's own ETA that comes from measured progress and covers the whole step (one
   session per lane, every lane live, no generic prior, no stall: "measured" on the step row) IS the step's time left, in or
@@ -202,7 +202,8 @@ python -m dancecap.pipeline analysis limit RUN USD|none  # change it (a step par
   the TOML descriptions or the statures; one pod), world (this PC: focal, gravity, camera height from the statures),
   SAM 3D Body (one pod, frames decoded on the pod), fits (one pod per chunk of <= 26 s, side by side; betas pinned from the
   statures, no shape pass), post (stitch + repair, this PC), analyses (one GPU pod: the runner has no CPU route), export
-  (`work/<take>/export/Mono_<Take>/`, the Unity project untouched). Avatars and the film are skipped with their reason.
+  (`work/<take>/export/Mono_<Take>/`, the Unity project untouched), LHM++ avatars beside the analyses (one pod, optional:
+  crops chosen from the take's own masks and fit, `work/<take>/avatar_lhmpp/`). The film is skipped with its reason.
   Every pod step needs `--yes`; each writes its pod jobs to `work/<take>/jobs/analyze/` and runs them as a `remote run`
   tagged with the run and the step (a session that failed for pod reasons is started again, up to 3 times; a command that
   failed on its own fails the step with its log tail). The lead / follow decision can be forced with
