@@ -670,9 +670,10 @@ def step_post(ctx: Ctx) -> str:
     ctx.local(["-m", "dancecap.stitch", ctx.take, "--chunks", str(sl), "--partial", "--force", "--select-weights",
                "arm=0.3,fingers=0.3", "--no-sheets", "--gate-exit", "report"], timeout_min=15)
     ctx.local(["-m", "dancecap.jl_repair", str(ctx.work / "smplx"), str(ctx.work / "smplx_rf2_noslip")], timeout_min=10)
-    st = _json(ctx.work / "stitch.json") or _json(ctx.work / "smplx" / "stitch.json") or {}
-    return f"stitched {len(plan['chunks'])} chunk(s) -> smplx/, smplx_rf2_noslip/; repaired" + (
-        f"; gates {json.dumps(st.get('gates') or st.get('verdict'), default=str)[:150]}" if st else "")
+    st = _json(ctx.work / "stitch.json") or {}
+    gate = st.get("gate") or {}
+    return f"stitched {len(plan['chunks'])} chunk(s) -> smplx/, smplx_rf2_noslip/; repaired; stitch gate " + (
+        "passed" if gate.get("passed") else f"FAILED (reported, not fatal): {json.dumps(gate.get('why'), default=str)[:200]}")
 
 
 def analyses_job(ctx: Ctx) -> Path:
