@@ -167,10 +167,10 @@ python -m dancecap.pipeline analysis limit RUN USD|none  # change it (a step par
 
 - **The plan is what is built**: one pod per mono step (the time shards do not exist), and every pod step pays the measured
   runner session start-up (6.3 min p50 / 15 min p90: bundle, pod start, upload, bootstrap, installs, download). Lanes that
-  run side by side share the home uplink (5 fit lanes each upload the 1.6 GB ma_2d checkpoint: about 63 min p50 for the
-  uploads alone, and the pods bill while they wait for them) and `remote run --parallel` starts at most 6 pods at once (8
-  phones = 2 rounds). An 88-s mono video plans at about 4.3 h p50 (p90 8.8 h, $10 p50) today, a 20-s one at about 2 h
-  ($2.20); "up to N pods at once" counts the steps that overlap.
+  run side by side share the home uplink (every fit lane uploads the 540 MB stripped ma_2d checkpoint + the body models, and
+  the pods bill while they wait for them) and `remote run --parallel` starts at most 6 pods at once (8 phones = 2 rounds).
+  Since 2026-10-22 an 88-s mono video plans at about 2.4 h p50 (4 fit chunks; p90 4.8 h, about $5 p50), a 20-s one at about
+  73 min ($1.18); "up to N pods at once" counts the steps that overlap.
 - **ETA** (2026-10-22): a running step that is past its estimate pushes the ETA out (the plan's spread, at least 0.3x / 1x
   its elapsed time past p90). A pod session's own ETA that comes from measured progress and covers the whole step (one
   session per lane, every lane live, no generic prior, no stall: "measured" on the step row) IS the step's time left, in or

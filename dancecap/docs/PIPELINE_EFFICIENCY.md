@@ -430,6 +430,112 @@ farm_view}.py`, `pipeline/monitor/`, `progress_eta.py`. Tests: `tests/test_runne
 
 ---
 
+## 7d. Generic round (2026-10-22): one video in, a finished analysis out
+
+The round-2 verdict was "a good planner, tracker and uploader, not video in / analysis out": camera, people, avatars and every
+mono job spec were take-specific. This round makes every mono step a generic executor and fixes the four dashboard leftovers of
+the round-2 final review. Code: `pipeline/mono_route.py` (new), `people_mono.py` (new), `cameras/mono_cam.py` (new),
+`pipeline/{analyze,activity,snapshots,farm_view}.py`, `monitor/static/components/stepmap.js`, `mono4d/jl_sam3db.py`,
+`jl_front.py`, `jl_export.py`, `jl_lowconf.py`, `heat_beats.py`, `remote/cand_sam3d_body/decode_frames.py`. Tests:
+`tests/test_analyze_generic.py` (15, new), `test_people_mono.py` (8, new), `test_mono_cam.py` (8, new), `test_heat_beats.py`
+(+1), the plan tests of `test_analyze_round2.py` / `test_analyze_monitor.py` updated to the generic plan, and
+`test_dashboard_round2.py`'s no-history ETA test, which failed on every day but 2026-10-21 (a hard-coded session id
+dated the runner log's clock times), now builds its session ids from the clock (test-only).
+
+**What each mono step runs now** (`python -m dancecap.pipeline.mono_route <step> --take T --run R`; the driver runs it as a
+`cmd` step, its `RESULT:` line becomes the step's message):
+
+| Step | Where | What | Replaces |
+|---|---|---|---|
+| beats | this PC | `dancecap beats` (the video's own sound) + `heat_beats` (the grid); a bass-less phone clip that is music all through now gets its grid from the clearest band | the trial's hand-added TOML + local run |
+| camera | 1 pod | `cameras.mono_cam pod`: PTZ skeleton (every fps/2-th frame) + per-frame track in 2 shards + MoGe-2 on 14 wide frames | `room_single_cam` (john_lula constants) / the parent's solve |
+| people | 1 pod | `people_mono run`: yolo11x-pose, the couple without bibs (tracklets, dancer-likeness, colour self-training), lead / follow from `people/roles_override.json` > the TOML descriptions > the statures, SAM 2.1 both ways, RTMW, a second round where the runs disagree | `jl_people` (bibs 124 / 116, zoom table) / the parent's tables |
+| world | this PC | `cameras.mono_cam world`: focal from MoGe-2 (wide frames), gravity from MoGe-2 floor normals through the track, camera height from the dancers' head / feet rays and statures, origin at the couple, Z towards the camera -> `cameras/` | J2's `room_single_cam solve` |
+| sam3d_body | 1 pod | `jl_sam3db` configured for the take: frames decoded ON the pod from the video (no JPEG upload), 4090 first, mask thresholds scaled to the frame; import, `qa_nofit`, `prior_nofit` here | `trial_sam3db.py` glue (constants overridden, T = 599 hard-coded) |
+| fits | 1 pod per chunk of <= 26 s, side by side | per chunk: the farm job json + chunk TOML + prior slice written here; pod: the chunk front (frames, cameras, masks, ma_2d, sync, prepare, mono-init, qa-mask), `fit-build` (MAMMA_MONO configs + prior), the fit with the betas PINNED from the statures (beta0 solved for the rest height: no shape pass), select, refine | `trial_front.py` / `trial_fit.py`, the parent's pinned betas |
+| post | this PC | the stitcher over the chunks (the per-frame flags the export needs; the trial's copy lacked them) + `jl_repair` | the trial's copy |
+| analyses | 1 GPU pod | timing, physics, counterbalance, floorcraft (base env + open3d + the locked-head model: no mamma bootstrap) | `pod_job_analyses*.json` by hand |
+| export | this PC | `jl_export --take T --no-install` -> `work/T/export/Mono_<Take>/` (the Unity project is never touched) | `trial_export.py` |
+| avatars, film | - | skipped with their reason (LHM++ reference crops for a new take are not written; the film needs the Unity editor) | |
+
+Every pod step needs `--yes` and runs as one tagged `remote run` (DANCECAP_ANALYSIS / DANCECAP_ANALYSIS_STEP): a session that
+failed for pod reasons (no pod, upload, bootstrap, ssh, a network install) is started again, up to 3 times; a command that failed
+on its own fails the step with its log tail. Only the sessions that run this call's jobs count (the first pod check took a
+sibling workflow's "no GPU pod" session for its own).
+
+**Dashboard leftovers (round-2 final review), fixed**
+- **Run ETA vs step ETA**: a live session ETA from measured progress that covers the whole step (one session per lane, every lane
+  live, no generic prior, no stall) IS the step's time left, in or out; anything else can only push out; a timeout-based one is
+  ignored. The step row shows the time left the run ETA counts. The review's 20:59:02 case now reads 212 s / 350 s (it read
+  396 s / 1188 s; 127 s were left; the row said 92 s).
+- **Snapshots at their event**: `request()` captures the monitor's data (`gather`, about 0.1 s warm) into
+  `<run>/pending/<ms>_<event>.json` and the detached renderer draws that file; the index has `ts` (data time), `rendered`, `frozen`.
+- **Badge**: "running" while any step runs (driver end status, the analysis card, the Farm page line).
+- **pod-cpu**: the mono plan has no pod-cpu step left: beats, world and post run here (seconds to a minute of CPU), the analyses
+  on a GPU runner pod (`remote run` has no CPU route; a CPU route is the ready-pods session's work).
+- The multi-view steps that still need an agent say exactly why (`MULTI_BLOCKERS`).
+
+**Validated offline before any pod** (no Runpod cost)
+- `people_mono` on john_lula's real detections, no bibs: torso joints inside the right truth mask 88.2 % (lead) / 79.9 % (follow)
+  against 85.5 % / 79.5 % for the bib-based `jl_people.solve`; lead / follow by the descriptions, confidence 0.999; anchors 25.9 s
+  wall for 2643 frames.
+- `mono_cam world` from J2's john_lula intermediates: focal 806 vs 808 px, gravity within 0.015 deg, camera height 1.44 m vs 1.43
+  (J2's convention), J2's origin reprojects 0.66 px median from ours; 188 s wall for 2643 frames.
+
+**Pod checks on the trial clip, step by step** (lk03_mono20 = a fresh 20-s cut of `Larissa-Kadu-demo/03-Demo-Mao.mp4`,
+source 34.6-54.6 s, 480x848, 30 fps, 599 frames, 11 MB; not john_lula):
+
+| Step | Result | Wall | Pod cost |
+|---|---|---|---|
+| camera (3 tries) | try 1: a duplicate keyword in `mono_cam.record()` (fixed); try 2: MoGe-2 needs `huggingface_hub` (its weights come from the Hub; the `--no-deps` recipe skipped it; fixed); try 3 ok: skeleton 0.85 px median on 40 frames, track 0.96 px median / 1.17 p90 over all 599 frames, none bad, MoGe-2 on 14 frames | session 430 s: bundle 2 s, upload 13-147 s (the home uplink was shared), bootstrap 64-144 s, installs 30 s, probe 3 s, skeleton 22-38 s, track 75-198 s (2 shards), MoGe-2 9-12 s | $0.10 (+ $0.36 for the failed tries and one wrong retry, below) |
+| people | ok on the first try: masks of both dancers on 599 / 599 frames, both pose-confident (>= 0.5) on 74 %, the right dancers in every review frame (seated and standing bystanders ignored), lead / follow by the TOML descriptions (confidence 0.998) | session 535 s: detect 30 s, couple + anchors 4.5 s, SAM 2.1 82 s, fuse 8 s, RTMW 38 s, second round 126 s, finalize 7.5 s | $0.13 |
+| world | focal 780 px (MoGe-2 wide median 779), camera height 1.76 m, the couple 5.0 m away (p5-p95 4.25-6.13), track residual 0.97 px; the review grid lies on the floor, the stature poles end at the heads | 45 s on this PC | - |
+| sam3d_body | ok on the first try: prompted 551 / 564 of 599 frames, QA-ok 547 / 560, prior on 547 / 560 of the 599 lattice instants | step 887 s: session 856 s (upload 28 s, bootstrap 102 s, venv install 88 s, decode ON the pod 2.8 s, infer 513 s = 0.46 s per person-frame, convert 64 s), import + QA + prior here 30 s | $0.21 |
+| fits (2 tries) | try 1: the job excluded `mamma/data/weights/ma_2d/mamma_mask_full_cvpr.ckpt`, the very path the stripped checkpoint is mapped to, so ma_2d found no weights (fixed; a test guards it); try 2: the whole chunk front passed (frames 4 s, cameras 3 s, masks 3 s, ma_2d 28 s, sync, prepare 3.5 s, mono-init 3 s, qa-mask 3 s: 62 s), then `fit-build` refused the chunk: the cut's first frame is at 0.033 s and the window ends at 19.93 s, so prepare kept lattice instants 1..597, not the planned 0..598 (fixed: the chunks are planned on the instants that have frames inside the window, and fit-build follows prepare's grid; checked here on the pod's prepare.json) | try 2: upload of the 632 MB bundle 860 s (0.74 MB/s: the uplink was shared), bootstrap (base + mamma + ma2d) 262 s | $0.12 + $0.31 |
+| analyses (scratch copy of the 2026-10-21 trial's motion) | ok on the first try with the base env + open3d + the locked-head model (no mamma bootstrap): timing 25 s, physics 22 s, counterbalance 8 s, floorcraft 8 s | session 668 s: upload of 127 MB 320 s (0.40 MB/s), bootstrap 216 s, commands 70 s | $0.16 |
+| post, export (scratch copy) | the stitcher over one chunk + jl_repair: 6 s, gate passed; `jl_export --take --no-install`: 25 checks passed, 0 failed, 5 s | this PC | - |
+
+The wrong retry: the step took a sibling workflow's concurrent session (the ready-pods session's CPU-route test, "no GPU pod") for its
+own and started the camera session again although its command had failed on its own. Fixed: a step counts only the sessions whose
+`runner.json` lists its jobs.
+
+{FINAL_RUN}
+
+**Folder trial** (run `20261022-020110-trial_mv_lk15`: the 8-phone, 15-s stream-copy cuts of larissa_kadu, 76 MB, a known
+room, `--room-known --yes`). It does **not** reach done; the exact blocking step is `cameras` (and `people` beside it):
+- unattended: intake 2.1 s (the take reused), the volume upload 95 s (a CPU gateway pod; the 8 files were already on the volume:
+  hash check only), the audio clocks 8.4 s on this PC; the driver then parked the rest and the run read "waiting" 2 min 16 s
+  after it started, pod cost $0.0007;
+- `cameras`: "no generic multi-phone camera executor: a shared world frame needs every phone localised against a solved room map,
+  and that code is take-specific (cameras/newcam.py WORK paths, recap_cameras for the recap); cameras.mono_cam solves one phone in
+  its own frame only";
+- `people`: "no generic multi-view people executor: the dancers are picked by triangulating across phones (recap_people,
+  carlos_aline_people are take-specific); people_mono handles one phone";
+- behind them, fronts / shape / fits / stitch / analyses wait on the farm's per-take profiles (recap_profile, ca_profile,
+  jl_profile) and the export on recap_export / carlos_aline_export. Each waiting step now carries that reason in its message.
+
+**Still open**
+- **Multi-view folders**: no generic executor for cameras (a shared world frame against a solved room map), people (triangulated
+  dancers), the farm's chunk profiles, the multi-view analyses and export: a folder runs intake, upload and clocks, then waits with
+  the exact reason (above).
+- **The fit session uploads ~630 MB** (the 540 MB stripped ma_2d checkpoint + the locked-head model) through the home uplink, in
+  every chunk session: 860 s at 0.74 MB/s today, and the pod bills while it waits. K chunk lanes share the one uplink. The
+  ready-pods session (the volume route, slim inputs) is the fix; until then the fits step is upload-bound on a slow day.
+- **Bootstraps of 100-320 s** per session (base, mamma, ma2d features from PyPI / wheels); the same ready-pods work (uv installs
+  measured at 11-14 s on 2026-10-22) is the fix.
+- **LHM++ avatars for a new take**: the reference crops (chosen from the masks and the fit) are not written, so the step is skipped
+  and the export carries plain bodies. The film needs the Unity editor and is skipped with that reason.
+- **people_mono on a crowded heat** (john_lula, 3-5 couples, no bibs): both roles right on 63.5 % of the frames by box IoU (the
+  bib tracker scores about the same on the torso-in-mask test); a follow hidden behind the lead is the main miss. On the demo
+  clip (one couple, a seated audience) the review sheets are right in every sampled frame.
+- **Camera models**: a fixed-centre phone only (pan / tilt / zoom); a walking phone now gets a warning in the world step
+  (background residuals over 2 px / 4 px), not a solver. A video with a rotation tag is refused with the ffmpeg command for an
+  upright copy. The focal is MoGe-2's (+-10 %): distances scale with it, the camera height does not.
+- In a git worktree whose `dancecap/work` is a junction, intake writes `source_dir` through the junction (five `..`); harmless on
+  the pods (the video is mapped), and the main checkout has no junction.
+
+---
+
 ## 8. Sources
 
 - Session records: `dancecap/work/runpod/sessions/*/result.json`, `state.json`, `runner.log`,
