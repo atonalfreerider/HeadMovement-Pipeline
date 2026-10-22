@@ -307,6 +307,7 @@ No other env and no system setting was touched.
     ... -m dancecap.film_faceswap sheet --report <out>.report.json --out sheet.jpg [--frames N ...] [--dets]
     ... -m dancecap.film_faceswap canon-points                          # face_points_canonical.json (below)
     ... -m dancecap.film_faceswap mock-sidecar --report <heuristic run>.report.json --out mock.faces.json   # tests the sidecar path
+    ... -m dancecap.film_faceswap restore-start --report <out>.report.json   # a whole-film output made before the fix: video start as recorded
 
 The GPU passes hold `work/gpu.lock`. FaceFusion's own content analyser runs on every 15th analysed frame (it is not bypassed). How
 `swap` works:
@@ -337,8 +338,12 @@ The GPU passes hold `work/gpu.lock`. FaceFusion's own content analyser runs on e
    > 44 px, 512 for > 88 px. The mask is FaceFusion's box mask (blur 0.3) x xseg_1 occlusion, times the weight. The face is pasted in
    YUV only where mask x weight > 1/255, so every other pixel of the decoded frame reaches the encoder unchanged (counted per frame).
    Text glyphs of UI rects (sidecar `ui`; without it the 9:16 caption band and the chapter card while it shows) are restored where the
-   swap changed them. Audio: an excerpt re-cuts the same instant as AAC 192k; a full film copies the track and keeps the video's
-   start offset (the recorder's 0.033 s). Video: x264 CRF 14 slow (`--lossless`: qp 0).
+   swap changed them, and so are the grey / blue skeleton strokes of the 3D overlays that cross a face (`overlay_mask`: bluer than
+   skin and hair, connected strokes >= 0.4 % of the box, + 1 px rim; xseg alone let the swap paint them partly away). Audio: an
+   excerpt re-cuts the same instant as AAC 192k; a full film copies the track and keeps the video's start offset (the recorder's
+   0.033 s) by a stream-copy remux after the encode (`restore_start`: ffmpeg 8 drops the `-itsoffset` of the encoded raw pipe; video
+   and audio bits unchanged by the remux). Frames are read with `-fps_mode passthrough` (without it ffmpeg duplicated the first frame
+   of every range: see "The whole v3 films" below). Video: x264 CRF 14 slow (`--lossless`: qp 0).
 
 ### The face sidecar (`<recording>.faces.json`, format "hm film faces" v1): the Unity recorder writes it
 
@@ -596,6 +601,52 @@ Sensitivity, measured on this build: the rule needs only WHEN a hand is on the p
 events the review flagged (#9, 29, 31, 36, 41, 47, 60, 64, 97, 104, 115, 118, 123, 124, 138, 140, 141, 143, 145, 146, 147) removed, no
 segment's physics layer changes (load colours stay 320.1 s: those segments are also demonstrations, or other holds cover them).
 
+### v3.2 (2026-10-21, toward the owner's "~50% phone"): the 3D views take only the time they need
+
+v3.1 stopped at 44.6 % full-frame phone video. v3.2 reaches **178.6 s = 48.6 %** of the 367.7-s film without touching the rules the owner set
+(no jump cut, ground level, the crane only for the 4 overheads at the same film times, arcs <= 200 deg/s, every frustum surface readable
+>= 0.6 s, one easing). `film_recap_flow` changes only (the director, `film/direction.json`, the captions and the soundtrack's time map are
+unchanged: `build --mix` re-renders `audio/larissa_kadu_recap_mix.wav` sample-identical, sha256 cb0cd023...); v3.1's files are kept in
+`v3/direction_prev_v3.1/`, and `review_v3.md` section (5) compares the cut film, v3.1 and v3.2.
+
+- **`give_phones_time`** (after `plan_flow`; every move is tried on a copy and kept only when `schedule` finds no view that misses its hold, every
+  chapter still opens a shot, and the full-frame video grows by >= 0.25 s): (1) a calm orbit or a zoom with no call of its own next to a phone joins
+  that phone (max 3 phone shots in a row, a phone shot at most 10 s = the director's `pov_max_s`), else becomes a phone shot of its own with the
+  phone that shows the window best, never one more than 90 deg round from a phone neighbour (`own_phone_max_turn_deg`: no whip for a second of
+  video), else hands the part the phone beside it can show (keeping the director's 3.0 s for a calm view); (2) the opening orbit keeps the title card on a still 3D view and hands the rest to a phone; (3) a physics view / zoom (never a pivot, the
+  replay or an overhead) ends 0.3 s after its last call's arrow + its way into the next phone, and starts 0.15 s before its first call's arrow
+  (the director's `phys_pre_s`), at the speech's own pauses, never shorter than the director's minimum (3.0 s physics, 2.6 s zoom). Taken: the
+  call-less 'frame' zoom 43.1-45.7 s -> its own phone shot 02 (+1.56 s), the calm orbit 271.1-276.0 s hands its last 1.9 s to phone 03 (+1.86 s;
+  the orbit keeps 3.0 s under the ch09 card), the 'frame' zoom 20.8 s starts at 22.5 s (+1.73 s to phone 00), the physics views at 79.6 s and
+  253.7 s end 0.9 s earlier (+0.92 / +0.86 s). Not taken (listed in the review): the opening (only phone 00 sees both teachers at 5-8 s, 174 deg
+  round from phone 05: a whip; phone 05 cannot show it - it records from 7.41 s; ch01 opens at 8.2 s), the rest of that orbit (no phone sees both
+  teachers at 263.9-266.9 s master), most physics tails / leads (their minimum length or their way out leaves no room).
+- **`nudge`** (in `plan_flow`, before any join): a shot of >= 2 s that misses its hold by <= 0.8 s takes that little from the shot after it (at a
+  pause, or by the deficit itself when <= 0.4 s) instead of swallowing it. The physics view at 315.7 s missed by 0.03 s and in v3.1 swallowed the
+  4.3-s phone shot 05 318.4-322.7; it now takes 0.08 s of it.
+- **`phone_first`** (in `fix_boundary`): a shot that cannot hold and has nothing of its own to show (no call arrow) joins the phone beside it before a
+  pivot / physics view: the orbit sliver 158.1-160.0 s goes to phone 00 (was pivot01's), the fly-in sliver 183.8-184.6 s to phone 02 (was pivot02's;
+  phone 02's 1.6-s shot grows to 2.4 s). The 6 pivot windows themselves (verb - 0.45 s .. 'axis' + 1.6 s) are all still pivot shots.
+- **The phone ways rest on their floors**: phone in / out 0.7 + 1.2 x |daz| / 180 (+0.1 x |dr| + 0.1 x |dh|), 0.7-2.2 s, min 0.7 [v3.1 0.8 / 0.75];
+  phone to phone 0.93 + 0.8 x .. (+0.05 x ..), 0.93-2.4 s, min 0.93 [1.0 + 1.1 x, min 0.95] - so the shortest way is set by the frustum's
+  readable floor (0.61 in / 0.68 out / 0.92 phone to phone) and every big turn by the 200 deg/s arc floor; the way out of a phone starts AT the
+  next segment (`depart_before_s` 0.0 [0.1]: the phone keeps its full frame to its end). `call_arrive_before_s` = 0.1 (unchanged; a parameter now).
+- **A phone is entered only while it records** (`schedule`, from its track's first / last sample; `check` fails a phone window outside it): the
+  way into phone 05 at the film's start (ch01_01_open) began at 6.3 s in v3.1, before phone 05 records (7.41 s) - its surface would have had no
+  video and the flight no live pose. It is now 0.35 s shorter than its rule and starts 1.07 s later (the orbit holds the title card longer; phone
+  05's full frame starts 1.4 s after its segment). Each phone shot's `cameras[0].dance_t` is now its way in .. way out (schema below).
+
+Result (v3.1 -> v3.2): full-frame phone video 163.8 s (44.6 %) -> **178.6 s (48.6 %)**; phone shots 39 (196.6 s) -> 41 (211.6 s, 57.5 %);
+camera in motion 96.7 s (26.3 %) -> 91.7 s (24.9 %); 75 shots / 74 transitions -> 76 / 75 (5 flight, 2 crane_up + 3 crane_down + 3 phone ways passing
+an overhead = the same 8 crane ways at 173.5-179.4, 237.8-243.3, 279.0-284.3, 333.2-339.4 s, 23 phone_in, 22 phone_out, 18 phone_to_phone, 2
+replay); phone ways median 1.12 -> 1.02 s (phone_in 1.0, phone_out 0.86, phone_to_phone 1.32), max 2.5 s; fastest arc 199.9 deg/s (unchanged);
+frustum surfaces readable min 0.68 -> 0.62 s, median 0.79 s (81 surfaces); shortest holds phone 1.4 s, 3D 1.0 s (v3.1 1.15), overhead 2.55 s.
+The price, physics on screen (film s): load colours 320.1 -> 315.8, the dancers' COM floor dots 292.5 -> 288.8, the counterbalance layer
+140.6 -> 131.9, pivot shots 27.3 -> 24.5 (the slivers they had swallowed; the pivot windows are intact) - the phone shots carry the load colours
+and the dots too (171.3 / 160.3 s of their 211.6 s). The phones' clips the direction needs: 340.4 s (clips.json). **Not 50 %**: what is left in 3D is the 6 pivots, the 4 overheads, the physics views (from 0.5 s before the first called word to the last
+call's arrow + the way out), the replay, the opening under the title card and one calm orbit no phone can show; going further needs fewer of
+those (the owner's call).
+
 ### The schema (additive; "hm film flow v1")
 
 - `camera.transition_in` (on every segment of a shot but the first): `type`; `start_s` (film s relative to the shot's first segment start;
@@ -610,7 +661,10 @@ segment's physics layer changes (load colours stay 320.1 s: those segments are a
   `drift_deg_s`, `ground_level: true`, `inline_lift_max_m` (orbit: avoid_inline's lift capped at 0.4 m); physics_3q `elevation_deg`, `look_target`
   (a FilmTargets target) + `look_target_weight`; `shot_key` (keeps two equal pivot views apart: no behaviour).
 - overhead: `up_azimuth_deg` + `up_policy: "from_entry"`. Phone shots are all `camera_tour` with `cut: "flow"` (the 5 `fly_to_camera` became
-  camera_tour + a phone_in).
+  camera_tour + a phone_in). v3.2: a phone shot's `cameras[0].dance_t` is the master window from the start of its way in to the end of its way
+  out (where FilmCamera.CameraTour must return the phone's live pose for the transition paths; the POV check of `clips` asks for pose and
+  video there), not the director's original window (a carve or a nudge had left stale windows: ch06_06_pov said 192.86-198.08 s for a shot
+  that ends at 193.82 s, and `clips` failed its POV check on it).
 - layers: `floorcraft: "pivot_dials"`, `floorcraft_current_t`, `physics_limbs` {width_scale, parts}, `physics_from_above` (information).
 - top level `flow` {version, schema, no_jump_cuts, defaults {easing, ground_m, clear_radius_m, frustum_depth_m, axis_run_m, axis_share, rule,
   squeeze_max_s, hold_s, flash_s, crane_extra_s, inline_lift_max_m}, frustums [{camera, film [a, b, c, d], role enter | leave, depth_m,
@@ -658,15 +712,15 @@ segment's physics layer changes (load colours stay 320.1 s: those segments are a
    `skeleton_mode: physics` on camera_tour / feature_zoom / feet_closeup / orbit / overhead segments switches the load colours there (SplatDancers'
    physicsView draws them over the splats; on a phone's video the skeleton-on-top lines are coloured), `physics_limbs.width_scale` widens the arm and
    leg segments in physics mode (SkeletonStyle), com_marker in phone shots is drawn through the phone's camera like the arrows.
-7. **Run it:** `python -m dancecap.film_recap_flow clips` under the Unity lock (v3.1: the phone shots and frustum surfaces need 326 s of phone video,
-   192.5 s of it not in the capture: clips.json; it keeps the current clips), then load `work/larissa_kadu_recap/v3/direction/direction.json` (or copy the folder over film/ after
+7. **Run it:** `python -m dancecap.film_recap_flow clips` under the Unity lock (v3.2: the phone shots and frustum surfaces need 340.4 s of phone video:
+   clips.json; it keeps the current clips; run 2026-10-21, see "Unity stage v3.2" below), then load `work/larissa_kadu_recap/v3/direction/direction.json` (or copy the folder over film/ after
    backing it up; its audio/ mix is identical), look at the ways in and out with `hm_film_show`, then record both aspects as before (splat dancers on).
    The face sidecar must also carry the frustum surfaces (`surfaces`, v3.1, section "The face sidecar" above): a dancer whose face lies
    behind a phone's frustum video surface is not swapped (the picture there is the phone's video of the real people).
 
 Limits: the azimuths, radii and heights of the plan are estimates from the physics COMs and the phone tracks (the viewer flies between its own live
 poses, so continuity holds by construction, but a duration may be off the rule for the live geometry by a little); nothing of v3 has been rendered;
-v3.1: 96.7 s of the film is camera motion (26.3 %; v3.0 35 %), and the phones' full-frame share (44.6 %) is still below the cut film's 52.4 % (above); "rotation" right after "bring her to the
+v3.2: 91.7 s of the film is camera motion (24.9 %; v3.1 26.3 %, v3.0 35 %), and the phones' full-frame share (48.6 %; v3.1 44.6 %) is still below the cut film's 52.4 % (above); "rotation" right after "bring her to the
 axis" (u034) and "rotate lateral" (u033) are kept as the leader's T (his T rotates there: floorcraft axis pivot 189.0-189.8 s); the "connected"
 rule reads the hand-contact events of the v3 hand-contact work - rebuild after they change (`check` says STALE; see v3.1 above).
 
@@ -685,3 +739,228 @@ worse only #118, curated). The motion is exported to a side capture only (`work/
 the Unity stage installs the four motion files with `bash dancecap/work/larissa_kadu_recap/v3/unity_motion/install_motion.sh` (checks
 the sha256 recorded by the export and the frame layout, backs up the installed files once, `--check`, `--restore`). `events.json` is
 unchanged, so the direction's 'connected' rule is not stale.
+
+## Unity stage v3.2 (2026-10-21, under work/unity.lock 15:28-16:00 local): motion installed, the phones' clips, the capture audited
+
+- `install_motion.sh --check` (all four sources match the export's sha256, the .bin sizes match), then the install: the pre-v3 motion is backed
+  up once in `v3/unity_motion/backup_installed_motion/` (+ capture.json), and the four files in `StreamingAssets/06_LarissaKaduRecap/` are now the
+  v3 hand-contact motion (`--check` afterwards: all identical).
+- `python -m dancecap.film_recap_flow clips` for the v3.2 direction: phone strips 00 3376 / 01 1611 / 02 2490 / 03 2665 / 05 1606 / 06 1674 frames
+  (clips per phone 112.7 / 53.7 / 83.0 / 88.9 / 55.4 / 55.9 s, the current clips kept), 49 POV windows OK, **pov_ok: True**, installed into the
+  capture's cameras/ (the editor's asset refresh made the .meta files again). The first two runs failed the POV check and were the reason for two
+  v3.2 fixes above: a phone shot's camera window was the director's stale one (ch06_06_pov), and the way into phone 05 began before it records.
+- `film_recap_flow check`: OK (time map = film/'s at 3677 points, captions identical, 'connected' rule up to date). Capture audit (every file
+  capture.json references present and parseable; the motion = the v3 export; splats/lead + follow sha256 as their manifests, the follower's 35899
+  hair splats + hair binding block, hair_groom.json; the physics / counterbalance / floorcraft / timing layers; every phone's HMJ strip readable
+  and covering every range clips.json needs within the phone's recording): complete. The director items 1-6 were implemented next (below).
+
+## Unity director v3 (2026-10-21, head-movement, under work/unity.lock): items 1-6, the face sidecar, the first v3 excerpts
+
+**Which direction the recap plays.** `FilmRecorder.FindDirection(capture)` (used by `hm_film record`, `hm_film_show`, the Record / Film Preview
+menus and the recorder window) walks `StreamingAssets/<capture>/film/`, then for every `dancecap/work/<take>/` first `v3/direction/` and then `film/`, and takes
+the first `direction*.json` whose `"capture"` is the capture folder. So `06_LarissaKaduRecap` now records and previews
+`work/larissa_kadu_recap/v3/direction/direction.json` (its narration timeline and its `audio/larissa_kadu_recap_mix.wav` are found beside it, as for
+film/); the other films have no `v3/` folder and are unchanged. The old recap stays reachable: `hm_film record --direction <film/direction.json>`,
+`hm_film_show --action start --direction <...>`. A recording of a direction with a top-level `flow` gets the file-name tag `_v3`
+(`06_LarissaKaduRecap_vertical_<date>_t<a>-<b>_v3.mp4`; `--tag` overrides). The viewer's film library (desktop playback bar, the Quest) keeps
+its own direction paths (`film_library build`): it still plays film/direction.json until the library is rebuilt from v3 (not done here).
+
+**Gating.** Everything below runs only when the direction has `flow` (`FilmDirection.Flow`, `HmFilm.FlowTimeline.Build`); a direction without it
+plays exactly as before (blends, cuts, segment layers, the old flash, the old overhead height).
+
+Code (head-movement): `Assets/Film/Flow/` (new assembly `HmFilmFlow`: `FlowMath.cs` - smootherstep, envelopes, cylindrical coordinates, the
+composite path `FlowPath`; `FlowTimeline.cs` - the schema, shots, phone windows, surfaces, covers, splat visibility, layer starts;
+`FaceSidecarMath.cs`), `FilmCamera.cs` (transitions, the 3D keys), `FilmDirector.cs` (layer entries, surfaces, covers, limbs, dials),
+`CameraVideoRig.cs` / `FilmCameraVideo.cs` / `FilmCameraSource.cs` (surfaces, covers), `Resources/HM_CameraVideo.shader` (`_ZWrite`),
+`FilmOverlay.cs` (flashes, the POV pill), `Floor/FloorCraftOverlay.cs` (`DialsOnly`), `Splats/Avatar/SplatDancers.cs` (`FilmVideoFade` follows the
+flow; `SplatOf`), `Splats/Avatar/Core/SkinnedSplatAvatar.cs` (`TrySkinNow`), `FilmFaceSidecar.cs`, `Editor/FilmRecorder.cs` / `FilmRecorderCli.cs`
+(`--faces`, `--direction`, `--tag`), `Editor/FilmRenderCheck.cs` (the sidecar in the report), `Editor/FilmFlowCheck.cs` (`hm_film_flow`).
+
+What it does (the numbers of RECAP_FILM.md "What the Unity director must implement"):
+1. **Transitions.** The camera state is a pure function of film time (`FlowTimeline.CameraAt`): a shot's own pose, or the transition of the shot
+   whose window [F0 + start_s, + duration_s] contains the time (start_s < 0: it starts in the previous shot; > 0: the previous view holds into the
+   shot). Inside it the pose is the path from the previous shot's LIVE pose (`from_pose: frozen`: its pose 1 ms before F0) to this shot's live pose,
+   eased by one smootherstep. `blend_s`, BlendIn and the replay's CutIn are ignored. Paths:
+   - `arc` (3D to 3D, the replays): cylindrical about the couple's centre, the azimuth the plan's way round (`arc.delta_deg`: a planned turn over
+     120 deg keeps its direction when the live difference wraps), radius >= clear_radius, height inside the band, look point / FOV / composition
+     lerped (the aim stays on the couple).
+   - the phone ways and the cranes are ONE polyline of (eye, rotation) keys sampled by cost length (metres + 0.25 m per radian turned), so the
+     speed is continuous across the parts: [out along phone A's full optical axis to its portal, axis_run_m behind it] + a cubic Bezier in
+     cylindrical coordinates about the couple (tangent to the axes: G1 with the dollies) + [in along phone B's axis]. The rotation turns inside
+     the Bezier only (eased, so it joins the dollies without a jolt), pulled toward the couple mid-way, and reaches the phone's CROPPED view at
+     the portal; the FOV lerps to the crop's.
+   - **Deviations the live geometry forced** (measured with `hm_film_flow`, the stills and the excerpts): in 28 of the 45 phone ways the 3D
+     end stands near the phone - within 1.5 m to its side, 0.6 m behind to 1.3 m in front of it, mostly 0.2-1.4 m above (`flowcheck_*.json` "geometry"). A straight "back along the
+     axis, then arc" then doubled back on itself or cut through the picture (the first 22.5-s way flew into phone 00's picture and out the other
+     side). So: (a) a U-turn handle grows with the turn it has to make (no hairpin at the axis); (b) each way gets a plan, decided once from the
+     live poses at its start, middle and end (cached: the path never changes shape mid-way; the 3D end of the 22.5-s way moves 0.5 m during it),
+     of the least summed "badness" over lifts 0-1.5 m and sideways swings 0-100 deg: crossing a picture 1000, a hairpin over 30 deg between
+     samples 5 per degree, a stall 20, plus the effort (`hm_film_flow --action plan` shows the choice); (c) when the 3D end stands inside
+     a phone's frustum before its picture, or the straight way to it passes through the picture, the picture stands closer to its phone (0.75 /
+     0.6 / 0.45 / 0.3 m instead of 0.9; `FilmCamera.SurfaceDepth`; the projection from the phone is the same at any depth, so the hand-off is
+     unchanged); (d) the cranes are one vertical arc straight between the overhead and the ground end (the portal or the 3D eye), the elevation
+     leaving / reaching the ground with zero slope, the azimuth turning near the ground, the aim locked on the look point (with the
+     slerp-plus-bump of the phone ways the couple left the top of the frame for 0.3 s on the way up); (e) a picture fades (0.25-0.9 m) while
+     the eye passes close beside or in front of it - not on the phone's side inside its outline, where the dolly and the hand-off are - so a way
+     that swings round it never wipes it across the lens in 3 frames.
+2. **3D shots.** orbit, physics_3q, feature_zoom, feet_closeup and rhythm use `world_azimuth_deg + drift_deg_s x (film - F0)` (not clamped before
+   F0: the transition into the shot sees the same drift); the orbit's avoid_inline lift is capped at `inline_lift_max_m`; `ground_level` keeps the
+   eye in [0.5, 2.4] m; physics_3q reads `elevation_deg`, `look_target` / `look_target_weight` (damped like the couple follow). The overhead with
+   `up_policy: from_entry` puts the top of the picture along the view it rose from - the LIVE azimuth of the previous shot's eye at the
+   transition's start (`up_azimuth_deg` only as the fallback) - with the eye at 89.9 deg on that azimuth. Also (flow only): the damped follows
+   reach back across shot boundaries and take new samples in with a weight ramp (a few-cm step at every shot start, hidden by the old cuts,
+   showed in a flight); the overhead's height is a weighted mean over +-0.24 s (its 'never crop' need jittered 20 cm per frame in a pivot).
+3. **Frustum surfaces.** For every `flow.frustums` entry with alpha > 0: the frustum lines (phone colour; the four edges fade out within 2 m of
+   the phone and keep about a constant width on screen, so they never sweep across the lens as bars; the rim fades with the cover) and the
+   phone's live FULL strip frame (the same texture and frame index as the full-frame video) on the image rectangle at its depth, queue 3100,
+   ZTest LEqual, ZWrite at alpha 1. The envelope [a, b, c, d] ends (enter) / starts (leave) exactly at the camera's arrival / departure, so in
+   every frame either the surface or the full-frame video carries the picture. **The hand-off cover** (instead of fading each overlay
+   separately): the picture is drawn a second time over every 3D overlay (queue 4500, ZTest Always) - the surface's copy ramps to 1 over the
+   last overlays_on_top_in_s before the arrival, the full-frame video's copy starts at 1 and fades over overlays_on_top_in_s after it (and back
+   over overlays_on_top_off_before_s before the departure), each held 0.04 s at the switch. The frame before the switch and the frame of it both
+   show the phone's video alone; the skeleton lines, arrows, COM dots, the T and the POV pill then fade in together. `PovVideoOpacity` = 1 from
+   the arrival to the next way's start, 0 otherwise.
+4. **Layers.** A layer timeline: every segment at its F0, the first segment of a shot at F0 + `layers_switch_s`, the `transit_layers` of a
+   phone-to-phone way over their window; continuous values blend over 0.8 s from each entry as before. The splat dancers follow
+   `FlowTimeline.SplatVisibility` (hidden from `splats_hidden_at_s`, back in over `splats_back_in_s` from the departure; kept when the phone's
+   video is missing).
+5. **Replays.** The flash also marks the first frame after the replay (a `replay_out` with `flash_s`), and in a flow film both flashes fade as
+   alpha x rest^2.2 (a linear alpha left a grey of about 70 on the last flash frame and dropped to the picture in one step). The camera flies
+   from the frozen pose (1.2 s).
+6. **Floor craft and physics.** `floorcraft: "pivot_dials"` = the record with only the counterbalance dials (no old Ts, T-to-T path, axis
+   pivots or spin dials); `floorcraft_current_t` adds the current T. `physics_limbs.width_scale` widens the arm and leg lines in physics mode
+   (blended like the other layers). `skeleton_mode: physics` on phone / zoom / feet / orbit / overhead segments already switched the load
+   colours (`SegLayers.Physics`); com_marker annotations are world-space, so they are drawn through the phone's camera on the video.
+
+**Face sidecar** (`Assets/Film/FilmFaceSidecar.cs`): `hm_film record ... --faces auto|on|off` (auto = with the splat dancers) writes
+`<recording>.faces.json` ("hm film faces" v1 as specified above): sampled in the director's late pass of every recorded frame (frame count =
+the MP4's), S_15 = `SkinnedSplatAvatar.TrySkinNow(15)` (the same matrices the splat skinning uploads, computed from the posed bones; with splats
+off the avatar's head bone x its bindpose), the canonical points from the capture's `splats/` or `work/<take>/v3/faceswap/face_points_canonical.json`
+(path + sha256 in the file), the recording camera, the recorder's output size, `ui` = the visible uGUI graphics of the film canvas merged into
+blocks + the legend, `surfaces` = every frustum surface drawn (polygon clipped against the near plane, a depth per point, `role`, `full`). The
+`.report.md` names it.
+
+**Checks.**
+- Edit-mode tests `Assets/Film/Flow/Tests/Editor/FlowTests.cs` (assembly HmFilmFlow.Tests): smootherstep, the envelopes and their hand-off,
+  the plan's turn direction, exact ends / continuity / G1 into the axis / clear radius of a phone way, a crane without roll, the timeline's
+  camera states, windows, covers and splat visibility on a synthetic direction, the face geometry, and - when the workspace has it - the v3
+  direction itself (a transition on every shot but the first, one easing, the 8 crane ways at the 4 overheads, holds >= 1.4 s, every frustum
+  tied to its shot, an opaque surface the frame before every arrival and at every departure), and a plan that goes round a picture the straight
+  way would cross (15 tests). All 84 edit-mode tests of the project pass.
+- `unity command hm_film_flow --action check [--from --to --out]` (Play mode, the film started): sweeps the film at 30 fps through the live
+  director and reports per-frame camera jumps, kinks, the ground band, the couple out of frame during a way, the hand-off frames, the surfaces'
+  on-screen readable time, the holds, the fastest turn of each way and each phone way's geometry; `--action series` dumps a window frame by frame.
+- `work/larissa_kadu_recap/v3/unity_film/jumpcuts.py <mp4> --start S --sheet` (frame-to-frame difference spikes: > 3 x the median of +-7 frames
+  and > 4/255) and `sidecar_check.py <mp4>` (validates the sidecar with `film_faceswap.validate_sidecar`, draws the points, surfaces and UI rects).
+
+**Results (vertical 1080x1920, the splat dancers + swinging hair on, D3D12, `--faces on`; renders git-ignored).**
+- `hm_film_flow --action check` over the whole film (11031 frames; `work/larissa_kadu_recap/v3/unity_film/flowcheck_vertical_final.json`):
+  no frame where a phone shot's own pose is not the phone's; the eye inside 0.5-2.4 m in every frame outside the 8 crane ways and the 4 overheads;
+  shortest full-frame phone hold 1.40 s; the fastest turn about the couple of any way 168 deg/s (phone to phone at 322 s), cranes up to 143 deg/s;
+  77 of 81 hand-off frames show the phone's picture alone over the whole frame at alpha 1 with its cover at 1 - the other 4 (phone 06 at 339.4 /
+  344.6 s, phone 00 at 127.2 s, phone 02 at 327.4 s) have the crop reaching 1-2.5 % past the phone's picture at an edge, the same black edge
+  the full-frame video shows there (the plan's crop, not the hand-off). The detector's 16 "jump" and 18 "kink" flags are turn-rate peaks of
+  1.4-3.5 deg per frame in the middle of fast ways and the overhead at 240 s (looked at: continuous); the couple's centre leaves the frame for 4
+  + 3 frames in the long ways into phone 03 (73.9 s) and phone 05 (317.6 s).
+  **Not met: the pictures' on-screen readable time.** Measured as alpha >= 0.5 while the picture covers 1-97 % of the frame with every corner in
+  front of the eye, 40 of the 81 surfaces read for >= 0.6 s (median 0.57 s, shortest 0.23 s; v3.2's own floor counts the envelope from its fade-in,
+  0.62 s, but for the first part of most ways the picture is outside the 3D view's frame). Pulling the aim toward the pictures (tried: +1
+  surface, the couple out of frame 11 instead of 7 frames) does not change it; longer ways in `film_recap_flow` would.
+- Pictures stand closer than 0.9 m in 8 ways (0.30-0.75 m: the 3D views at 22.5, 34.7, 79.2, 90.4, 106.4, 127.2, 160.0 and 315.2 s stand just in
+  front of or above their phone); 10 ways carry a small detour (lift 0.25-0.5 m; the 22.5-s way swings 30 deg round its picture);
+  `hm_film_flow --action plan` lists them.
+- 13 excerpts in `head-movement/Recordings/06_LarissaKaduRecap_vertical_2026-10-21_t<a>-<b>_v3[_nosplats].mp4` (each with `.faces.json`,
+  `.report.json/.md`, `.audiofix.json/.log`, `_rawaudio.mp4`; all reports PASS, A/V 0.0 ms, the audio replaced from the mix; the earlier passes in
+  `Recordings/v3_excerpts_superseded/`), every frame run through `jumpcuts.py` (sheets and `.jumps.json` in `work/.../v3/unity_film/`):
+
+  | excerpt (film s) | what | frame-difference spikes |
+  |---|---|---|
+  | 12.3-15.7 | phone 05 -> phone 00 (both pictures in the world) | none |
+  | 22.0-26.4 | out of phone 00 round its picture into the 'frame' zoom, into phone 02 | none (the first pass flew through the picture: 3 spikes, d 51-90) |
+  | 41.6-46.5 | into phone 02, phone 02 -> phone 01 | none |
+  | 147.3-148.7 | the fastest phone-to-phone turn (3 deg per frame) | none |
+  | 159.5-164.3 | out of phone 00 into pivot 1 "back to the axis" (dials, "axis (pivot point)") | none |
+  | 172.8-180.6 | out of phone 01 + crane up, the overhead, crane down into pivot 2 | none |
+  | 228-244.5 (+ `_nosplats`) | physics view (momentum, weight heading, load colours, COM dots), #118, crane up / down | none |
+  | 245.8-255.6 | the replay: flash + flight from the frozen pose in, the same out | the 2 replay cuts (under their flashes); a caption word at 255.2 s (d 4.6) |
+  | 297.5-301.6 | out of phone 02 into pivot 5 and back into phone 02 | none |
+  | 331-337 (+ `_nosplats`) | pivot 6, crane up, the overhead with #155 | none |
+  | 354.4-361.6 | physics view, into phone 00 | none |
+- Looked at (sheets every 0.2 s and every frame around each switch): the pictures stand in the world with their frustum lines and are hidden
+  by / hide the splat bodies correctly; the hand-off frames are the phone's video on both sides; the overlays then fade in; no apex blob or bars
+  near the lens (the first pass had both); the cranes keep the couple in the frame (the first pass lost it at the top for 0.3 s); the pivot views
+  show the counterbalance dial and the "axis (pivot point)" arrow at her anchored foot, the widened arm / leg load lines and the balance axes.
+- Hands: #118 - his right arm passes her left side and the hand-contact light sits at her left upper back through 228-237 s, with the splats and
+  with the 25 % avatars; the 239.6-240.8 s return (the overhead) moves smoothly. #155 (film 332.2-336.5 s: pivot 6, the crane, the overhead) - no
+  elbow wobble or finger flicker visible frame by frame from above or in the pivot view, so it was NOT reverted.
+- Face sidecars: all 13 validate (`film_faceswap.validate_sidecar`: entries = the MP4's frames); `sidecar_check.py` sheets
+  (`*_v3.sidecar.jpg`): the 5 points sit on both faces in 3D frames (yaw / iod plausible) and on the real heads in the phone frames, the
+  `surfaces` polygons lie on the pictures (phone 05 leaving + phone 00 entering at 13.4 s), the UI rects on the captions, pills and legend;
+  the reader would leave 0-85 face-frames per excerpt (both dancers) alone because a picture stands in front of them. The splats-off sidecars use the avatar's
+  head bone (same layout).
+
+**Not done / limits.** No full film and no 16:9 render (the side fill of a portrait clip now fades with the cover, untested in a recording);
+the readable-time shortfall above; the crop of phones 00 / 06 reaching past the picture's edge at four hand-offs is the plan's; the splat dancers
+were left OFF in the editor afterwards (SessionState), the lock released.
+
+## The whole v3 films, recorded and face-swapped (2026-10-21 18:56 - 10-22 00:13 local; Unity under work/unity.lock 18:56-19:21)
+
+**Recording.** Nothing heavy running (the pipeline monitor and a review server idle). Play mode `hm_splatdancers --action on` (hair
+Skinned on the simulated strands, skeleton over splats Physics, D3D12), out of Play mode, then `unity command hm_film --action record
+--aspect vertical --capture 06_LarissaKaduRecap --faces on` and the same with `--aspect horizontal`; the v3 direction was found by
+`FindDirection` and the `_v3` tag set itself. Both reports PASS: 11032 frames = 367.733 s x 30 (film 0-367.677 s), 1080x1920 / 1920x1080,
+splatDancers true, ordered readback (at most 1 frame pending, 0 timeouts), 444 / 445 s real (24.8 frames/s). The audio fix ran by itself
+on both: PASS, video md5 unchanged, -16.0 LUFS, true peak -1.3 dBTP, sync 0.0 ms in 30 windows (r >= 0.99968), 0 burst blocks; the
+recorder's own track again had the burst at 56.860-56.900 s (peak 199.6), kept in `_rawaudio.mp4`. Face sidecars: 11032 entries each,
+`validate_sidecar` clean (vertical: 5675 3D frames, 5357 phone-video frames, 2694 frames with a frustum surface). Looked at 10 stills
+per aspect (`scratchpad`, not kept): splat bodies with hair, captions, the frustum pictures standing in the world, the overheads, the
+pivot dials, the replay pill. The splat dancers were switched OFF again (Play mode, `--action off`) and the lock released at 19:21.
+
+**Face swap** (`conda run -n facefusion ... film_faceswap swap --film <rec>_v3.mp4 --sidecar <rec>_v3.faces.json --out <rec>_v3_faces.mp4`,
+then `verify`; logs `v3/faceswap/run_full_<aspect>_v3[_final].log`, `verify_full_<aspect>_v3_final.log`):
+
+| | vertical | horizontal |
+|---|---|---|
+| analysed frames (3D, a dancer in view) / speed | 5672 of 11032, 9.1 film frames/s | 5675 of 11032, 10.0 film frames/s |
+| detections confirming the projected points (Kadu / Larissa) | 2327 / 1565 | 2356 / 1568 |
+| swapped face-frames (Kadu / Larissa frames) | 1780 (1255 / 525) | 1615 (1209 / 406) |
+| swap spans (Kadu / Larissa) | 16 / 9, shortest 0.87 / 0.97 s | 14 / 7, shortest 1.0 / 0.97 s |
+| face-frames flagged behind a frustum picture, never swapped (Kadu / Larissa) | 1124 / 1143 | 1109 / 1127 |
+| overlay strokes kept over a swapped face | 348 frames | 321 frames |
+| pixels changed outside the faces before encoding | 0 | 0 |
+| luma PSNR outside the faces (CRF 14) / flicker ratio | 48.2 dB / 0.991 | 49.1 dB / 0.991 |
+| swap pass | 8.3 frames/s, 116 ms per face (boost 128) | 8.6 frames/s, 149 ms per face (boost 128) |
+
+Checked on each final against its recording (`v3/faceswap/final_check_<aspect>_v3.json`, made by `v3/faceswap/tools/verify_final.py`; sheets by `look_frames.py`): 11032 frames in both files; video starts at
+0.033 s and audio at 0 in both (as recorded); the audio stream is bit-identical to the recording's (packet md5); in sync with the mix
+at 14 points (0.0 ms, r >= 0.99978); 0 burst blocks; -16.0 LUFS / -1.3 dBTP like the mix; at 16 places across the film picture k of the
+final matches picture k of the recording (not k - 1 or k + 1). The phones' own video and every frame where a picture stands in front of a
+face are untouched.
+
+**Three faults the first full run showed, fixed in `film_faceswap.py` before the final run** (tests 14 pass, two new):
+1. **The reader repeated the first frame.** Without `-fps_mode passthrough` ffmpeg's constant-rate rawvideo output filled the half-frame
+   gap after the seek by duplicating the first frame: buffer k held frame first + k - 1. The swap therefore applied sidecar entry i to the
+   picture of frame i - 1, and the output repeated frame 0 and lost the last frame (`verify` did not see it: it read both files the same
+   way). Found by comparing decoded frames directly. **Every output made before this fix carries it** (the prototype excerpts A-D,
+   `tests/`, `cli_test/`: picture one frame late against its audio, metadata one frame early). With the frames aligned, the detections
+   that confirm the projected points rose from 1841 / 1151 to 2327 / 1565 (vertical).
+2. **The video start.** The Writer's `-itsoffset` is dropped for an encoded raw pipe (the swapped video started at 0, one frame early
+   against the copied audio once the reader was right). `restore_start` remuxes the swapped video with the recording's audio and
+   timescale (stream copy, both md5-checked).
+3. **Overlay strokes over a face.** In the physics views the grey / blue skeleton lines cross the faces (Larissa 315.6-316.8 s, Kadu
+   286-288 s, 299-300 s); xseg did not always see them as occluders and the swap painted them partly away (a broken, flickering line).
+   `overlay_mask` / `restore_overlay` put the recorded pixels back on those strokes (+ 1 px rim), so the line stays in front of the face.
+
+**Looked at** (`v3/faceswap/look_full/*_frames.jpg` = 20 frames of each final, `*_faces.jpg` = before | after of every swapped face in
+them): the right identity on every swapped face (Kadu's beard and eyes, Larissa's eyes and lips sharper than the splat faces), the
+skeleton strokes intact over the faces, captions and pills untouched, phone video and the frustum pictures never swapped; the 16:9 hand-off
+at 25.9 s (phone 02) shows the same picture on both frames.
+
+**Limits.** The faces are small in most of the film (median inter-ocular 19 px vertical, 14 px horizontal; boost 128 throughout), so the
+gain is modest and fast turns keep the splat faces (v3.1 rule). The light slash on Larissa's left cheek is in the splat render, not the
+swap. The film starts with Kadu swapped for 0.87 s (fade-in from black, an open range end where the 1-s minimum does not apply), then
+unswapped 0.87-1.97 s. At 190.97-191.33 s Kadu's swap fades out and back in while Larissa's head passes in front of his face (0.37 s gap).
+In the two grey flash frames at 253.67-253.70 s (measured on the vertical) the stroke colour test also matched the washed-out faces, so the swap is mostly undone on
+those 2 frames (a flatness test - strokes have luma std <= 3, the washed faces 7-19 - would separate them; not built). Red / orange
+tension strokes are left to xseg. Superseded outputs (the shifted first run, the run without the stroke restore) are in
+`head-movement/Recordings/v3_faces_superseded/`.

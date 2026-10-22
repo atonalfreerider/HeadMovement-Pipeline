@@ -231,3 +231,72 @@ def test_sidecar_surfaces_are_validated_and_the_heuristic_skips_every_frustum_wi
     w, _ = fs.shot_weights(path, 0, 300, 30.0, fs.Cfg())
     t = np.arange(300) / 30.0
     assert w[(t >= 2.0) & (t <= 3.5)].max() == 0.0 and w[t < 1.9].min() == 1.0 and w[t > 3.6].min() == 1.0
+
+
+@pytest.mark.skipif(__import__("shutil").which("ffmpeg") is None or __import__("shutil").which("ffprobe") is None,
+                    reason="ffmpeg / ffprobe not on PATH")
+def test_a_whole_film_keeps_the_recordings_video_start(tmp_path):
+    """The recorder's MP4 starts its video at 0.033 s and its audio at 0; the swapped whole film must keep that A/V relation
+    (2026-10-21: the encoded raw pipe dropped -itsoffset and the picture ran one frame early; restore_start remuxes it back)."""
+    import subprocess
+    base, film, out = tmp_path / "base.mp4", tmp_path / "rec.mp4", tmp_path / "out.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "nullsrc=s=64x112:r=30:d=1,geq=lum='mod(N*40+X*2+Y,256)':cb=128:cr=128", "-f", "lavfi", "-i",
+                    "sine=frequency=440:duration=1.04", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(base)], check=True)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-itsoffset", "0.033", "-i", str(base), "-i", str(base), "-map", "0:v:0", "-map", "1:a:0",
+                    "-c", "copy", "-video_track_timescale", "30000", str(film)], check=True)
+    info = fs.ffprobe(film)
+    assert abs(info["v_start"] - 0.033) < 1e-3 and info["frames"] == 30
+    w = fs.Writer(out, film, info, 0, info["frames"], info["width"], info["height"], fs.Cfg())
+    for buf in fs.YuvReader(film, info, 0, info["frames"]):
+        w.write(buf)
+    w.close()
+    res = fs.restore_start(out, film)
+    got = fs.ffprobe(out)
+    assert abs(got["v_start"] - info["v_start"]) < 5e-4 and got["frames"] == info["frames"] and res.get("ok", True)
+    if res["remuxed"]:
+        assert res["video_md5_unchanged"] and res["audio_md5_equals_film"]
+    assert fs.stream_md5(out, "a") == fs.stream_md5(film, "a")
+    assert fs.restore_start(out, film)["remuxed"] is False      # idempotent
+    # frame k of the output is frame k of the film (the reader hands over exactly the coded frames: no duplicated first frame)
+    src = [fs.planes(b, 64, 112)[0].astype(np.int16) for b in fs.YuvReader(film, info, 0, 30)]
+    dst = [fs.planes(b, 64, 112)[0].astype(np.int16) for b in fs.YuvReader(out, fs.ffprobe(out), 0, 30)]
+    assert len(src) == len(dst) == 30
+    same = [float(np.abs(a - b).mean()) for a, b in zip(src, dst)]
+    shifted = [float(np.abs(a - b).mean()) for a, b in zip(src[:-1], dst[1:])]
+    assert max(same) < 3.0 and min(shifted) > 5 * max(same)
+    # an excerpt starts on its own first frame too
+    part = [fs.planes(b, 64, 112)[0].astype(np.int16) for b in fs.YuvReader(film, info, 10, 3)]
+    assert all(np.array_equal(a, b) for a, b in zip(part, src[10:13]))
+
+
+def test_overlay_strokes_over_a_face_are_kept_and_skin_eyes_and_hair_are_not():
+    """Grey / blue skeleton strokes that cross a swapped face are restored from the recording (Larissa at 316 s, 2026-10-21);
+    skin, lips, red hair, dark eyes and small bright eye whites are left to the swap."""
+    h, w = 120, 110
+    bgr = np.zeros((h, w, 3), np.uint8)
+    bgr[:] = (126, 145, 202)                                   # splat skin (B, G, R)
+    bgr[:, :18] = (36, 41, 117)                                # red hair
+    bgr[40:46, 30:42] = (35, 40, 45)                           # a dark eye
+    bgr[41:44, 44:47] = (205, 200, 200)                        # a small bluish eye white (9 px)
+    bgr[80:86, 40:70] = (95, 110, 170)                         # lips
+    stroke = np.zeros((h, w), bool)
+    for x in range(w):                                         # a grey-lavender load line across the face, 6 px wide
+        y0 = int(20 + 0.6 * x)
+        stroke[y0:y0 + 6, x] = True
+    bgr[stroke] = (158, 149, 155)
+    blue = np.zeros((h, w), bool)
+    blue[100:108, 60:110] = True                               # a blue arm line entering from the side
+    bgr[blue] = (240, 110, 60)
+    m = fs.overlay_mask(bgr)
+    assert m[stroke].all() and m[blue].all()
+    grown = cv2.dilate((stroke | blue).astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)
+    assert not (m & ~grown).any()                              # nothing beyond the strokes and their 1-px rim
+    assert not m[41:44, 44:47].any() or grown[41:44, 44:47].all()
+    # the restore puts the recorded pixels back exactly there (Y full res, chroma where any of the 2 x 2 is a stroke)
+    Y, U, V = np.full((h, w), 50, np.uint8), np.full((h // 2, w // 2), 60, np.uint8), np.full((h // 2, w // 2), 70, np.uint8)
+    Yo, Uo, Vo = np.full((h, w), 200, np.uint8), np.full((h // 2, w // 2), 210, np.uint8), np.full((h // 2, w // 2), 220, np.uint8)
+    n = fs.restore_overlay(Y, U, V, Yo, Uo, Vo, bgr, [0, 0, w, h])
+    assert n == int(m.sum()) and (Y[m] == 200).all() and (Y[~m] == 50).all()
+    assert (U == 210).sum() > 0 and (U == 60).sum() > 0
+    # a face without strokes: nothing restored
+    assert not fs.overlay_mask(np.full((h, w, 3), (126, 145, 202), np.uint8)).any()

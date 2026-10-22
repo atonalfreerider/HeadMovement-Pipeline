@@ -19,8 +19,10 @@ How it works (docs/RECAP_FILM.md, section "Face swap of the recorded film"):
     frame the face stops qualifying);
   * pass 2, swap: inswapper_128 with the dancer's own headshot identity, per-track pixel boost (128 / 256 / 512 by face size),
     FaceFusion's box x occlusion (xseg) mask times the weight, pasted and blended in YUV only where the mask is > 1/255: every other
-    pixel of the decoded frame goes to the encoder unchanged (bit-exact; text glyphs of UI overlays over a face are restored too);
-    the audio is copied (an excerpt: the same instant re-cut as AAC 192k).
+    pixel of the decoded frame goes to the encoder unchanged (bit-exact; text glyphs of UI overlays over a face are restored too,
+    and so are the grey / blue skeleton strokes of the 3D overlays that cross a face: overlay_mask);
+    the audio is copied (an excerpt: the same instant re-cut as AAC 192k); a whole film is remuxed afterwards so its video starts
+    where the recording's does (0.033 s; restore_start).
 
 Runs in the 'facefusion' conda env (Python 3.13, onnxruntime-gpu 1.30, CUDA 13), not in dancecap's env, from the dancecap root:
     conda run -n facefusion --no-capture-output python -m dancecap.film_faceswap swap --film F.mp4 --out O.mp4 \
@@ -29,6 +31,7 @@ Runs in the 'facefusion' conda env (Python 3.13, onnxruntime-gpu 1.30, CUDA 13),
     ... -m dancecap.film_faceswap mock-sidecar ...  # a sidecar made from a heuristic analysis (tests the sidecar code path)
     ... -m dancecap.film_faceswap verify --report R.json   # outside the swapped faces the output equals the source (lossless) / PSNR
     ... -m dancecap.film_faceswap sheet --report R.json    # before / after face crops of sampled frames, for looking
+    ... -m dancecap.film_faceswap restore-start --report R.json   # a whole-film output whose video starts at 0: video start as recorded
 The GPU passes hold dancecap's work/gpu.lock. Likeness data (headshots, films, sheets) stays in work/ and Recordings/ (git-ignored).
 """
 from __future__ import annotations
@@ -121,13 +124,18 @@ def frame_seek(info: dict, first: int) -> float:
 
 
 class YuvReader:
-    """Frames [first, first + count) of a film as writable yuv420p buffers (one contiguous array per frame)."""
+    """Frames [first, first + count) of a film as writable yuv420p buffers (one contiguous array per frame).
+
+    `-fps_mode passthrough` (2026-10-21, first full-film run): without it ffmpeg's default constant-rate output for rawvideo fills
+    the half-frame gap between the seek point and the first frame by DUPLICATING that frame, so buffer k held frame first + k - 1
+    (the sidecar entry of frame i was applied to the picture of frame i - 1, and the output repeated its first frame and lost the
+    last one). Passthrough hands over exactly the coded frames, in order."""
 
     def __init__(self, film: Path, info: dict, first: int, count: int):
         self.w, self.h, self.count = info["width"], info["height"], count
         self.size = self.w * self.h * 3 // 2
         cmd = ["ffmpeg", "-v", "error", "-nostdin", "-ss", f"{frame_seek(info, first):.6f}", "-i", str(film), "-map", "0:v:0",
-               "-frames:v", str(count), "-f", "rawvideo", "-pix_fmt", "yuv420p", "-"]
+               "-fps_mode", "passthrough", "-frames:v", str(count), "-f", "rawvideo", "-pix_fmt", "yuv420p", "-"]
         self.p = subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=self.size * 2)
 
     def __iter__(self):
@@ -179,6 +187,48 @@ class Writer:
         rc = self.p.wait()
         if rc:
             raise RuntimeError(f"ffmpeg encoder exited {rc}")
+
+
+def stream_md5(path: Path, stream: str) -> str:
+    """md5 of a stream's packets (stream copy): equal = the same coded bits."""
+    return subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-i", str(path), "-map", f"0:{stream}:0", "-c", "copy", "-f", "md5", "-"],
+                          capture_output=True, text=True, check=True).stdout.strip()
+
+
+def restore_start(out: Path, film: Path) -> dict:
+    """A whole film: put the recording's video start offset back (2026-10-21, first full-film run).
+
+    The recorder's MP4 starts its video at 0.033 s and its audio at 0 (the A/V relation as recorded). The Writer passes that offset as
+    -itsoffset on the raw pipe, but ffmpeg 8 drops it for an encoded rawvideo pipe (the encoded video starts at 0 even with -copyts),
+    so the swapped film's picture would run one frame EARLY against its copied audio (before the YuvReader fix the reader's duplicated
+    first frame happened to hide this: every picture one frame late in the file, at its recorded time). An -itsoffset on a demuxed MP4
+    with stream copy does hold: remux the swapped video (bits unchanged) with the film's own audio (bits unchanged) and the film's
+    video timescale."""
+    src, got = ffprobe(film), ffprobe(out)
+    want = src["v_start"] - src["fmt_start"]
+    res = {"film_video_start_s": src["v_start"], "out_video_start_s_before": got["v_start"]}
+    if abs((got["v_start"] - got["fmt_start"]) - want) < 0.0005:
+        return res | {"remuxed": False}
+    tb = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=time_base", "-of", "csv=p=0",
+                         str(film)], capture_output=True, text=True, check=True).stdout.strip()
+    scale = int(tb.split("/")[1]) if "/" in tb else 15360
+    tmp = out.with_name(out.stem + "_restart.mp4")
+    cmd = ["ffmpeg", "-v", "error", "-y", "-nostdin", "-itsoffset", f"{want:.6f}", "-i", str(out), "-i", str(film),
+           "-map", "0:v:0", "-map", "1:a:0?", "-c", "copy", "-video_track_timescale", str(scale), "-movflags", "+faststart", str(tmp)]
+    subprocess.run(cmd, check=True)
+    v_before, v_after = stream_md5(out, "v"), stream_md5(tmp, "v")
+    a_film, a_after = (stream_md5(film, "a"), stream_md5(tmp, "a")) if src["has_audio"] else ("", "")
+    now = ffprobe(tmp)
+    ok = v_before == v_after and a_film == a_after and now["frames"] == got["frames"] and \
+        abs((now["v_start"] - now["fmt_start"]) - want) < 0.0005
+    res |= {"remuxed": True, "out_video_start_s_after": now["v_start"], "video_md5_unchanged": v_before == v_after,
+            "audio_md5_equals_film": a_film == a_after, "frames": now["frames"], "ok": ok}
+    if not ok:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(f"[faceswap] restoring the video start failed: {res}")
+    os.replace(tmp, out)
+    print(f"[faceswap] video start restored to {now['v_start']:.6f} s (as the recording); video and audio bits unchanged", flush=True)
+    return res
 
 
 # ---------------------------------------------------------------------------------------------------------------------- gpu lock
@@ -947,13 +997,49 @@ def paste_yuv(Y, U, V, bgr, swapped, mask, M, weight):
     return [int(x1), int(y1), int(x2), int(y2)]
 
 
+def overlay_mask(bgr: np.ndarray, min_share: float = 0.004) -> np.ndarray:
+    """The film's own 3D overlay strokes inside a face's paste box (2026-10-21, first full-film run: where the physics view's skeleton
+    / load lines cross a swapped face, xseg did not always see them as occluders and the swap partly painted the line away, e.g.
+    Larissa at 316 s). Grey-lavender and blue strokes are bluer than skin, lips, brows and the red hair (blue - red > -12 with the
+    brightest channel > 90; splat skin has red - blue >= 30, the dark eyes stay below 90); only connected strokes of some size count
+    (>= 0.4 % of the box, >= 12 px: no eye whites), grown by 1 px for their anti-aliased rims. The swap is undone there, so the line
+    stays in front of the face as recorded. Red / orange tension strokes are not separable from skin by colour and are left to xseg."""
+    import cv2
+    b, r = bgr[..., 0].astype(np.int16), bgr[..., 2].astype(np.int16)
+    m = ((b - r) > -12) & (bgr.max(axis=2) > 90)
+    if not m.any():
+        return m
+    n, lab, st, _ = cv2.connectedComponentsWithStats(m.astype(np.uint8), connectivity=8)
+    keep = np.zeros(n, bool)
+    keep[1:] = st[1:, cv2.CC_STAT_AREA] >= max(12, int(min_share * m.size))
+    if not keep.any():
+        return np.zeros_like(m)
+    return cv2.dilate(keep[lab].astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)
+
+
+def restore_overlay(Y, U, V, Yo, Uo, Vo, src_bgr: np.ndarray, box) -> int:
+    """Put the recorded pixels back where overlay_mask finds a stroke in the source inside an (even-aligned) paste box."""
+    x1, y1, x2, y2 = box
+    m = overlay_mask(src_bgr[y1:y2, x1:x2])
+    if not m.any():
+        return 0
+    ys, yo = Y[y1:y2, x1:x2], Yo[y1:y2, x1:x2]
+    ys[m] = yo[m]
+    m2 = m.reshape(m.shape[0] // 2, 2, m.shape[1] // 2, 2).any(axis=(1, 3))
+    cs = (slice(y1 // 2, y2 // 2), slice(x1 // 2, x2 // 2))
+    U[cs][m2] = Uo[cs][m2]
+    V[cs][m2] = Vo[cs][m2]
+    return int(m.sum())
+
+
 def run_swap(ff: FF, film: Path, info: dict, first: int, count: int, plan: list, sources: dict, cfg: Cfg, out: Path,
              sbs: Path | None, ui_of_frame) -> dict:
     import cv2
     w, h = info["width"], info["height"]
     writer = Writer(out, film, info, first, count, w, h, cfg)
     sbs_writer = Writer(sbs, film, info, first, count, 2 * w, h, cfg, crf=17) if sbs else None
-    stats = {"frames": 0, "faces_swapped": 0, "changed_outside_support": 0, "glyph_restored_px": 0, "per_frame": []}
+    stats = {"frames": 0, "faces_swapped": 0, "changed_outside_support": 0, "glyph_restored_px": 0, "overlay_restored_px": 0,
+             "overlay_restored_frames": 0, "per_frame": []}
     t0 = time.time()
     t_model = 0.0
     for k, buf in enumerate(YuvReader(film, info, first, count)):
@@ -963,6 +1049,7 @@ def run_swap(ff: FF, film: Path, info: dict, first: int, count: int, plan: list,
         boxes = []
         if todo:
             bgr = cv2.cvtColor(buf.reshape(h * 3 // 2, w), cv2.COLOR_YUV2BGR_I420)
+            src_bgr = bgr.copy()
             for p, wt in todo:
                 lm5 = p["lm"][k - p["k0"]]
                 tm = time.time()
@@ -974,6 +1061,12 @@ def run_swap(ff: FF, film: Path, info: dict, first: int, count: int, plan: list,
                     boxes.append({"role": p["role"], "w": round(wt, 3), "box": b, "boost": p["boost"],
                                   "lm5": np.round(lm5, 1).tolist()})
                     stats["faces_swapped"] += 1
+        # the film's own 3D overlay strokes over a swapped face stay as recorded (in front of the face)
+        if boxes:
+            Yo, Uo, Vo = planes(orig, w, h)
+            n_ov = sum(restore_overlay(Y, U, V, Yo, Uo, Vo, src_bgr, b["box"]) for b in boxes)
+            stats["overlay_restored_px"] += n_ov
+            stats["overlay_restored_frames"] += int(n_ov > 0)
         # UI text over a swapped face stays as recorded
         if boxes:
             Yo, Uo, Vo = planes(orig, w, h)
@@ -1074,6 +1167,8 @@ def cmd_swap(a):
                             for p in plan]
         stats = run_swap(ff, film, info, first, count, plan, sources, cfg, out, Path(a.side_by_side) if a.side_by_side else None,
                          ui_of_frame)
+    if first == 0 and count >= info["frames"] > 0:          # a whole film: keep the recording's A/V relation
+        report["video_start"] = restore_start(out, film)
     report.update({k: v for k, v in stats.items() if k != "per_frame"})
     report["per_frame"] = stats["per_frame"]
     report["swap_spans"] = swap_spans(plan, fps, first)
@@ -1083,7 +1178,8 @@ def cmd_swap(a):
     rp.write_text(json.dumps(report, indent=1))
     print(f"[faceswap] {out} ({count} frames): analysis {report['analysis_fps']} fps, swap {report['swap_fps']} fps, "
           f"{report['faces_swapped']} faces, {report['model_ms_per_face']} ms per face; changed outside the faces: "
-          f"{report['changed_outside_support']} px; report {rp}", flush=True)
+          f"{report['changed_outside_support']} px; overlay strokes kept over {report['overlay_restored_frames']} swapped frames "
+          f"({report['overlay_restored_px']} px); report {rp}", flush=True)
     for t in report["tracks"]:
         print("   ", json.dumps(t), flush=True)
     for r, v in report["swap_spans"].items():
@@ -1174,6 +1270,15 @@ def cmd_mock_sidecar(a):
           "dancers": [{"key": r, "name": NAMES[r]} for r in ROLES], "f": fr}
     Path(a.out).write_text(json.dumps(sc))
     print(f"[faceswap] mock sidecar {a.out}: frames {an['first']}..{an['first'] + an['count'] - 1} filled")
+
+
+def cmd_restore_start(a):
+    """A whole-film output written before the fix: put the recording's video start back (report gets "video_start")."""
+    rep = json.loads(Path(a.report).read_text())
+    res = restore_start(Path(rep["out"]), Path(rep["film"]))
+    rep["video_start"] = res
+    Path(a.report).write_text(json.dumps(rep, indent=1))
+    print(json.dumps(res))
 
 
 def cmd_verify(a):
@@ -1306,6 +1411,9 @@ def main(argv=None):
     v = sub.add_parser("verify")
     v.add_argument("--report", required=True)
     v.set_defaults(fn=cmd_verify)
+    rs = sub.add_parser("restore-start")
+    rs.add_argument("--report", required=True)
+    rs.set_defaults(fn=cmd_restore_start)
     sh = sub.add_parser("sheet")
     sh.add_argument("--report", required=True)
     sh.add_argument("--out", required=True)
