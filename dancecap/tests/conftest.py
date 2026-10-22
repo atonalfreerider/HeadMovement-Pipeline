@@ -1,11 +1,15 @@
 """Shared test setup: no test reads the live Runpod balance (remote.cap() follows the account when DANCECAP_RUNPOD_CAP is
 unset), so a test never calls runpodctl or writes work/runpod/balance_cap.json in the real tree."""
+import os
 import sys
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # run from the workspace root too
+# OpenCV reads the flag once, when cv2 is first imported: mono4d.atlas sets it at import, but in a full run another test
+# imports cv2 first and the Atlas EXR round trips fail (they pass alone)
+os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
 
 
 @pytest.fixture(autouse=True)
