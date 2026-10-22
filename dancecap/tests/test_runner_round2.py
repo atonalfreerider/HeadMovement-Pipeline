@@ -381,7 +381,7 @@ def test_run_session_records_the_gpu_choice_and_warning(tmp_path, monkeypatch):
                          choice={"chosen": {"gpu": A40}, "warning": warn, "excluded_faster": [{"gpu": G4090}]})
     monkeypatch.setattr(remote, "pod_session", fake_session)
 
-    def steps(ses, pod, todo, b, m, feats):
+    def steps(ses, pod, todo, b, m, feats, served=None):
         for j in todo:
             ses.state["jobs"][j.name]["status"] = "ok"
     monkeypatch.setattr(rj, "_pod_steps", steps)
@@ -539,6 +539,10 @@ def test_mamma_fit_commands_relay_their_ma3d_log():
     d = rj.asdict(plain)
     d.pop("source")
     d.pop("watch")   # an unset `watch` leaves the fingerprint as it was before the field existed (session resume)
+    for k in ("base", "cpu", "min_ram_gb", "min_vcpu", "models"):   # the same for the fields of 2026-10-22
+        d.pop(k)
+    for cd in d["commands"]:
+        cd.pop("early")
     assert plain.fingerprint() == hashlib.sha256(json.dumps(d, sort_keys=True).encode()).hexdigest()[:16]
     assert _job("p2", watch=["dancecap/work/t/x.log"]).fingerprint() != plain.fingerprint()
     if BASH:

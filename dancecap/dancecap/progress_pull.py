@@ -129,6 +129,11 @@ def pod_progress_path(sid: str) -> str:
     return f"{POD_WS}/dancecap/work/runpod/sessions/{sid}/progress.jsonl"
 
 
+# the take whose mamma/logs a MAMMA command writes: `mamma fit <take>` (often a chunk take, not the job's own: the
+# 2026-10-21 trial's fit job showed no iterations), `mamma run`, `mamma_chunks fit|gate <take>`
+_MAMMA_TAKE = re.compile(r"\bmamma(?:_chunks)?\s+(?:fit|run|gate)\s+([A-Za-z0-9_.-]+)")
+
+
 def default_tails(jobs) -> list[dict]:
     """Third-party logs worth tailing for these jobs (L1 bridge for tools we do not instrument)."""
     out = []
@@ -139,10 +144,12 @@ def default_tails(jobs) -> list[dict]:
                                   or []))
         if not take:
             continue
+        name = getattr(j, "name", None) or (j.get("name") if isinstance(j, dict) else None) or "mamma"
         w = f"{POD_WS}/dancecap/work/{take}"
         if "mamma" in cmds:
-            out.append({"glob": f"{w}/mamma/logs/ma_3d_*.log", "adapter": "mamma_iter",
-                        "lane_from": r"ma_3d_(.+)\.log$", "step": "fit_chunks", "job": "mamma"})
+            for t in dict.fromkeys(_MAMMA_TAKE.findall(cmds) or [take]):
+                out.append({"glob": f"{POD_WS}/dancecap/work/{t}/mamma/logs/ma_3d_*.log", "adapter": "mamma_iter",
+                            "lane_from": r"ma_3d_(.+)\.log$", "step": "fit_chunks", "job": name})
         if "front_pod" in cmds:
             out.append({"glob": f"{w}/front/logs/loc*.log", "adapter": "loc", "lane_from": r"/(loc[^/]*)\.log$",
                         "step": "front", "job": "front"})

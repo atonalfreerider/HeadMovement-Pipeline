@@ -60,9 +60,10 @@ def test_mono_plan_is_what_is_built_plus_session_overhead():
     assert "shape" not in by                               # betas pinned from the statures: no shape pass
     assert not any(s["executor"] in ("agent", "farm") for s in by.values())
     # every fit session uploads the stripped ma_2d checkpoint (540 MB) + the body models
-    assert by["fits"]["overhead_min"]["p50"] == pytest.approx(6.3 + 670 / 2.1 / 60, abs=0.11)
-    # SAM 3D Body for 600 frames on one 4090: about 8 min of compute + install + a session (the trial's good session: 14.3 min)
-    assert 14 < by["sam3d_body"]["p50_min"] < 20
+    assert by["fits"]["overhead_min"]["p50"] == pytest.approx(A.SESSION_OVERHEAD_MIN["p50"] + 670 / 2.1 / 60, abs=0.11)
+    # SAM 3D Body for 600 frames on one 4090: about 8 min of compute + install + a session (the trial's good session: 14.3 min;
+    # the ready pods' session start-up is 3.0 min p50)
+    assert 12 < by["sam3d_body"]["p50_min"] < 17
     assert "beats" in by["analyses"]["deps"] and by["world"]["deps"] == ["camera", "people"]
     assert by["upload"]["optional"] and not any("upload" in s["deps"] for s in by.values())
     t = A.totals(list(by.values()))
@@ -434,10 +435,11 @@ def test_parallel_lanes_share_the_uplink_and_run_in_rounds():
     min where the physical floor is 63), and 8 phones as 8 pods at once where `remote run --parallel` starts 6."""
     long = {s["id"]: s for s in A.route_plan("mono", {**TRIAL, "duration_s": 88.1, "frames": 2643}, {})}
     fits = long["fits"]
-    assert fits["lanes"] == 4 and fits["overhead_min"]["p50"] == pytest.approx(6.3 + 4 * 670 / 2.1 / 60, abs=0.11)
-    assert fits["overhead_min"]["p90"] == pytest.approx(15.0 + 4 * 670 / 0.73 / 60, abs=0.11)
+    o = A.SESSION_OVERHEAD_MIN
+    assert fits["lanes"] == 4 and fits["overhead_min"]["p50"] == pytest.approx(o["p50"] + 4 * 670 / 2.1 / 60, abs=0.11)
+    assert fits["overhead_min"]["p90"] == pytest.approx(o["p90"] + 4 * 670 / 0.73 / 60, abs=0.11)
     one = {s["id"]: s for s in A.route_plan("mono", TRIAL, {})}["fits"]
-    assert one["lanes"] == 1 and one["overhead_min"]["p50"] == pytest.approx(6.3 + 670 / 2.1 / 60, abs=0.11)
+    assert one["lanes"] == 1 and one["overhead_min"]["p50"] == pytest.approx(o["p50"] + 670 / 2.1 / 60, abs=0.11)
     t = A.totals(list(long.values()))
     assert t["wall_min"]["p50"] > 120                                   # the 4 fit lanes share the one home uplink
     multi = {s["id"]: s for s in A.route_plan("multi", {"n": 8, "duration_s": 60.0, "size_mb": 400.0, "fps": 30.0,

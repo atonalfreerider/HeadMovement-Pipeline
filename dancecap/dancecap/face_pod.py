@@ -25,7 +25,9 @@ Locally afterwards (seconds to minutes, one process):
   python -m dancecap.avatar_face <take>               portrait face textures (needs the bake + portrait landmarks)
 
 The bundle holds the take's frames, dancer masks, cameras and SMPL-X fit (likeness + SMPL-X-licensed data on a private
-pod that is deleted at the end) but no MANO / FLAME file, so community cloud is allowed. Estimate for larissa_kadu_38
+pod that is deleted at the end) but no MANO / FLAME file. It runs in Secure Cloud only: MediaPipe wants the vCPUs of a
+secure host, and since 2026-10-21 the runner tries a GPU in every cloud before the next GPU, so a cloud list with
+COMMUNITY put a community A5000 before the secure A4000 (round-2 hand-off). Estimate for larissa_kadu_38
 (8 cameras x ~1150 frames, ~9000 face crops): MediaPipe ~0.06 s per crop per CPU -> ~1 min on 24 CPUs; survey ~5 min;
 expr ~5 min; dominated by the frames upload (~2.6 GB at 2.5 MB/s ~ 18 min) unless batched with the texture bake.
 """
@@ -39,7 +41,7 @@ from .take import PACKAGE_ROOT
 
 GPUS = ["NVIDIA RTX A5000", "NVIDIA RTX A4000", "NVIDIA A40", "NVIDIA RTX A6000", "NVIDIA L40S",
         "NVIDIA A100 80GB PCIe", "NVIDIA A100-SXM4-80GB"]       # CPU work: the cheapest pod with many vCPUs
-CLOUDS = ["SECURE", "COMMUNITY"]
+CLOUDS = ["SECURE"]
 MAX_MINUTES = 90
 
 

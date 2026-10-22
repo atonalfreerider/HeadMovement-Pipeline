@@ -21,8 +21,10 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import os
 import re
+import secrets as _secrets
 import shlex
 import subprocess
 import sys
@@ -361,6 +363,9 @@ class Pod:
     user: str = "root"
     killswitch: dict | None = None
     choice: dict | None = None   # how pod_session picked this GPU / cloud (options tried, max-cost exclusions)
+    cpu: bool = False            # a CPU pod (no GPU, no CUDA check; the bootstrap installs the CPU torch)
+    machine: dict | None = None  # what the pod record says: {vcpu, ram_gb} (checked against the jobs' minimums)
+    volume: dict | None = None   # the network volume mounted on this pod: {id, dc, mount} (the volume route)
 
     def _ssh_base(self) -> list[str]:
         return ["ssh", "-i", str(SSH_KEY), "-p", str(self.port), "-o", "StrictHostKeyChecking=no",
@@ -425,6 +430,16 @@ class Pod:
 
     def put(self, local: Path, remote: str, timeout: float | None = None) -> None:
         self._scp(str(local), f"{self.user}@{self.host}:{remote}", timeout)
+
+    def feed(self, cmd: str, data: bytes, timeout: float = 120) -> str:
+        """stdout of a pod command that reads `data` on its stdin (one ssh round trip: a script goes up and starts at once)."""
+        p = subprocess.run(self._ssh_base() + [f"bash -lc {shlex.quote(cmd)}"], input=data, capture_output=True,
+                           timeout=timeout)
+        out = p.stdout.decode("utf-8", "replace")
+        if p.returncode != 0:
+            raise RuntimeError(f"pod command failed ({p.returncode}): {cmd[:200]}: "
+                               f"{(p.stderr.decode('utf-8', 'replace') or out)[-400:]}")
+        return out
 
     def put_secret(self, name: str, value: str, timeout: float = 60) -> None:
         """Write a secret to /workspace/.secrets/<name> (mode 600) through ssh STDIN: the value never appears in a command
@@ -613,11 +628,224 @@ def option_order(gpus: list[str], clouds: list[str], broken: dict | None = None)
 
 _GPU_MEMO = threading.local()   # pod_session reads the GPU catalog once per round, not once per (gpu, cloud) (~0.7 s each)
 
+# CPU pods (owner 2026-10-21: everything Runpod can do goes there; the analyses and beats need no GPU). Secure Cloud only;
+# $ per vCPU-hour and GB RAM per vCPU = farm.pods.CPU_FLAVORS (list-cpu-types 2026-10-08), compute-optimized first.
+CPU_FLAVORS = {"cpu5c": (0.035, 2), "cpu3c": (0.03, 2), "cpu5g": (0.046, 4), "cpu3g": (0.04, 4)}
+CPU_PRIORITY = ["cpu5c", "cpu3c", "cpu5g", "cpu3g"]
+DEFAULT_VCPU = 16
+CPU_DISK_GB = 40
+
+
+def cpu_label(flavor: str, vcpu: int) -> str:
+    return f"cpu:{flavor}x{int(vcpu)}"
+
+
+def parse_cpu_label(label: str) -> tuple[str, int] | None:
+    m = re.fullmatch(r"cpu:([a-z0-9]+)x(\d+)", str(label or ""))
+    return (m.group(1), int(m.group(2))) if m else None
+
+
+def cpu_options(vcpu: int = DEFAULT_VCPU, flavors: list[str] | None = None, min_ram_gb: float | None = None) -> list[str]:
+    """CPU pod options (labels cpu:<flavor>x<vcpu>) in the order tried; a flavor whose RAM (GB per vCPU x vcpu) is under
+    min_ram_gb is left out."""
+    out = []
+    for fl in flavors or CPU_PRIORITY:
+        if fl not in CPU_FLAVORS:
+            continue
+        if min_ram_gb and CPU_FLAVORS[fl][1] * vcpu < float(min_ram_gb):
+            continue
+        out.append(cpu_label(fl, vcpu))
+    return out
+
+
+def cpu_offers(vcpu: int) -> dict[str, list[str]] | None:
+    """{flavor: [data centers with stock]} for CPU pods of `vcpu` vCPUs (v2 catalog), None when it cannot be read. The
+    2026-10-22 live run asked for 16 vCPUs in every flavor and got 'no longer any instances' 8 times: at 16 only EUR-IS-1
+    had cpu3 stock, at 8 the cpu3 flavors were HIGH in EU-RO-1 and 7 more data centers, cpu5 only in EUR-IS-1."""
+    try:
+        d = rest("GET", f"/catalog/cpus?include=AVAILABILITY&product=POD&vcpuCount={int(vcpu)}", base=REST_V2, timeout=30)
+        return {c["id"]: [x["id"] for x in c.get("dataCenters") or []
+                          if str(x.get("availability") or "").upper() not in ("", "NONE")]
+                for c in d.get("cpus") or [] if c.get("id")}
+    except Exception:  # noqa: BLE001 - no catalog: every flavor is tried blind
+        return None
+
+
+def cpu_plan(vcpu: int, flavors: list[str] | None = None, min_ram_gb: float | None = None,
+             volume: dict | None = None) -> tuple[list[tuple[str, str]], dict[str, list[str]]]:
+    """(options, {label: data centers}) for a CPU pod: `vcpu` vCPUs, then half as many (>= 4), each flavor that the
+    catalog offers at that size; with a volume, every option in its data center first (VOL_CLOUD). Without a readable
+    catalog: every flavor at `vcpu`, blind."""
+    sizes = [int(vcpu)] + ([int(vcpu) // 2] if int(vcpu) // 2 >= 4 else [])
+    vol_opts, plain, dcs = [], [], {}
+    for n in sizes:
+        offers = cpu_offers(n)
+        for lab in cpu_options(n, flavors, min_ram_gb):
+            fl = parse_cpu_label(lab)[0]
+            if offers is None:
+                if n == sizes[0]:
+                    vol_opts.append((lab, VOL_CLOUD))
+                    plain.append((lab, "SECURE"))
+                continue
+            where = offers.get(fl) or []
+            if not where:
+                continue
+            dcs[lab] = where
+            if volume and volume["dc"] in where:
+                vol_opts.append((lab, VOL_CLOUD))
+            plain.append((lab, "SECURE"))
+    if volume and not vol_opts and plain:
+        # the catalog's per-data-center stock flickers (2026-10-22: EU-RO-1 listed at 02:01, not at 02:06, again at 02:08):
+        # two blind tries in the volume's data center at the smallest size cost ~2 s; the volume saves the model upload
+        n = sizes[-1]
+        vol_opts = [(lab, VOL_CLOUD) for lab in cpu_options(n, flavors, min_ram_gb)[:2]]
+    return (vol_opts if volume else []) + plain, dcs
+
+
+def option_price(gpu: str, cloud: str) -> float | None:
+    """$/h of a pod option: a GPU type in a cloud (gpu_price), or a CPU label (secure, per vCPU-hour)."""
+    c = parse_cpu_label(gpu)
+    if c:
+        return round(CPU_FLAVORS[c[0]][0] * c[1], 4) if c[0] in CPU_FLAVORS else None
+    return gpu_price(gpu, cloud)
+
+
+REST = "https://rest.runpod.io/v1"
+REST_V2 = "https://api.runpod.io/v2"   # the catalog with per-data-center CPU availability
+
+
+class RestError(RuntimeError):
+    pass
+
+
+def rest(method: str, path: str, body: dict | None = None, timeout: float = 60, base: str = REST):
+    """Runpod REST (v1 by default; the API key goes in the Authorization header only, never into a log or an error)."""
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(f"{base}{path}", method=method, data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"Authorization": f"Bearer {_api_key()}", "Content-Type": "application/json",
+                                          "User-Agent": "dancecap-farm/1.0 (+curl-compatible)"})  # urllib's default UA gets a Cloudflare 1010
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read().decode()
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as e:
+        raise RestError(f"{method} {path}: HTTP {e.code}: {e.read().decode()[:600]}") from None
+
+
+def _machine(pod_json: dict | None) -> dict:
+    """{vcpu, ram_gb} from a pod record (REST shape: vcpuCount, memoryInGb); missing values are left out."""
+    out = {}
+    for k, src in (("vcpu", "vcpuCount"), ("ram_gb", "memoryInGb")):
+        v = (pod_json or {}).get(src)
+        if v is None:
+            v = ((pod_json or {}).get("machine") or {}).get(src)
+        try:
+            if v is not None and float(v) > 0:
+                out[k] = float(v)
+        except (TypeError, ValueError):
+            pass
+    return out
+
+
+def too_small(machine: dict, min_ram_gb: float | None, min_vcpu: float | None) -> str | None:
+    """Why a host is under a batch's minimums (host RAM, vCPUs), or None (also when the record does not say)."""
+    bad = []
+    if min_ram_gb and machine.get("ram_gb") is not None and machine["ram_gb"] < float(min_ram_gb):
+        bad.append(f"{machine['ram_gb']:.0f} GB RAM < {float(min_ram_gb):.0f}")
+    if min_vcpu and machine.get("vcpu") is not None and machine["vcpu"] < float(min_vcpu):
+        bad.append(f"{machine['vcpu']:.0f} vCPUs < {float(min_vcpu):.0f}")
+    return ", ".join(bad) or None
+
+
+def _rest_create(body: dict) -> dict:
+    """POST /pods. A 5xx may still have created the pod: look for its (unique) name, and if Runpod lists it, record and
+    delete it before the error goes up (it would bill unrecorded)."""
+    try:
+        return rest("POST", "/pods", body, timeout=120)
+    except RestError as e:
+        if "HTTP 5" in str(e) and "no longer any instances" not in str(e):   # that one created nothing
+            time.sleep(4)
+            live = listed_pods() or {}
+            for pid, rec in live.items():
+                if rec.get("name") == body["name"]:
+                    e.pod_id = pid   # type: ignore[attr-defined]
+        raise
+
+
+# The volume route (2026-10-22): a pod in the farm volume's data center with the volume mounted (secure cloud only) reads
+# the body models and the ma_2d checkpoint from it instead of the home uplink. Its options carry this cloud name; they go
+# before the same GPU type's (or CPU flavor's) plain options.
+VOL_CLOUD = "SECURE+VOL"
+VOL_MOUNT = "/hmvol"   # not /workspace: the session's workspace stays on the pod's own disk
+
+
+def with_volume(order: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Each GPU type / CPU flavor first through the volume route, then its plain options, in the given order."""
+    out, seen = [], set()
+    for g, c in order:
+        if g not in seen:
+            seen.add(g)
+            out.append((g, VOL_CLOUD))
+        out.append((g, c))
+    return out
+
+
+def stock_in(gpu: str, dc: str) -> bool:
+    """Whether the GPU catalog lists stock of `gpu` in data center `dc` (CPU flavors: assumed, EU-RO-1 had HIGH stock of
+    every flavor, FARM.md)."""
+    if parse_cpu_label(gpu):
+        return True
+    for g in gpu_list():
+        if g.get("gpuId") == gpu:
+            return any(d.get("dataCenterId") == dc and str(d.get("stockStatus") or "none").lower() not in ("none", "")
+                       for d in g.get("dataCenterAvailability") or [])
+    return False
+
+
+def _create_option(name: str, gpu: str, cloud: str, image: str, disk_gb: int, min_ram_gb: float | None = None,
+                   min_vcpu: float | None = None, volume: dict | None = None, dcs: list[str] | None = None) -> dict:
+    """Create the pod of one option -> the create response ({id, costPerHr, ...}). A GPU pod goes through runpodctl, or
+    through REST when the jobs set host minimums (runpodctl has no flag for them); a CPU pod through REST. Port 22/tcp is
+    requested at creation (without it Runpod gives only its ssh proxy, which can't scp). REST pods get a unique name so a
+    5xx that created one anyway finds it (_rest_create)."""
+    c = parse_cpu_label(gpu)
+    vol = volume if cloud == VOL_CLOUD else None
+    cloud = "SECURE" if cloud == VOL_CLOUD else cloud
+    if c or min_ram_gb or min_vcpu:
+        body = {"name": f"dancecap-{name}-{_secrets.token_hex(3)}", "imageName": image, "cloudType": cloud,
+                "containerDiskInGb": int(disk_gb), "volumeInGb": 0, "ports": ["22/tcp"]}
+        if vol:
+            body.update(dataCenterIds=[vol["dc"]], networkVolumeId=vol["id"], volumeMountPath=vol.get("mount") or VOL_MOUNT)
+        if c:
+            body.update(computeType="CPU", cloudType="SECURE", cpuFlavorIds=[c[0]], vcpuCount=c[1],
+                        containerDiskInGb=min(int(disk_gb), CPU_DISK_GB))
+            if dcs and not vol:   # the data centers the catalog lists with stock of this flavor and size
+                body["dataCenterIds"] = list(dcs)
+        else:
+            body.update(computeType="GPU", gpuTypeIds=[gpu], gpuCount=1)
+            if min_ram_gb:
+                body["minRAMPerGPU"] = int(math.ceil(float(min_ram_gb)))
+            if min_vcpu:
+                body["minVCPUPerGPU"] = int(math.ceil(float(min_vcpu)))
+            if cloud == "COMMUNITY":
+                body["supportPublicIp"] = True
+        return _rest_create(body)
+    args = ["pod", "create", "--name", f"dancecap-{name}", "--image", image, "--gpu-id", gpu,
+            "--container-disk-in-gb", str(disk_gb), "--cloud-type", cloud, "--ports", "22/tcp"]
+    if cloud == "COMMUNITY":
+        args.append("--public-ip")
+    if vol:
+        args += ["--data-center-ids", vol["dc"], "--network-volume-id", vol["id"],
+                 "--volume-mount-path", vol.get("mount") or VOL_MOUNT]
+    return _ctl(*args, timeout=180)  # no --wait: record the pod in the ledger the moment it exists
+
 
 @contextlib.contextmanager
 def pod_session(name: str, max_minutes: float, gpus: list[str] | None = None, image: str = DEFAULT_IMAGE,
                 disk_gb: int = 80, clouds: list[str] | None = None, start_timeout_min: float = 6,
-                max_start_attempts: int = 2, max_cost: float | None = None):
+                max_start_attempts: int = 2, max_cost: float | None = None, cpu: dict | None = None,
+                min_ram_gb: float | None = None, min_vcpu: float | None = None, volume: dict | None = None):
     """Create a pod, yield it, and always delete it. Refuses to start if the budget can't cover max_minutes.
 
     max_cost: a per-session ceiling ($) on top of the global cap: GPU/cloud options whose listed price x
@@ -625,15 +853,31 @@ def pod_session(name: str, max_minutes: float, gpus: list[str] | None = None, im
     Options are tried fastest GPU first (option_order). The yielded Pod carries `choice` = what was tried and why; when the
     session max or the remaining budget ruled out a FASTER GPU than the one picked, choice["warning"] says so (also printed)
     so a slower card is never chosen silently. A failure raises with the same `choice` attached (e.choice).
+
+    cpu: {"vcpu": N, "flavors": [...]} = a CPU pod (Secure Cloud, REST create, no CUDA check) instead of a GPU.
+    min_ram_gb / min_vcpu: the host's RAM and vCPUs (a GPU pod is created through REST with minRAMPerGPU / minVCPUPerGPU;
+    every pod's record is checked, and a host under them is deleted and the next option tried).
+    volume: {id, dc, mount} = try each GPU type / CPU flavor first in that data center with the network volume mounted
+    (VOL_CLOUD options, skipped at once without stock there); the yielded Pod's `volume` says whether it got it.
     """
     ensure_ssh_key()
     last_err = None
     pod = None
     attempts = 0
-    broken = broken_pairs()
-    order, demoted = option_order(gpus or GPU_PREFERENCE, clouds or CLOUDS, broken)
+    cpu_dcs: dict = {}
+    if cpu is not None:
+        broken: dict = {}
+        order, cpu_dcs = cpu_plan(int(cpu.get("vcpu") or DEFAULT_VCPU), cpu.get("flavors"), min_ram_gb, volume)
+        demoted: list = []
+    else:
+        broken = broken_pairs()
+        order, demoted = option_order(gpus or GPU_PREFERENCE, clouds or CLOUDS, broken)
+    if volume and cpu is None:       # a faster GPU type stays first: each type through the volume route, then plain
+        order = with_volume(order)
     choice: dict = {"order": [f"{g} ({c})" for g, c in order], "max_cost": max_cost, "max_minutes": max_minutes,
                     "tried": [], "demoted": [{"gpu": g, "cloud": c, "host": broken[(g, c)]} for g, c in demoted]}
+    if cpu is not None or min_ram_gb or min_vcpu:
+        choice["needs"] = {k: v for k, v in (("cpu", cpu), ("min_ram_gb", min_ram_gb), ("min_vcpu", min_vcpu)) if v}
     for g, c in demoted:
         print(f"[runpod] {short_gpu(g)} ({c}) is tried after the next GPU type: it led to the broken host {broken[(g, c)]}")
     started = False   # a create was attempted (a pure budget refusal stays a BudgetError, as before)
@@ -642,11 +886,14 @@ def pod_session(name: str, max_minutes: float, gpus: list[str] | None = None, im
         for gpu, cloud in order:
             row: dict = {"gpu": gpu, "cloud": cloud}
             choice["tried"].append(row)
-            price = gpu_price(gpu, cloud)
+            is_cpu = parse_cpu_label(gpu) is not None
+            on_vol = cloud == VOL_CLOUD
+            price = option_price(gpu, "SECURE" if on_vol else cloud)
             row["price"] = price
-            if price is None:
+            if price is None or (on_vol and not stock_in(gpu, volume["dc"])):
                 row["result"] = "no stock"
-                print(f"[runpod] {gpu} ({cloud}): not offered / no stock right now")
+                print(f"[runpod] {gpu} ({cloud}): not offered / no stock right now"
+                      + (f" in {volume['dc']}" if on_vol and price is not None else ""))
                 continue
             # budget check uses the listed price BEFORE anything is created
             need = price * (max_minutes + start_timeout_min) / 60
@@ -663,20 +910,17 @@ def pod_session(name: str, max_minutes: float, gpus: list[str] | None = None, im
                                        f"remaining ${rem:.2f} of the ${cap():.2f} cap")
                 print(f"[runpod] skip {gpu} ({cloud}): {last_err}")
                 continue
-            # 22/tcp must be requested at creation: without it Runpod gives only its ssh proxy, which can't scp
-            args = ["pod", "create", "--name", f"dancecap-{name}", "--image", image, "--gpu-id", gpu,
-                    "--container-disk-in-gb", str(disk_gb), "--cloud-type", cloud, "--ports", "22/tcp"]
-            if cloud == "COMMUNITY":
-                args.append("--public-ip")
             started = True
             _GPU_MEMO.rows = None   # stock moves while a pod starts: the next option reads the catalog again
+            t_create = time.time()
             try:
-                created = _ctl(*args, timeout=180)  # no --wait: record the pod in the ledger the moment it exists
+                created = _create_option(name, gpu, cloud, image, disk_gb, min_ram_gb, min_vcpu, volume,
+                                         cpu_dcs.get(gpu))
             except Exception as e:  # no capacity for this GPU/cloud: try the next one
                 row.update(result="create failed", error=str(e)[:200])
                 print(f"[runpod] {gpu} ({cloud}): create failed: {str(e)[:200]}")
                 last_err = e
-                pid = _id_from_error(str(e))
+                pid = getattr(e, "pod_id", None) or _id_from_error(str(e))
                 if pid:
                     _record(pid, name, gpu, cloud, price, max_minutes)
                     row["pod_id"] = pid   # analyze.run_pods charges every pod a session made to its run, exactly
@@ -688,17 +932,26 @@ def pod_session(name: str, max_minutes: float, gpus: list[str] | None = None, im
             row["pod_id"] = pod_id
             print(f"[runpod] created {pod_id}: {gpu} ({cloud}) ${cost:.2f}/h; waiting up to {start_timeout_min:.0f} min "
                   f"for the container")
+            small = None
             try:
                 pod = _wait_running(pod_id, start_timeout_min * 60)
                 why_bad = None
                 if pod:
+                    row["t_running"] = round(time.time() - t_create, 1)
+                    mach = {**_machine(created), **_machine(pod)}
+                    if mach:
+                        row["machine"] = mach
+                    small = too_small(mach, min_ram_gb, min_vcpu)
                     host, port = _pod_ssh(pod)
                     denied = host_denied(host)
-                    if denied:
+                    if small:
+                        why_bad = f"host {host} is too small for the jobs ({small})"
+                    elif denied:
                         why_bad = f"host {host} is on the broken-host list ({denied})"
                         remember_broken(host, gpu, cloud)
                     else:
-                        p = Pod(pod_id, name, gpu, cost, host, port)
+                        p = Pod(pod_id, name, gpu, cost, host, port, cpu=is_cpu, machine=mach or None,
+                                volume={**volume, "mount": volume.get("mount") or VOL_MOUNT} if on_vol else None)
                         for _ in range(30):  # sshd answers before keys are installed
                             try:
                                 if p.run("true", check=False, timeout=40) == 0:
@@ -706,8 +959,9 @@ def pod_session(name: str, max_minutes: float, gpus: list[str] | None = None, im
                             except TimeoutError:
                                 pass
                             time.sleep(5)
-                        ok, detail = preflight(p)
-                        if detail.startswith("unchecked") or not ok:
+                        # a CPU pod has no GPU to check (and nvidia-smi's absence must not deny its host)
+                        ok, detail = (True, "unchecked: a CPU pod") if is_cpu else preflight(p)
+                        if (detail.startswith("unchecked") or not ok) and not is_cpu:
                             print(f"[runpod] CUDA check on {host}: {detail}")
                         if ok:
                             if not detail.startswith("unchecked"):
@@ -721,7 +975,18 @@ def pod_session(name: str, max_minutes: float, gpus: list[str] | None = None, im
                 raise
             if pod and not why_bad:
                 row["result"] = "ok"
+                row["t_ready"] = round(time.time() - t_create, 1)
                 break
+            if why_bad and small:
+                row.update(result="host too small", why=small)
+                last_err = RuntimeError(why_bad)
+                print(f"[runpod] {why_bad}: deleting {pod_id} and trying the next option")
+                _delete(pod_id, reason=why_bad[:120])
+                pod = None
+                attempts += 1
+                if attempts >= max_start_attempts + 1:
+                    break
+                continue
             if why_bad:
                 row.update(result="broken host", host=why_bad.split()[1])
                 last_err = RuntimeError(why_bad)
@@ -798,7 +1063,8 @@ def _no_pod_error(last_err, choice: dict, started: bool) -> Exception:
     if not started and priced and all(r.get("result") == "over the remaining budget" for r in priced):
         err: Exception = BudgetError(str(last_err))
     else:
-        msg = f"no GPU pod could be started: {last_err}"
+        cpu = any(parse_cpu_label(r.get("gpu")) for r in rows)
+        msg = f"no {'CPU' if cpu else 'GPU'} pod could be started: {last_err}"
         over = [r for r in priced if r.get("result") == "over the session max"]
         if over and not started:
             cheapest = min(over, key=lambda r: r["need"])

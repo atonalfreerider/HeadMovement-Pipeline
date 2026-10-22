@@ -386,6 +386,9 @@ def test_a_failed_first_bootstrap_stays_in_the_gantt(tmp_path):
 
 def _running_cmd_session(tmp_path, sid, rates_keys=None, frames=None, warnings=None):
     now = time.time()
+    # the runner.log clock times are read on the session id's date (progress.sid_date): the id carries today's date, else
+    # the step started a day off (the tests were written with 20261021 ids and failed from the next day on)
+    sid = time.strftime("%Y%m%d", time.localtime(now - 700)) + sid[8:]
     lines = [f"[pod-runner {_hh(now - 700)}] bundle_scan ...", f"[pod-runner {_hh(now - 699)}] bundle_scan done in 1.0s",
              f"[pod-runner {_hh(now - 600)}] j/run ..."]
     d = tmp_path / sid

@@ -255,6 +255,8 @@ def job(max_minutes: float = 75, chunk: int = CHUNK, reserve_min: float = 30.0, 
         frames_in = [_ws(WORK / "frames" / CAM) + "/"]
     d = {"schema": "dancecap.pod_job/1", "name": JOB_NAME, "take": TAKE, "max_minutes": max_minutes, "needs": [],
          "min_vram_gb": 24,
+         # its own uv venv (install.sh): no bootstrap base / check for the image python
+         "base": False,
          "inputs": [_ws(INPUT) + "/", *frames_in, _ws(WORK / "people" / f"masks_{CAM}.npz")],
          "exclude": ["dancecap/work/runpod/pywheels", "dancecap/work/runpod/wheelhouse", "mamma-turing"],
          "secrets": {"HF_TOKEN": "C:/Users/johnb/Desktop/sam3d-body-key-hf.txt"},
@@ -262,7 +264,7 @@ def job(max_minutes: float = 75, chunk: int = CHUNK, reserve_min: float = 30.0, 
                  "S3DB_HF_REPO": "facebook/sam-3d-body-dinov3", "S3DB_HF_REV": "11aaa346c7204874a1cbafe3d39a979080b2c55a",
                  "DINOV3_COMMIT": "5aa7e93ab42ae3526291f6b4e3fcd22637e03326",
                  "MHR_COMMIT": "877cba5ee61a5f77d1457bf4de93a66695132bd9", "MHR_ASSETS_RELEASE": "v1.0.1",
-                 "TORCH_HOME": f"{POD_ROOT}/torch_home", "HF_HOME": f"{POD_ROOT}/hf_home", "UV_LINK_MODE": "copy",
+                 "TORCH_HOME": f"{POD_ROOT}/torch_home", "HF_HOME": f"{POD_ROOT}/hf_home", "UV_LINK_MODE": "hardlink",
                  "TQDM_DISABLE": "1", "HF_HUB_DISABLE_PROGRESS_BARS": "1"},
          "commands": [
              {"name": "install", "timeout_min": 10, "cmd": "bash remote/cand_sam3d_body/install.sh"},

@@ -93,12 +93,13 @@ def _cmd_remote_jobs(a):
     if getattr(a, "parallel", False) and a.action == "run" and not a.session:
         # independent job groups on separate pods at the same time (owner 2026-10-21: speed over cost)
         res = rj.run_parallel(jobs, label="batch", max_cost=a.max_cost, gpus=a.gpus.split(",") if a.gpus else None,
-                              force=a.force, dry_run=a.dry_run, max_minutes=a.max_minutes, max_pods=a.max_pods)
+                              force=a.force, dry_run=a.dry_run, max_minutes=a.max_minutes, max_pods=a.max_pods,
+                              cpu=True if a.cpu else None, vcpu=a.vcpu)
         print(json.dumps(res, indent=1, default=str))
         return
     res = rj.run_session(jobs, sid=a.session, label=a.action if a.action == "validate" else "batch",
                          max_cost=a.max_cost, gpus=a.gpus.split(",") if a.gpus else None, force=a.force,
-                         dry_run=a.dry_run, max_minutes=a.max_minutes)
+                         dry_run=a.dry_run, max_minutes=a.max_minutes, cpu=True if a.cpu else None, vcpu=a.vcpu)
     print(json.dumps(res, indent=1, default=str))
 
 
@@ -525,13 +526,17 @@ def main(argv=None):
     sp.add_argument("--session", help="run/validate: resume this session id (work/runpod/sessions/<sid>)")
     sp.add_argument("--max-cost", type=float, help="run/validate: per-session worst-case $ ceiling (price x max minutes)")
     sp.add_argument("--max-minutes", type=float, help="override the pod lifetime (kill switch); default = estimate")
-    sp.add_argument("--gpus", help="comma-separated Runpod GPU ids to try (default remote.GPU_PREFERENCE)")
+    sp.add_argument("--gpus", help="comma-separated Runpod GPU ids to try, in this order (default: remote.GPU_LADDER, the "
+                                   "fastest card with enough memory for every job first)")
     sp.add_argument("--force", action="store_true", help="re-run jobs already done in this session")
     sp.add_argument("--dry-run", action="store_true", help="build the bundle + estimate, no pod")
     sp.add_argument("--parallel", action="store_true",
                     help="run: independent jobs (no `after` link) on separate pods at the same time, one session each "
                          "(--max-cost applies per session)")
     sp.add_argument("--max-pods", type=int, default=6, help="--parallel: at most this many pods at once")
+    sp.add_argument("--cpu", action="store_true",
+                    help="run: on a CPU pod (Secure Cloud, CPU torch); default: a CPU pod when every job says \"cpu\": true")
+    sp.add_argument("--vcpu", type=int, help="run --cpu: the CPU pod's vCPUs (default remote.DEFAULT_VCPU)")
     sp.add_argument("--frames", type=int, default=180, help="validate: synthetic MAMMA grid frames")
     sp.set_defaults(fn=cmd_remote)
     sp = sub.add_parser("cameras", help="static-room SfM (ALIKED+LightGlue, COLMAP) + per-frame pose/zoom of every camera")
