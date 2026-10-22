@@ -77,7 +77,7 @@ def _ff(ffmpeg: str, *args: str, binary: bool = False) -> subprocess.CompletedPr
 
 def probe(ffprobe: str, path: Path) -> dict:
     r = _run(ffprobe, ["-v", "error", "-show_entries",
-                       "stream=index,codec_type,codec_name,profile,width,height,r_frame_rate,avg_frame_rate,nb_frames,duration,"
+                       "stream=index,codec_type,codec_name,profile,width,height,r_frame_rate,avg_frame_rate,nb_frames,duration,start_time,"
                        "sample_rate,channels,bit_rate:format=duration", "-of", "json", str(path)])
     if r.returncode != 0:
         raise AudioFixError(f"ffprobe {path.name} failed: {r.stderr[-400:]}")
@@ -104,6 +104,16 @@ def video_seconds(p: dict) -> tuple[float, int, float]:
     n = int(v["nb_frames"]) if str(v.get("nb_frames", "")).isdigit() else -1
     dur = n / fps if n > 0 and fps > 0 else float(v.get("duration") or p["format"]["duration"])
     return dur, n, fps
+
+
+def video_start(p: dict) -> float:
+    """start time (s) of the video stream (the first picture's pts); 0 when unknown"""
+    v = _stream(p, "video") or {}
+    try:
+        x = float(v.get("start_time"))
+    except (TypeError, ValueError):
+        return 0.0
+    return x if math.isfinite(x) else 0.0
 
 
 def video_md5(ffmpeg: str, path: Path) -> str:
@@ -218,14 +228,21 @@ def fix(video: Path, mix: Path, *, start: float = 0.0, report: Path | None = Non
     p_raw = probe(ffprobe, raw)
     dur, frames, fps = video_seconds(p_raw)
     tmp = video.with_name(video.stem + "_audiofix_tmp" + video.suffix)
-    log(f"[audiofix] video {frames} frames @ {fps:g} fps = {dur:.3f} s; audio = {mix.name} from {start:.3f} s, AAC {AAC_BITRATE}")
-    _ff(ffmpeg, "-y", "-i", str(raw), "-ss", f"{start:.6f}", "-t", f"{dur:.6f}", "-i", str(mix),
+    # the Unity Recorder's H.264 (B-frames) gives the first picture pts = 1 frame with no edit list: frame k (film start + k/fps) was shown
+    # at (k + 1)/fps, one frame behind the sound (the independent check of the v3 films, 2026-10-22). The video stream is shifted back by
+    # its own start (stream copy: same packets, pts from 0) so picture k and the mix at k/fps play together.
+    vstart = video_start(p_raw)
+    shift = ["-itsoffset", f"{-vstart:.6f}"] if vstart > 1e-4 else []
+    log(f"[audiofix] video {frames} frames @ {fps:g} fps = {dur:.3f} s (first picture at {vstart:.6f} s{' -> 0' if shift else ''}); "
+        f"audio = {mix.name} from {start:.3f} s, AAC {AAC_BITRATE}")
+    _ff(ffmpeg, "-y", *shift, "-i", str(raw), "-ss", f"{start:.6f}", "-t", f"{dur:.6f}", "-i", str(mix),
         "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-af", f"apad=whole_dur={dur:.6f}",
         "-c:a", "aac", "-b:a", AAC_BITRATE, "-ar", str(SR), "-ac", "2", "-movflags", "+faststart", str(tmp))
 
     res = verify(tmp, raw, mix, start=start, ffmpeg=ffmpeg, ffprobe=ffprobe)
     res.update({"kind": "film_audio_fix", "created": time.strftime("%Y-%m-%d %H:%M:%S"), "video": str(video), "raw": str(raw),
                 "mix": str(mix), "start_s": round(start, 6), "duration_s": round(dur, 6), "frames": frames, "fps": fps,
+                "video_start_raw_s": round(vstart, 6),
                 "method": f"video stream copied; audio = AAC-LC {AAC_BITRATE} 48 kHz stereo of the mix from film {start:.3f} s, "
                           f"padded to the video length (NOTES_R10)"})
     if res["pass"]:
@@ -265,6 +282,10 @@ def verify(new: Path, raw: Path, mix: Path, *, start: float, ffmpeg: str = "ffmp
     add("audio stream", a.get("codec_name") == "aac" and int(a.get("channels") or 0) == 2 and str(a.get("sample_rate")) == str(SR),
         f"{a.get('codec_name')} {a.get('sample_rate')} Hz x{a.get('channels')}, {int(a.get('bit_rate') or 0) / 1000:.0f} kb/s")
     add("audio duration", abs(adur - dur) <= 0.03, f"audio {adur:.3f} s, video {dur:.3f} s")
+    vs_new = video_start(p_new)
+    astart = float(a.get("start_time") or 0.0)
+    add("picture k with the sound at k/fps", abs(vs_new - astart) <= 0.5 / max(fps, 1.0),
+        f"first picture at {vs_new:.6f} s, audio from {astart:.6f} s (raw first picture {video_start(p_raw):.6f} s)")
 
     rec = decode(ffmpeg, ["-i", str(new)])
     rawa = decode(ffmpeg, ["-i", str(raw)])

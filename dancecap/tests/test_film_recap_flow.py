@@ -1,5 +1,9 @@
 """v3 of the class-recap direction (dancecap.film_recap_flow): the back-to-the-axis finder, the pivot target, the duration rule and its easing,
-the side-on azimuth, where a transition sits, carving a pivot window into the segments, the schedule's holds. Pure functions, no capture data."""
+the side-on azimuth, where a transition sits, carving a pivot window into the segments, the schedule's holds; v4 (owner 2026-10-22): the C2 ramps
+and way profiles, the live blend, the way durations and caps, the targets, the orbit plan, the long-hold planner, the cranes' holds; v4.1 (owner
+2026-10-22 after the v3 films): the cruise crane, the targets, the no-reversal way link, the 20-s-hold planner, Jev's need series, the legend's
+place and the crop that clears it, the overhead window. Pure functions, no capture data."""
+import math
 import sys
 from pathlib import Path
 
@@ -203,3 +207,313 @@ def test_cfg_from_doc_reads_the_rules_a_direction_was_built_with():
     c = fl.cfg_from_doc(doc)
     assert c.axis_share == 0.4 and c.rule["phone_in"]["lo"] == 1.3 and c.hold_s["phone"] == 2.0 and c.ground_m == (0.5, 2.4)
     assert fl.cfg_from_doc({}).axis_share == fl.FlowCfg().axis_share
+
+
+# ---------------------------------------------------------------- v3.2: the 3D views take only the time they need (owner "~50% phone")
+
+
+def test_v3_2_phone_ways_rest_on_their_floors():
+    """v3.2: the phone ways are as short as the frustum's readable floor and the 200 deg/s arc floor allow; the way out of a phone starts at the
+    next segment (the phone keeps its full-frame video to its end)"""
+    cfg = fl.FlowCfg()
+    assert cfg.depart_before_s == 0.0
+    for typ in ("phone_in", "phone_out", "phone_to_phone"):
+        T = fl.rule_duration(typ, 0, 0, 0, cfg)
+        assert T >= fl.readable_floor(typ, cfg) and T - fl.readable_floor(typ, cfg) < 0.1     # (the floor, not an old base, sets the shortest way)
+        roles = {"phone_in": ("enter",), "phone_out": ("leave",), "phone_to_phone": ("enter", "leave")}[typ]
+        for role in roles:
+            env = fl.frustum_envelope(role, typ, 10.0, T, cfg)
+            assert fl.frustum_readable(role, typ, env, 10.0, T, cfg) >= cfg.frustum_readable_s - 1e-9
+    assert fl.rule_duration("phone_in", 30, 0, 0, cfg) == fl.rule_duration("phone_out", 30, 0, 0, cfg)
+
+
+def test_full_frame_counts_from_the_arrival_to_the_way_out():
+    sh = [shot("3d", 0, 6), shot("phone", 6, 12, phone="00"), shot("3d", 12, 18)]
+    sh[1].trans = {"type": "phone_in", "start_film": 5.0, "arrive_film": 6.0}
+    sh[2].trans = {"type": "phone_out", "start_film": 11.6, "arrive_film": 12.5}
+    assert fl.full_frame_s(sh) == pytest.approx(5.6)
+
+
+def test_split_at_film_keeps_the_time_map_and_refuses_a_replay():
+    segs = [seg("a", 0.0, 4.0, off=2.0), seg("b", 4.0, 9.0, off=2.0)]
+    assert fl.split_at_film(segs, 8.0)                                     # film 8.0 = master 6.0, inside b
+    assert [s["id"] for s in segs] == ["a", "b", "b_r"]
+    assert segs[1]["dance"] == [4.0, 6.0] and segs[2]["film"] == [8.0, 11.0]
+    assert fl.split_at_film(segs, 6.0) and len(segs) == 3                  # an existing boundary: nothing to do
+    r = seg("r", 1.0, 3.0, off=10.0)
+    r["replay"] = True
+    assert not fl.split_at_film([r], 12.0)
+
+
+def test_chapters_must_open_their_shots():
+    a, b, c = seg("a", 0, 3), seg("b", 3, 5, "camera_tour"), seg("c", 5, 8, "camera_tour")
+    assert fl.chapters_start_shots([a, b, c], {"a", "b"})                # b opens the phone shot b + c
+    assert not fl.chapters_start_shots([a, b, c], {"c"})                 # c is in the middle of it
+
+
+def test_join_idx_gives_the_survivor_s_view_to_the_gone_segments():
+    a = seg("a", 0, 3, "physics_3q")
+    a["layers"] = {"skeleton_mode": "physics"}
+    b = seg("b", 3, 5, "orbit")
+    b["layers"] = {"source_video": "00"}
+    segs = [a, b]
+    assert fl.join_idx(segs, [0], [1], "3d", None, None)
+    assert segs[1]["camera"] == {"mode": "physics_3q"} and segs[1]["v3_merged_from"] == "orbit" and "source_video" not in segs[1]["layers"]
+    assert not fl.join_idx([seg("x", 0, 2, "camera_tour"), seg("y", 2, 4)], [0], [1], "phone", "00", None)   # no phone data: not possible
+
+
+def test_locked_dance_maps_film_to_master_only_on_locked_segments():
+    a, b = seg("a", 10.0, 14.0, off=5.0), seg("b", 14.0, 20.0, off=5.0)
+    r = seg("r", 12.0, 13.0, off=10.0)
+    r["replay"] = True
+    assert fl.locked_dance([a, b], 21.0, -1.0) == pytest.approx(16.0)
+    assert fl.locked_dance([r], 22.5, -1.0) == -1.0                      # inside a replay: the fallback
+
+
+# ---------------------------------------------------------------- v4 (owner 2026-10-22): moves / 3, phone holds x 3, slow orbits, C2 glides, faint frustums
+
+
+def test_v4_ramps_are_c2_at_their_window_edges():
+    """every v4 weight is a smootherstep ramp: value 0 / 1 and zero 1st and 2nd derivative at both ends of its window, so a blend of LIVE end
+    states leaves the departing view with its own velocity and acceleration and lands on the arriving view's"""
+    h = 1e-4
+    for a, b in ((0.0, 0.75), (0.25, 1.0), (0.35, 0.65)):
+        for u in (a, b):
+            d1 = (fl.ramp(u + h, a, b) - fl.ramp(u - h, a, b)) / (2 * h)
+            d2 = (fl.ramp(u + h, a, b) - 2 * fl.ramp(u, a, b) + fl.ramp(u - h, a, b)) / (h * h)
+            assert abs(d1) < 1e-3 and abs(d2) < 1e-1
+        assert fl.ramp(a, a, b) == 0.0 and fl.ramp(b, a, b) == 1.0
+
+
+def test_v4_profiles_end_on_the_views_and_phone_out_is_phone_in_reversed():
+    g = 0.15
+    w0, w1 = fl.profile_weights("phone_in", 0.0, g), fl.profile_weights("phone_in", 1.0, g)
+    assert w0["glide"] == 0 and w1["glide"] == 1 and w0["d_in"] == 1 and w1["d_in"] == 0      # from the orbit to the portal, then on the phone
+    assert w0["picture_in"] == 0 and w1["picture_in"] == 1 and w0["outline_in"] == pytest.approx(g) and w1["outline_in"] == pytest.approx(1.0)
+    for u in (0.0, 0.1, 0.3, 0.5, 0.62, 0.8, 1.0):
+        i, o = fl.profile_weights("phone_in", 1.0 - u, g), fl.profile_weights("phone_out", u, g)
+        assert o["glide"] == pytest.approx(1.0 - i["glide"]) and o["d_out"] == pytest.approx(i["d_in"])
+        assert o["picture_out"] == pytest.approx(i["picture_in"]) and o["outline_out"] == pytest.approx(i["outline_in"])
+    p0, p1 = fl.profile_weights("phone_to_phone", 0.0, g), fl.profile_weights("phone_to_phone", 1.0, g)
+    assert p0["d_out"] == 0 and p1["d_out"] == 1 and p0["d_in"] == 1 and p1["d_in"] == 0
+    assert p0["picture_out"] == 1 and p1["picture_out"] == 0 and p0["picture_in"] == 0 and p1["picture_in"] == 1
+    # the eye is on the phone's optical axis (the glide done) before the dolly ends: the picture is always in front of the camera
+    assert fl.V4_PROFILE["phone_in"]["glide"][1] < fl.V4_PROFILE["phone_in"]["dolly"][1]
+
+
+def test_v4_live_blend_keeps_the_orbits_velocity():
+    """a way from a turning orbit (A: azimuth w t) into a still phone (B): at the way's start the camera turns exactly at the orbit's rate (no
+    stop), with no acceleration jump, and at its end at the phone's (0) - the C2 promise of UNITY_CONTRACT_v4.md section 2"""
+    w, T, t0 = 6.0, 3.5, 10.0
+
+    def az(t):
+        u = (t - t0) / T
+        gl = fl.profile_weights("phone_in", min(1.0, max(0.0, u)))["glide"]
+        return (1 - gl) * (w * t) + gl * 30.0
+    h = 1e-4
+    assert (az(t0 + h) - az(t0 - h)) / (2 * h) == pytest.approx(w, abs=1e-3)
+    assert abs((az(t0 + h) - 2 * az(t0) + az(t0 - h)) / (h * h)) < 1e-1
+    assert abs((az(t0 + T + h) - az(t0 + T - h)) / (2 * h)) < 1e-3
+
+
+def test_v4_way_durations_keep_the_picture_readable_and_the_crane_under_its_cap():
+    cfg4 = fl.V4Cfg()
+    for typ in ("phone_in", "phone_out", "phone_to_phone"):
+        T = fl.v4_way_T(typ, cfg4)
+        lo, hi, _ = cfg4.dur[typ]
+        assert lo <= T <= hi and 2.5 <= T <= 5.0
+        for role, u in fl.picture_readable_u(typ).items():
+            assert u * T >= cfg4.readable_s - 1e-9, (typ, role)
+    for typ in ("crane_up", "crane_down"):
+        T = fl.v4_way_T(typ, cfg4)
+        assert 1.875 * 74.0 / T <= cfg4.cap_crane_deg_s + 1e-9          # the pitch from the orbit (about 16 deg) to 89.9 deg within the cap
+    assert cfg4.cap_az_deg_s <= 168.0 / 5 and cfg4.ghost_opacity == 0.15  # well below v3.2's measured 168 deg/s; the owner's 15 %
+
+
+def test_v4_targets_are_the_owners_factors_of_the_baseline():
+    base = {"moves": {"total": 75}, "phone_holds": {"mean_s": 4.36, "median_s": 3.87, "min_s": 1.4}}
+    tg = fl.v4_hold_targets(base, fl.V4Cfg())
+    assert tg["moves_max"] == 25 and tg["hold_mean_min_s"] == pytest.approx(13.08) and tg["hold_median_min_s"] == pytest.approx(11.61)
+    assert tg["hold_min_s"] == pytest.approx(4.2) and tg["orbit_rate_deg_s"] == [4.0, 10.0] and tg["way_s"] == [2.5, 5.0]
+
+
+def test_v4_orbit_plan_links_two_phones_without_reversing():
+    cfg4 = fl.V4Cfg()
+    pl = fl.orbit_rate_plan(0.0, 100.0, 30.0, 3.5, 3.5, cfg4)
+    lo, hi = cfg4.orbit_rate_deg_s
+    assert lo <= abs(pl["w"]) <= hi
+    for r in (pl["r_out"], pl["r_in"]):
+        assert abs(r) < 2.0 or math.copysign(1.0, r) == math.copysign(1.0, pl["w"])   # the ways turn the orbit's way: no reversal
+    # the stretch arrives where the phone is: a_out + w x (L - T_out - T_in) + r_in = az_to (mod 360)
+    a_in = pl["a_out"] + pl["w"] * (30.0 - 7.0)
+    assert fl.wrap180(a_in + pl["r_in"] - 100.0) == pytest.approx(0.0, abs=0.05)
+    assert abs(pl["excess_deg"]) < 5.0
+    # free ends (the opening, the film's end): the way eases into / out of the orbit at its natural turn, half the rate x the way
+    op = fl.orbit_rate_plan(None, 40.0, 9.7, 0.0, 3.5, cfg4, 1.0)
+    assert op["r_in"] == pytest.approx(0.5 * op["w"] * 3.5) and op["excess_deg"] == 0.0
+    assert fl.orbit_excess(0.0, 170.0, 9.0, 4.5, cfg4) > fl.orbit_excess(0.0, 170.0, 60.0, 4.5, cfg4)   # a short stretch cannot carry a big turn
+    assert fl.orbit_excess(0.0, 120.0, 30.0, 4.5, cfg4) < 1e-6
+
+
+def test_v4_dp_plans_long_holds_round_a_protected_window_within_the_move_budget():
+    cfg4 = fl.V4Cfg()
+    B = [float(x) for x in range(0, 121)]
+    prot = [(0.0, 4.3), (50.0, 62.0)]
+
+    def free(a, b):
+        return not any(p0 < b - 1e-3 and p1 > a + 1e-3 for p0, p1 in prot)
+
+    def hold_q(cam, a, b):
+        return {"score": 0.9 if cam == "00" else 0.8, "cover": 1.0, "height": 0.4, "strong": True}
+    runs, info = fl.v4_dp(B, ["00", "01"], hold_q, lambda a, b, f: None, free, lambda a, b: 0.6 * (b - a),
+                          lambda cam, a, b, q: 1.0 * (b - a), cfg4, max_moves=4, hold_min=12.0, open_end=4.3, az_of=lambda cam, f: 0.0)
+    assert info["ok"] and runs[0]["kind"] == "orbit" and runs[0]["f0"] == 0.0 and runs[-1]["f1"] == 120.0
+    for a, b in zip(runs, runs[1:]):
+        assert a["f1"] == b["f0"] and a["kind"] != b["kind"]
+    phones = [r for r in runs if r["kind"] == "phone"]
+    assert phones and all(12.0 - 1e-6 <= r["f1"] - r["f0"] <= cfg4.hold_max_s for r in phones)
+    assert all(free(r["f0"], r["f1"]) for r in phones)                                         # never over the protected window
+    assert len(runs) - 1 <= 4                                                                   # the move budget
+    for k, r in enumerate(runs):
+        if r["kind"] == "orbit" and 0 < k < len(runs) - 1:
+            assert r["f1"] - r["f0"] >= 2 * cfg4.way_margin_s + cfg4.pure_orbit_min_s - 1e-6
+            assert free(r["f0"], r["f0"] + cfg4.way_margin_s) and free(r["f1"] - cfg4.way_margin_s, r["f1"])
+
+
+def test_v4_crane_down_keeps_the_overheads_hold_and_the_orbit_after_it():
+    cfg4 = fl.V4Cfg()
+    sh = [shot("3d", 0, 10), shot("overhead", 10, 16), shot("3d", 16, 40), shot("3d", 40, 50, replay=True)]
+    ways = [{"k": 1, "type": "crane_up", "start": 5.5, "T": 4.8, "notes": []}, {"k": 2, "type": "crane_down", "start": 10.6, "T": 4.8, "notes": []},
+            {"k": 3, "type": "replay_in", "start": 40.0, "T": 2.5, "notes": []}]
+    fl.v4_fit_cranes(ways, sh, cfg4)
+    assert ways[1]["start"] >= 5.5 + 4.8 + cfg4.hold_s["overhead"] - 1e-9 and ways[1]["notes"]
+    ways[1]["start"], ways[2]["start"] = 16.0, 21.0
+    fl.v4_fit_cranes(ways, sh, cfg4)
+    assert ways[1]["start"] + 4.8 + cfg4.hold_s["3d"] <= 21.0 + 1e-9                     # the orbit holds before the replay's flash
+
+
+# ---------------------------------------------------------------- v4.1 (owner 2026-10-22 after the v3 films): longer holds placed by Jev's need_3d,
+# slow orbits that never turn back, ways >= 4 s under 12 deg/s, cruise cranes under 20 deg/s, the physics legend in the 9:16 top band
+
+
+def test_v41_cruise_crane_is_c2_and_peaks_at_one_over_one_minus_ease():
+    e, h = 0.25, 1e-4
+    assert fl.cruise(0.0, e) == 0.0 and fl.cruise(1.0, e) == pytest.approx(1.0)
+    for x in (0.0, 1.0):
+        d1 = (fl.cruise(min(1.0, x + h), e) - fl.cruise(max(0.0, x - h), e)) / (min(1.0, x + h) - max(0.0, x - h))
+        assert abs(d1) < 1e-3
+    for x in (h, 1 - h):                                                     # 2nd derivative ~0 just inside both ends
+        d2 = (fl.cruise(x + h, e) - 2 * fl.cruise(x, e) + fl.cruise(x - h, e)) / (h * h)
+        assert abs(d2) < 0.5
+    rates = [(fl.cruise(x + h, e) - fl.cruise(x - h, e)) / (2 * h) for x in [i / 200 for i in range(1, 200)]]
+    assert max(rates) == pytest.approx(1.0 / (1.0 - e), rel=1e-3) and min(rates) >= -1e-9
+    # the v4.1 cranes: 5.1 s keeps a 74.4-deg elevation change under the 20 deg/s pitch cap; a smootherstep crane would need 7 s
+    c41 = fl.v41_cfg()
+    T = fl.v4_way_T("crane_up", c41)
+    assert T == pytest.approx(5.1) and c41.crane_span_deg / (1 - c41.crane_ease) / T <= c41.cap_crane_deg_s
+    assert 1.875 * c41.crane_span_deg / T > c41.cap_crane_deg_s
+    w = fl.profile_weights("crane_up", 0.5, 0.15, fl.V41_PROFILE["crane_up"])
+    assert w["elevation"] == pytest.approx(0.5) and fl.V41_PROFILE["phone_in"] == fl.V4_PROFILE["phone_in"]
+    assert fl.V4Cfg().prof() is fl.V4_PROFILE and c41.prof() is fl.V41_PROFILE        # v4.0 keeps its profiles (reproducible)
+
+
+def test_v41_targets_are_the_owners_numbers():
+    tg = fl.v41_targets(fl.v41_cfg())
+    # the owner's decision of 2026-10-22: the CHECK holds the delivered meaning-first plan to >= 25 %; the PLANNER keeps its 45 % (so a
+    # rebuild still delivers the same plan)
+    assert tg["moves_max"] == 22 and tg["share_min"] == 0.25 and tg["share_plan_min"] == 0.45 and tg["share_decision"]
+    assert fl.v41_cfg().share_min == 0.45 and tg["hold_min_s"] == 20.0 and tg["hold_mean_min_s"] == 25.0
+    assert tg["way_min_s"] == 4.0 and tg["orbit_rate_deg_s"][1] <= 6.0 and tg["orbit_rate_deg_s"][0] > 0
+    assert (tg["cap_az_deg_s"], tg["cap_rot_deg_s"], tg["cap_speed_m_s"], tg["cap_crane_deg_s"]) == (12.0, 12.0, 1.2, 20.0)
+    c = fl.v41_cfg()
+    for typ in ("phone_in", "phone_out", "replay_in", "replay_out", "crane_up", "crane_down"):
+        assert fl.v4_way_T(typ, c) >= 4.0
+    assert c.ghost_opacity == 0.15
+
+
+def test_v41_way_peak_and_no_reversal_need_the_phone_ahead_of_the_orbit():
+    # a way that only eases the orbit into a still phone half its natural turn ahead turns back for a moment; 0.75 of it never does
+    assert fl._WAY_MIN[int(round(0.5 / 0.01))] < 0 and fl._WAY_MIN[int(round(0.75 / 0.01))] >= -1e-6
+    assert fl.way_peak_factor(0.5) == pytest.approx(1.337, abs=0.01) and fl.way_peak_factor(0.75) == pytest.approx(1.778, abs=0.01)
+    c = fl.v41_cfg()
+    lk = fl.orbit_link(0.0, 90.0, 30.0, 4.5, 4.5, c)
+    assert lk is not None and lk["rho"] >= 0.5 + c.orbit_lead - 1e-9 and lk["peak_az_est"] <= c.link_frac * c.cap_az_deg_s
+    lo, hi = c.orbit_rate_deg_s
+    assert lo <= abs(lk["w"]) <= hi
+    # the stretch arrives on the phone: a_out + w (L - T_out - T_in) + r_in = az_to (mod 360), and both ways turn the orbit's way
+    a_in = lk["a_out"] + lk["w"] * (30.0 - 9.0) + lk["r_in"]
+    assert fl.wrap180(a_in - 90.0) == pytest.approx(0.0, abs=0.05)
+    assert lk["r_out"] * lk["w"] > 0 and lk["r_in"] * lk["w"] > 0
+    assert fl.orbit_link(0.0, 175.0, 14.0, 4.5, 4.5, c) is None            # a short stretch cannot carry a half turn slowly
+    pl = fl.orbit_rate_plan(0.0, 90.0, 30.0, 4.5, 4.5, c)
+    assert pl["w"] == lk["w"] and pl["r_in"] == lk["r_in"]
+
+
+def test_v41_dp_plans_holds_of_20_s_ending_on_a_phone_without_phone_to_phone():
+    c = fl.v41_cfg()
+    B = [float(x) for x in range(0, 121)]
+    prot = [(0.0, 4.3), (50.0, 62.0)]
+
+    def free(a, b):
+        return not any(p0 < b - 1e-3 and p1 > a + 1e-3 for p0, p1 in prot)
+
+    def hold_q(cam, a, b, final):
+        return {"score": 0.9, "cover": 1.0, "height": 0.4, "strong": True, "level": 0}
+    runs, info = fl.v41_dp(B, ["00", "01"], hold_q, free, lambda a, b: 0.3 * (b - a), lambda cam, a, b, q: 1.0 * (b - a), c, max_moves=5, hold_min=20.0,
+                           open_end=4.3, m_in=lambda cam, f: 4.5, m_out=lambda cam, f: 4.5, az_of=lambda cam, f: {"00": 0.0, "01": 100.0}[cam])
+    assert info["ok"] and runs[0]["kind"] == "orbit" and runs[0]["f0"] == 0.0 and runs[-1]["f1"] == 120.0
+    phones = [r for r in runs if r["kind"] == "phone"]
+    assert phones and all(20.0 - 1e-6 <= r["f1"] - r["f0"] <= c.hold_max_s for r in phones) and all(free(r["f0"], r["f1"]) for r in phones)
+    for a, b in zip(runs, runs[1:]):
+        assert a["f1"] == b["f0"] and a["kind"] != b["kind"]                 # never phone to phone
+    assert len(runs) - 1 <= 5 and runs[-1]["kind"] == "phone"               # the film may end on a phone (no way out)
+    for k, r in enumerate(runs):
+        if r["kind"] == "orbit" and 0 < k < len(runs) - 1:
+            assert r["f1"] - r["f0"] >= 4.5 + 4.5 + c.pure_orbit_min_s - 1e-6
+            assert free(r["f0"], r["f0"] + 4.5) and free(r["f1"] - 4.5, r["f1"])
+
+
+def test_v41_need_series_maps_utterances_to_film_and_weights_by_speech(tmp_path):
+    import json
+    p = tmp_path / "need3d.json"
+    p.write_text(json.dumps({"utterances": [{"id": "u000", "start": 1.0, "end": 3.0, "need_3d": 0.0, "overhead": 0.1, "text": "hi"},
+                                            {"id": "u001", "start": 5.0, "end": 9.0, "need_3d": 3.0, "overhead": 0.9, "text": "the axis"}]}), encoding="utf-8")
+    doc = {"segments": [seg("a", 0.0, 6.0), seg("b", 6.0, 12.0)], "timeline": {"film_duration_s": 12.0}}
+    n = fl.NeedSeries(p, doc)
+    assert n.mean(n.mask([(0.0, 12.0)]))[0] == pytest.approx(2.0, abs=0.05)          # 2 s at 0, 4 s at 3: speech-weighted
+    assert n.mean(n.mask([(0.0, 12.0)]))[1] == pytest.approx(6.0, abs=0.15)
+    i = int(4.0 / n.dt)
+    assert not n.speech[i] and n.filled[i] == 0.0                                 # a silence takes the lower neighbour
+    assert n.mean(n.mask([(3.5, 4.5)]))[0] is None
+
+
+def test_v41_legend_moves_to_the_top_band_and_the_crop_clears_it():
+    import numpy as np
+    from dancecap import recap_pov as rp
+    x0, x1, y0, y1 = fl.legend_rect(fl.V41_LEGEND)
+    assert (round(x0, 3), round(x1, 3), round(y0, 4), round(y1, 4)) == (0.473, 0.987, 0.1442, 0.2155)
+    assert fl.legend_rect(fl.LEGEND_UNITY_V3)[2] == pytest.approx(0.2025, abs=1e-4)        # the present Unity place: head height
+    assert y0 >= 0.14                                                                      # inside the 9:16 safe area (top 14 %)
+    t = np.arange(0.0, 10.0, 0.1)
+    low = rp.PhoneData("x", t, np.ones(len(t), bool), np.tile([0.3, 0.3, 0.7, 0.7], (len(t), 1)), (1080, 1920))
+    high = rp.PhoneData("x", t, np.ones(len(t), bool), np.tile([0.3, 0.06, 0.7, 0.55], (len(t), 1)), (1080, 1920))
+    cfg41 = fl.dataclasses_replace(rp.PovCfg(), **fl.V41_CROP)
+    rect = fl.legend_rect(fl.V41_LEGEND)
+    assert fl.legend_clear_frames(low, cfg41, rect).all()                    # the v4.1 framing puts the heads under the legend
+    assert not fl.legend_clear_frames(low, rp.PovCfg(), rect).all()          # the v4.0 framing (box from 15 % down) does not
+    assert not fl.legend_clear_frames(high, cfg41, rect).any()               # a phone framed tight at the top cannot
+
+
+def test_v41_overhead_window_lets_a_crane_down_leave_early_but_keeps_its_hold():
+    c = fl.v41_cfg()
+    segs = [seg("a", 0.0, 100.0), seg("o", 100.0, 106.0, mode="overhead_floorcraft"), seg("b", 106.0, 200.0)]
+    segs[0]["chapter_card"] = {"film_out": 3.0}
+    prot = fl.v4_protected(segs, c)
+    ov = next(p for p in prot if p["kind"] == "overhead")
+    up = 100.0 + c.arrive_after_s
+    assert ov["f"][0] == pytest.approx(up - c.dur["crane_up"][1] - c.overhead_gap_s)
+    down = max(up + c.hold_s["overhead"], 106.0 - c.overhead_leave_early_s)
+    assert ov["f"][1] == pytest.approx(down + c.dur["crane_down"][1] + c.overhead_gap_s)
+    assert ov["f"][1] < 106.0 + c.dur["crane_down"][1]                      # earlier than the v4.0 window's end
+    p40 = next(p for p in fl.v4_protected([dict(s) for s in segs], fl.V4Cfg()) if p["kind"] == "overhead")
+    assert p40["f"] == [100.0 - 5.0, 106.0 + 5.0]                            # v4.0 unchanged
