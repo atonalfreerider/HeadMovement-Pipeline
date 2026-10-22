@@ -430,7 +430,7 @@ farm_view}.py`, `pipeline/monitor/`, `progress_eta.py`. Tests: `tests/test_runne
 
 ---
 
-## 7d. Generic round (2026-10-22): one video in, a finished analysis out
+## 7e. Generic round (2026-10-22): one video in, a finished analysis out
 
 The round-2 verdict was "a good planner, tracker and uploader, not video in / analysis out": camera, people, avatars and every
 mono job spec were take-specific. This round makes every mono step a generic executor and fixes the four dashboard leftovers of

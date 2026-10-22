@@ -386,6 +386,7 @@ def step_people(ctx: Ctx) -> str:
         "outputs": [ctx.ws(pe) + "/teachers_01.npz", ctx.ws(pe) + "/masks_01.npz", ctx.ws(pe) + "/teachers.json",
                     ctx.ws(pe) + "/identity.json", ctx.ws(pe) + "/coverage.json", ctx.ws(pe) + "/verification.json",
                     ctx.ws(pe) + "/people_mono.json", ctx.ws(pe) + "/anchors0.json", ctx.ws(pe / "in") + "/ocr.json",
+                    ctx.ws(pe / "in") + "/pose.npz",   # every detection: a wrong couple can be re-solved here without a pod
                     ctx.ws(pe / "pose_tables") + "/", ctx.ws(ctx.work / "review" / "people") + "/"],
         "verify": [ctx.ws(pe / "teachers_01.npz"), ctx.ws(pe / "masks_01.npz")],
         "notes": [f"pipeline/mono_route people: the couple of {ctx.video.name} (generic: people_mono, no bibs)"]})
@@ -606,8 +607,9 @@ def step_fits(ctx: Ctx) -> str:
         return "dry run"
     rep = []
     for c in plan["chunks"]:
-        r = _json(ctx.work.parent / c["take"] / "mamma" / "report.json") or {}
-        rep.append(f"{c['id']} k {c['k0']}..{c['k1']}" + (f" reproj {r.get('reproj_px') or r.get('median_px')}" if r else ""))
+        res = ((_json(ctx.work.parent / c["take"] / "mamma" / "report.json") or {}).get("residuals") or {}).get(CAM) or {}
+        px = ", ".join(f"{role} {res[role]['median_px']:.1f} px" for role in ("lead", "follow") if isinstance(res.get(role), dict))
+        rep.append(f"{c['id']} k {c['k0']}..{c['k1']}" + (f" (2D residual median {px})" if px else ""))
     return f"{len(plan['chunks'])} chunk(s) fitted: " + "; ".join(rep)
 
 

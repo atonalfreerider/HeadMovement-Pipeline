@@ -197,7 +197,7 @@ python -m dancecap.pipeline analysis limit RUN USD|none  # change it (a step par
 - It prints the plan: every step with where it runs (every heavy step on Runpod; this PC only for the intake, the audio
   clocks, the Unity export and the film), how many pods side by side, p50 / p90 minutes and dollars from the measured 2026-10
   runs, the end-to-end time on the critical path and the total pod cost. `--dry-run` stops there.
-- **One video (2026-10-22): every step runs with no agent** (`pipeline/mono_route.py`; PIPELINE_EFFICIENCY.md 7d): beats
+- **One video (2026-10-22): every step runs with no agent** (`pipeline/mono_route.py`; PIPELINE_EFFICIENCY.md 7e): beats
   (this PC, 26 s), camera (`cameras.mono_cam`, one pod), people (`people_mono`: the couple without bibs, lead / follow from
   the TOML descriptions or the statures; one pod), world (this PC: focal, gravity, camera height from the statures),
   SAM 3D Body (one pod, frames decoded on the pod), fits (one pod per chunk of <= 26 s, side by side; betas pinned from the

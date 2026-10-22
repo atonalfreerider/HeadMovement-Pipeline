@@ -65,6 +65,10 @@ DYN_LAG_S = 0.3
 DYN_WIN_S = 1.0
 DYN0, DYN_S = 0.03, 0.03   # pose dynamics (body heights per 0.3 s) at which the dancer score is neutral, and its scale
 REF_WIN_S = 2.0
+REF_MERGE_RATIO = 0.6       # the 2nd tallest moving person under this x the tallest: the couple is one detection (an embrace), or only one
+                            # dancer is seen; the tallest is the dancer height then (the 2nd tallest was a spectator: lk03_cut20, 17 s)
+REF_GUARD = 0.75            # the couple's own reference never falls below this x the scene reference (a wrong pair of small spectators
+                            # made itself the reference and was kept: lk03_cut20, 17-20 s)
 MAX_CAND = 7
 BASE = 1.0                 # dancer score of an average moving, centred person of the reference height (a missing slot scores -MISS_COST)
 W_SIZE = 4.0
@@ -297,14 +301,15 @@ def fill_nan(x: np.ndarray, default: float) -> np.ndarray:
 
 
 def reference_height(P: dict, mask: np.ndarray, fps: float) -> np.ndarray:
-    """(F,) dancer height in pixels per frame: the 2nd tallest (tallest when alone) person of `mask` (the moving ones), rolling median over +-2 s."""
+    """(F,) dancer height in pixels per frame: the 2nd tallest person of `mask` (the moving ones; a tall passer-by in front does not set
+    it), or the tallest when the 2nd is under REF_MERGE_RATIO of it (the couple in one box, or one dancer alone), rolling median over +-2 s."""
     F = P["n_frames"]
     per = np.full(F, np.nan)
     for f in range(F):
         ids = np.arange(P["fstart"][f], P["fstart"][f + 1])
         h = np.sort(P["height"][ids[mask[ids]]])[::-1]
         if len(h):
-            per[f] = h[1] if len(h) >= 2 else h[0]
+            per[f] = h[1] if len(h) >= 2 and h[1] >= REF_MERGE_RATIO * h[0] else h[0]
     allh = P["height"][mask] if mask.any() else P["height"]
     return fill_nan(rolling_nanmedian(per, int(round(REF_WIN_S * fps))), float(np.median(allh)) if len(allh) else 100.0)
 
@@ -318,7 +323,7 @@ def couple_reference(P: dict, ids: np.ndarray, fps: float, fallback: np.ndarray)
     if ok.sum() < 10:
         return fallback
     r = rolling_nanmedian(per, int(round(REF_WIN_S * fps)))
-    return np.where(np.isfinite(r), r, fallback)
+    return np.maximum(np.where(np.isfinite(r), r, fallback), REF_GUARD * fallback)
 
 
 def dancer_score(P: dict, dyn: np.ndarray, ref: np.ndarray) -> np.ndarray:
@@ -487,7 +492,7 @@ def solve_identity(P: dict, iters: int = 2) -> dict:
     tid = link_tracklets(P, valid, max(1, int(round(LINK_GAP_S * fps))))
     dyn = pose_dynamics(P, tid, max(1, int(round(DYN_LAG_S * fps))), max(1, int(round(DYN_WIN_S * fps / 2))))
     warp = people_warp(P, tid)
-    ref = reference_height(P, valid & (np.nan_to_num(dyn) >= DYN0), fps)
+    ref = ref_scene = reference_height(P, valid & (np.nan_to_num(dyn) >= DYN0), fps)
     log(f"{valid.sum()} valid persons, {tid.max() + 1} tracklets, reference height {np.median(ref):.0f} px ({time.time() - t0:.1f} s)")
     u = dancer_score(P, dyn, ref)
     frames = build_frames(P, valid, u, u, ref, warp)
@@ -495,7 +500,7 @@ def solve_identity(P: dict, iters: int = 2) -> dict:
     ids1 = chosen_ids(frames, r["cand"])
     member = np.minimum(1.0, 2.0 * r["p"])                             # symmetric posterior: P(one of the couple) = 2 x the slot marginal
     log(f"pass 1 (who): present {(ids1 >= 0).mean(0).round(3)}, member >= {MEMBER_MIN} {(member >= MEMBER_MIN).mean(0).round(3)}")
-    ref = couple_reference(P, ids1, fps, ref)
+    ref = couple_reference(P, ids1, fps, ref_scene)
     u = dancer_score(P, dyn, ref)
     seeds, split = seed_slots(P, ids1, member, ref)
     allmask = valid & (P["height"] >= 0.5 * ref[P["frame"]])
@@ -516,7 +521,7 @@ def solve_identity(P: dict, iters: int = 2) -> dict:
         both = (ids >= 0).all(1) & (ids[:, 0] != ids[:, 1]) & (r["p"] >= 0.9).all(1)
         if both.sum() >= 16:
             seeds = {"lead": ids[both, 0], "follow": ids[both, 1]}
-            ref = couple_reference(P, ids, fps, ref)
+            ref = couple_reference(P, ids, fps, ref_scene)
             u = dancer_score(P, dyn, ref)
     res.update({"ref": ref, "ids1": ids1, "member1": member, "split": split, "valid": valid, "tid": tid, "dyn": dyn, "warp": warp,
                 "seconds": round(time.time() - t0, 1)})

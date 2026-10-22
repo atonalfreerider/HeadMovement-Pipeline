@@ -222,3 +222,28 @@ def test_finalize_writes_contract(tmp_path):
     assert json.loads((ctx.people / "teachers.json").read_text())["identity"]["decided_by"] == "description"
     assert summ["frames"] == F and json.loads((ctx.people / "coverage.json").read_text())[0]["s"] == 0
     assert "colour" in json.loads((ctx.people / "verification.json").read_text())
+
+
+def test_reference_height_survives_a_merged_couple():
+    """lk03_cut20 (2026-10-22): the couple embraced into one detection at 17 s; the 2nd tallest moving person was then a spectator a
+    third of their size, the reference height followed it and the tracker locked onto two spectators. The tallest is the reference
+    when the 2nd is much smaller, and the couple's own reference never falls far below the scene's."""
+    import numpy as np
+    from dancecap import people_mono as PM
+    F = 90
+    heights, frames = [], []
+    for f in range(F):
+        hs = [320.0, 300.0, 110.0, 100.0] if f < 45 else [330.0, 110.0, 100.0]     # from frame 45 the couple is one box
+        heights += hs
+        frames += [f] * len(hs)
+    frames = np.array(frames)
+    P = {"n_frames": F, "height": np.array(heights), "fstart": np.searchsorted(frames, np.arange(F + 1)), "frame": frames}
+    ref = PM.reference_height(P, np.ones(len(frames), bool), 30.0)
+    assert ref[:20].min() > 250 and ref[-20:].min() > 250
+    ids = np.full((F, 2), -1)
+    small = [i for i, h in enumerate(heights) if h <= 110.0]
+    for f in range(F):          # a wrong pair of spectators chosen everywhere: the guard keeps the reference up
+        sp = [i for i in small if frames[i] == f]
+        ids[f] = sp[:2]
+    r = PM.couple_reference(P, ids, 30.0, ref)
+    assert (r >= PM.REF_GUARD * ref - 1e-9).all()
