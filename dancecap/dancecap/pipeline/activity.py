@@ -8,6 +8,7 @@ jobs: the 95 remote-runner sessions of 2026-10-19..21 appeared nowhere on it.
 """
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 
@@ -306,6 +307,21 @@ def is_reused(s: dict) -> bool:
     return s.get("status") == "done" and "REUSED" in f"{s.get('message') or ''} {s.get('note') or ''}"
 
 
+STALL_RE = re.compile(r"no progress for|stall", re.I)
+
+
+def session_eta_basis(live_sess: list[dict]) -> str:
+    """How far the live sessions' ETA can be trusted (analyze.schedule): "timeout" = built from a job's timeout (it said 21
+    min for a 3-min job: not used), "measured" = every session's ETA comes from progress_eta (measured phases), none from a
+    generic prior and none stalled (then it may pull the step's time left in), else "session" (it can only push out)."""
+    details = " ".join(str(c.get("phase_detail") or "") for c in live_sess)
+    if "timeout" in details:
+        return "timeout"
+    measured = all(str((c.get("eta") or {}).get("basis") or "").startswith("progress_eta") for c in live_sess)
+    stalled = any(STALL_RE.search(_wmsg(w)) for c in live_sess for w in c.get("warnings") or [])
+    return "measured" if measured and "generic prior" not in details and not stalled else "session"
+
+
 def step_progress(row: dict, live_sess: list[dict]) -> dict | None:
     """The REAL progress of a running step, when there is a source: its own byte / frame counter (the volume upload), else
     its live pod sessions' phases (session_progress: frame counters and phases, the slowest session counts). None = no
@@ -357,14 +373,23 @@ def analysis_card(doc: dict, now: float, sessions: bool = True) -> dict:
             etas = [c["eta"] for c in live_sess if (c.get("eta") or {}).get("p50") is not None]
             eta_s = max(e["p50"] for e in etas) if etas else None
             eta_p90 = max((e.get("p90") or e["p50"]) for e in etas) if etas else None
-            # a session ETA built from a job's timeout said 21 min for a 3-min job (trial): schedule() then ignores it
-            basis = "timeout" if any("timeout" in str(c.get("phase_detail") or "") for c in live_sess) else "session"
+            basis = session_eta_basis(live_sess) if etas else None
         row["progress_frac"] = step_progress(row, live_sess) if row["status"] == "running" else None
+        row["whole_step"] = s.get("whole_step", True)
+        row["live_lanes"] = len(live_sess)
         steps.append({**row, "sessions": sids, "eta_s": eta_s, "eta_s_p90": eta_p90, "eta_basis": basis,
                       "cost_p50_usd": analyze.step_cost({**s, "reused": row["reused"]}),
                       "cost_usd": round(float((det or {}).get("by_step", {}).get(s["id"]) or 0.0), 4) if det else None})
     lv = analyze.live({**doc, "steps": steps}, now)
-    card = {"run": run, "take": doc.get("take"), "status": doc.get("status"), "created": doc.get("created"),
+    for row in steps:   # the step row shows the time left the run's ETA uses (they contradicted each other: 92 s vs 396 s)
+        if row["id"] in (lv.get("left") or {}):
+            left = lv["left"][row["id"]]
+            row.update(eta_session_s=row.get("eta_s"), eta_s=left["p50"], eta_s_p90=left["p90"])
+    status = doc.get("status")
+    if status in ("waiting", "planned") and any(s["status"] == "running" for s in steps):
+        # the badge said "waiting" while an agent's step ran (its sessions live, or a `start` mark): the run is running
+        status = "running"
+    card = {"run": run, "take": doc.get("take"), "status": status, "created": doc.get("created"),
             "agent_hint": doc.get("agent_hint"),
             "updated": doc.get("updated"), "ended": analyze.run_end(doc) if hasattr(analyze, "run_end") else None,
             "route": (doc.get("input") or {}).get("route"),

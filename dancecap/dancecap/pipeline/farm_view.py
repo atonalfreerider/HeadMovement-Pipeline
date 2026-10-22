@@ -89,7 +89,10 @@ def analyses_by_take(limit: int = 30) -> dict[str, dict]:
         except Exception:  # noqa: BLE001
             pass
         base = paths.work() / t
-        out[t] = {"run": d.get("run"), "status": d.get("status"), "created": d.get("created"), "ended": end,
+        status = d.get("status")
+        if status in ("waiting", "planned") and any(s.get("status") == "running" for s in d.get("steps") or []):
+            status = "running"     # a step runs (an agent's): the run is not "waiting" (activity.analysis_card)
+        out[t] = {"run": d.get("run"), "status": status, "created": d.get("created"), "ended": end,
                   "done": sum(1 for s in steps if s.get("status") in ("done", "skipped")), "total": len(steps),
                   "reused": [s.get("id") for s in d.get("steps") or [] if s.get("reused") or
                              (s.get("reused") is None and "REUSED" in str(s.get("message") or ""))],

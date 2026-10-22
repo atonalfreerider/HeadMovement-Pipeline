@@ -64,8 +64,8 @@ def intervals(work: Path | None = None, smplx_dir: str = "smplx_rf2_noslip") -> 
             if level == "interpolated":
                 continue                                    # the fit's own `absent` runs (above) are the same stretches, per role and per frame
             out.append({"from": a, "to": b, "role": role, "level": level, "reason": re.sub(r"\s+", " ", what).strip()[:120]})
-    toml = PACKAGE_ROOT / "takes" / f"{TAKE}.toml"
-    if toml.exists():
+    toml = PACKAGE_ROOT / "takes" / f"{work.name}.toml"     # the take of `work` (was john_lula.toml for every take: the
+    if toml.exists():                                        # trial capture listed john_lula's three zoom steps)
         import tomllib
         cams = tomllib.loads(toml.read_text(encoding="utf-8")).get("cameras", {})
         for cam in cams.values():

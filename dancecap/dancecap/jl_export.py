@@ -30,6 +30,19 @@ from .take import PACKAGE_ROOT, Take
 
 TAKE = "john_lula"
 CAPTURE = "08_JohnLula"
+
+
+def configure(take: str, capture: str | None = None) -> None:
+    """Export another one-camera take (pipeline/mono_route; the 2026-10-21 trial patched TAKE / CAPTURE from a glue script)."""
+    global TAKE, CAPTURE
+    TAKE = take
+    CAPTURE = capture or default_capture(take)
+
+
+def default_capture(take: str) -> str:
+    """A capture folder name for a take: "Mono_" + its CamelCase name (letters, digits, _ . - only: export_unity's rule)."""
+    import re
+    return "Mono_" + "".join(w[:1].upper() + w[1:] for w in re.split(r"[^A-Za-z0-9]+", take) if w)[:48]
 AUDIO = "audio/audio_overlap.wav"
 ROOM_BY_DESIGN = ("no room / splat",)       # demo_export.validate expects the dancers only; this capture carries the room mesh on purpose
 EXPECTED_PLAIN = tuple(x for x in re_.EXPECTED_PLAIN if x != "audio") + ROOM_BY_DESIGN
@@ -57,10 +70,24 @@ def song_meta(work: Path) -> dict:
     return out
 
 
+def camera_summary(work: Path) -> str:
+    """"one handheld phone (WxH, N zoom steps)" from the take's cameras/01.npz (was john_lula's text for every take)."""
+    import numpy as np
+    try:
+        z = np.load(work / "cameras" / "01.npz", allow_pickle=True)
+        w, h = (int(v) for v in z["native_size"]) if "native_size" in z.files else (int(z["K"][0, 0, 2] * 2), int(z["K"][0, 1, 2] * 2))
+        zoom = np.asarray(z["zoom_2x"], bool) if "zoom_2x" in z.files else np.zeros(1, bool)
+        steps = int(np.count_nonzero(np.diff(zoom.astype(int))))
+    except (OSError, KeyError, ValueError):
+        return "one handheld phone"
+    words = {0: "no zoom step", 1: "one zoom step", 2: "two zoom steps", 3: "three zoom steps"}
+    return f"one handheld phone ({w}x{h}, {words.get(steps, f'{steps} zoom steps')})"
+
+
 def reliability_meta(work: Path) -> dict:
     """provenance.reliability: what the single-camera fit does and does not support (PROVISIONAL.md / NOTES_J3b.md), and the low-confidence intervals the layers carry."""
     from . import jl_lowconf as lc
-    return {"camera": "one handheld phone (538x960, three zoom steps): the distance of the couple from the camera is +-10 percent (focal length), the pose relative to the pelvis, "
+    return {"camera": f"{camera_summary(work)}: the distance of the couple from the camera is +-10 percent (focal length), the pose relative to the pelvis, "
                       "the left-right position and the height above the floor are good; hands are the raw fit's",
             "provisional": True, "low_confidence": lc.intervals(work), "monocular": True}
 
@@ -122,7 +149,7 @@ def export(capture: str = CAPTURE, install: bool = True, avatars: bool = False, 
                 res["warnings"].append(f"{kind}: {type(e).__name__}: {e}")
     res["steps"]["moves"] = "skipped: no move labels (no narration, no trained classifier)"
     res["steps"]["beats"] = "zouk-time-analysis.json from " + ("timing/timing.json (the heat's grid)" if (work / "timing" / "timing.json").exists() else "song/beats_heat.json")
-    res["steps"]["rhythm"] = "rhythm.json (live rhythm score)" if (work / "rhythm" / "rhythm.json").exists() else "skipped: no work/john_lula/rhythm/rhythm.json yet (python -m dancecap.rhythm run john_lula)"
+    res["steps"]["rhythm"] = "rhythm.json (live rhythm score)" if (work / "rhythm" / "rhythm.json").exists() else f"skipped: no work/{TAKE}/rhythm/rhythm.json yet (python -m dancecap.rhythm run {TAKE})"
     return res
 
 
@@ -137,13 +164,19 @@ def validate(capture: str, install: bool, rep: dict | None, avatars: bool) -> di
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="python -m dancecap.jl_export", description=__doc__.split("\n\n")[0])
-    ap.add_argument("--capture", default=CAPTURE)
+    ap.add_argument("--take", default=TAKE, help="the one-camera take (default john_lula)")
+    ap.add_argument("--capture", default=None, help="capture folder (default 08_JohnLula for john_lula, else Mono_<Take>)")
     ap.add_argument("--no-install", action="store_true", help="only work/john_lula/export/<capture>/")
     ap.add_argument("--validate-only", action="store_true")
     ap.add_argument("--avatars", action="store_true", help="the avatars of work/john_lula/avatar/ (shape edits, textures, groom, shoes, faces)")
     ap.add_argument("--audio", type=Path, help="another soundtrack wav (default work/john_lula/audio/audio_overlap.wav, sample 0 = reference 0 s)")
     ap.add_argument("--no-audio", action="store_true")
     a = ap.parse_args(argv)
+    if a.take != TAKE:
+        configure(a.take, a.capture)
+    elif a.capture:
+        configure(TAKE, a.capture)
+    a.capture = CAPTURE
     install = not a.no_install
     t0 = time.time()
     res: dict = {"take": TAKE, "capture": a.capture, "steps": {}, "warnings": []}
