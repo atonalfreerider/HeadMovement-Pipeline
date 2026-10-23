@@ -577,3 +577,211 @@ def test_window_check_vetoes_relative_coco_threshold():
     assert zc.window_check_vetoes(chk, wins, coco_rel=0.3) == {}
     chk["a"]["v4_px"] = 42.0
     assert zc.window_check_vetoes(chk, wins, coco_rel=0.3) != {}
+
+
+# ------------------------------------------------------------------------------------------------ the last pass
+
+
+def _speeds(T, **over):
+    s = {"pelvis": np.ones(T), "spine3": np.ones(T), "root": np.full(T, 0.1)}
+    s.update(over)
+    return s
+
+
+def test_spike_ranges_short_deep_and_fold_runs_only():
+    """runs of <= 5 frames deeper than 5 cm or bent past 120 deg are spikes (runs 1 frame apart joined); a 6-frame run is not (steps 2 / 3);
+    the kind is "arm" unless the pelvis / spine / root move much faster inside the run than around it"""
+    T = 200
+    pen = np.zeros(T)
+    bend = np.full(T, 30.0)
+    pen[20:22] = 0.09                                                   # 2 frames, 9 cm
+    pen[40:46] = 0.07                                                   # 6 frames: not a spike
+    pen[60:62] = 0.06
+    pen[63:65] = 0.06                                                   # 1 frame apart: one run of 5 frames
+    bend[100:103] = 150.0                                               # a short fold
+    pen[150] = 0.04                                                     # under 5 cm: nothing
+    out = zc.spike_ranges(pen, bend, _speeds(T))
+    assert [(s["a"], s["b"]) for s in out] == [(20, 21), (60, 64), (100, 102)]
+    assert [s["why"] for s in out] == [["deep"], ["deep"], ["fold"]]
+    assert all(s["kind"] == "arm" for s in out)
+    assert out[0]["pen_cm"] == 9.0 and out[2]["bend_deg"] == 150.0
+    # the pelvis jumps 12 deg / frame inside the first run (2 deg around it): the whole body
+    pel = np.full(T, 2.0)
+    pel[21] = 12.0
+    out = zc.spike_ranges(pen, bend, _speeds(T, pelvis=pel))
+    assert out[0]["kind"] == "body" and out[0]["body_why"] == ["pelvis"] and out[1]["kind"] == "arm"
+    # ... but not when it moves that fast around the run as well (a fast turn, not a glitch)
+    pel[8:34] = 12.0
+    assert zc.spike_ranges(pen, bend, _speeds(T, pelvis=pel))[0]["kind"] == "arm"
+
+
+def test_spike_knots_skip_other_spikes_and_need_free_neighbours():
+    T = 50
+    blocked = np.zeros(T, bool)
+    blocked[10:12] = True
+    blocked[15:17] = True
+    K = zc.spike_knots(10, 11, T, 4, blocked)
+    assert K.tolist() == [6, 7, 8, 9, 12, 13, 14, 17]                   # frames 15-16 (the next spike) skipped
+    assert zc.spike_knots(0, 2, T, 4) is None                           # no frame before it
+    assert zc.spike_knots(2, 3, T, 4).tolist() == [0, 1, 4, 5, 6, 7]    # fewer knots where the film starts
+    b2 = np.zeros(T, bool)
+    b2[19:23] = True
+    assert zc.spike_knots(20, 22, T, 4, b2) is None                     # the frame just before the run is itself blocked
+
+
+def test_despike_c2_reproduces_a_smooth_motion_and_keeps_the_knots():
+    """a rotation turning along a cubic in time with a 3-frame glitch: the C2 spline through 4 frames on each side gives the cubic back
+    exactly; the knots and every other joint are untouched for "arm"; "body" also splines the root and keeps the legs' global rotations"""
+    from scipy.spatial.transform import Rotation as Ro
+    T = 40
+    P = np.zeros((T, 55, 3))
+    tr = np.zeros((T, 3))
+    ang = lambda k: 0.5 * k + 0.02 * k ** 2 - 0.0004 * k ** 3                      # noqa: E731  (deg)
+    for k in range(T):
+        P[k, zc.WRIST["right"]] = Ro.from_euler("z", ang(k), degrees=True).as_rotvec()
+        P[k, zc.SPINE3] = Ro.from_euler("y", 1.0 * k, degrees=True).as_rotvec()
+        P[k, zc.PELVIS] = Ro.from_euler("y", 0.5 * k, degrees=True).as_rotvec()
+        P[k, zc.HIP["left"]] = Ro.from_euler("x", 0.3 * k, degrees=True).as_rotvec()
+        tr[k] = [0.01 * k + 0.0005 * k ** 2, 0, 0]
+    clean = P.copy()
+    clean_tr = tr.copy()
+    P[20:23, zc.WRIST["right"]] = Ro.from_euler("x", 70.0, degrees=True).as_rotvec()
+    P[20:23, zc.SPINE3] = Ro.from_euler("x", 20.0, degrees=True).as_rotvec()
+    P[20:23, zc.PELVIS] = Ro.from_euler("x", 15.0, degrees=True).as_rotvec()
+    tr[20:23] += [0, 0.1, 0]
+    K = zc.spike_knots(20, 22, T, 4)
+    Q, trq = zc.despike_c2(P, tr, 20, 22, K, "arm")
+    assert np.allclose(Q[:, zc.WRIST["right"]], clean[:, zc.WRIST["right"]], atol=1e-9)
+    assert np.array_equal(Q[:, zc.SPINE3], P[:, zc.SPINE3]) and np.array_equal(trq, tr)
+    assert np.array_equal(Q[K], P[K])
+    Q2, trq2 = zc.despike_c2(P, tr, 20, 22, K, "body")
+    assert np.allclose(Q2[:, zc.SPINE3], clean[:, zc.SPINE3], atol=1e-9) and np.allclose(trq2, clean_tr, atol=1e-12)
+    # the legs keep their global rotations under the despiked pelvis (knees etc. unchanged, the hip re-expressed)
+    for k in range(20, 23):
+        g_old = Ro.from_rotvec(P[k, zc.PELVIS]) * Ro.from_rotvec(P[k, zc.HIP["left"]])
+        g_new = Ro.from_rotvec(Q2[k, zc.PELVIS]) * Ro.from_rotvec(Q2[k, zc.HIP["left"]])
+        assert (g_old.inv() * g_new).magnitude() < 1e-9
+    assert np.array_equal(Q2[:, zc.KNEE["left"]], P[:, zc.KNEE["left"]])
+
+
+def test_envelope_is_a_raised_cosine_blend():
+    e = zc.envelope(15, 4, 15)
+    assert len(e) == 34 and np.all(e[15:19] == 1.0)
+    assert np.all((e[:15] > 0) & (e[:15] < 1)) and np.all(np.diff(e[:16]) > 0)
+    assert np.allclose(e[:15], e[19:][::-1])
+    assert e[0] < 0.02                                                  # it starts from (nearly) nothing
+
+
+def test_last_windows_cores_merge_and_flags():
+    T = 400
+    pen = np.zeros(T)
+    gap = np.full(T, 0.08)
+    bend = np.full(T, 40.0)
+    pen[100:110] = 0.06                                                 # push frames
+    bend[120:140] = 105.0
+    bend[128:132] = 130.0                                               # a fold: its whole run past 100 deg is unfolded
+    bend[300:310] = 110.0                                               # past 100 deg but never past 120: left alone
+    gap[90:150] = 0.0
+    cfg = zc.LastCfg()
+    w = zc.last_windows(pen, gap, bend, cfg)
+    assert len(w) == 1                                                  # 10 frames apart: one window
+    w = w[0]
+    assert w["core"] == [100 - cfg.pad, 139 + cfg.pad]
+    assert w["span"] == [100 - cfg.pad - cfg.ramp, 139 + cfg.pad + cfg.ramp]
+    assert w["push"] == list(range(100, 110)) and w["unfold"] == list(range(120, 140))
+    assert w["touch"][0] == 90 and w["touch"][-1] == 149 and w["pull"] == []
+    # the back holds' floating frames (2-5 cm off her) inside a window are pulled onto her; farther ones are left alone
+    gap[60:90] = 0.03
+    gap[70:75] = 0.09
+    back = np.zeros(T, bool)
+    back[50:200] = True
+    w = zc.last_windows(pen, gap, bend, cfg, back=back)[0]
+    span = range(w["span"][0], w["span"][1] + 1)
+    assert w["pull"] == [k for k in span if 60 <= k < 90 and not 70 <= k < 75]
+
+
+def test_sphere_dirs_and_pick_exit():
+    D = zc.sphere_dirs(48)
+    assert np.allclose(np.linalg.norm(D, axis=1), 1.0) and abs(D.mean(0)).max() < 0.05
+    dirs = np.eye(3)
+    # frame 1's shortest exit is along y (5.7 cm) but its x exit (6 cm) is far nearer frame 0's and frame 2's: the path stays on x
+    t = np.array([[0.05, 0.09, np.inf],
+                  [0.06, 0.057, np.inf],
+                  [0.05, 0.09, np.inf],
+                  [0.04, 0.02, np.inf]])                                # frame 3: y is shorter by 2 cm, worth one jump
+    d, ok = zc.pick_exit(t, dirs, np.zeros((4, 3)), 0.095, w_jump=0.3)
+    assert ok.all()
+    assert np.allclose(d[:3], [[0.05, 0, 0], [0.06, 0, 0], [0.05, 0, 0]]) and np.allclose(d[3], [0, 0.02, 0])
+    # a frame without an exit takes the cap along the direction with the least depth left
+    t2 = np.array([[0.05, np.inf, np.inf], [np.inf, np.inf, np.inf]])
+    left = np.array([[0.0, 0.0, 0.0], [0.03, 0.02, 0.05]])
+    d, ok = zc.pick_exit(t2, dirs, left, 0.095, w_jump=0.0)
+    assert ok.tolist() == [True, False] and np.allclose(d[1], [0, 0.095, 0])
+
+
+def _synthetic_arm_window(W=6, nl=2, nr=2):
+    """an ArmWindow built by hand: a straight right arm along -x (shoulder at 0, elbow at -0.3, wrist at -0.55), identity rotations, two
+    hand points rigid with the wrist, one forearm point half on the elbow"""
+    torch = pytest.importorskip("torch")
+    w = object.__new__(zc.ArmWindow)
+    w.torch = torch
+    w.ks = np.arange(W)
+    w.nl, w.nr, w.nc = nl, nr, W - nl - nr
+    t = lambda a: torch.tensor(np.asarray(a, float), dtype=torch.float64)  # noqa: E731
+    eye = np.tile(np.eye(3), (W, 1, 1))
+    w.G14 = w.G17 = w.G19 = w.G21 = t(eye)
+    w.R19 = t(eye)
+    w.S, w.E, w.Wr = t(np.zeros((W, 3))), t(np.tile([-0.3, 0, 0], (W, 1))), t(np.tile([-0.55, 0, 0], (W, 1)))
+    w.b1, w.b2 = t([-0.3, 0, 0]), t([-0.25, 0, 0])
+    w.ea = w.b2 / w.b2.norm()
+    V = np.tile(np.array([[-0.62, 0.0, 0.02], [-0.65, 0.01, 0.0], [-0.45, 0.0, 0.03]]), (W, 1, 1))
+    w.Vt = t(V)
+    w.V0 = V
+    w.A17 = w.Vt - w.S[:, None]
+    w.A19 = w.Vt - w.E[:, None]
+    w.A21 = w.Vt - w.Wr[:, None]
+    w.w17, w.w19, w.wh = (t(x)[None, :, None] for x in ([0, 0, 0], [0, 0, 0.5], [1, 1, 0.5]))
+    w.C0 = t(np.tile([-0.6, 0, 0], (W, 1)))
+    w.tips0 = t(np.tile([[-0.75, 0, 0]] * 5, (W, 1, 1)))
+    w.Cl = w.C0 - w.Wr
+    w.Tl = w.tips0 - w.Wr[:, None]
+    w.env = t(zc.envelope(nl, w.nc, nr))
+    w.ey = t([0.0, 1.0, 0.0])
+    w.Pw = np.zeros((W, 55, 3))
+    return w, torch
+
+
+def test_arm_window_zero_is_the_base_and_the_numbers_do_what_they_say():
+    from scipy.spatial.transform import Rotation as Ro
+    w, torch = _synthetic_arm_window()
+    W = len(w.ks)
+    f = w.forward(torch.zeros((W, w.NV), dtype=torch.float64))
+    assert np.allclose(f["X"].numpy(), w.V0) and np.allclose(f["W"].numpy(), w.Wr.numpy()) and np.allclose(f["C"].numpy(), w.C0.numpy())
+    # the forearm's own twist moves no joint and keeps the hand's points (the hand's world rotation is a separate number)
+    v = torch.zeros((W, w.NV), dtype=torch.float64)
+    v[:, 4] = 0.7
+    f = w.forward(v)
+    assert np.allclose(f["E"].numpy(), w.E.numpy()) and np.allclose(f["W"].numpy(), w.Wr.numpy())
+    assert np.allclose(f["X"].numpy()[:, :2], w.V0[:, :2])
+    # the elbow's hinge: the forearm swings in the elbow's flexion plane (no off-hinge part), the elbow stays
+    v = torch.zeros((W, w.NV), dtype=torch.float64)
+    v[:, 3] = 0.5
+    f = w.forward(v)
+    P1 = np.zeros((1, 55, 3))
+    P1[0, zc.ELBOW["right"]] = Ro.from_matrix(f["R19"].numpy()[w.nl]).as_rotvec()
+    ang = zc.elbow_angles(P1, "right")
+    assert abs(ang["off_hinge"][0]) < 1e-6 and abs(abs(ang["flexion"][0]) - np.degrees(0.5)) < 1e-6
+    assert np.allclose(f["E"].numpy(), w.E.numpy())
+    assert np.linalg.norm(f["W"].numpy()[w.nl] - w.Wr.numpy()[w.nl]) == pytest.approx(2 * 0.25 * np.sin(0.25), abs=1e-9)
+    # a world rotation of the hand turns its points about the wrist, the wrist stays
+    v = torch.zeros((W, w.NV), dtype=torch.float64)
+    v[:, 5:8] = torch.tensor([0.0, 0.0, 0.4])
+    f = w.forward(v)
+    assert np.allclose(f["W"].numpy(), w.Wr.numpy())
+    r = Ro.from_rotvec([0, 0, 0.4]).as_matrix()
+    assert np.allclose(f["C"].numpy()[w.nl], r @ (w.C0.numpy()[w.nl] - w.Wr.numpy()[w.nl]) + w.Wr.numpy()[w.nl])
+    # every frame's numbers times the envelope: the change fades to (nearly) nothing at the window's ends
+    v = torch.zeros((W, w.NV), dtype=torch.float64)
+    v[:, 0:3] = torch.tensor([0.0, 0.0, 0.3])
+    p = w.params(v).numpy()
+    assert np.allclose(p[w.nl:w.nl + w.nc, 2], 0.3) and np.allclose(p[:, 2], 0.3 * w.env.numpy())

@@ -65,6 +65,11 @@ The closing pass (after the check of the final pass, final_check/; jobs/zc_close
     python -m dancecap.zouk_contacts gate --tag r6 --tags r6 --base-tag fin2 --exact --vis    # curation.json["stages"]["r6"], gate_r6.json
     python -m dancecap.zouk_contacts validate-final --fits input,v3,inst2,v4
 
+The last pass (before the one render; see the section "the last pass"; runs locally, her surface queries on the GPU):
+    python -m dancecap.zouk_contacts last-pass                    # the installed ec8e7101 -> v4/smplx_contact, exact_v4.npz, last/report.json
+    python -m dancecap.zouk_contacts measure --fit v4 && python -m dancecap.zouk_contacts validate-final --fits input,v3,ec8e,v4
+    python -m dancecap.zouk_contacts unity-motion                 # then install_motion.sh (--check first)
+
 Everything is written under work/larissa_kadu_recap/v4/ (git-ignored likeness data); the input fits are never touched.
 """
 from __future__ import annotations
@@ -3559,11 +3564,22 @@ def _part_of_joint() -> np.ndarray:
 def exact_measure(name: str, device: str = "cuda", batch: int = 48, ks: np.ndarray | None = None) -> dict:
     """the leader's right hand (and forearm) vs her mesh, every frame (or ks) -> v4/contacts/exact_<name>.npz: hand_pen (T,) deepest hand
     point inside her (m, >= 0), hand_pen_part (T, P), arm_pen (T,) deepest forearm point, hand_gap (T,) signed min distance"""
-    import torch
     t0 = time.time()
     fit = load_fit(name)
     T = len(fit["lead"]["t"])
     ks = np.arange(T) if ks is None else np.asarray(ks)
+    out = exact_of(fit, ks, device, batch)
+    n = len(ks)
+    OUT.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(OUT / f"exact_{name}.npz", ks=ks, parts=np.array(EXACT_PARTS), **out)
+    log(f"exact {name}: {n} frames in {time.time() - t0:.0f} s")
+    return out
+
+
+def exact_of(fit: dict, ks: np.ndarray, device: str = "cuda", batch: int = 48) -> dict:
+    """exact_measure's numbers for a fit held in memory (frames ks): hand_pen, arm_pen, hand_gap, hand_pen_part"""
+    import torch
+    ks = np.asarray(ks)
     ids = hc.rest_hand_ids(fit["lead"]["betas"])["right"]
     pts = np.concatenate([ids.hand, ids.palm, ids.arm])
     nh, npm = len(ids.hand), len(ids.palm)
@@ -3591,9 +3607,6 @@ def exact_measure(name: str, device: str = "cuda", batch: int = 48, ks: np.ndarr
             for pi in range(len(EXACT_PARTS)):
                 v = np.where(hp == pi, hsd, np.inf).min(1)
                 out["hand_pen_part"][sl, pi] = np.maximum(0, -np.where(np.isfinite(v), v, 0))
-    OUT.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(OUT / f"exact_{name}.npz", ks=ks, parts=np.array(EXACT_PARTS), **out)
-    log(f"exact {name}: {n} frames in {time.time() - t0:.0f} s")
     return out
 
 
@@ -3894,7 +3907,8 @@ def validate_final_table(rep: dict) -> list:
             except (KeyError, TypeError, IndexError):
                 out.append("-")
         return out
-    rows = [["measure"] + [{"v4": "final", "inst2": "installed before (d034e0b7)", "inst": "installed (5ccf839e)"}.get(f, f) for f in fits]]
+    rows = [["measure"] + [{"v4": "final", "ec8e": "installed before (ec8e7101)", "inst2": "installed (d034e0b7)", "inst": "installed (5ccf839e)"}.get(f, f)
+                           for f in fits]]
     rows.append(["his right hand inside her (exact, her mesh): frames > 0.5 cm / > 2 cm / p90 depth cm"]
                 + col(lambda r: f"{r['exact_hand'][0]} / {r['exact_hand'][1]} / {r['exact_hand'][2]}"))
     rows.append(["... frames > 5 cm / > 8 cm"] + col(lambda r: f"{r['exact_hand_gt5_gt8'][0]} / {r['exact_hand_gt5_gt8'][1]}"))
@@ -3935,7 +3949,7 @@ def validate_final_table(rep: dict) -> list:
 
 def validate_final_md(rep: dict) -> str:
     rows = rep["table"]
-    out = ["# Leader's right hand: final numbers (input | v3 | final)", "",
+    out = ["# Leader's right hand: final numbers (" + " | ".join(str(c) for c in rows[0][1:]) + ")", "",
            f"Whole film, {rep['frames']} frames at 30 Hz. The final motion changed {rep['frames_changed_final_vs_v3']} frames against v3. "
            "Exact = his hand / forearm against her posed SMPL-X mesh (closest points + winding numbers). MAMMA = the hand landmarks the fit "
            "used, in the phones that see the hand; COCO = an independent detector the fit never saw (bias-corrected joint).", "",
@@ -4075,18 +4089,18 @@ def _write_install_script() -> Path:
     s = s.replace("# put the backed-up (pre-v3) files back", "# put the backed-up (installed before v4) files back")
     s = s.replace("# Version: the 2026-10-21 safety pass (dancecap.hand_contact; decisions in v3/hand_contact/curation.json, numbers in\n"
                   "# v3/hand_contact/validate.json, the export and the sha256 of each file in v3/unity_motion/unity_motion.json).",
-                  "# Version: the v4 zouk contacts with the final pass and the closing pass (dancecap.zouk_contacts; decisions in\n"
-                  "# v4/contacts/curation.json incl. its stages r4 / r5 / r6 / r7 / r67 / r8 + the post-hoc gates v4/contacts/gate.json,\n"
+                  "# Version: the v4 zouk contacts with the final pass, the closing pass and the last pass (dancecap.zouk_contacts; decisions\n"
+                  "# in v4/contacts/curation.json incl. its stages r4 / r5 / r6 / r7 / r67 / r8 + the post-hoc gates v4/contacts/gate.json,\n"
                   "# gate_r4.json, gate_r5.json, gate_r6.json, gate_r7.json, gate_r67.json, gate_r8.json (the final assembly:\n"
-                  "# v4/contacts/runs/r8/final_assembly.json), numbers in v4/contacts/validate_final.md, the export and the sha256 of each\n"
-                  "# file in\n"
+                  "# v4/contacts/runs/r8/final_assembly.json); the last pass: v4/contacts/last/report.json), numbers in\n"
+                  "# v4/contacts/validate_final.md, the export and the sha256 of each file in\n"
                   "# v4/contacts/unity_motion/unity_motion.json). Earlier installs are kept: v4/contacts/unity_motion_installed_5ccf/\n"
-                  "# (smplx_lead.bin 5ccf839e..., before the final pass) and v4/contacts/unity_motion_installed_d034/ (d034e0b7..., before\n"
-                  "# the closing pass).")
+                  "# (smplx_lead.bin 5ccf839e..., before the final pass), v4/contacts/unity_motion_installed_d034/ (d034e0b7..., before\n"
+                  "# the closing pass) and v4/contacts/unity_motion_installed_ec8e/ (ec8e7101..., before the last pass).")
     s = s.replace("# never overwrite the first backup (that is the pre-v3 motion)",
                   "# never overwrite the first backup (that is the motion installed before v4: the v3 hand-contact motion; --restore puts that\n"
-                  "                                                              # back - the 5ccf839e / d034e0b7 motions are in\n"
-                  "                                                              # ../unity_motion_installed_5ccf/ and ../unity_motion_installed_d034/)")
+                  "                                                              # back - the 5ccf839e / d034e0b7 / ec8e7101 motions are in\n"
+                  "                                                              # ../unity_motion_installed_5ccf/, _d034/ and _ec8e/)")
     p = UNITY_MOTION / "install_motion.sh"
     p.write_bytes(s.replace("\r\n", "\n").encode("utf-8"))
     return p
@@ -4616,6 +4630,925 @@ def run_gate(tag: str = "pass3", rounds: int = 4, coco: bool = True, extra_veto:
     return rep
 
 
+# ------------------------------------------------------------------------------------------------ the last pass (before the one render)
+#
+# Owner (2026-10-22): the hand fixes come before the recap is re-recorded, and it is rendered once. What a viewer SEES matters now - no hand
+# inside her body, no wrist folded back onto his forearm, no 1-3-frame spikes - with a small, bounded change of the installed motion
+# (smplx_lead.bin ec8e7101..., kept as v4/smplx_contact_installed_ec8e). The earlier passes could not close these because the 2D guards (MAMMA's
+# hand points, the COCO wrist / elbow of the phone that sees the hand) vetoed every move, and on 1-3-frame spikes and deep folds that 2D is
+# itself unreliable. The last pass:
+#   1. spikes - runs of at most 5 frames with his hand > 5 cm inside her, or a short fold past 120 deg: his right arm (shoulder, elbow,
+#      wrist, fingers; the whole body where the pelvis / spine / root spike too, the legs keeping their global rotations) across the run
+#      becomes a C2 cubic spline through the poses just outside it (4 frames each side, fewer where that makes it faster than its
+#      neighbours); no 2D veto, the 2D change is reported;
+#   2. frames still > 5 cm inside her (with the whole episode > 2 cm around them): the hand pushed out to <= 1 cm - per frame the smallest
+#      rigid translation that brings it out of her (exit_translations: every direction searched, the exits of neighbouring frames one
+#      steady path), then the arm solve (ArmWindow / solve_arm_window: the shoulder's rotation, the elbow on its hinge, the forearm's own
+#      twist, the hand's orientation) against her exact surface re-linearised each round - inside the twist / hinge / bend limits, at
+#      most 10 cm of hand movement, blended in and out over 0.6 s, with the speed audit's rules as limits (no new added-speed or fast
+#      frame, no new wrist flick); the 2D guard reports and vetoes a window only when the COCO elbow, in the phones that see it, gets
+#      more than 25 px worse;
+#   3. wrists bent past 120 deg: unfolded to <= 100 deg over the run bent past 100 deg, moving the forearm as needed (same cap, blends and
+#      limits), the palm kept where it touched her;
+#   4. no new floating: a hand that touched her keeps the contact in the solve, floating back-hold frames in a window are pulled onto her;
+#   then a post-hoc check against the installed motion: a window with a new gate flag (whip, flick, twist, hyperextension, fold) or new
+#   penetration is scaled back (x 0.75 / 0.5 / 0.25 / 0), and while the film's elbow / fingertip added-speed frames or its floating frames
+#   exceed the installed motion's, the windows adding most to them are scaled back.
+#
+#     python -m dancecap.zouk_contacts last-pass            # ec8e -> v4/smplx_contact (+ v4/contacts/last/report.json, exact_v4.npz)
+
+FIT_EC8E = V4 / "smplx_contact_installed_ec8e"       # the closing pass installed 2026-10-22 (smplx_lead.bin ec8e7101...): the last pass's base
+FITS["ec8e"] = FIT_EC8E
+LAST_DIR = OUT / "last"
+ARM_R = (SHOULDER["right"], ELBOW["right"], WRIST["right"], *range(40, 55))     # his right arm: shoulder, elbow, wrist, the 15 finger joints
+
+
+@dataclass
+class LastCfg:
+    spike_cm: float = 5.0            # a spike: a run of at most spike_max_frames frames with his hand deeper than this inside her ...
+    spike_max_frames: int = 5
+    spike_merge: int = 1             # ... (runs this few frames apart are one run)
+    fold_deg: float = 120.0          # ... or with the wrist bent past this (a short fold)
+    knots: int = 4                   # the C2 spline goes through this many frames on each side of a spike
+    speed_slack: float = 1.1         # ... and must not move faster than this x its neighbours (else fewer knots)
+    body_ratio: float = 1.5          # the whole body is despiked where the pelvis / spine-3 / root move this much faster inside the run than
+    body_min_deg: float = 3.0        # within 12 frames around it and at least this fast (deg / frame; the root: body_min_mps)
+    body_min_mps: float = 0.5
+    push_from_cm: float = 5.0        # frames deeper than this after the despikes are pushed out ...
+    push_to_cm: float = 1.0          # ... to at most this, with the whole episode deeper than push_run_cm around them
+    push_run_cm: float = 2.0
+    fold_to_deg: float = 100.0       # wrists bent past fold_deg are unfolded to at most this over their run bent past it
+    pad: int = 3                     # a window's core: the frames to push / unfold +- this
+    cap_m: float = 0.10              # the palm centre, the wrist and each fingertip move at most this much
+    ramp: int = 18                   # the blend in / out (frames, raised cosine): 0.6 s
+    merge_gap: int = 30              # cores closer than this (frames) are one window
+    touch_m: float = 0.02            # the hand counts as touching her where its signed gap was below this
+    elbow_guard_px: float = 25.0     # a window is vetoed when the COCO elbow (phones that see it) gets this much worse (median px)
+    guard_min_n: int = 8
+    rounds: int = 4                  # re-linearisations of her surface per window
+    iters: int = 100                 # L-BFGS iterations per round
+    device: str = "cuda"             # her surface queries (the solve itself runs on the CPU, float64)
+
+
+def angular_speed(Rg: np.ndarray) -> np.ndarray:
+    """(T,3,3) rotations -> (T,) degrees turned from the previous frame (0 at frame 0)"""
+    from scipy.spatial.transform import Rotation as Ro
+    r = Ro.from_matrix(np.asarray(Rg, float))
+    return np.r_[0.0, np.degrees((r[:-1].inv() * r[1:]).magnitude())]
+
+
+def spike_ranges(pen: np.ndarray, bend: np.ndarray, speeds: dict, cfg: LastCfg | None = None) -> list[dict]:
+    """step 1's spikes: runs of at most spike_max_frames frames with the hand deeper than spike_cm inside her (pen, m) or the wrist bent past
+    fold_deg (bend, deg), runs at most spike_merge frames apart joined (a joined run longer than spike_max_frames is not a spike: steps 2 / 3
+    take it); kind "body" where the pelvis or spine-3 (deg / frame) or the root (m/s) - speeds {"pelvis", "spine3", "root"}, (T,) the speed
+    into each frame - moves body_ratio x faster inside the run (its frames and the one after) than within 12 frames around it, and at least
+    body_min_*; else "arm" -> [{"a", "b", "kind", "why", "body_why", "pen_cm", "bend_deg"}] sorted, apart"""
+    cfg = cfg or LastCfg()
+    T = len(pen)
+    cand = []
+    for m, why in ((np.asarray(pen) > cfg.spike_cm / 100, "deep"), (np.asarray(bend) > cfg.fold_deg, "fold")):
+        cand += [[a, b, {why}] for a, b in _runs(m, cfg.spike_merge)]
+    cand.sort(key=lambda c: c[0])
+    merged = []
+    for a, b, w in cand:
+        if merged and a <= merged[-1][1] + cfg.spike_merge + 1:
+            merged[-1][1] = max(merged[-1][1], b)
+            merged[-1][2] |= w
+        else:
+            merged.append([a, b, set(w)])
+    out = []
+    for a, b, w in merged:
+        if b - a + 1 > cfg.spike_max_frames:
+            continue
+        nb = np.r_[max(0, a - 12):max(0, a - 1), min(T, b + 2):min(T, b + 13)].astype(int)
+        inside = np.arange(a, min(T, b + 2))
+        body = []
+        for k, floor in (("pelvis", cfg.body_min_deg), ("spine3", cfg.body_min_deg), ("root", cfg.body_min_mps)):
+            s = np.asarray(speeds[k], float)
+            vi, vn = float(s[inside].max()), (float(s[nb].max()) if len(nb) else 0.0)
+            if vi > floor and vi > cfg.body_ratio * vn:
+                body.append(k)
+        out.append({"a": int(a), "b": int(b), "t": [round(a / HZ, 2), round(b / HZ, 2)], "kind": "body" if body else "arm",
+                    "why": sorted(w), "body_why": body, "pen_cm": round(float(np.max(pen[a:b + 1])) * 100, 1),
+                    "bend_deg": round(float(np.max(bend[a:b + 1])), 1)})
+    return out
+
+
+def spike_knots(a: int, b: int, T: int, n: int, blocked: np.ndarray | None = None) -> np.ndarray | None:
+    """the n frames on each side of the run [a, b] that the spline goes through (not inside another run: blocked), or None when the frames
+    just outside it are not free"""
+    blocked = np.zeros(T, bool) if blocked is None else blocked
+    left = [k for k in range(a - 1, max(-1, a - 1 - 3 * n), -1) if not blocked[k]][:n][::-1]
+    right = [k for k in range(b + 1, min(T, b + 1 + 3 * n)) if not blocked[k]][:n]
+    if len(left) < 2 or len(right) < 2 or left[-1] != a - 1 or right[0] != b + 1:
+        return None
+    return np.array(left + right)
+
+
+def despike_c2(P: np.ndarray, tr: np.ndarray, a: int, b: int, K: np.ndarray, kind: str = "arm") -> tuple[np.ndarray, np.ndarray]:
+    """one spike [a, b]: the rotations (kind "arm": his right shoulder, elbow, wrist + fingers; "body": every joint and the root translation,
+    the legs keeping their global rotations as in despike_hermite) on the run become a C2 cubic spline (scipy CubicSpline, not-a-knot)
+    through the knot frames K (outside the run, unchanged), in the tangent space of the frame before the run -> (P copy, transl copy)"""
+    from scipy.interpolate import CubicSpline
+    from scipy.spatial.transform import Rotation as Ro
+    P, tr = np.asarray(P, float).copy(), np.asarray(tr, float).copy()
+    P0 = P.copy()
+    x = np.arange(a, b + 1)
+    K = np.asarray(K)
+    joints = range(P.shape[1]) if kind == "body" else ARM_R
+    for j in joints:
+        R0 = Ro.from_rotvec(P0[a - 1, j])
+        loc = (R0.inv() * Ro.from_rotvec(P0[K, j])).as_rotvec()
+        P[x, j] = (R0 * Ro.from_rotvec(CubicSpline(K, loc, axis=0)(x))).as_rotvec()
+    if kind == "body":
+        Rp_new, Rp_old = Ro.from_rotvec(P[x, PELVIS]), Ro.from_rotvec(P0[x, PELVIS])
+        for s_ in SIDES:
+            P[x, HIP[s_]] = (Rp_new.inv() * Rp_old * Ro.from_rotvec(P0[x, HIP[s_]])).as_rotvec()
+            for jj in (KNEE[s_], ANKLE[s_], FOOT[s_]):
+                P[x, jj] = P0[x, jj]
+        tr[x] = CubicSpline(K, tr[K], axis=0)(x)
+    return P, tr
+
+
+def _arm_points(betas: np.ndarray) -> dict:
+    """his right hand (surface + palm patch) and forearm points (hand_contact.rest_hand_ids, the exact check's points) with their skinning
+    weights on the shoulder, the elbow and the hand (wrist + fingers)"""
+    ids = hc.rest_hand_ids(betas)["right"]
+    pts = np.concatenate([ids.hand, ids.palm, ids.arm])
+    W = hc.skin_weights()[pts]
+    nh, npm = len(ids.hand), len(ids.palm)
+    return {"ids": pts, "nh": nh, "npm": npm, "w17": W[:, SHOULDER["right"]], "w19": W[:, ELBOW["right"]],
+            "wh": W[:, [WRIST["right"], *range(40, 55)]].sum(1)}
+
+
+def _surface_planes(surf, X: np.ndarray, VF: np.ndarray, device: str, bs: int = 12) -> dict:
+    """signed distance, closest point and outward normal of her posed surface (VF (W,nv,3)) at points X (W,n,3): exact (winding numbers)"""
+    import torch
+    W, n = X.shape[:2]
+    sd, q, nq = np.zeros((W, n)), np.zeros((W, n, 3)), np.zeros((W, n, 3))
+    with torch.no_grad():
+        for a in range(0, W, bs):
+            r = surf.query(torch.as_tensor(X[a:a + bs], dtype=torch.float32, device=device),
+                           torch.as_tensor(VF[a:a + bs], dtype=torch.float32, device=device), wn_within=0.03)
+            sd[a:a + bs] = r["sd"].cpu().numpy()
+            q[a:a + bs] = r["q"].cpu().numpy()
+            nq[a:a + bs] = r["nq"].cpu().numpy()
+    return {"sd": sd, "q": q, "n": nq}
+
+
+def sphere_dirs(n: int = 48) -> np.ndarray:
+    """(n,3) unit directions spread evenly over the sphere (Fibonacci)"""
+    i = np.arange(n) + 0.5
+    phi = np.arccos(1 - 2 * i / n)
+    th = np.pi * (1 + 5 ** 0.5) * i
+    return np.stack([np.cos(th) * np.sin(phi), np.cos(phi), np.sin(th) * np.sin(phi)], 1)
+
+
+def pick_exit(t: np.ndarray, dirs: np.ndarray, depth_at_max: np.ndarray, tmax: float, w_jump: float = 3.0) -> tuple[np.ndarray, np.ndarray]:
+    """per frame of a run, from t (F, D) - the smallest translation along each direction that brings the hand out (inf: none within tmax) -
+    the exits as one path through time (dynamic programming): each frame's cost is its translation's length (a frame with no exit: tmax +
+    10 x the depth left at tmax, depth_at_max (F, D)), each step's cost w_jump x how far the translation jumps between the two frames (the
+    exit direction deep in her swings 90 deg between neighbouring frames: following the shortest exit frame by frame whips the hand)
+    -> (delta (F,3), ok (F,) an exit within tmax)"""
+    t = np.asarray(t, float)
+    F, D = t.shape
+    ok_fd = np.isfinite(t)
+    tl = np.where(ok_fd, t, tmax)
+    unary = np.where(ok_fd, t, tmax + 10.0 * np.asarray(depth_at_max, float))
+    vec = tl[:, :, None] * dirs[None]                                   # (F, D, 3)
+    cost = unary[0].copy()
+    bp = np.zeros((F, D), np.int64)
+    for i in range(1, F):
+        jump = np.linalg.norm(vec[i - 1][:, None] - vec[i][None], axis=-1)   # (D from, D to)
+        c = cost[:, None] + w_jump * jump
+        bp[i] = c.argmin(0)
+        cost = c.min(0) + unary[i]
+    path = np.zeros(F, np.int64)
+    path[-1] = int(cost.argmin())
+    for i in range(F - 1, 0, -1):
+        path[i - 1] = bp[i, path[i]]
+    ar = np.arange(F)
+    return vec[ar, path], ok_fd[ar, path]
+
+
+def exit_translations(X: np.ndarray, VF: np.ndarray, surf, device: str, tmax: float = 0.095, depth_ok: float = 0.008,
+                      n_dirs: int = 48, steps: int = 7, bs: int = 64, max_up: float = 0.35) -> dict:
+    """step 2's push: per frame the smallest rigid translation of his hand points X (F,n,3) that leaves no point deeper than depth_ok inside
+    her (VF (F,nv,3)), over n_dirs directions: a bisection (`steps` halvings of [0, tmax]) with the fast inside test (the side of the closest
+    point's normal), the chosen exit (pick_exit) then checked exactly (winding numbers) and lengthened 5 mm at a time until it holds (or the
+    cap) -> {"delta" (F,3), "ok" (F,), "t" (F,), "depth_left" (F,) exact, at the chosen translation}; the exits of neighbouring frames
+    form one steady path (pick_exit), and X should be one run of consecutive frames. Directions rising more steeply than max_up (the
+    world's +y component) are not searched: the shortest way out of her upper back is often over her shoulder, and the review of the
+    first run saw the hand pushed up onto the back of her neck (289.0 s, cam 01)"""
+    import torch
+    F, n = X.shape[:2]
+    D = sphere_dirs(n_dirs)
+    D = D[D[:, 1] <= max_up]
+    n_dirs = len(D)
+    Xt = torch.as_tensor(np.asarray(X, np.float32), device=device)
+    Vt = torch.as_tensor(np.asarray(VF, np.float32), device=device)
+    Dt = torch.as_tensor(D, dtype=torch.float32, device=device)
+    fi, di = np.meshgrid(np.arange(F), np.arange(n_dirs), indexing="ij")
+    fi, di = fi.ravel(), di.ravel()
+
+    def depth(tvals: np.ndarray, f_idx: np.ndarray, dvec: torch.Tensor, exact: bool) -> np.ndarray:
+        out = np.zeros(len(f_idx))
+        tv = torch.as_tensor(np.asarray(tvals, np.float32), device=device)
+        with torch.no_grad():
+            for a in range(0, len(f_idx), bs):
+                f_ = torch.as_tensor(f_idx[a:a + bs], device=device)
+                P = Xt[f_] + (tv[a:a + bs, None] * dvec[a:a + bs])[:, None, :]
+                q = surf.query(P, Vt[f_], wn_within=0.03, inside_test=exact)
+                out[a:a + bs] = np.maximum(0, -q["sd"].min(1).values.cpu().numpy())
+        return out
+    Dall = Dt[torch.as_tensor(di, device=device)]
+    hi = np.full(len(fi), tmax)
+    d_hi = depth(hi, fi, Dall, False)
+    ok = d_hi <= depth_ok
+    lo = np.zeros(len(fi))
+    for _ in range(steps):
+        mid = 0.5 * (lo + hi)
+        dm = depth(np.where(ok, mid, tmax), fi, Dall, False)
+        good = ok & (dm <= depth_ok)
+        hi = np.where(good, mid, hi)
+        lo = np.where(ok & ~good, mid, lo)
+    t = np.where(ok, hi, np.inf).reshape(F, n_dirs)
+    delta, okf = pick_exit(t, D, d_hi.reshape(F, n_dirs), tmax)
+    tt = np.linalg.norm(delta, axis=1)
+    u = delta / np.maximum(tt, 1e-9)[:, None]
+    ut = torch.as_tensor(u, dtype=torch.float32, device=device)
+    left = depth(tt, np.arange(F), ut, True)
+    for _ in range(int(np.ceil(tmax / 0.005))):                        # the exact check: lengthen the exit until it holds
+        more = (left > depth_ok + 0.001) & (tt < tmax - 1e-6)
+        if not more.any():
+            break
+        tt = np.where(more, np.minimum(tt + 0.005, tmax), tt)
+        left = np.where(more, depth(tt, np.arange(F), ut, True), left)
+    okf = left <= depth_ok + 0.001
+    return {"delta": u * tt[:, None], "ok": okf, "t": tt, "depth_left": left}
+
+
+def envelope(n_left: int, n_core: int, n_right: int) -> np.ndarray:
+    """a window's blend: raised-cosine ramps (0 -> 1 over n_left frames, 1 -> 0 over n_right), 1 on the core"""
+    up = 0.5 - 0.5 * np.cos(np.pi * np.arange(1, n_left + 1) / (n_left + 1))
+    dn = 0.5 + 0.5 * np.cos(np.pi * np.arange(1, n_right + 1) / (n_right + 1))
+    return np.r_[up, np.ones(n_core), dn]
+
+
+def _skew_t(torch, v):
+    z = torch.zeros_like(v[..., 0])
+    return torch.stack([torch.stack([z, -v[..., 2], v[..., 1]], -1), torch.stack([v[..., 2], z, -v[..., 0]], -1),
+                        torch.stack([-v[..., 1], v[..., 0], z], -1)], -2)
+
+
+class ArmWindow:
+    """one window of the last pass: his right arm re-posed by 8 numbers per frame - a world rotation of the arm about the shoulder (3), the
+    elbow's flexion about its hinge (1, the off-hinge part kept), the forearm's own twist about its bone (1, pronation / supination: no joint
+    moves), a world rotation of the hand (3) - applied to the base motion's frames
+    ks; the hand / forearm points follow by linear blend skinning (the base's posed points moved by the changed joints' transforms). The
+    numbers are free on every frame and multiplied by the window's envelope (1 on the core, raised-cosine ramps to exactly 0 at the
+    window's ends: the change blends in and out, and the ramps' own limits - bend, twist, speed - hold there too)."""
+
+    NV = 8
+
+    def __init__(self, fit: dict, P: np.ndarray, ks: np.ndarray, n_left: int, n_right: int, rest_J: np.ndarray, pts: dict):
+        import torch
+        self.torch = torch
+        self.ks = np.asarray(ks)
+        W = len(ks)
+        self.nl, self.nr, self.nc = n_left, n_right, W - n_left - n_right
+        lead = fit["lead"]
+        o = posed(lead, self.ks, P[self.ks])
+        J, R = o["J"], o["R"]
+        t64 = lambda a: torch.tensor(np.asarray(a, float), dtype=torch.float64)  # noqa: E731
+        self.G14, self.G17, self.G19, self.G21 = (t64(R[:, j]) for j in (COLLAR["right"], SHOULDER["right"], ELBOW["right"], WRIST["right"]))
+        self.S, self.E, self.Wr = t64(J[:, SHOULDER["right"]]), t64(J[:, ELBOW["right"]]), t64(J[:, WRIST["right"]])
+        self.R19 = t64(rotvec_to_mat(P[self.ks, ELBOW["right"]]))
+        self.Pw = np.asarray(P[self.ks], float).copy()
+        self.b1 = t64(rest_J[ELBOW["right"]] - rest_J[SHOULDER["right"]])
+        self.b2 = t64(rest_J[WRIST["right"]] - rest_J[ELBOW["right"]])
+        V = hc.Body(lead, "cpu").forward_np(P[self.ks], np.asarray(lead["transl"], float)[self.ks], ids=pts["ids"])["verts"].astype(float)
+        self.V0 = V
+        Vt = t64(V)
+        self.A17 = torch.einsum("wji,wnj->wni", self.G17, Vt - self.S[:, None])
+        self.A19 = torch.einsum("wji,wnj->wni", self.G19, Vt - self.E[:, None])
+        self.A21 = torch.einsum("wji,wnj->wni", self.G21, Vt - self.Wr[:, None])
+        self.w17, self.w19, self.wh = (t64(pts[k])[None, :, None] for k in ("w17", "w19", "wh"))
+        self.Vt = Vt
+        C = hc.palm_centre(J, "right")
+        tips = o["tips"][:, 5:10]
+        self.C0, self.tips0 = t64(C), t64(tips)
+        self.Cl = torch.einsum("wji,wj->wi", self.G21, self.C0 - self.Wr)
+        self.Tl = torch.einsum("wji,wnj->wni", self.G21, self.tips0 - self.Wr[:, None])
+        self.env = t64(envelope(n_left, self.nc, n_right))
+        self.ey = t64([0.0, 1.0, 0.0])
+        self.ea = self.b2 / self.b2.norm()                                  # the forearm bone's axis in the elbow's frame
+
+    def set_input(self, fit_in_lead: dict, P_in: np.ndarray, p99: dict) -> None:
+        """the INPUT motion at this window's frames (the speed audit's reference): its elbow, wrist, palm centre, fingertips, the wrist's
+        local rotation, and p99 {point: m/s} of each point's speed over the film"""
+        torch = self.torch
+        o = posed(fit_in_lead, self.ks, P_in[self.ks])
+        t64 = lambda a: torch.tensor(np.asarray(a, float), dtype=torch.float64)  # noqa: E731
+        self.X_in = {"E": t64(o["J"][:, ELBOW["right"]]), "W": t64(o["J"][:, WRIST["right"]]), "C": t64(hc.palm_centre(o["J"], "right")),
+                     "tips": t64(o["tips"][:, 5:10])}
+        self.R21_in = t64(rotvec_to_mat(P_in[self.ks, WRIST["right"]]))
+        self.p99 = dict(p99)
+
+    def params(self, v):
+        """the free numbers (W, NV) -> every frame's change: times the envelope"""
+        return v * self.env[:, None]
+
+    def forward(self, v) -> dict:
+        torch = self.torch
+        p = self.params(v)
+        ds, th, te, dh = p[:, 0:3], p[:, 3], p[:, 4], p[:, 5:8]
+        Q17 = torch.linalg.matrix_exp(_skew_t(torch, ds))
+        G17 = Q17 @ self.G17
+        Ry = torch.linalg.matrix_exp(_skew_t(torch, th[:, None] * self.ey))
+        R19 = Ry @ self.R19 @ torch.linalg.matrix_exp(_skew_t(torch, te[:, None] * self.ea))
+        G19 = G17 @ R19
+        G21 = torch.linalg.matrix_exp(_skew_t(torch, dh)) @ self.G21
+        E = self.S + torch.einsum("wij,j->wi", G17, self.b1)
+        Wr = E + torch.einsum("wij,j->wi", G19, self.b2)
+        X17 = torch.einsum("wij,wnj->wni", G17, self.A17) + self.S[:, None]
+        X19 = torch.einsum("wij,wnj->wni", G19, self.A19) + E[:, None]
+        X21 = torch.einsum("wij,wnj->wni", G21, self.A21) + Wr[:, None]
+        rest = 1.0 - self.w17 - self.w19 - self.wh
+        X = rest * self.Vt + self.w17 * X17 + self.w19 * X19 + self.wh * X21
+        C = torch.einsum("wij,wj->wi", G21, self.Cl) + Wr
+        tips = torch.einsum("wij,wnj->wni", G21, self.Tl) + Wr[:, None]
+        R21 = G19.transpose(1, 2) @ G21
+        return {"p": p, "G17": G17, "R19": R19, "G19": G19, "G21": G21, "R21": R21, "E": E, "W": Wr, "X": X, "C": C, "tips": tips}
+
+    def poses(self, v, P: np.ndarray) -> np.ndarray:
+        """the base pose P (T,55,3) with this window's frames re-posed by the numbers v -> a copy"""
+        from scipy.spatial.transform import Rotation as Ro
+        with self.torch.no_grad():
+            f = self.forward(v)
+        P = P.copy()
+        G14 = self.G14.numpy()
+        P[self.ks, SHOULDER["right"]] = Ro.from_matrix(np.einsum("wji,wjk->wik", G14, f["G17"].numpy())).as_rotvec()
+        P[self.ks, ELBOW["right"]] = Ro.from_matrix(f["R19"].numpy()).as_rotvec()
+        P[self.ks, WRIST["right"]] = Ro.from_matrix(f["R21"].numpy()).as_rotvec()
+        return P
+
+
+def solve_arm_window(win: ArmWindow, VF: np.ndarray, surf, flags: dict, cfg: LastCfg, pts: dict, log_to: list | None = None):
+    """the last pass's solve of one window (steps 2 and 3 together): per frame flags (W,) bool - "push" (the hand to <= push_to_cm inside
+    her), "unfold" (the wrist bend to <= fold_to_deg), "touch" (the hand touched her: it keeps the contact; an unfolded one keeps its palm
+    centre) - with the smallest arm change (elbow / wrist / palm movement, the hand's rotation), the bend / twist / elbow limits never worse
+    than the base, at most cap_m of palm / wrist / fingertip movement and a smooth, bounded change frame to frame. Her surface (exact closest
+    points + normals, _surface_planes) is re-linearised `rounds` times -> (core numbers v, report)"""
+    torch = win.torch
+    nh, npm = pts["nh"], pts["npm"]
+    nhand = nh + npm
+    W = len(win.ks)
+    f64 = lambda a: torch.tensor(np.asarray(a, float), dtype=torch.float64)  # noqa: E731
+    push, unfold, touch = (f64(flags[k].astype(float)) for k in ("push", "unfold", "touch"))
+    pull = f64(flags.get("pull", np.zeros(W, bool)).astype(float))
+    with torch.no_grad():
+        f0 = win.forward(torch.zeros((W, win.NV), dtype=torch.float64))
+        b0, _, _, tw0 = wrist_terms_t(torch, f0["R21"], "right", with_twist=True)
+        fl0, _ = elbow_terms_t(torch, f0["R19"], "right")
+    pl0 = _surface_planes(surf, win.V0, VF, cfg.device)
+    sd_orig = f64(pl0["sd"])
+    deg = np.pi / 180
+    # per frame the deepest hand point (a soft minimum over the points, tau 2 mm): push frames to push_to_cm (3 mm margin), the others never
+    # deeper than the base (or 1 cm); the forearm never deeper than the base (or 1 cm)
+    tau = 0.002
+    smin_h0 = -tau * torch.logsumexp(-sd_orig[:, :nhand] / tau, 1)
+    smin_a0 = -tau * torch.logsumexp(-sd_orig[:, nhand:] / tau, 1)
+    lo_h = torch.where(push > 0, torch.full_like(smin_h0, -(cfg.push_to_cm / 100 - 0.003)),
+                       torch.minimum(smin_h0, torch.full_like(smin_h0, -0.01)) - 0.002)
+    lo_a = torch.minimum(smin_a0, torch.full_like(smin_a0, -0.01)) - 0.002
+    # an unfolded wrist keeps its palm centre where the hand touched her (and was not deep inside her)
+    keep = touch * unfold * (smin_h0 > -0.015).double()
+    bend_hi = torch.where(unfold > 0, torch.full_like(b0, (cfg.fold_to_deg - 3) * deg), torch.maximum(b0, torch.full_like(b0, 85 * deg)))
+    # the twist never beyond the base's (or 90 deg); on a wrist folded past 150 deg the base's twist is meaningless: 90 deg there
+    tw_hi = torch.where(b0 < 150 * deg, torch.maximum(tw0.abs(), torch.full_like(tw0, 85 * deg)), torch.full_like(tw0, 85 * deg))
+    fl_lo = torch.minimum(fl0, torch.full_like(fl0, -3 * deg))
+    # the speed audit's rules (zouk_contacts.gate_flags, hand_contact.speed_audit) as limits, per point (elbow, wrist, palm, fingertips) and
+    # step: the motion's change against the INPUT moves at most max(0.5 m/s, the base's) - no new added-speed frame; the point itself at most
+    # max(the input's p99, the input there, the base there) + 0.2 m/s - no new fast frame; the wrist's local rotation turns at most
+    # max(the input's, the base's) + 6 deg / frame - no new flick
+    lim = {}
+    if getattr(win, "X_in", None) is not None:
+        for k in ("E", "W", "C", "tips"):
+            xin, xb = win.X_in[k], f0[k]
+            d0 = ((xb - xin)[1:] - (xb - xin)[:-1]).norm(dim=-1)
+            vin, vb = (xin[1:] - xin[:-1]).norm(dim=-1), (xb[1:] - xb[:-1]).norm(dim=-1)
+            p99 = win.p99[k] / HZ
+            lim[k] = (torch.clamp(d0 + 0.001, min=0.5 / HZ), torch.maximum(torch.maximum(vin, vb), torch.full_like(vin, p99)) + 0.2 / HZ)
+
+        def rot_step(R):
+            c = ((R[:-1].transpose(1, 2) @ R[1:]).diagonal(dim1=1, dim2=2).sum(-1) - 1) / 2
+            return c.clamp(-1, 1)
+        c_in, c_b = rot_step(win.R21_in), rot_step(f0["R21"])
+        a_lim = torch.maximum(torch.acos(c_in), torch.acos(c_b)) + 6 * deg
+    fl_hi = torch.maximum(fl0, torch.full_like(fl0, 150 * deg))
+    # the start: zero, except that folded wrists start unfolded along a path continuous in time (unfold_wrist: the wrist's local rotation
+    # compressed above fold_to_deg - 15 deg) - at a bend near 180 deg the direction to unfold is ambiguous frame by frame (a free start spun
+    # the hand 270 deg about the forearm in 0.2 s at 273.6 s)
+    v0 = np.zeros((W, win.NV))
+    if flags["unfold"].any():
+        from scipy.spatial.transform import Rotation as Ro
+        core = slice(0, W)
+        Pu, _ = unfold_wrist(win.Pw[core], knee_deg=cfg.fold_to_deg - 15, slope=0.1)
+        G19c, G21c = win.G19.numpy()[core], win.G21.numpy()[core]
+        G21u = np.einsum("wij,wjk->wik", G19c, rotvec_to_mat(Pu[:, WRIST["right"]]))
+        v0[:, 5:8] = Ro.from_matrix(np.einsum("wij,wkj->wik", G21u, G21c)).as_rotvec()
+    v = torch.tensor(v0, dtype=torch.float64, requires_grad=True)
+    # push frames: the smallest rigid translation of the hand that brings it out (exit_translations, every direction searched: deep in her,
+    # the closest-point normals of the hand's points point every way and one plane per point pulls the hand sideways) - the palm's target,
+    # and the hand's points there are where her surface is first linearised
+    X_lin, pl = win.V0, pl0
+    tgt = torch.zeros((W, 3), dtype=torch.float64)
+    has_tgt = torch.zeros(W, dtype=torch.float64)
+    exit_rep = None
+    pi_ = np.flatnonzero(flags["push"])
+    if len(pi_):
+        X_lin = win.V0.copy()
+        ts, found = [], 0
+        for a_, b_ in _runs(flags["push"], 0):                          # one steady exit path per run of push frames
+            x = np.arange(a_, b_ + 1)
+            ex = exit_translations(win.V0[x, :nhand:2], VF[x], surf, cfg.device, tmax=cfg.cap_m - 0.005,
+                                   depth_ok=cfg.push_to_cm / 100 - 0.002)
+            X_lin[x, :nhand] += ex["delta"][:, None]
+            tgt[x] = f64(ex["delta"])
+            ts.append(ex["t"])
+            found += int(ex["ok"].sum())
+        pl = _surface_planes(surf, X_lin, VF, cfg.device)
+        has_tgt[pi_] = 1.0
+        ts = np.concatenate(ts)
+        exit_rep = {"frames": int(len(pi_)), "found": found, "t_cm_max": round(float(ts.max()) * 100, 2),
+                    "t_cm_median": round(float(np.median(ts)) * 100, 2)}
+    hist = []
+    relu = torch.relu
+    cap = cfg.cap_m - 0.005
+
+    def d2(x):
+        return x[2:] - 2 * x[1:-1] + x[:-2]
+    for rnd in range(cfg.rounds):
+        sd_lin, nq = f64(pl["sd"]), f64(pl["n"])
+        Xl = f64(X_lin)
+        far = (sd_lin >= 0.05).double()                  # the plane of a point far off her says nothing: left out of the minimum
+
+        def loss_fn():
+            f = win.forward(v)
+            sdp = sd_lin + ((f["X"] - Xl) * nq).sum(-1) + far
+            smin = -tau * torch.logsumexp(-sdp[:, :nhand] / tau, 1)
+            smin_a = -tau * torch.logsumexp(-sdp[:, nhand:] / tau, 1)
+            L_pen = 3e5 * ((relu(lo_h - smin) ** 2).sum() + (relu(lo_a - smin_a) ** 2).sum())
+            # the contact of a touching hand
+            # (a touching hand stays within 1.5 cm of her: the gate counts > 2 cm off her as floating; a floating one in a back hold is
+            # pulled onto her, more gently)
+            L_touch = 1e6 * (touch * relu(smin - 0.015) ** 2).sum() + 3e4 * (pull * relu(smin - 0.015) ** 2).sum()
+            dE, dW, dC = f["E"] - f0["E"], f["W"] - f0["W"], f["C"] - f0["C"]
+            dT = f["tips"] - f0["tips"]
+            L_min = 50 * ((dE ** 2).sum() + (dW ** 2).sum() + (dC ** 2).sum()) + 2.0 * (f["p"][:, 4:8] ** 2).sum() + 0.5 * (f["p"][:, :3] ** 2).sum()
+            L_keep = 1000 * (keep * (dC ** 2).sum(-1)).sum()
+            L_tgt = 2000 * (has_tgt * ((dC - tgt) ** 2).sum(-1)).sum()
+            mv = torch.cat([dW.norm(dim=-1)[:, None], dC.norm(dim=-1)[:, None], dT.norm(dim=-1)], 1)
+            L_cap = 1e8 * (relu(mv - cap) ** 2).sum()
+            bend, _, _, tw = wrist_terms_t(torch, f["R21"], "right", with_twist=True)
+            L_bend = 3e4 * (relu(bend - bend_hi) ** 2).sum()
+            tw_ok = (bend.detach() < 150 * deg).double()                 # the twist is defined only below a full fold
+            L_tw = 3e4 * (tw_ok * relu(tw.abs() - tw_hi) ** 2).sum()
+            fl, _ = elbow_terms_t(torch, f["R19"], "right")
+            L_el = 300 * ((relu(fl_lo - fl) ** 2) + relu(fl - fl_hi) ** 2).sum()
+            L_sm = 3e4 * sum((d2(x) ** 2).sum() for x in (dE, dW, dC)) + 300 * (d2(f["p"]) ** 2).sum()
+            # a bounded change frame to frame (no whip): the added movement of the elbow, the wrist, the palm, the fingertips <= 12 mm / frame
+            # (0.36 m/s; the speed audit's limit is 0.55)
+            L_v = 1e6 * sum((relu((x[1:] - x[:-1]).norm(dim=-1) - 0.012) ** 2).sum() for x in (dE, dW, dC, dT))
+            L_sp = 0.0
+            if lim:
+                for k, x in (("E", f["E"]), ("W", f["W"]), ("C", f["C"]), ("tips", f["tips"])):
+                    xin = win.X_in[k]
+                    dd = ((x - xin)[1:] - (x - xin)[:-1]).norm(dim=-1)
+                    vv = (x[1:] - x[:-1]).norm(dim=-1)
+                    L_sp = L_sp + 1e8 * ((relu(dd - lim[k][0]) ** 2).sum() + (relu(vv - lim[k][1]) ** 2).sum())
+                L_sp = L_sp + 1e6 * (relu(torch.acos(rot_step(f["R21"]).clamp(-1 + 1e-7, 1 - 1e-7)) - a_lim) ** 2).sum()
+            return L_sp + L_pen + L_touch + L_min + L_keep + L_tgt + L_cap + L_bend + L_tw + L_el + L_sm + L_v
+        opt = torch.optim.LBFGS([v], lr=1.0, max_iter=cfg.iters, line_search_fn="strong_wolfe", tolerance_grad=1e-9, tolerance_change=1e-12)
+
+        def closure():
+            opt.zero_grad()
+            L = loss_fn()
+            L.backward()
+            return L
+        opt.step(closure)
+        with torch.no_grad():
+            f = win.forward(v)
+            X_lin = f["X"].numpy()
+        pl = _surface_planes(surf, X_lin, VF, cfg.device)
+        hand_depth = np.maximum(0, -pl["sd"][:, :nhand].min(1))
+        hist.append({"round": rnd + 1, "loss": round(float(loss_fn().detach()), 4),
+                     "push_frames_depth_cm_max": round(float(hand_depth[flags["push"]].max() * 100), 2) if flags["push"].any() else None})
+    with torch.no_grad():
+        f = win.forward(v)
+        bend, _, _, tw = wrist_terms_t(torch, f["R21"], "right", with_twist=True)
+        mv = torch.cat([(f["W"] - f0["W"]).norm(dim=-1)[:, None], (f["C"] - f0["C"]).norm(dim=-1)[:, None],
+                        (f["tips"] - f0["tips"]).norm(dim=-1)], 1).max(1).values
+    hand_depth0 = np.maximum(0, -pl0["sd"][:, :nhand].min(1))
+    hand_depth = np.maximum(0, -pl["sd"][:, :nhand].min(1))
+    rep = {"rounds": hist, "frames": W, "core": [int(win.ks[win.nl]), int(win.ks[win.nl + win.nc - 1])],
+           "hand_move_cm_max": round(float(mv.max()) * 100, 2),
+           "elbow_move_cm_max": round(float((f["E"] - f0["E"]).norm(dim=-1).max()) * 100, 2),
+           "depth_cm_max_before_after": [round(float(hand_depth0.max()) * 100, 2), round(float(hand_depth.max()) * 100, 2)],
+           "bend_deg_max_before_after": [round(float(b0.max() / deg), 1), round(float(bend.max() / deg), 1)],
+           "push_frames": int(flags["push"].sum()), "unfold_frames": int(flags["unfold"].sum()), "touch_frames": int(flags["touch"].sum()),
+           "pull_frames": int(flags.get("pull", np.zeros(W, bool)).sum()),
+           "exit": exit_rep}
+    if flags["push"].any():
+        rep["push_frames_depth_cm_max_before_after"] = [round(float(hand_depth0[flags["push"]].max()) * 100, 2),
+                                                        round(float(hand_depth[flags["push"]].max()) * 100, 2)]
+    if flags["unfold"].any():
+        rep["unfold_frames_bend_max_before_after"] = [round(float(b0[flags["unfold"]].max() / deg), 1),
+                                                      round(float(bend[torch.as_tensor(flags["unfold"])].max() / deg), 1)]
+    if log_to is not None:
+        log_to.append(rep)
+    return v.detach(), rep
+
+
+def last_windows(pen: np.ndarray, gap: np.ndarray, bend: np.ndarray, cfg: LastCfg | None = None, back: np.ndarray | None = None) -> list[dict]:
+    """steps 2 / 3: the windows of the despiked motion - push frames (deeper than push_from_cm), unfold frames (the runs bent past fold_to_deg
+    that reach fold_deg); cores = those frames +- pad, merged when closer than merge_gap; ramps of `ramp` frames each side
+    -> [{"core": [c0, c1], "span": [s0, s1], "push", "unfold", "touch", "pull": frame lists (absolute)}] (push: the episode deeper than
+    push_run_cm around each frame deeper than push_from_cm; touch: the hand's signed gap (gap: the installed motion's) below touch_m;
+    pull: the back holds (back (T,) bool) where the hand floated 2-5 cm off her)"""
+    cfg = cfg or LastCfg()
+    T = len(pen)
+    pen = np.asarray(pen)
+    # push frames: the whole episode deeper than push_run_cm around a frame deeper than push_from_cm (leaving the neighbours of a pushed
+    # frame 3-4 cm inside her would need the hand to jump out and back in within a frame or two)
+    push = np.zeros(T, bool)
+    for a, b in _runs(pen > cfg.push_run_cm / 100, 2):
+        if (pen[a:b + 1] > cfg.push_from_cm / 100).any():
+            push[a:b + 1] = True
+    unf = np.zeros(T, bool)
+    for a, b in _runs(np.asarray(bend) > cfg.fold_to_deg, 0):
+        if (np.asarray(bend)[a:b + 1] > cfg.fold_deg).any():
+            unf[a:b + 1] = True
+    need = push | unf
+    core = np.zeros(T, bool)
+    for a, b in _runs(need, 0):
+        core[max(0, a - cfg.pad):min(T, b + cfg.pad + 1)] = True
+    out = []
+    for c0, c1 in _runs(core, cfg.merge_gap):
+        s0, s1 = max(0, c0 - cfg.ramp), min(T - 1, c1 + cfg.ramp)
+        x = np.arange(s0, s1 + 1)
+        out.append({"core": [int(c0), int(c1)], "span": [int(s0), int(s1)], "t": [round(c0 / HZ, 2), round(c1 / HZ, 2)],
+                    "push": x[push[x] & (x >= c0) & (x <= c1)].tolist(), "unfold": x[unf[x] & (x >= c0) & (x <= c1)].tolist(),
+                    "touch": x[np.asarray(gap)[x] < cfg.touch_m].tolist(),
+                    "pull": (x[(np.asarray(gap)[x] >= cfg.touch_m) & (np.asarray(gap)[x] <= 0.05) & np.asarray(back)[x]].tolist()
+                             if back is not None else [])})
+    return out
+
+
+def _elbow_guard(fits: dict, ks: np.ndarray, obs, judge, bias: dict, bodies: dict, hcfg: HoldCfg) -> dict:
+    """the 2D of a window, base ("before") against the candidate ("after"): the COCO elbow and wrist (median px over the phone-frames that
+    see the candidate's joint and have a detection, the same detections for both) and MAMMA's hand points (phones that see the palm)"""
+    out = {}
+    kl, kf = posed(fits["after"]["lead"], ks), posed(fits["after"]["follow"], ks)
+
+    def med(a):
+        a = np.asarray(a, float)
+        a = a[np.isfinite(a)]
+        return (round(float(np.median(a)), 2) if len(a) else None), int(len(a))
+
+    def joint_x(fit, which):
+        J = posed(fit["lead"], ks)["J"]
+        jj = WRIST["right"] if which == "wrist" else ELBOW["right"]
+        b = np.asarray(bias.get(f"lead_right_{which}", [0, 0, 0]), float)
+        return J[:, jj] + np.einsum("kij,j->ki", hc._forearm_frame(J, "right"), b), J[:, jj]
+    for which in ("elbow", "wrist"):
+        jj = WRIST["right"] if which == "wrist" else ELBOW["right"]
+        vis = joint_visible(obs, ks, kl["J"][:, jj], bodies, kl, kf)
+        Xl = kl["J"][:, WRIST["left"] if which == "wrist" else ELBOW["left"]]
+        (X0, J0), (X1, J1) = joint_x(fits["before"], which), joint_x(fits["after"], which)
+        e0, n0 = med(coco_errors_vis(judge, obs, X0, ks, which, vis, Xl, X1))
+        e1, n1 = med(coco_errors_vis(judge, obs, X1, ks, which, vis, Xl, X0))
+        mv = []
+        for ci, c in enumerate(obs.cams):
+            u0, _ = obs.project(c, J0[:, None], ks)
+            u1, _ = obs.project(c, J1[:, None], ks)
+            d = np.linalg.norm(u1[:, 0] - u0[:, 0], axis=-1)
+            mv += list(d[vis[:, ci]])
+        out[which] = {"before_px": e0, "after_px": e1, "n": min(n0, n1),
+                      "moved_px_visible_max": round(float(np.max(mv)), 1) if mv else None}
+    vp = joint_visible(obs, ks, hand_site(kl["J"], "right", "palm")[0], bodies, kl, kf)
+    (m0, k0), (m1, k1) = (med(hand_2d_errors_vis(fits[f], ks, obs, hcfg, vp, [fits["before"], fits["after"]])) for f in ("before", "after"))
+    out["mamma"] = {"before_px": m0, "after_px": m1, "n": min(k0, k1)}
+    return out
+
+
+def _with_pose(fit: dict, P: np.ndarray, tr: np.ndarray | None = None) -> dict:
+    """the fit with the leader's pose (and root translation) replaced, in memory"""
+    T = len(P)
+    d = dict(fit["lead"])
+    d["global_orient"] = P[:, 0].copy()
+    d["body_pose"] = P[:, 1:22].reshape(T, 63).copy()
+    d["left_hand_pose"] = P[:, 25:40].reshape(T, 45).copy()
+    d["right_hand_pose"] = P[:, 40:55].reshape(T, 45).copy()
+    if tr is not None:
+        d["transl"] = np.asarray(tr, float).copy()
+    return {"lead": d, "follow": fit["follow"]}
+
+
+def _segment_speeds(P: np.ndarray, fit_lead: dict, ks: np.ndarray) -> dict:
+    """(len(ks)-1,) m/s of his right elbow, wrist, palm centre and the fastest fingertip between consecutive frames ks"""
+    o = posed(fit_lead, ks, P[ks])
+    pts = {"elbow": o["J"][:, ELBOW["right"]], "wrist": o["J"][:, WRIST["right"]], "palm": hc.palm_centre(o["J"], "right")}
+    tips = o["tips"][:, 5:10]
+    out = {k: np.linalg.norm(np.diff(x, axis=0), axis=-1) * HZ for k, x in pts.items()}
+    out["tip"] = np.linalg.norm(np.diff(tips, axis=0), axis=-1).max(1) * HZ
+    return out
+
+
+def last_sheets(items: list, fit_names=("ec8e", "v4"), stem: str = "last", per_sheet: int = 5, tile: int = 236) -> list:
+    """review sheets of the last pass: per item ({"t": s, "what": str}) 2 phones (one that sees her back, the widest other), each the raw
+    crop and the meshes of every fit (his right hand + forearm yellow, the hand outlined), the exact depth / gap and the wrist bend of each
+    fit in the side panel -> v4/contacts/last/<stem>_<i>.jpg"""
+    import cv2
+    fl = [(f, load_fit(f)) for f in fit_names]
+    ex = {}
+    for f in fit_names:
+        with np.load(OUT / f"exact_{f}.npz") as z:
+            ex[f] = (z["hand_pen"].copy(), z["hand_gap"].copy())
+    bends = {f: wrist_angles(hc.full_pose(fit["lead"]), "right")["bend"] for f, fit in fl}
+    obs = hc.Obs()
+    phones = hc.Phones()
+    H = load_holds()
+    LAST_DIR.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for si in range(0, len(items), per_sheet):
+        rows = []
+        for it in items[si:si + per_sheet]:
+            k = int(round(float(it["t"]) * HZ))
+            pc = hand_site(posed(fl[-1][1]["lead"], np.array([k]))["J"], "right", "palm")[0][0]
+            cams = review_cams(obs, posed(fl[0][1]["follow"], np.array([k]))["J"][0], k, pc, 2)
+            tl = mesh_tiles(k, fl, obs, phones, cams, tile, point=pc)
+            cells = [x for row in tl for x in row]
+            head = np.full((tile, 250, 3), 245, np.uint8)
+            lines = [f"t {k / HZ:.2f} s  film {film_time_of(k / HZ)}", str(it.get("what", ""))[:44], f"hold {H['names'][k]}"]
+            for f in fit_names:
+                lines.append(f"{f}: in her {ex[f][0][k] * 100:.1f} cm gap {ex[f][1][k] * 100:.1f}")
+                lines.append(f"    wrist bend {bends[f][k]:.0f} deg")
+            y = 16
+            for ln in lines[:13]:
+                cv2.putText(head, ln[:44], (5, y), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (20, 20, 20), 1, cv2.LINE_AA)
+                y += 18
+            rows.append(np.concatenate([head] + cells, 1))
+        Wd = max(r.shape[1] for r in rows)
+        rows = [np.pad(r, ((0, 4), (0, Wd - r.shape[1]), (0, 0)), constant_values=255) for r in rows]
+        top = np.full((30, Wd, 3), 255, np.uint8)
+        cv2.putText(top, "last pass: per phone the crop | " + " | ".join(fit_names) + " - lead blue, follow orange, his right hand yellow",
+                    (6, 21), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
+        p = LAST_DIR / f"{stem}_{si // per_sheet + 1}.jpg"
+        cv2.imwrite(str(p), np.concatenate([top] + rows, 0), [cv2.IMWRITE_JPEG_QUALITY, 86])
+        paths.append(p)
+        log(f"sheet -> {p}")
+    return paths
+
+
+def added_speed_max(fit_lead: dict, P_ref: np.ndarray, P_new: np.ndarray, ks: np.ndarray) -> dict:
+    """the fastest ADDED movement (m/s, the change P_new - P_ref between consecutive frames ks) of his right elbow, palm centre and
+    fingertips"""
+    o0, o1 = posed(fit_lead, ks, P_ref[ks]), posed(fit_lead, ks, P_new[ks])
+    d = {"elbow": o1["J"][:, ELBOW["right"]] - o0["J"][:, ELBOW["right"]],
+         "palm": hc.palm_centre(o1["J"], "right") - hc.palm_centre(o0["J"], "right"), "tip": o1["tips"][:, 5:10] - o0["tips"][:, 5:10]}
+    return {k: round(float(np.linalg.norm(np.diff(v, axis=0), axis=-1).max()) * HZ, 2) if len(ks) > 1 else 0.0 for k, v in d.items()}
+
+
+def _added_fast(fit_in_lead: dict, P_in: np.ndarray, fit_lead: dict, P: np.ndarray) -> dict:
+    """(T,) bool per point (elbow, tip0..tip4): the motion's change against the input moves faster than 0.55 m/s from the frame to the next
+    (arm_speed_checks' "added_gt_0.55" counts these)"""
+    oi, o1 = posed(fit_in_lead, None, P_in), posed(fit_lead, None, P)
+    out = {"elbow": hc.speeds(o1["J"][:, ELBOW["right"]] - oi["J"][:, ELBOW["right"]]) > 0.55}
+    for i in range(5):
+        out[f"tip{i}"] = hc.speeds(o1["tips"][:, 5 + i] - oi["tips"][:, 5 + i]) > 0.55
+    return {k: np.r_[x, False] for k, x in out.items()}             # (T,): the step into the next frame (arm_speed_checks' count)
+
+
+def last_pass(base: str = "ec8e", out: str = "v4", cfg: LastCfg | None = None, write: bool = True, only: list | None = None) -> dict:
+    """the last pass (see the section): the base motion (the installed ec8e7101) -> steps 1-3 -> FITS[out] (v4/smplx_contact), exact_<out>.npz
+    (recomputed where the leader changed), v4/contacts/last/report.json (every spike / window with its numbers and 2D)"""
+    from scipy.spatial.transform import Rotation as Ro  # noqa: F401
+    cfg = cfg or LastCfg()
+    t0 = time.time()
+    fit = load_fit(base)
+    T = len(fit["lead"]["t"])
+    P0 = hc.full_pose(fit["lead"])
+    tr0 = np.asarray(fit["lead"]["transl"], float)
+    with np.load(OUT / f"exact_{base}.npz") as z:
+        ex0 = {k: z[k].copy() for k in z.files}
+    rep = {"what": "the last pass (zouk_contacts.last_pass): spikes C2-despiked, deep frames pushed out, folds unfolded", "base": base,
+           "cfg": asdict(cfg), "spikes": [], "windows": []}
+    obs = hc.Obs()
+    judge = hc.CocoJudge()
+    bias = hc.calibrate_coco_bias(load_fit("input"), obs, judge)
+    bodies = capsule_bodies(load_fit("input"))
+    hcfg = HoldCfg()
+    # ---- step 1: spikes
+    o = posed(fit["lead"], None, P0)
+    speeds = {"pelvis": angular_speed(o["R"][:, PELVIS]), "spine3": angular_speed(o["R"][:, SPINE3]),
+              "root": np.r_[0.0, np.linalg.norm(np.diff(tr0, axis=0), axis=1) * HZ]}
+    bend0 = wrist_angles(P0, "right")["bend"]
+    spikes = spike_ranges(ex0["hand_pen"], bend0, speeds, cfg)
+    blocked = np.zeros(T, bool)
+    for s in spikes:
+        blocked[s["a"]:s["b"] + 1] = True
+    P1, tr1 = P0.copy(), tr0.copy()
+    for s in spikes:
+        a, b = s["a"], s["b"]
+        best = None
+        for nk in range(cfg.knots, 1, -1):
+            K = spike_knots(a, b, T, nk, blocked)
+            if K is None:
+                continue
+            Pc, trc = despike_c2(P1, tr1, a, b, K, s["kind"])
+            seg = np.arange(max(0, a - 12), min(T, b + 13))              # the run and 12 frames each side (its neighbours)
+            sp = _segment_speeds(Pc, _with_pose(fit, Pc, trc)["lead"], seg)
+            gi = np.arange(a - 1 - seg[0], b + 1 - seg[0])                # the steps into / inside / out of the run
+            nbi = np.setdiff1d(np.arange(len(seg) - 1), gi)
+            ratio = max(float(sp[k][gi].max()) / max(float(sp[k][nbi].max()), 0.05) for k in sp)
+            if best is None or ratio < best[0] - 1e-9:
+                best = (ratio, nk, Pc, trc)
+            if ratio <= cfg.speed_slack:
+                break
+        if best is None:
+            s["skipped"] = "no free frames around it"
+            continue
+        s["knots"], s["speed_ratio_vs_neighbours"] = best[1], round(best[0], 2)
+        P1, tr1 = best[2], best[3]
+    ch1 = np.flatnonzero((np.abs(P1 - P0).max((1, 2)) > 0) | (np.abs(tr1 - tr0).max(1) > 0))
+    fit1 = _with_pose(fit, P1, tr1)
+    ex1 = {k: v.copy() for k, v in ex0.items()}
+    if len(ch1):
+        e = exact_of(fit1, ch1, cfg.device, 24)
+        for k in ("hand_pen", "arm_pen", "hand_gap", "hand_pen_part"):
+            ex1[k][ch1] = e[k]
+    for s in spikes:
+        if "skipped" in s:
+            continue
+        x = np.arange(s["a"], s["b"] + 1)
+        s["pen_cm_after"] = round(float(ex1["hand_pen"][x].max()) * 100, 1)
+        s["bend_deg_after"] = round(float(wrist_angles(P1[x], "right")["bend"].max()), 1)
+        s["2d"] = _elbow_guard({"before": fit, "after": fit1}, x, obs, judge, bias, bodies, hcfg)
+    rep["spikes"] = spikes
+    rep["step1_frames_changed"] = int(len(ch1))
+    log(f"last pass step 1: {len(spikes)} spikes, {len(ch1)} frames ({time.time() - t0:.0f} s)")
+    # ---- steps 2 / 3: push out, unfold
+    bend1 = wrist_angles(P1, "right")["bend"]
+    # the contact to keep: where the INSTALLED motion's hand touched her (a despike may have lifted it); the back holds' floating frames
+    # in a window are pulled onto her (step 4)
+    wins = last_windows(ex1["hand_pen"], ex0["hand_gap"], bend1, cfg, back=np.isin(load_holds()["names"], BACK_HOLDS))
+    rest_J = rest_body(fit["lead"]["betas"])["J"]
+    pts = _arm_points(fit["lead"]["betas"])
+    fit_in = load_fit("input")
+    P_in = hc.full_pose(fit_in["lead"])
+    o_in = posed(fit_in["lead"], None, P_in)
+    p99_in = {k: float(np.percentile(hc.speeds(x), 99)) for k, x in
+              (("E", o_in["J"][:, ELBOW["right"]]), ("W", o_in["J"][:, WRIST["right"]]), ("C", hc.palm_centre(o_in["J"], "right")))}
+    p99_in["tips"] = float(min(np.percentile(hc.speeds(o_in["tips"][:, 5 + i]), 99) for i in range(5)))
+    surf = hc.GpuSurface(hc.Body(fit["lead"], "cpu").faces, len(hc.vertex_joint()), cfg.device)
+    bf = hc.Body(fit["follow"], cfg.device)
+    PF, trF = hc.full_pose(fit["follow"]), np.asarray(fit["follow"]["transl"], float)
+    P2 = P1.copy()
+    solved = {}
+    for wi, w in enumerate(wins):
+        s0, s1 = w["span"]
+        c0, c1 = w["core"]
+        if only and not any(s0 / HZ <= float(t) <= s1 / HZ for t in only):     # a trial on some windows (only: seconds)
+            continue
+        ks = np.arange(s0, s1 + 1)
+        win = ArmWindow(fit1, P1, ks, c0 - s0, s1 - c1, rest_J, pts)
+        win.set_input(fit_in["lead"], P_in, p99_in)
+        VF = bf.forward_np(PF[ks], trF[ks], verts=True, batch=64)["verts"]
+        flags = {k: np.isin(ks, w[k]) for k in ("push", "unfold", "touch", "pull")}
+        v, r = solve_arm_window(win, VF, surf, flags, cfg, pts)
+        Pw = win.poses(v, P1)
+        fit_w = _with_pose(fit1, Pw, tr1)
+        g = _elbow_guard({"before": fit1, "after": fit_w}, np.arange(c0, c1 + 1), obs, judge, bias, bodies, hcfg)
+        r.update({"id": f"last:{wi}", "t": w["t"], "t_span": [round(s0 / HZ, 2), round(s1 / HZ, 2)], "2d": g})
+        el = g["elbow"]
+        worse = (el["after_px"] - el["before_px"]) if (el["after_px"] is not None and el["before_px"] is not None) else 0.0
+        r["vetoed"] = bool(el["n"] >= cfg.guard_min_n and worse > cfg.elbow_guard_px)
+        if r["vetoed"]:
+            r["why"] = f"the COCO elbow (phones that see it) {el['before_px']} -> {el['after_px']} px (n {el['n']})"
+        else:
+            P2[ks] = Pw[ks]
+            solved[wi] = {"win": win, "v": v, "span": (s0, s1), "r": r}
+        rep["windows"].append(r)
+        log(f"last pass window {wi + 1}/{len(wins)} {w['t']}: {r['depth_cm_max_before_after']} cm, bend {r['bend_deg_max_before_after']}, "
+            f"move {r['hand_move_cm_max']} cm, elbow 2D {el['before_px']} -> {el['after_px']} px{' VETO' if r['vetoed'] else ''} "
+            f"({time.time() - t0:.0f} s)")
+    # ---- the post-hoc check of every window against the installed motion (the base): no new gate flag in its span (zouk_contacts.gate_flags:
+    # whip, wrist flick, twist, elbow hyperextension / off-hinge, fold) and no new penetration (> 2 cm and 1 cm deeper than the base) - a
+    # window that has one is scaled back (its numbers x 0.75, 0.5, 0.25,
+    # then 0 = vetoed); and over the film no more frames whose change against the input moves faster than 0.55 m/s (the elbow; each
+    # fingertip, counted as arm_speed_checks does: the worst finger) and no more floating frames in the back holds than the base - while a
+    # budget is exceeded, the windows adding the most to it are scaled back
+    back = np.isin(load_holds()["names"], BACK_HOLDS)
+    fit_base = fit
+    steps_s = [1.0, 0.75, 0.5, 0.25, 0.0]
+    scale = {wi: 0 for wi in solved}
+    base_add = _added_fast(fit_in["lead"], P_in, fit_base["lead"], P0)
+    float0 = (ex0["hand_gap"] > 0.02) & back
+    tips = [f"tip{i}" for i in range(5)]
+    for rnd in range(16):
+        P2 = P1.copy()
+        for wi, sv in solved.items():
+            P2 = sv["win"].poses(sv["v"] * steps_s[scale[wi]], P2) if steps_s[scale[wi]] > 0 else P2
+        fit2 = _with_pose(fit, P2, tr1)
+        ch2 = np.flatnonzero((np.abs(P2 - P0).max((1, 2)) > 0) | (np.abs(tr1 - tr0).max(1) > 0))
+        ex2 = {k: v.copy() for k, v in ex0.items()}
+        if len(ch2):
+            e = exact_of(fit2, ch2, cfg.device, 24)
+            for k in ("hand_pen", "arm_pen", "hand_gap", "hand_pen_part"):
+                ex2[k][ch2] = e[k]
+        gf = gate_flags({"input": fit_in, "ref": fit_base, "cand": fit2}, ref="ref", cand="cand", added_vs_ref=True)
+        add2 = _added_fast(fit_in["lead"], P_in, fit2["lead"], P2)
+        float2 = (ex2["hand_gap"] > 0.02) & back
+        live = [wi for wi in solved if steps_s[scale[wi]] > 0]
+        moved = []
+        for wi in live:
+            a_, b_ = solved[wi]["span"]
+            sl = slice(a_, b_ + 1)
+            why = [f"{k} {int(v_[sl].sum())}" for k, v_ in gf["flags"].items() if v_[sl].any()]
+            # ... nor a hand pushed (or unfolded) INTO her: frames deeper than 2 cm and 1 cm deeper than the base (exact)
+            deeper = int(((ex2["hand_pen"][sl] > 0.02) & (ex2["hand_pen"][sl] > ex0["hand_pen"][sl] + 0.01)).sum())
+            if deeper:
+                why.append(f"new penetration {deeper}")
+            if why:
+                moved.append((wi, why))
+        if not moved:
+            over = []
+            if add2["elbow"].sum() > base_add["elbow"].sum():
+                over.append("elbow")
+            if max(add2[k].sum() for k in tips) > max(base_add[k].sum() for k in tips):
+                over += tips
+            if float2.sum() > float0.sum():
+                over.append("float")
+            if over:
+                def contrib(wi):
+                    a_, b_ = solved[wi]["span"]
+                    sl = slice(a_, b_ + 1)
+                    c = sum(int(add2[k][sl].sum()) - int(base_add[k][sl].sum()) for k in over if k != "float")
+                    if "float" in over:
+                        c += int(float2[sl].sum()) - int(float0[sl].sum())
+                    return c
+                cs = sorted(((contrib(wi), wi) for wi in live), reverse=True)
+                for c, wi in cs[:2]:
+                    if c > 0:
+                        moved.append((wi, [f"over the film's budget ({', '.join(over)}): this window adds {c}"]))
+        for wi, why in moved:
+            scale[wi] += 1
+            solved[wi]["r"].setdefault("scaled_back", []).append({"to": steps_s[scale[wi]], "why": why})
+        n_e, n_t = int(add2["elbow"].sum()), max(int(add2[k].sum()) for k in tips)
+        b_e, b_t = int(base_add["elbow"].sum()), max(int(base_add[k].sum()) for k in tips)
+        log(f"last pass check round {rnd + 1}: scales {[steps_s[scale[wi]] for wi in solved]}; film: elbow added {n_e} (base {b_e}), "
+            f"worst fingertip {n_t} (base {b_t}), floating {int(float2.sum())} (base {int(float0.sum())})")
+        if not moved:
+            break
+    rep["check"] = {"rounds": rnd + 1, "elbow_added": [b_e, n_e], "fingertip_added_worst": [b_t, n_t],
+                    "floating_back": [int(float0.sum()), int(float2.sum())],
+                    "new_gate_flags": {k: int(v_.sum()) for k, v_ in gf["flags"].items()}}
+    for wi, sv in solved.items():
+        sv["r"]["scale"] = steps_s[scale[wi]]
+        if steps_s[scale[wi]] == 0:
+            sv["r"]["vetoed"] = True
+            sv["r"]["why"] = "the post-hoc check: " + "; ".join(sv["r"]["scaled_back"][-1]["why"])
+    for r in rep["windows"]:
+        xs = np.arange(int(round(r["t_span"][0] * HZ)), int(round(r["t_span"][1] * HZ)) + 1)
+        r["float_back_gt2cm_before_after"] = [int(((ex0["hand_gap"][xs] > 0.02) & back[xs]).sum()),
+                                              int(((ex2["hand_gap"][xs] > 0.02) & back[xs]).sum())]
+        r["added_speed_mps_max"] = added_speed_max(fit2["lead"], P1, P2, xs)
+        x = np.arange(r["core"][0], r["core"][1] + 1)
+        r["exact_core_depth_cm_max_after"] = round(float(ex2["hand_pen"][x].max()) * 100, 2)
+        r["exact_core_frames_gt5cm_after"] = int((ex2["hand_pen"][x] > 0.05).sum())
+        r["bend_deg_max_after"] = round(float(wrist_angles(P2[x], "right")["bend"].max()), 1)
+    rep["frames_changed_vs_base"] = int(len(ch2))
+    rep["seconds"] = round(time.time() - t0, 1)
+    LAST_DIR.mkdir(parents=True, exist_ok=True)
+    if only:
+        write_json(LAST_DIR / "trial.json", rep)
+        np.savez_compressed(LAST_DIR / "trial_poses.npz", lead=P2, transl=tr1)
+        return rep
+    np.savez_compressed(LAST_DIR / "poses_step1.npz", lead=P1, transl=tr1)
+    np.savez_compressed(LAST_DIR / "poses_final.npz", lead=P2, transl=tr1)
+    if write:
+        b2 = {r: dict(fit[r]) for r in ROLES}
+        b2["lead"]["transl"] = tr1
+        rep["written"] = write_fit_v4(b2, {"lead": P2, "follow": hc.full_pose(fit["follow"])}, FITS[out])
+        np.savez_compressed(OUT / f"exact_{out}.npz", ks=np.arange(T), parts=ex0["parts"],
+                            **{k: ex2[k] for k in ("hand_pen", "arm_pen", "hand_gap", "hand_pen_part")})
+    write_json(LAST_DIR / "report.json", rep)
+    log(f"last pass: {len(ch2)} frames changed vs {base} ({time.time() - t0:.0f} s)")
+    return rep
+
+
 # ------------------------------------------------------------------------------------------------ CLI
 
 def main(argv=None) -> int:
@@ -4691,6 +5624,12 @@ def main(argv=None) -> int:
     p.add_argument("--n", type=int, default=20)
     p.add_argument("--extra", default="118,47,155")
     sub.add_parser("unity-motion")
+    p = sub.add_parser("last-pass", help="the last pass: spikes, deep frames, folds of the installed motion -> v4/smplx_contact")
+    p.add_argument("--base", default="ec8e")
+    p.add_argument("--out", default="v4")
+    p.add_argument("--cfg", default=None, help="json of LastCfg fields")
+    p.add_argument("--no-write", action="store_true")
+    p.add_argument("--only", default=None, help="a trial: only the windows around these seconds (comma list), report in last/trial.json")
     a = ap.parse_args(argv)
     if a.cmd == "capsules":
         b = capsule_bodies(force=a.force)
@@ -4752,6 +5691,10 @@ def main(argv=None) -> int:
         before_after_sheets(a.n, [int(x) for x in a.extra.split(",")] if a.extra else [])
     elif a.cmd == "unity-motion":
         print(json.dumps(py_json(export_motion()), indent=1))
+    elif a.cmd == "last-pass":
+        r = last_pass(a.base, a.out, LastCfg(**json.loads(a.cfg)) if a.cfg else None, write=not a.no_write,
+                      only=[float(x) for x in a.only.split(",")] if a.only else None)
+        print(json.dumps(py_json({k: r[k] for k in ("step1_frames_changed", "frames_changed_vs_base", "seconds")}), indent=1))
     return 0
 
 
