@@ -1,0 +1,41 @@
+# Lucas + Luiza x ? - registered by the Pipeline Monitor new-capture wizard on 2026-10-23.
+# The videos and the soundtrack are referenced in place (never copied); outputs go to work/<take>/ (git-ignored).
+# Capture type: two-view (2 camera(s) used).
+name = "lucas_luiza"
+source_dir = "../../../../Videos/Zouk/lucas-luisa-jnj"
+# affine audio clocks (reference_time = slope * source_time + offset), written by the audio_sync stage
+alignment = "../work/lucas_luiza/clock/alignment.json"
+exclude = []
+# window = [t0, t1]   # reference seconds analysed in detail: written by the window stage
+
+# Dance metadata: data is siloed by level; the title is "Leader + Follower x Song".
+[dance]
+level = "professional"            # professional | intermediate | novice
+category = "jack_and_jill"      # demo | lesson | jack_and_jill
+song_file = "../../../../Videos/Zouk/lucas-luisa-jnj/Brenda Mullen - I Don't Wanna Know (Mario Winans Cover).mp3"   # studio track (stays local, never in a repo)
+
+[dancers.lead]
+name = "Lucas"
+pid = 1
+stature_m = 1.75
+shoe_sole_m = 0.025
+
+[dancers.follow]
+name = "Luiza"
+pid = 2
+stature_m = 1.63
+shoe_sole_m = 0.025
+
+# Consent per dancer as reported by the user (TMR_SOMA_PLAN G0): "?" = unknown. cloud_processing is
+# required before any Runpod stage; public_repo before anything leaves the PC.
+[consent]
+lead = { capture = "?", fit_3d = "?", ml_analysis = "?", cloud_processing = true, name_shown = "?", level_shown = "?", publication = "?", public_repo = "?", recorded = "2026-10-23" }
+follow = { capture = "?", fit_3d = "?", ml_analysis = "?", cloud_processing = true, name_shown = "?", level_shown = "?", publication = "?", public_repo = "?", recorded = "2026-10-23" }
+source_rights = "?"
+bystanders = "?"
+
+[cameras."01"]   # camera type (Pipeline Monitor / narration tool); this block is rewritten as a whole, comments typed inside it are not kept
+file = "Video-44260.mp4"
+
+[cameras."02"]   # camera type (Pipeline Monitor / narration tool); this block is rewritten as a whole, comments typed inside it are not kept
+file = "Zouk Heat - 4 7 2024 - Lucas & Luiza Pro Jack & Jill.mp4"
