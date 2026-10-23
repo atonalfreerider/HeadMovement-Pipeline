@@ -109,6 +109,7 @@ def _trim_smplx(src: Path, dst: Path) -> dict:
     for k in ("posedirs", "J_regressor", "weights", "v_template"):
         z[k] = np.asarray(z[k], np.float32)
     dst.parent.mkdir(parents=True, exist_ok=True)
+    z = {k: v for k, v in z.items() if v.dtype != object}   # part2num / joint2num (dicts): smplx never reads them, NumPy 2.5 will not save them
     np.savez_compressed(dst, **z)
     torch.manual_seed(0)
     kw = dict(gender="neutral", use_pca=False, flat_hand_mean=True)

@@ -220,6 +220,9 @@ def prep(decode_on_pod: bool = False) -> dict:
     (INPUT / "meta.json").write_text(json.dumps(meta), newline="\n")
     dst = INPUT / "smplx" / "SMPLX_NEUTRAL.npz"
     dst.parent.mkdir(parents=True, exist_ok=True)
+    if not TRIMMED_SMPLX.exists():     # a fresh PC has no larissa_kadu_38 work folder: build it the same way (and check it)
+        from .cand_sam3d_body import _trim_smplx
+        _trim_smplx(WORKSPACE / "smplx" / "SMPLX_NEUTRAL.npz", TRIMMED_SMPLX)
     shutil.copy2(TRIMMED_SMPLX, dst)   # cand_sam3d_body._trim_smplx's file (checked against the full model there)
     f = np.array([K[i, 0, 0] for i in range(F)])
     info = {"frames": F, "size": [W, H], "t": [float(t[0]), float(t[-1])], "decode_s": round(time.time() - t0, 1),
