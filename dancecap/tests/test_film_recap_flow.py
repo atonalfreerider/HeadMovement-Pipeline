@@ -3,6 +3,7 @@ the side-on azimuth, where a transition sits, carving a pivot window into the se
 and way profiles, the live blend, the way durations and caps, the targets, the orbit plan, the long-hold planner, the cranes' holds; v4.1 (owner
 2026-10-22 after the v3 films): the cruise crane, the targets, the no-reversal way link, the 20-s-hold planner, Jev's need series, the legend's
 place and the crop that clears it, the overhead window. Pure functions, no capture data."""
+import copy
 import math
 import sys
 from pathlib import Path
@@ -517,3 +518,136 @@ def test_v41_overhead_window_lets_a_crane_down_leave_early_but_keeps_its_hold():
     assert ov["f"][1] < 106.0 + c.dur["crane_down"][1]                      # earlier than the v4.0 window's end
     p40 = next(p for p in fl.v4_protected([dict(s) for s in segs], fl.V4Cfg()) if p["kind"] == "overhead")
     assert p40["f"] == [100.0 - 5.0, 106.0 + 5.0]                            # v4.0 unchanged
+
+
+# ---------------------------------------------------------------------------------------------- v4.2 (owner 2026-10-22 after v4.1)
+def _seg(sid, f0, f1, physics, cam=None, card=None, tr=None, view="orbit"):
+    c = dict(cam or {"mode": "orbit", "radius_m": 3.6, "radius_vertical_m": 4.3, "height_m": 2.15, "look_height_m": 0.95, "inline_lift_max_m": 0.25,
+                     "v4": {"role": "slow_orbit", "run": 0}})
+    if tr:
+        c["transition_in"] = tr
+    s = {"id": sid, "film": [f0, f1], "dance": [f0, f1], "camera": c, "view_state": view, "annotations": [],
+         "layers": {"skeleton_mode": "physics", "physics": True, "legend": "x"} if physics else {"skeleton_mode": "rhythm"}}
+    if card:
+        s["chapter_card"] = {"kind": "chapter", "title": sid, "film_in": card[0], "film_out": card[1]}
+    return s
+
+
+def _doc(segs):
+    return {"segments": segs, "timeline": {"film_duration_s": segs[-1]["film"][1]}, "flow": {"version": 2, "defaults": {"clear_radius_m": 1.4, "ground_m": [0.5, 2.4]}}}
+
+
+def test_v42_meter_shows_a_few_seconds_at_every_switch_on_of_the_physics_view():
+    phone = {"mode": "camera_tour", "cameras": [{"camera": "00"}], "v4": {"role": "phone_hold"}}
+    segs = [_seg("a", 0.0, 10.0, False), _seg("b", 10.0, 30.0, True), _seg("c", 30.0, 40.0, True, cam=phone,
+            tr={"type": "phone_in", "start_s": -4.0, "duration_s": 4.0, "layers_switch_s": 0.0}),
+            _seg("d", 40.0, 50.0, False), _seg("e", 50.0, 70.0, True, card=(0.35, 2.95)), _seg("f", 70.0, 72.0, False), _seg("g", 72.0, 73.0, True),
+            _seg("h", 73.0, 80.0, False)]
+    doc = _doc(segs)
+    pieces = fl.physics_timeline(doc)
+    assert [(p["a"], p["b"], p["on"]) for p in pieces] == [(0.0, 10.0, False), (10.0, 40.0, True), (40.0, 50.0, False), (50.0, 70.0, True),
+                                                           (70.0, 72.0, False), (72.0, 73.0, True), (73.0, 80.0, False)]
+    m = fl.meter_windows(doc)
+    assert m["switch_ons"] == 3 and m["dropped"] == 1 and m["schema"] == "hm film meter v1" and m["revision"] == "4.2"
+    w = m["windows"]
+    # the first: at the switch-on (10 s), 0.3-s fade in, shown to 14 s, 1-s fade out to 15 s; the physics view that stays on (b -> c) is no new switch-on
+    assert (w[0]["start_s"], w[0]["full_s"], w[0]["fade_s"], w[0]["end_s"], w[0]["delay_s"]) == (10.0, 10.3, 14.0, 15.0, 0.0)
+    # the second meets e's chapter card (50.35-52.95 s): it starts 0.2 s after the card
+    assert w[1]["start_s"] == pytest.approx(53.15) and w[1]["end_s"] == pytest.approx(58.15) and w[1]["after"] and w[1]["delay_s"] == pytest.approx(3.15)
+    # the 1-s physics view at 72 s: too short for a window (dropped, with a note); a meter never outlasts the physics view
+    assert len(w) == 2 and any("72.00" in n for n in m["notes"])
+    al = [fl.meter_alpha(m, t) for t in (9.99, 10.0, 10.15, 10.3, 12.0, 14.0, 14.5, 15.0, 15.01)]
+    assert al[0] == 0.0 and al[1] == 0.0 and al[2] == pytest.approx(0.5) and al[3] == 1.0 and al[4] == 1.0 and al[5] == 1.0
+    assert al[6] == pytest.approx(0.5) and al[7] == 0.0 and al[8] == 0.0
+    # smooth: no step anywhere, never over the card, never without the physics view
+    ts = [i / 300.0 for i in range(0, 80 * 300)]
+    a = [fl.meter_alpha(m, t) for t in ts]
+    assert max(abs(x - y) for x, y in zip(a[1:], a[:-1])) <= 1.875 / (300 * 0.3) + 1e-6      # the smootherstep's steepest step over the 0.3-s fade in
+    for t, x in zip(ts, a):
+        if x > 0:
+            assert any(p["on"] and p["a"] <= t <= p["b"] for p in pieces)
+            assert not (50.35 <= t <= 52.95)
+
+
+def test_v42_meter_pulls_its_fade_in_when_the_physics_view_ends_early():
+    doc = _doc([_seg("a", 0.0, 5.0, False), _seg("b", 5.0, 7.5, True), _seg("c", 7.5, 12.0, False)])
+    w = fl.meter_windows(doc)["windows"]
+    assert len(w) == 1 and w[0]["start_s"] == 5.0 and w[0]["end_s"] == 7.5 and w[0]["fade_s"] == pytest.approx(6.5)
+    assert fl.meter_alpha({"windows": w}, 7.5) == 0.0 and fl.meter_alpha({"windows": w}, 6.0) == 1.0
+
+
+def test_v42_layer_start_follows_the_way_and_transit_layers_count():
+    # out of a phone the 3D layers apply from the way's start; a phone-to-phone way's transit layers switch the physics view on over their window
+    phone = {"mode": "camera_tour", "cameras": [{"camera": "00"}], "v4": {"role": "phone_hold"}}
+    phone2 = {"mode": "camera_tour", "cameras": [{"camera": "05"}], "v4": {"role": "phone_hold"}}
+    segs = [_seg("a", 0.0, 10.0, False, cam=phone), _seg("b", 10.0, 20.0, False, cam=phone2,
+            tr={"type": "phone_to_phone", "start_s": -2.0, "duration_s": 4.0, "layers_switch_s": 2.0,
+                "transit_layers": {"film": [8.0, 12.0], "layers": {"skeleton_mode": "physics"}}}), _seg("c", 20.0, 30.0, False)]
+    doc = _doc(segs)
+    assert fl.layer_starts(doc) == [0.0, 12.0, 20.0]
+    p = fl.physics_timeline(doc)
+    assert [(x["a"], x["b"], x["on"]) for x in p] == [(0.0, 8.0, False), (8.0, 12.0, True), (12.0, 30.0, False)]
+    w = fl.meter_windows(doc)["windows"]
+    assert len(w) == 1 and w[0]["start_s"] == 8.0 and w[0]["end_s"] == 12.0
+
+
+def test_v42_closer_orbit_is_0_8_x_about_the_couple_and_keeps_the_look_down_angle():
+    cam = {"mode": "orbit", "radius_m": 3.6, "radius_vertical_m": 4.3, "height_m": 2.15, "look_height_m": 0.95, "inline_lift_max_m": 0.25,
+           "v4": {"role": "slow_orbit", "run": 2}}
+    c, info = fl.closer_block(cam)
+    assert c["radius_m"] == pytest.approx(2.88) and c["radius_vertical_m"] == pytest.approx(3.44) and c["height_m"] == pytest.approx(1.91)
+    assert c["inline_lift_max_m"] == pytest.approx(0.2) and c["lens_distance_scale"] == pytest.approx(1.25) and not info["clamped"]
+    # the eye moves in along its line of sight: the same elevation, 0.8 x the distance to the look point
+    for rk in ("radius_m", "radius_vertical_m"):
+        assert math.atan2(c["height_m"] - 0.95, c[rk]) == pytest.approx(math.atan2(2.15 - 0.95, cam[rk]), abs=1e-3)
+        assert math.hypot(c[rk], c["height_m"] - 0.95) == pytest.approx(0.8 * math.hypot(cam[rk], 1.2), abs=2e-3)
+    assert c["v4"]["closer"]["v41"]["radius_vertical_m"] == 4.3 and cam["radius_m"] == 3.6          # the v4.1 record; the input untouched
+    # a radius that 0.8 x would put inside the couple's clear radius stops at it (reported)
+    c2, info2 = fl.closer_block(dict(cam, radius_m=1.6))
+    assert c2["radius_m"] == pytest.approx(1.4) and info2["clamped"] and "clear radius" in info2["clamped"][0]
+    # apply_closer: every slow-orbit block and the ways' 3D-end estimates; a phone shot is untouched
+    phone = {"mode": "camera_tour", "cameras": [{"camera": "00"}], "v4": {"role": "phone_hold"}}
+    tr = {"type": "phone_out", "start_s": 0.0, "duration_s": 4.5, "from": {"kind": "phone", "radius_m": 4.6, "height_m": 1.6},
+          "to": {"kind": "3d", "radius_m": 4.3, "height_m": 2.15}}
+    doc = _doc([_seg("a", 0.0, 10.0, False, cam=phone), _seg("b", 10.0, 20.0, True, cam=dict(cam, transition_in=tr))])
+    doc["flow"]["defaults"]["v4"] = {"orbit": {"block": {k: v for k, v in cam.items() if k != "v4"}}}
+    rep = fl.apply_closer(doc)
+    b = doc["segments"][1]["camera"]
+    # a phone way's 3D end stays v4.1's (the orbit eases back to v4.1's distance at it: the way keeps its peaks)
+    assert b["radius_vertical_m"] == pytest.approx(3.44) and b["transition_in"]["to"]["radius_m"] == pytest.approx(4.3)
+    assert b["closer_in_s"] == [14.5, 20.0]                         # the way out ends at 14.5 s; the part ends at 20 s
+    assert b["transition_in"]["from"]["radius_m"] == 4.6 and doc["segments"][0]["camera"] == phone
+    assert doc["flow"]["defaults"]["v4"]["orbit"]["block"]["radius_m"] == pytest.approx(2.88) and doc["flow"]["defaults"]["inline_lift_max_m"] == pytest.approx(0.2)
+    assert rep["runs"][0]["v42"]["radius_m"] == pytest.approx(2.88) and rep["runs"][0]["eye_distance_m"]["vertical"]["v42"] == pytest.approx(3.571, abs=1e-3)
+
+
+def test_v42_closer_orbit_eases_back_to_v41_distance_at_every_phone_way():
+    """the phone ways keep v4.1's paths (their peaks under the caps): the orbit is at v4.1's distance at each phone way and 0.8 x inside"""
+    orbit = {"mode": "orbit", "radius_m": 3.6, "radius_vertical_m": 4.3, "height_m": 2.15, "look_height_m": 0.95, "inline_lift_max_m": 0.25,
+             "v4": {"role": "slow_orbit", "run": 1}}
+    p0 = {"mode": "camera_tour", "cameras": [{"camera": "00"}], "v4": {"role": "phone_hold"}}
+    p1 = {"mode": "camera_tour", "cameras": [{"camera": "06"}], "v4": {"role": "phone_hold"},
+          "transition_in": {"type": "phone_in", "start_s": -4.0, "duration_s": 4.0}}
+    ob = dict(orbit, transition_in={"type": "phone_out", "start_s": 0.0, "duration_s": 4.0})
+    over = {"mode": "overhead_floorcraft", "v4": {"role": "overhead"}, "transition_in": {"type": "crane_up", "start_s": -4.75, "duration_s": 5.1}}
+    ob2 = dict(orbit, transition_in={"type": "crane_down", "start_s": -2.0, "duration_s": 5.1})
+    p2 = dict(p0, transition_in={"type": "phone_in", "start_s": -4.0, "duration_s": 4.0})
+    doc = _doc([_seg("a", 0.0, 10.0, False, cam=p0), _seg("b", 10.0, 25.0, True, cam=ob), _seg("b2", 25.0, 40.0, True, cam=copy.deepcopy(ob)),
+                _seg("c", 40.0, 60.0, True, cam=p1), _seg("d", 60.0, 80.0, True, cam=dict(ob, run=2)), _seg("o", 80.0, 86.0, True, cam=over),
+                _seg("e", 86.0, 91.0, True, cam=ob2), _seg("f", 91.0, 100.0, True, cam=p2)])
+    rep = fl.apply_closer(doc)
+    segs = doc["segments"]
+    b, b2, d, e = (segs[i]["camera"] for i in (1, 2, 4, 6))
+    assert b == b2                                                         # one orbit part: the same block (one shot)
+    assert b["closer_in_s"] == [14.0, 20.0] and b["closer_out_s"] == [30.0, 36.0]
+    assert d["closer_in_s"] == [64.0, 70.0] and "closer_out_s" not in d       # the way after it is a crane: no ease needed there
+    # after a crane down the ease may reach back into the crane (it reads the live orbit): 87 -> 84 s (the crane starts at 84 s)
+    assert e["closer_out_s"] == [84.0, 87.0] and "closer_in_s" not in e
+    assert len(rep["eases"]) == 4
+    for cam, t, want in ((b, 14.0, 1.25), (b, 17.0, 1.125), (b, 25.0, 1.0), (b, 36.0, 1.25), (b, 12.0, 1.25), (d, 75.0, 1.0), (e, 87.0, 1.25), (e, 84.0, 1.0)):
+        assert fl.closer_factor(cam, t) == pytest.approx(want, abs=1e-6), (t, want)
+    # the dolly is slow: 0.89 m of eye distance (9:16 4.46 -> 3.57) over a 6-s smootherstep peaks at 1.875 x 0.89 / 6 = 0.28 m/s
+    ts = [14.0 + i * 0.01 for i in range(601)]
+    dist = [fl.closer_factor(b, t) * math.hypot(3.44, 1.91 - 0.95) for t in ts]
+    assert max(abs(y - x) / 0.01 for x, y in zip(dist, dist[1:])) == pytest.approx(1.875 * (4.464 - 3.571) / 6.0, abs=0.01)
+    assert fl.closer_factor(orbit, 50.0) == 1.0                              # a v4.1 block

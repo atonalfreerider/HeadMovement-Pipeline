@@ -15,6 +15,10 @@ v4.1 = v4 (owner 2026-10-22 after the v3 films: "hold longer on POVs and slowly 
     python -m dancecap.film_recap_flow build --version v4 --plan share --out <work>/v4/direction/v4.1_share   # the share-first alternative
     python -m dancecap.film_recap_flow check --version v4           # the flow checks + the owner's targets (exits 1 when one is missed)
     python -m dancecap.film_recap_flow clips --version v4           # UNITY STAGE ONLY
+    (v4.1 is now built with --version v4.1 into v4/direction/v4.1/)
+v4.2 = v4 (owner 2026-10-22 after v4.1: the physics meter only a few seconds at each switch-on, the slow orbits 20 % closer, the face swap on the
+splats only): the v4.1 plan + flow.meter + closer orbit blocks:
+    python -m dancecap.film_recap_flow build --version v4           # -> v4/direction/ (+ review_v4.2.md, UNITY_CONTRACT_v4.md with its v4.2 section)
 
 The owner's words (2026-10-21):
   (3) "every time kadu say's 'back to the axis' he's referring to the counterbalance pivot point, not the T axis. correct this"
@@ -2307,8 +2311,9 @@ def cmd_check(path: Path) -> int:
 
 def cmd_check_v4(doc: dict, tl: dict, sp: dict, geo: Geo | None) -> int:
     """the v4 checks + the owner's targets (against the v3.2 direction when it is there, else the targets the direction carries)"""
-    v41 = (doc.get("flow") or {}).get("revision") == "4.1"
-    cfg4 = v41_cfg() if v41 else V4Cfg()
+    rev = (doc.get("flow") or {}).get("revision")
+    v41 = rev in ("4.1", "4.2")
+    cfg4 = v42_cfg() if rev == "4.2" else v41_cfg() if v41 else V4Cfg()
     geo4 = Geo4(geo) if geo is not None else None
     base = v4_baseline(geo4, cfg4) if (geo4 is not None and V32_DIRECTION.exists() and not v41) else None
     pov = fr.load_pov(fr.Paths(), "auto")
@@ -2318,6 +2323,8 @@ def cmd_check_v4(doc: dict, tl: dict, sp: dict, geo: Geo | None) -> int:
         met = film_metrics(doc, geo4, cfg4)
         need_p = Path(((doc.get("recap_film") or {}).get("v4") or {}).get("need3d", {}).get("path") or NEED3D)
         v41_extra_metrics(met, doc, geo4, cfg4, NeedSeries(need_p, doc) if need_p.exists() else None, pov)
+        if rev == "4.2":
+            v42_extra_metrics(met, doc, geo4, cfg4, pov, film_metrics(doc, geo4, cfg4, aspect="horizontal"))
     r = check_v4(doc, tl, sp, geo, geo4, cfg4, base, met, phq)
     print("OK" if not r["bad"] else "\n".join(r["bad"]))
     for row in r["targets"]:
@@ -2571,7 +2578,7 @@ class V4Cfg:
 
     def prof(self) -> dict:
         """the ways' profiles of this version"""
-        return V41_PROFILE if self.version == "4.1" else V4_PROFILE
+        return V41_PROFILE if self.version in ("4.1", "4.2") else V4_PROFILE
 
 
 def v4_hold_targets(base: dict, cfg4: V4Cfg) -> dict:
@@ -2670,8 +2677,10 @@ class PoseModel:
     = the phone's smoothed pose. Inside a way the LIVE endpoint states are blended by the way's profile (v4: V4_PROFILE; v1 / v3: the v3 paths -
     the arc in its arc share, the dollies on the axis). Used for the before / after numbers of both v3.2 and v4."""
 
-    def __init__(self, doc: dict, geo4: Geo4, cfg: FlowCfg | None = None, cfg4: V4Cfg | None = None):
+    def __init__(self, doc: dict, geo4: Geo4, cfg: FlowCfg | None = None, cfg4: V4Cfg | None = None, aspect: str = "vertical"):
+        # aspect: "vertical" (9:16, the orbit's radius_vertical_m: every v4 number of the plan) or "horizontal" (16:9, radius_m; v4.2 reports both)
         self.doc, self.g = doc, geo4
+        self.aspect = aspect
         self.segs = doc["segments"]
         self.shots = shots_of(self.segs)
         self.v4 = int((doc.get("flow") or {}).get("version", 1)) >= 2
@@ -2726,8 +2735,11 @@ class PoseModel:
             return {"kind": "overhead", "eye": eye, "dir": look - eye, "fov": 40.0, "c": c, "az": az, "look": look, "d": d}
         az = float(cam.get("world_azimuth_deg", 0.0)) + float(cam.get("drift_deg_s", 0.0)) * (f - sh.f0)
         if self.v4 and (cam.get("v4") or {}).get("role"):
-            r, h = float(cam.get("radius_vertical_m", self.cfg4.orbit_r_h[0])), float(cam.get("height_m", self.cfg4.orbit_r_h[1]))
+            rkey = "radius_m" if self.aspect == "horizontal" else "radius_vertical_m"
+            r, h = float(cam.get(rkey, self.cfg4.orbit_r_h[0])), float(cam.get("height_m", self.cfg4.orbit_r_h[1]))
             lh = float(cam.get("look_height_m", self.cfg4.orbit_look_h))
+            fac = closer_factor(cam, f)                      # v4.2: 1 = the block's (closer) offset, 1 / k = v4.1's at a phone way
+            r, h = r * fac, lh + (h - lh) * fac
         else:
             key = "pivot" if self.segs[sh.segs[0]].get("pivot") else eye_key(self.segs[sh.segs[0]])
             r, h = self.cfg.eye_rh.get(key, (3.5, 1.6))
@@ -2877,7 +2889,7 @@ def rates(sm: dict) -> dict:
 # ------------------------------------------------------------------------------------------------ v4: the numbers of a direction (before / after)
 
 
-def film_metrics(doc: dict, geo4: Geo4 | None, cfg4: V4Cfg | None = None, sample: bool = True) -> dict:
+def film_metrics(doc: dict, geo4: Geo4 | None, cfg4: V4Cfg | None = None, sample: bool = True, aspect: str = "vertical") -> dict:
     """What the owner asked about, measured the same way on any flow direction (v3.2 and v4):
       moves - every camera move: each way between two views (flight, crane, phone in / out, phone to phone, replay) + every separate 3D
               re-framing inside a shot (none: a shot is one camera block; its drift is the orbit's continuous motion, not a move);
@@ -2956,7 +2968,7 @@ def film_metrics(doc: dict, geo4: Geo4 | None, cfg4: V4Cfg | None = None, sample
                        "drift_rates_deg_s": sorted({round(r, 2) for r, t, kd in d3_rates}),
                        "drift_time_weighted_deg_s": round(sum(r * t for r, t, _ in d3_rates) / max(1e-6, sum(t for _, t, _ in d3_rates)), 2)}}
     if sample and geo4 is not None:
-        pm = PoseModel(doc, geo4, cfg4=cfg4)
+        pm = PoseModel(doc, geo4, cfg4=cfg4, aspect=aspect)
         sm = pm.sample()
         rt = rates(sm)
         in_way = sm["way"] >= 0
@@ -2992,7 +3004,7 @@ def film_metrics(doc: dict, geo4: Geo4 | None, cfg4: V4Cfg | None = None, sample
         cr = [p["peak_pitch_deg_s"] for p in per if p["type"] in ("crane_up", "crane_down") and p["peak_pitch_deg_s"] is not None]
         out["ways"]["crane_pitch_deg_s"] = {"max": max(cr) if cr else None, "median": q(cr, 50)}
         out["_sample"] = {"t": sm["t"], "az": sm["az"], "eye_h": sm["eye"][:, 1], "az_rate": rt["az_deg_s"], "rot_rate": rt["rot_deg_s"], "speed": rt["speed_m_s"],
-                          "way": sm["way"], "ph_hold": ph_hold, "kind": sm["kind"]}
+                          "way": sm["way"], "ph_hold": ph_hold, "kind": sm["kind"], "eye": sm["eye"], "c": sm["c"]}
     return out
 
 
@@ -4001,8 +4013,8 @@ def check_v4(doc: dict, tl: dict, sp: dict, geo: Geo | None, geo4: Geo4 | None, 
     shots = shots_of(segs)
     flow = doc.get("flow") or {}
     met = met or film_metrics(doc, geo4, cfg4, sample=geo4 is not None)
-    tg = (flow.get("v4") or {}).get("targets") or (v41_targets(cfg4) if cfg4.version == "4.1" else (v4_hold_targets(base, cfg4) if base else None))
-    if tg is not None and cfg4.version == "4.1" and cfg4.share_check_min >= 0 and tg.get("share_min") != cfg4.share_check_min:
+    tg = (flow.get("v4") or {}).get("targets") or (v41_targets(cfg4) if cfg4.version in ("4.1", "4.2") else (v4_hold_targets(base, cfg4) if base else None))
+    if tg is not None and cfg4.version in ("4.1", "4.2") and cfg4.share_check_min >= 0 and tg.get("share_min") != cfg4.share_check_min:
         # the owner's decision of 2026-10-22 (OWNER_SHARE_DECISION): the check holds the delivered plan to >= 25 % phone video; a direction
         # built before it carries the planner's 45 % in flow.v4.targets
         tg = {**tg, "share_plan_min": tg.get("share_min"), "share_min": cfg4.share_check_min, "share_decision": OWNER_SHARE_DECISION}
@@ -4106,8 +4118,10 @@ def check_v4(doc: dict, tl: dict, sp: dict, geo: Geo | None, geo4: Geo4 | None, 
             ct = json.loads(cur_tl.read_text(encoding="utf-8"))
             same = json.dumps(ct.get("captions"), sort_keys=True) == json.dumps(tl.get("captions"), sort_keys=True)
             (notes if same else bad).append("captions identical to film/narration/timeline.json" if same else "the captions differ from film/narration/timeline.json")
-    if cfg4.version == "4.1":
+    if cfg4.version in ("4.1", "4.2"):
         _targets_v41(target, doc, met, cfg4, tg, phq, shots, notes)
+        if cfg4.version == "4.2":
+            _targets_v42(target, doc, met, cfg4, notes)
         pw = [segs[shots[k].segs[0]]["camera"]["transition_in"] for k in range(1, len(shots))]
         return {"bad": bad, "notes": notes, "targets": rows, "shots": len(shots), "boundaries": len(shots) - 1,
                 "transitions": {t: sum(1 for x in pw if x["type"] == t) for t in V4_PROFILE}}
@@ -4237,10 +4251,13 @@ def _targets_v41(target, doc: dict, met: dict, cfg4: V4Cfg, tg: dict, phq, shots
     target("6. faint frustums of every phone in every 3D view", f"opacity {cfg4.ghost_opacity}, all phones", f"opacity {gh.get('opacity')}, phones {gh.get('phones')}",
            bool(gh.get("enabled")) and abs(float(gh.get("opacity", -1)) - cfg4.ghost_opacity) < 1e-9 and len(gh.get("phones") or []) >= 6 and (gh.get("views") or {}).get("3d"))
     target("6. the replay (in / out ways)", "1 / 1", f"{bt.get('replay_in', 0)} / {bt.get('replay_out', 0)}", bt.get("replay_in") == 1 and bt.get("replay_out") == 1)
-    # 7. the physics legend
+    # 7. the physics legend (v4.2: the meter windows, _targets_v42)
     lg = (met.get("legend") or {}).get("v41_place") or {}
+    if cfg4.version == "4.2":
+        lg = {}
     pl = ((doc.get("presets") or {}).get("vertical") or {}).get("legend") or {}
-    target("7. physics legend in the 9:16 top band (presets.vertical.legend), the teachers' box clear of it in the phone holds",
+    if cfg4.version != "4.2":
+        target("7. physics legend in the 9:16 top band (presets.vertical.legend), the teachers' box clear of it in the phone holds",
            f"top {cfg4.legend['top_frac'] if cfg4.legend else '-'}; >= {100 * tg['legend_clear_min']:.0f} % of hold frames clear",
            f"top {pl.get('top_frac')}; {100 * (1 - lg.get('under_legend_share', 1.0)):.1f} % clear ({lg.get('frames')} frames; box top median {lg.get('box_top_median')})",
            bool(pl) and abs(float(pl.get("top_frac", -1)) - float(cfg4.legend["top_frac"])) < 1e-9 and lg.get("frames", 0) > 0
@@ -4747,7 +4764,7 @@ def contract_md(res: dict) -> str:
 
 def write_all_v4(res: dict, out: Path | None = None) -> None:
     if res["cfg4"].version == "4.1":
-        return write_all_v41(res, Path(out or OUT_V4))
+        return write_all_v41(res, Path(out or OUT_V41))
     doc, tl = res["doc"], res["tl"]
     out = Path(out or OUT_V40)
     (out / "narration").mkdir(parents=True, exist_ok=True)
@@ -5503,9 +5520,11 @@ def need_metrics(doc: dict, met: dict, need: NeedSeries, hi: float = 2.5, lo: fl
             "low_in_3d": lo_off, "low_in_3d_s": round(sum(x["in_3d_s"] for x in lo_off), 1), "low_total_s": round(lo_all, 1)}
 
 
-def legend_overlap(doc: dict, pov: director.PovSource, rect: tuple[float, float, float, float], step: float = 0.1) -> dict:
+def legend_overlap(doc: dict, pov: director.PovSource, rect: tuple[float, float, float, float], step: float = 0.1,
+                   windows: list[tuple[float, float]] | None = None) -> dict:
     """in the 9:16 phone holds: the share of frames (with both teachers detected) in which the teachers' union box, through the hold's crop, reaches
-    into the legend's rectangle (x0, x1, y0, y1 of the frame, y down); and the box top's median (fraction of the view height)"""
+    into the legend's rectangle (x0, x1, y0, y1 of the frame, y down); and the box top's median (fraction of the view height). windows (film s,
+    v4.2): only the frames inside them count (the meter shows only there)"""
     segs = doc["segments"]
     shots = shots_of(segs)
     per, n_all, hit_all, tops = [], 0, 0, []
@@ -5519,6 +5538,8 @@ def legend_overlap(doc: dict, pov: director.PovSource, rect: tuple[float, float,
         fa = ph.size[0] / ph.size[1]
         n, hit = 0, 0
         for d in np.arange(sh.d0, sh.d1, step):
+            if windows is not None and not any(a <= sh.f0 + (d - sh.d0) < b for a, b in windows):
+                continue
             j = int(np.searchsorted(ph.t, d))
             if j <= 0 or j >= len(ph.t) or not ph.ok[j]:
                 continue
@@ -6057,11 +6078,758 @@ def write_all_v41(res: dict, out: Path) -> None:
                    "class-recap camera: v3.2 (the 2026-10-21 finals) / v4.0 / v4.1 (owner 2026-10-22: hold longer on POVs, slowly orbit, Jev)")
 
 
-VERSIONS = ("v3", "v4", "v4.0", "v4.1")       # v4 = the latest v4 (v4.1)
+# ------------------------------------------------------------------------------------------------ v4.2: the physics meter's windows, closer orbits
+
+
+OUT_V41 = OUT_V4 / "v4.1"
+V41_DIRECTION = OUT_V41 / "direction.json"
+V42_OWNER = ("owner 2026-10-22, after v4.1: \"for kadu larissa recap video output: just show the physics meter at the very top of the frame for a few "
+             "seconds every time we switch physics mode on and then fade it out. I like the camera motions, but in gauss splat mode let's get 20% closer "
+             "to the dancers when we orbit. on the very final pass let's apply the face fusion to the gauss splats only. no need to re-review videos "
+             "dozens of times. just plan the motion and render once and I'll review\"")
+V42_CLOSER = 0.8          # every slow orbit (and the pivots / physics views riding on it) at 0.8 x its v4.1 eye offset about the couple
+# the physics meter ("Skeleton load - ESTIMATED from motion", tension / neutral / compression): per switch-on of the physics view a window that fades
+# in over fade_in_s, shows until hold_s after its start and fades out over fade_out_s (smootherstep both ways); a window that would meet a chapter
+# card or the title starts card_gap_s after it instead (the card's pill sits in the same top band)
+V42_METER = {"schema": "hm film meter v1", "revision": "4.2", "fade_in_s": 0.3, "hold_s": 4.0, "fade_out_s": 1.0, "curve": "smootherstep", "card_gap_s": 0.2}
+# where it shows (Unity FilmOverlay.Tick / SkeletonLegend: a 300 x 74 px box scaled from its top-right corner)
+V42_METER_PLACE = {
+    "vertical": {"anchor": "top_right", "top_px_at_1080w": 276.8, "right_px_at_1080w": 14.0, "box_px": [300, 74], "scale": 1.65,
+                 "rule": "top = presets.vertical.safe.top_frac x H + 8 x W / 1080 (the very top of the 9:16 safe area, above the heads), right edge 14 px in, 1.65 x"},
+    "horizontal": {"anchor": "top_right", "top_px_at_1080h": 62.0, "right_px_at_1920w": 96.0, "box_px": [300, 74], "scale": 1.5,
+                   "rule": "top = presets.horizontal.safe.top_frac x H + 8 x H / 1080, right edge at the title-safe side margin (safe.side_frac x W), legend_scale 1.5"}}
+FLOW_SCHEMA_V42 = ("; v4.2 (flow.revision '4.2', UNITY_CONTRACT_v4.md 'v4.2'): flow.meter {windows: [{on_s, start_s, full_s, fade_s, end_s}], place} - the physics "
+                   "meter shows only in its windows; the slow-orbit block's lens_distance_scale (the lens chosen for eye distance x this) and camera.v4.closer")
+
+
+def legend_rect_h(spec: dict, W: float = 1920.0, H: float = 1080.0) -> tuple[float, float, float, float]:
+    """(x0, x1, y0, y1) of the meter in fractions of the 16:9 frame (y down)"""
+    s = float(spec.get("scale", 1.0))
+    w, h = (float(v) * s for v in spec.get("box_px", [300, 74]))
+    x1 = W - float(spec.get("right_px_at_1920w", 14.0)) * W / 1920.0
+    y0 = float(spec["top_px_at_1080h"]) * H / 1080.0
+    return (x1 - w) / W, x1 / W, y0 / H, (y0 + h) / H
+
+
+def physics_on(seg: dict, layers: dict | None = None) -> bool:
+    """the director's physics view (Unity FilmDirector.SegLayers.Physics): skeleton_mode "physics", or the layer flag `physics` (default: the
+    segment's view_state is "physics")"""
+    L = (seg.get("layers") or {}) if layers is None else layers
+    return L.get("skeleton_mode") == "physics" or bool(L.get("physics", seg.get("view_state") == "physics"))
+
+
+def layer_starts(doc: dict) -> list[float]:
+    """film time from which each segment's layers apply (Unity FlowTimeline.LayerStart): its F0, or for the first segment of a shot with a way in
+    F0 + transition_in.layers_switch_s"""
+    segs = doc["segments"]
+    out = [float(s["film"][0]) for s in segs]
+    for sh in shots_of(segs):
+        tr = segs[sh.segs[0]]["camera"].get("transition_in")
+        if tr:
+            out[sh.segs[0]] = float(sh.f0) + float(tr.get("layers_switch_s", 0.0) or 0.0)
+    return out
+
+
+def physics_timeline(doc: dict) -> list[dict]:
+    """the physics view over the film as the director switches it: pieces {a, b, on, seg} covering [0, F] - each segment's layers from its layer
+    start (the entry in force is the latest start), a phone-to-phone way's transit_layers over their own window - one piece per state run"""
+    segs = doc["segments"]
+    F = float(doc["timeline"]["film_duration_s"])
+    st = layer_starts(doc)
+    ev = sorted((st[i], i) for i in range(len(segs)))
+    cuts = {0.0, F}
+    for a, _ in ev:
+        cuts.add(min(F, max(0.0, a)))
+    transits = []
+    for s in segs:
+        tl = (s["camera"].get("transition_in") or {}).get("transit_layers")
+        if tl and tl.get("film"):
+            a, b = (float(x) for x in tl["film"])
+            transits.append((a, b, physics_on({}, tl.get("layers") or {}), s["id"]))
+            cuts.update({a, b})
+    ts = sorted(t for t in cuts if 0.0 <= t <= F)
+    pieces: list[dict] = []
+    for a, b in zip(ts[:-1], ts[1:]):
+        if b - a < 1e-6:
+            continue
+        m = 0.5 * (a + b)
+        cur = [i for t0, i in ev if t0 <= m]
+        i = cur[-1] if cur else 0
+        on, sid = physics_on(segs[i]), segs[i]["id"]
+        for ta, tb, ton, tid in transits:
+            if ta <= m < tb:
+                on, sid = ton, tid + " (transit)"
+        if pieces and pieces[-1]["on"] == on and abs(pieces[-1]["b"] - a) < 1e-6:
+            pieces[-1]["b"] = b
+        else:
+            pieces.append({"a": a, "b": b, "on": on, "seg": sid})
+    return pieces
+
+
+def card_windows(doc: dict) -> list[tuple[float, float, str]]:
+    """the film windows of the chapter cards (Unity ChapterCards: F0 + film_in .. min(F1, F0 + film_out)) and of a segment's title card"""
+    out = []
+    for s in doc["segments"]:
+        f0, f1 = (float(x) for x in s["film"])
+        cc = s.get("chapter_card")
+        if cc:
+            a, b = f0 + float(cc.get("film_in", 0.3)), min(f1, f0 + float(cc.get("film_out", 2.9)))
+            if b - a >= 0.3:
+                out.append((a, b, f"{cc.get('kind', 'chapter')} card '{cc.get('title', '')}' ({s['id']})"))
+        t = s.get("title")
+        if isinstance(t, dict):
+            a = f0 + float(t.get("film_in", 0.0))
+            b = min(f1, f0 + float(t["film_out"])) if t.get("film_out") is not None else f1
+            out.append((a, b, f"title ({s['id']})"))
+    return sorted(out)
+
+
+def meter_windows(doc: dict, spec: dict | None = None) -> dict:
+    """flow.meter: one window per switch-on (off -> on) of the physics view, from the layer timeline. A window starts at the switch-on (or, when it
+    would meet a chapter card or the title, card_gap_s after that card), fades in over fade_in_s, holds until hold_s after its start and fades out
+    over fade_out_s; it never outlasts the physics view (a view that ends earlier pulls the fade-out in) and is dropped when the physics view
+    leaves it less than fade_in_s + 1 s + fade_out_s / 2 (a meter flashing up for a moment)"""
+    sp = dict(V42_METER, **(spec or {}))
+    fi, hold, fo, gap = (float(sp[k]) for k in ("fade_in_s", "hold_s", "fade_out_s", "card_gap_s"))
+    pieces = physics_timeline(doc)
+    cards = card_windows(doc)
+    wins, notes = [], []
+    prev = False
+    for p in pieces:
+        if p["on"] and not prev:
+            t_on, t_off = p["a"], p["b"]
+            s, after = t_on, []
+            moved = True
+            while moved:
+                moved = False
+                for a, b, what in cards:
+                    if s < b + gap - 1e-9 and s + hold + fo > a - gap + 1e-9:
+                        s, moved = b + gap, True
+                        after.append(what)
+            e = min(s + hold + fo, t_off)
+            if e - s < fi + 1.0 + 0.5 * fo - 1e-9:
+                notes.append(f"switch-on at {t_on:.2f} s ({p['seg']}): no window - the physics view ends at {t_off:.2f} s, before the meter could show"
+                             + (f" after the {after[-1]}" if after else ""))
+            else:
+                fade = s + hold if e >= s + hold + fo - 1e-9 else max(s + fi, e - fo)
+                wins.append({"on_s": round(t_on, 3), "start_s": round(s, 3), "full_s": round(s + fi, 3), "fade_s": round(fade, 3), "end_s": round(e, 3),
+                             "delay_s": round(s - t_on, 3), "segment": p["seg"], "physics_until_s": round(t_off, 3), "after": after})
+        prev = p["on"]
+    return {"schema": sp["schema"], "revision": sp["revision"],
+            "what": "the physics meter: the skeleton-load legend ('Skeleton load - ESTIMATED from motion', tension / neutral / compression)",
+            "rule": "it shows only inside these windows (and only while the physics view is on): alpha = smootherstep up over [start_s, full_s], 1 until "
+                    "fade_s, smootherstep down to 0 at end_s; one window per switch-on of the physics view; a window that would meet a chapter card or "
+                    "the title starts card_gap_s after it",
+            "fade_in_s": fi, "hold_s": hold, "fade_out_s": fo, "curve": sp["curve"], "card_gap_s": gap, "place": copy.deepcopy(V42_METER_PLACE),
+            "windows": wins, "switch_ons": sum(1 for i, p in enumerate(pieces) if p["on"] and (i == 0 or not pieces[i - 1]["on"])), "dropped": len(notes),
+            "notes": notes}
+
+
+def meter_alpha(meter: dict, t: float) -> float:
+    """the meter's opacity at film t (the python twin of Unity FlowTimeline.MeterAlpha)"""
+    a = 0.0
+    for w in (meter or {}).get("windows", []):
+        if not (w["start_s"] <= t <= w["end_s"]):
+            continue
+        up = smootherstep((t - w["start_s"]) / max(1e-6, w["full_s"] - w["start_s"])) if t < w["full_s"] else 1.0
+        dn = 1.0 - smootherstep((t - w["fade_s"]) / max(1e-6, w["end_s"] - w["fade_s"])) if t > w["fade_s"] else 1.0
+        a = max(a, min(up, dn))
+    return a
+
+
+V42_CLOSER_EASE_S = 6.0   # next to a phone way the closer orbit eases from v4.1's distance (at the way) to 0.8 x over this long (smootherstep)
+# the closer orbit's framing bands (fractions of the frame height from the bottom; FitBand: the lens only widens when the couple's floor .. top_m
+# would not fit, else the composition is centred in the band). v4.1's 9:16 band (0.31-0.77) kept the couple under the always-on legend; with the
+# dancers 1.25 x larger it put their feet onto the caption block (editor stills at 60 s and 274.6 s), and the legend now shows only in the meter's
+# windows - so 9:16 moves up to 0.34-0.84, and 16:9 gets the same rule (it had none: the feet reached into the caption line at 60 s; the near foot sits about 6 % of the height below the couple centre's floor point the band fits, hence 0.24)
+V42_BAND_V = {"fit_band": True, "top_m": 1.95, "band_lo": 0.34, "band_hi": 0.84}
+V42_BAND_H = {"fit_band": True, "top_m": 1.9, "band_lo": 0.24, "band_hi": 0.99}
+
+
+def closer_weight(cam: dict, f: float) -> float:
+    """v4.2: how close the slow orbit is at film f, 0 (v4.1's distance) .. 1 (the block's, 0.8 x): a smootherstep up over camera.closer_in_s after a
+    phone way out, down over camera.closer_out_s before a phone way in; 1 without them"""
+    w = 1.0
+    a = cam.get("closer_in_s")
+    if a:
+        w *= ramp(f, float(a[0]), float(a[1])) if float(a[1]) > float(a[0]) else (1.0 if f >= float(a[0]) else 0.0)
+    b = cam.get("closer_out_s")
+    if b:
+        w *= 1.0 - (ramp(f, float(b[0]), float(b[1])) if float(b[1]) > float(b[0]) else (1.0 if f >= float(b[1]) else 0.0))
+    return w
+
+
+def closer_factor(cam: dict, f: float) -> float:
+    """v4.2: the factor on the block's eye offset about the look point at film f: 1 at full closeness, 1 / k (v4.1's distance) at a phone way"""
+    k = float(((cam.get("v4") or {}).get("closer") or {}).get("scale") or 1.0)
+    if k >= 1.0 - 1e-9:
+        return 1.0
+    return 1.0 + (1.0 / k - 1.0) * (1.0 - closer_weight(cam, f))
+
+
+def closer_eases(doc: dict, ease_s: float = V42_CLOSER_EASE_S) -> list[dict]:
+    """v4.2: the closer orbit's ease windows. A phone way's 3D end is the orbit at v4.1's distance (the way is v4.1's way: its peaks under the
+    caps); inside the orbit the distance eases to 0.8 x over ease_s after a phone way out (closer_in_s) and back before a phone way in
+    (closer_out_s). The window may reach into a crane / replay way next to it (the crane reads the live orbit); between two phone ways of one
+    orbit part each takes at most half the gap. Writes the keys into every segment of the part; returns one row per window"""
+    segs = doc["segments"]
+    shots = shots_of(segs)
+    rows = []
+    for k, sh in enumerate(shots):
+        cam = segs[sh.segs[0]]["camera"]
+        if (cam.get("v4") or {}).get("role") != "slow_orbit":
+            continue
+        tr = cam.get("transition_in") or {}
+        ntr = (segs[shots[k + 1].segs[0]]["camera"].get("transition_in") or {}) if k + 1 < len(shots) else {}
+        w_end = sh.f0 + float(tr["start_s"]) + float(tr["duration_s"]) if tr.get("type") == "phone_out" else None
+        w_start = shots[k + 1].f0 + float(ntr["start_s"]) if ntr.get("type") == "phone_in" else None
+        lo = sh.f0 + float(tr["start_s"]) if tr and tr.get("type") != "phone_out" else sh.f0
+        hi = shots[k + 1].f0 + float(ntr["start_s"]) + float(ntr["duration_s"]) if ntr and ntr.get("type") != "phone_in" else sh.f1
+        keys = {}
+        if w_end is not None:
+            avail = (w_start - w_end) / 2.0 if w_start is not None else hi - w_end
+            T = max(0.0, min(ease_s, avail))
+            keys["closer_in_s"] = [round(w_end, 3), round(w_end + T, 3)]
+            rows.append({"segment": segs[sh.segs[0]]["id"], "side": "after the phone way out", "film": keys["closer_in_s"], "T": round(T, 2)})
+        if w_start is not None:
+            avail = (w_start - w_end) / 2.0 if w_end is not None else w_start - max(0.0, lo)
+            T = max(0.0, min(ease_s, avail))
+            keys["closer_out_s"] = [round(w_start - T, 3), round(w_start, 3)]
+            rows.append({"segment": segs[sh.segs[0]]["id"], "side": "before the phone way in", "film": keys["closer_out_s"], "T": round(T, 2)})
+        for i in sh.segs:
+            segs[i]["camera"].update(copy.deepcopy(keys))
+    return rows
+
+
+def closer_block(cam: dict, k: float = V42_CLOSER, clear_m: float = 1.4, ground: tuple = (0.5, 2.4)) -> tuple[dict, dict]:
+    """a slow-orbit camera block k x closer about the couple: both radii (9:16 radius_vertical_m, 16:9 radius_m) and the eye's height above the
+    look point by k (the same look-down angle: the eye moves straight in along its line of sight), the inline lift's cap by k, never inside the
+    couple's clear radius (a radius that k would put inside it stops at the clear radius - reported). `lens_distance_scale` = 1 / k: Unity chooses
+    the lens (CoupleFov) for the v4.1 distance, so the dancers fill 1 / k more of the frame instead of the lens widening the closeness away.
+    Returns (the block, what changed)"""
+    c = copy.deepcopy(cam)
+    lh = float(c.get("look_height_m", 0.95))
+    h = float(c["height_m"])
+    lift = float(c.get("inline_lift_max_m", 0.25))
+    info = {"scale": k, "v41": {key: c.get(key) for key in ("radius_m", "radius_vertical_m", "height_m", "inline_lift_max_m")}, "clamped": []}
+    for key in ("radius_m", "radius_vertical_m"):
+        if c.get(key) is None:
+            continue
+        r = float(c[key])
+        rn = k * r
+        if rn < clear_m:
+            info["clamped"].append(f"{key} {r:g} m x {k:g} = {rn:.2f} m is inside the clear radius: {clear_m:g} m")
+            rn = clear_m
+        c[key] = round(rn, 3)
+    c["height_m"] = round(lh + k * (h - lh), 3)
+    c["inline_lift_max_m"] = round(k * lift, 3)
+    c["lens_distance_scale"] = round(1.0 / k, 4)
+    if c.get("vertical_band"):
+        info["v41"]["vertical_band"] = copy.deepcopy(c["vertical_band"])
+        c["vertical_band"] = dict(V42_BAND_V)
+    c["horizontal_band"] = dict(V42_BAND_H)
+    if not (ground[0] - 1e-9 <= c["height_m"] and c["height_m"] + c["inline_lift_max_m"] <= ground[1] + 1e-9):
+        info["clamped"].append(f"eye {c['height_m']} + lift {c['inline_lift_max_m']} m outside the ground band {ground}")
+    for key, rk in (("vertical", "radius_vertical_m"), ("horizontal", "radius_m")):
+        if c.get(rk) is not None and info["v41"].get(rk) is not None:
+            info[f"eye_distance_{key}_m"] = {"v41": round(math.hypot(float(info["v41"][rk]), h - lh), 3),
+                                             "v42": round(math.hypot(float(c[rk]), c["height_m"] - lh), 3)}
+    c.setdefault("v4", {})["closer"] = {"scale": k, "v41": info["v41"], "lens": "CoupleFov(eye distance x lens_distance_scale / closer factor): the v4.1 lens, "
+                                                                                 "the dancers 1/k larger at full closeness"}
+    return c, info
+
+
+def apply_closer(doc: dict, k: float = V42_CLOSER) -> dict:
+    """every slow-orbit block of the direction (camera.v4.role slow_orbit: the orbits, the pivots, the physics views and the replay riding on them)
+    k x closer (closer_block), the v1 from / to estimates of the ways' 3D ends with them, flow.defaults' orbit block; the overheads and their cranes'
+    top end stay (the crane's ground end is the live orbit). Returns {scale, runs: per run v4.1 / v4.2, clamped: [...]}"""
+    flow = doc.get("flow") or {}
+    dflt = flow.get("defaults") or {}
+    clear = float(dflt.get("clear_radius_m", 1.4))
+    gm = tuple(dflt.get("ground_m", (0.5, 2.4)))
+    runs: dict = {}
+    clamped = []
+
+    def scale_end(e: dict, lh: float) -> None:
+        if e and e.get("kind") == "3d" and e.get("radius_m") is not None and not e.get("closer"):
+            e["radius_m"] = round(max(clear, k * float(e["radius_m"])), 2)
+            e["height_m"] = round(lh + k * (float(e["height_m"]) - lh), 2)
+            e["closer"] = k
+
+    for s in doc["segments"]:
+        cam = s["camera"]
+        if (cam.get("v4") or {}).get("role") != "slow_orbit":
+            continue
+        nc, info = closer_block(cam, k, clear, gm)
+        if info["clamped"]:
+            clamped.append({"segment": s["id"], "why": info["clamped"]})
+        run = (cam.get("v4") or {}).get("run")
+        if run not in runs:
+            runs[run] = {"run": run, "first_segment": s["id"], "film": [s["film"][0], s["film"][1]], "drift_deg_s": cam.get("drift_deg_s"),
+                         "v41": {"radius_vertical_m": cam.get("radius_vertical_m"), "radius_m": cam.get("radius_m"), "height_m": cam.get("height_m"),
+                                 "inline_lift_max_m": cam.get("inline_lift_max_m")},
+                         "v42": {"radius_vertical_m": nc.get("radius_vertical_m"), "radius_m": nc.get("radius_m"), "height_m": nc.get("height_m"),
+                                 "inline_lift_max_m": nc.get("inline_lift_max_m"), "lens_distance_scale": nc.get("lens_distance_scale")},
+                         "eye_distance_m": {"vertical": info.get("eye_distance_vertical_m"), "horizontal": info.get("eye_distance_horizontal_m")}, "segments": 0}
+        runs[run]["film"][1] = s["film"][1]
+        runs[run]["segments"] += 1
+        s["camera"] = nc
+    # the ways' v1 estimates of a 3D end (the v4 director blends the live states; these only document the plan): a crane's or the replay's 3D end
+    # is the closer orbit; a phone way's is v4.1's (the orbit eases back to v4.1's distance at it: closer_eases)
+    for s in doc["segments"]:
+        tr = s["camera"].get("transition_in")
+        if tr and tr.get("type") not in AXIS_TYPES:
+            for end in ("from", "to"):
+                scale_end(tr.get(end), 0.95)
+    ob = ((dflt.get("v4") or {}).get("orbit") or {}).get("block")
+    if ob:
+        nb, _ = closer_block(ob, k, clear, gm)
+        nb.pop("v4", None)
+        dflt["v4"]["orbit"]["block"] = nb
+        dflt["inline_lift_max_m"] = nb["inline_lift_max_m"]
+    eases = closer_eases(doc)
+    dflt.setdefault("v4", {})["closer"] = {"scale": k, "ease_s": V42_CLOSER_EASE_S, "rule": "the slow orbit at 0.8 x v4.1's eye offset about the look point; "
+                                           "next to a phone way it eases (smootherstep, camera.closer_in_s / closer_out_s) to v4.1's distance at the way, "
+                                           "so the phone ways keep v4.1's paths and peaks; the lens is CoupleFov(v4.1's distance) throughout"}
+    return {"scale": k, "runs": [runs[r] for r in sorted(runs, key=lambda x: (x is None, x))], "clamped": clamped, "eases": eases}
+
+
+def eye_stats(met: dict, doc: dict, geo4: Geo4) -> dict:
+    """from a film_metrics sample: the eye's distance to the couple (its centre 1 m up) and its horizontal radius in the settled slow orbits, and
+    the closest the eye comes to either dancer (centre of mass, horizontally) over all ground-level 3D time (orbits + their ways, not the cranes /
+    overheads)"""
+    sm = met.get("_sample")
+    if sm is None or "eye" not in sm:
+        return {}
+    t, eye, c, kind, way = sm["t"], sm["eye"], sm["c"], sm["kind"], sm["way"]
+    shots = shots_of(doc["segments"])
+    trs = {k: doc["segments"][shots[k].segs[0]]["camera"]["transition_in"]["type"] for k in range(1, len(shots))}
+    settled = (kind == "3d") & (way < 0) & ~sm["ph_hold"]
+    ground_way = np.array([w >= 1 and trs.get(int(w)) not in ("crane_up", "crane_down") for w in way])
+    ground3d = settled | ground_way
+    dist = np.linalg.norm(eye - (c + np.array([0.0, 1.0, 0.0])), axis=1)
+    rad = np.hypot(eye[:, 0] - c[:, 0], eye[:, 2] - c[:, 2])
+    g = geo4.g
+    dmin = np.full(len(t), np.inf)
+    for i in np.nonzero(ground3d)[0][::3]:
+        d = _dance_at_film(doc, float(t[i]))
+        for arr in (g.lead, g.follow):
+            px, pz = np.interp(d, g.t, arr[:, 0]), np.interp(d, g.t, arr[:, 2])
+            dmin[i] = min(dmin[i], float(math.hypot(eye[i, 0] - px, eye[i, 2] - pz)))
+
+    def q(xs, p):
+        return round(float(np.percentile(xs, p)), 3) if len(xs) else None
+    fin = np.isfinite(dmin) & ground3d
+    return {"orbit_eye_distance_m": {"median": q(dist[settled], 50), "min": q(dist[settled], 0), "max": q(dist[settled], 100)},
+            "orbit_radius_m": {"median": q(rad[settled], 50), "min": q(rad[settled], 0)},
+            "ground_3d_radius_min_m": q(rad[ground3d], 0), "nearest_dancer_m": {"min": q(dmin[fin], 0), "p5": q(dmin[fin], 5), "median": q(dmin[fin], 50)},
+            "frames": int(settled.sum())}
+
+
+def v42_cfg() -> V4Cfg:
+    c41 = v41_cfg()
+    ob, _ = closer_block(c41.orbit_block)
+    ob.pop("v4", None)
+    r, h = c41.orbit_r_h
+    return dataclasses_replace(c41, version="4.2", orbit_block=ob, orbit_r_h=(round(V42_CLOSER * r, 3), round(c41.orbit_look_h + V42_CLOSER * (h - c41.orbit_look_h), 3)))
+
+
+def _peak_summary(m: dict) -> dict:
+    w = m.get("ways") or {}
+    return {"az": (w.get("peak_az_deg_s") or {}).get("max"), "rot": (w.get("peak_rot_deg_s") or {}).get("max"), "speed": (w.get("peak_speed_m_s") or {}).get("max"),
+            "pitch": (w.get("crane_pitch_deg_s") or {}).get("max")}
+
+
+def v42_extra_metrics(met: dict, doc: dict, geo4: Geo4 | None, cfg4: V4Cfg, pov, met_h: dict | None = None) -> None:
+    """v4.2's numbers: the meter (windows against the physics view and the cards, the teachers' clearance in the holds it shows over), the eye's
+    distance / clearance in 9:16 (met) and 16:9 (met_h), the 16:9 way peaks"""
+    meter = (doc.get("flow") or {}).get("meter") or {}
+    F = float(doc["timeline"]["film_duration_s"])
+    ts = np.arange(0.0, F, 1.0 / 30.0)
+    al = np.array([meter_alpha(meter, float(x)) for x in ts])
+    on = np.zeros(len(ts), bool)
+    for p in physics_timeline(doc):
+        if p["on"]:
+            on |= (ts >= p["a"]) & (ts < p["b"])
+    card = np.zeros(len(ts), bool)
+    for a, b, _ in card_windows(doc):
+        card |= (ts >= a) & (ts <= b)
+    wins = meter.get("windows") or []
+    shapes = [{"start_s": w["start_s"], "fade_in_s": round(w["full_s"] - w["start_s"], 3), "full_until_s": round(w["fade_s"] - w["start_s"], 3),
+               "fade_out_s": round(w["end_s"] - w["fade_s"], 3), "delay_s": w["delay_s"]} for w in wins]
+    mm = {"switch_ons": meter.get("switch_ons"), "windows": len(wins), "shapes": shapes, "shown_s": round(float((al > 0.002).sum()) / 30.0, 2),
+          "frames_shown_without_physics": int(((al > 0.002) & ~on).sum()), "frames_shown_over_a_card": int(((al > 0.002) & card).sum()),
+          "physics_on_s": round(float(on.sum()) / 30.0, 1)}
+    if pov is not None:
+        mm["holds_clear"] = legend_overlap(doc, pov, legend_rect(V42_METER_PLACE["vertical"]), windows=[(w["start_s"], w["end_s"]) for w in wins])
+    met["meter"] = mm
+    sm = met.get("_sample")
+    if sm is not None:
+        segs = doc["segments"]
+        f0s = np.array([float(x["film"][0]) for x in segs])
+        settled = (sm["kind"] == "3d") & (sm["way"] < 0) & ~sm["ph_hold"]
+        fac = np.array([closer_factor(segs[max(0, int(np.searchsorted(f0s, t, side="right")) - 1)]["camera"], float(t)) for t in sm["t"][settled]])
+        dt = 1.0 / cfg4.sample_hz
+        met["closer_ease"] = {"windows": len({(k, tuple(x["camera"][k])) for x in segs for k in ("closer_in_s", "closer_out_s") if x["camera"].get(k)}),
+                              "settled_orbit_s": round(float(settled.sum()) * dt, 1), "full_closeness_s": round(float((fac <= 1.0 + 1e-6).sum()) * dt, 1),
+                              "full_closeness_share": round(float((fac <= 1.0 + 1e-6).mean()), 3) if len(fac) else None,
+                              "mean_factor": round(float(fac.mean()), 4) if len(fac) else None}
+    if geo4 is not None:
+        met["eye"] = eye_stats(met, doc, geo4)
+        if met_h is not None:
+            met["eye_16x9"] = eye_stats(met_h, doc, geo4)
+    if met_h is not None:
+        met["ways_16x9"] = _peak_summary(met_h)
+
+
+def _targets_v42(target, doc: dict, met: dict, cfg4: V4Cfg, notes: list[str]) -> None:
+    """the owner's v4.2 targets: the physics meter only for a few seconds at each switch-on, clear of the cards; the slow orbits 0.8 x closer in both
+    aspects, never inside the clear radius, the eye in the ground band; the 16:9 ways under the v4.1 caps too"""
+    mm = met.get("meter") or {}
+    meter = (doc.get("flow") or {}).get("meter") or {}
+    sp = V42_METER
+    good = [s for s in mm.get("shapes", []) if abs(s["fade_in_s"] - sp["fade_in_s"]) < 2e-3 and abs(s["full_until_s"] - sp["hold_s"]) < 2e-3
+            and abs(s["fade_out_s"] - sp["fade_out_s"]) < 2e-3]
+    target("8. the physics meter: one window per switch-on of the physics view (fade in 0.3 s, shown 4 s, fade out 1 s), never while the physics view is off, "
+           "never over a chapter card", f"{mm.get('switch_ons')} windows (or dropped: a physics view too short), 0 / 0 frames",
+           f"{mm.get('windows')} windows ({len(good)} full-length) from {', '.join(str(w['start_s']) for w in meter.get('windows', []))} s, shown {mm.get('shown_s')} of "
+           f"{mm.get('physics_on_s')} s of physics; frames without physics {mm.get('frames_shown_without_physics')}, over a card {mm.get('frames_shown_over_a_card')}",
+           mm.get("windows", 0) >= 1 and mm.get("windows", 0) + int(meter.get("dropped", 0)) == mm.get("switch_ons") and mm.get("frames_shown_without_physics", 1) == 0
+           and mm.get("frames_shown_over_a_card", 1) == 0)
+    hc = mm.get("holds_clear") or {}
+    if hc.get("frames"):
+        target("8. the meter at the very top of the 9:16 frame: the teachers' box clear of it in the phone-hold frames it shows over",
+               ">= 95 %", f"{100 * (1 - hc['under_legend_share']):.1f} % clear ({hc['frames']} frames)", 1 - hc["under_legend_share"] >= 0.95 - 1e-9)
+    for w in meter.get("windows", []):
+        if w["delay_s"] > 0:
+            notes.append(f"the meter of the switch-on at {w['on_s']} s ({w['segment']}) starts {w['delay_s']} s later, after the {w['after'][-1]}")
+    for n in meter.get("notes", []):
+        notes.append("meter: " + n)
+    # 9. closer orbits
+    ratios, bad_r = [], []
+    clear = float(((doc.get("flow") or {}).get("defaults") or {}).get("clear_radius_m", 1.4))
+    for s in doc["segments"]:
+        cam = s["camera"]
+        if (cam.get("v4") or {}).get("role") != "slow_orbit":
+            continue
+        v41 = ((cam.get("v4") or {}).get("closer") or {}).get("v41") or {}
+        for key in ("radius_vertical_m", "radius_m"):
+            r41, r42 = v41.get(key), cam.get(key)
+            if r41 is None or r42 is None:
+                bad_r.append(f"{s['id']} {key}: no v4.1 record")
+                continue
+            want = max(clear, V42_CLOSER * float(r41))
+            ratios.append(float(r42) / float(r41))
+            if abs(float(r42) - want) > 2e-3 or float(r42) < clear - 1e-9:
+                bad_r.append(f"{s['id']} {key} {r42} (want {want:.3f})")
+        if not (0.5 <= float(cam["height_m"]) and float(cam["height_m"]) + float(cam.get("inline_lift_max_m", 0.0)) <= 2.4 + 1e-9):
+            bad_r.append(f"{s['id']}: eye {cam['height_m']} + lift {cam.get('inline_lift_max_m')} m outside 0.5-2.4 m")
+    ey, eh = met.get("eye") or {}, met.get("eye_16x9") or {}
+    gv, gh = ey.get("ground_3d_radius_min_m"), eh.get("ground_3d_radius_min_m")
+    target("9. every slow orbit (pivots, physics views, the replay on it) 0.8 x its v4.1 radius about the couple, both aspects; never inside the clear "
+           "radius; eye in the ground band", f"0.8 x; >= {clear:g} m; 0.5-2.4 m",
+           (f"{len(ratios)} radii, ratio {min(ratios):.3f}-{max(ratios):.3f}" if ratios else "no slow orbit") + f"; settled orbit radius median 9:16 "
+           f"{(ey.get('orbit_radius_m') or {}).get('median')} m, 16:9 {(eh.get('orbit_radius_m') or {}).get('median')} m; closest ground-level 3D radius "
+           f"{gv} / {gh} m" + (f"; problems {bad_r[:4]}" if bad_r else ""),
+           bool(ratios) and not bad_r and (gv is None or gv >= clear - 1e-6) and (gh is None or gh >= clear - 1e-6))
+    w16 = met.get("ways_16x9") or {}
+    if w16.get("az") is not None:
+        tg = v41_targets(cfg4)
+        target("9. 16:9 ways under the v4.1 caps (turn about the couple / view rotation / eye speed / crane pitch)",
+               f"<= {tg['cap_az_deg_s']} / {tg['cap_rot_deg_s']} deg/s / {tg['cap_speed_m_s']} m/s / {tg['cap_crane_deg_s']} deg/s",
+               f"{w16.get('az')} / {w16.get('rot')} / {w16.get('speed')} / {w16.get('pitch')}",
+               w16["az"] <= tg["cap_az_deg_s"] + 0.05 and (w16.get("rot") or 0) <= tg["cap_rot_deg_s"] + 0.05
+               and (w16.get("speed") or 0) <= tg["cap_speed_m_s"] + 0.01 and (w16.get("pitch") or 0) <= tg["cap_crane_deg_s"] + 0.05)
+
+
+def v42_doc(doc41: dict) -> tuple[dict, dict]:
+    """the v4.2 direction from the v4.1 one: closer orbits, the meter's windows, the presets' meter places; returns (doc, closer report)"""
+    doc = copy.deepcopy(doc41)
+    closer = apply_closer(doc, V42_CLOSER)
+    doc["flow"]["meter"] = meter_windows(doc)
+    doc["flow"]["revision"] = "4.2"
+    doc["flow"]["schema"] = doc["flow"]["schema"] + FLOW_SCHEMA_V42
+    pv = doc["presets"]["vertical"]
+    x0, x1, y0, y1 = legend_rect(V42_METER_PLACE["vertical"])
+    pv["legend"] = dict(V42_METER_PLACE["vertical"], what=V41_LEGEND["what"], top_frac=round(y0, 4), bottom_frac=round(y1, 4), x_frac=[round(x0, 4), round(x1, 4)],
+                        shows="only inside flow.meter.windows (v4.2): about 4 s at each switch-on of the physics view, then a 1-s fade out",
+                        under_cards=V41_LEGEND["under_cards"], labels=V41_LEGEND["labels"], framing=V41_LEGEND["framing"])
+    hx0, hx1, hy0, hy1 = legend_rect_h(V42_METER_PLACE["horizontal"])
+    doc["presets"]["horizontal"]["legend"] = dict(V42_METER_PLACE["horizontal"], top_frac=round(hy0, 4), bottom_frac=round(hy1, 4), x_frac=[round(hx0, 4), round(hx1, 4)],
+                                                  shows="only inside flow.meter.windows (v4.2)")
+    doc["created"] = ("generated by dancecap.film_recap_flow build --version v4.2 (the v4.1 plan + the physics meter only at each switch-on + the slow "
+                      "orbits 0.8 x closer) on top of dancecap.film_recap; edit the rules there")
+    return doc, closer
+
+
+def build_v42(log=print, write: bool = True, hand_events: Path | None = None, out: Path | None = None, need_path: Path = NEED3D) -> dict:
+    """v4.2 = the v4.1 plan (every move, timing and rate: build_v41 meaning-first, rebuilt) + the physics meter's windows (flow.meter) + every slow
+    orbit 0.8 x closer about the couple (apply_closer). The ways' durations and placement stay v4.1's; their peaks are re-measured on the closer
+    orbits (PoseModel, 9:16 and 16:9) and must stay under v4.1's caps"""
+    r = build_v41(log=log, cfg4=v41_cfg(), write=False, hand_events=hand_events, need_path=need_path)
+    cfg4 = v42_cfg()
+    geo4, need = r["geo4"], r.get("need")
+    pov = fr.load_pov(fr.Paths(), "auto")
+    doc41, met41 = r["doc"], r["metrics"]
+    met41_h = film_metrics(doc41, geo4, r["cfg4"], aspect="horizontal")
+    met41["eye"] = eye_stats(met41, doc41, geo4)
+    met41["eye_16x9"] = eye_stats(met41_h, doc41, geo4)
+    met41["ways_16x9"] = _peak_summary(met41_h)
+    doc, closer = v42_doc(doc41)
+    met = film_metrics(doc, geo4, cfg4)
+    v41_extra_metrics(met, doc, geo4, cfg4, need, pov)
+    met_h = film_metrics(doc, geo4, cfg4, aspect="horizontal")
+    v42_extra_metrics(met, doc, geo4, cfg4, pov, met_h)
+    # the ways' planned peaks on the closer orbits (9:16 as every v4 number; 16:9 next to it); v4.1's kept for the record
+    shots = shots_of(doc["segments"])
+    per = {p["k"]: p for p in met["ways"].get("peaks", [])}
+    per_h = {p["k"]: p for p in met_h["ways"].get("peaks", [])}
+    keys = ("peak_az_deg_s", "peak_rot_deg_s", "peak_speed_m_s", "peak_pitch_deg_s")
+    for k, sh in enumerate(shots):
+        if k == 0:
+            continue
+        for i in sh.segs:
+            v4b = (doc["segments"][i]["camera"].get("transition_in") or {}).get("v4")
+            if v4b is None:
+                continue
+            v4b["peaks_planned_v41"] = v4b.get("peaks_planned")
+            ks = keys if (per.get(k) or {}).get("type") in ("crane_up", "crane_down") else keys[:3]
+            v4b["peaks_planned"] = {k2: (per.get(k) or {})[k2] for k2 in ks if (per.get(k) or {}).get(k2) is not None}
+            v4b["peaks_planned_16x9"] = {k2: (per_h.get(k) or {})[k2] for k2 in ks if (per_h.get(k) or {}).get(k2) is not None}
+    phq = PhoneQ41(pov, geo4, r["cfg4"]) if pov is not None else None
+    checks = check_v4(doc, r["tl"], r["sp"], r["geo"], geo4, cfg4, None, met, phq)
+    doc["flow"]["v4"]["measured"] = _metrics_public(met)
+    doc.setdefault("recap_film", {}).setdefault("v4", {})["v42"] = {"owner": V42_OWNER, "from": "the v4.1 plan (build_v41, meaning-first), rebuilt", "closer": closer,
+                                                                     "meter": {k2: v for k2, v in doc["flow"]["meter"].items() if k2 in ("windows", "switch_ons", "notes")}}
+    res = dict(r)
+    res.update({"doc": doc, "cfg4": cfg4, "metrics": met, "metrics_16x9": met_h, "checks": checks, "closer": closer, "doc41": doc41, "metrics41": met41,
+                "metrics41_16x9": met41_h})
+    if write:
+        write_all_v42(res, Path(out or OUT_V4))
+    return res
+
+
+def v42_rows(res: dict) -> list[list]:
+    """the v4.1 / v4.2 table: radii, eye distances, way peaks (both aspects), the meter"""
+    m41, m42 = res["metrics41"], res["metrics"]
+    cl = res["closer"]["runs"]
+
+    def rng(xs):
+        xs = sorted({x for x in xs if x is not None}, key=str)
+        return " / ".join(f"{x:g}" if isinstance(x, (int, float)) else str(x) for x in xs) if xs else "-"
+
+    def g(m, *keys):
+        x = m
+        for k in keys:
+            if not isinstance(x, dict) or x.get(k) is None:
+                return "-"
+            x = x[k]
+        return x
+
+    def pk(m, key):
+        return g(m, "ways", key, "max")
+    caps_ = v41_targets(res["cfg4"])
+    mm = m42.get("meter") or {}
+    ed = cl[0]["eye_distance_m"] if cl else {"vertical": {}, "horizontal": {}}
+    return [
+        ["slow-orbit radius about the couple, 9:16 (radius_vertical_m, m)", rng(x["v41"]["radius_vertical_m"] for x in cl), rng(x["v42"]["radius_vertical_m"] for x in cl), "0.8 x"],
+        ["slow-orbit radius about the couple, 16:9 (radius_m, m)", rng(x["v41"]["radius_m"] for x in cl), rng(x["v42"]["radius_m"] for x in cl), "0.8 x"],
+        ["eye height + inline-lift cap (m)", rng(f"{x['v41']['height_m']} + {x['v41']['inline_lift_max_m']}" for x in cl),
+         rng(f"{x['v42']['height_m']} + {x['v42']['inline_lift_max_m']}" for x in cl), "0.5-2.4 m"],
+        ["eye distance to the look point (the block), 9:16 / 16:9 (m)", f"{ed['vertical'].get('v41')} / {ed['horizontal'].get('v41')}",
+         f"{ed['vertical'].get('v42')} / {ed['horizontal'].get('v42')}", "0.8 x"],
+        ["eye distance to the couple (centre 1 m up), settled orbits, sampled median 9:16 / 16:9 (m)",
+         f"{g(m41, 'eye', 'orbit_eye_distance_m', 'median')} / {g(m41, 'eye_16x9', 'orbit_eye_distance_m', 'median')}",
+         f"{g(m42, 'eye', 'orbit_eye_distance_m', 'median')} / {g(m42, 'eye_16x9', 'orbit_eye_distance_m', 'median')}", ""],
+        ["settled slow-orbit time at the full 0.8 x (the rest: the 6-s eases next to the phone ways)", "-",
+         f"{g(m42, 'closer_ease', 'full_closeness_s')} of {g(m42, 'closer_ease', 'settled_orbit_s')} s ({g(m42, 'closer_ease', 'windows')} eases)", ""],
+        ["closest ground-level 3D eye radius about the couple, 9:16 / 16:9 (m)", f"{g(m41, 'eye', 'ground_3d_radius_min_m')} / {g(m41, 'eye_16x9', 'ground_3d_radius_min_m')}",
+         f"{g(m42, 'eye', 'ground_3d_radius_min_m')} / {g(m42, 'eye_16x9', 'ground_3d_radius_min_m')}", ">= 1.4 m (the clear radius)"],
+        ["closest the eye comes to a dancer (centre of mass, horizontal), 9:16 / 16:9 (m)", f"{g(m41, 'eye', 'nearest_dancer_m', 'min')} / {g(m41, 'eye_16x9', 'nearest_dancer_m', 'min')}",
+         f"{g(m42, 'eye', 'nearest_dancer_m', 'min')} / {g(m42, 'eye_16x9', 'nearest_dancer_m', 'min')}", ""],
+        ["ways 9:16: peak turn about the couple / view rotation (deg/s) / eye speed (m/s)", f"{pk(m41, 'peak_az_deg_s')} / {pk(m41, 'peak_rot_deg_s')} / {pk(m41, 'peak_speed_m_s')}",
+         f"{pk(m42, 'peak_az_deg_s')} / {pk(m42, 'peak_rot_deg_s')} / {pk(m42, 'peak_speed_m_s')}", f"<= {caps_['cap_az_deg_s']} / {caps_['cap_rot_deg_s']} / {caps_['cap_speed_m_s']}"],
+        ["ways 16:9: peak turn / rotation (deg/s) / eye speed (m/s)", f"{g(m41, 'ways_16x9', 'az')} / {g(m41, 'ways_16x9', 'rot')} / {g(m41, 'ways_16x9', 'speed')}",
+         f"{g(m42, 'ways_16x9', 'az')} / {g(m42, 'ways_16x9', 'rot')} / {g(m42, 'ways_16x9', 'speed')}", f"<= {caps_['cap_az_deg_s']} / {caps_['cap_rot_deg_s']} / {caps_['cap_speed_m_s']}"],
+        ["cranes: peak pitch 9:16 / 16:9 (deg/s)", f"{pk(m41, 'crane_pitch_deg_s')} / {g(m41, 'ways_16x9', 'pitch')}", f"{pk(m42, 'crane_pitch_deg_s')} / {g(m42, 'ways_16x9', 'pitch')}",
+         f"<= {caps_['cap_crane_deg_s']}"],
+        ["camera moves / ways' durations", f"{m41['moves']['total']} / {m41['ways']['min_s']}-{m41['ways']['max_s']} s", f"{m42['moves']['total']} / {m42['ways']['min_s']}-{m42['ways']['max_s']} s", "unchanged"],
+        ["orbit rates (deg/s)", ", ".join(str(x) for x in m41["three_d"]["drift_rates_deg_s"]), ", ".join(str(x) for x in m42["three_d"]["drift_rates_deg_s"]), "unchanged"],
+        ["phone holds (n, mean s)", f"{m41['phone_holds']['n']}, {m41['phone_holds']['mean_s']}", f"{m42['phone_holds']['n']}, {m42['phone_holds']['mean_s']}", "unchanged"],
+        ["physics meter on screen", f"whenever the load colours are on ({mm.get('physics_on_s')} s)", f"{mm.get('windows')} windows, {mm.get('shown_s')} s",
+         "a few seconds at each switch-on"],
+    ]
+
+
+def review_v42_md(res: dict) -> str:
+    doc, met, ch = res["doc"], res["metrics"], res["checks"]
+    meter = doc["flow"]["meter"]
+    cl = res["closer"]
+    L = ["# v4.2 direction review: Class recap (larissa_kadu_recap)", "", V42_OWNER, "",
+         "v4.2 = the v4.1 plan (every move, its timing and every orbit rate: `build_v41` meaning-first, rebuilt) with three output changes: the physics "
+         "meter only for a few seconds at each switch-on, the slow orbits 20 % closer, the face swap on the splat dancers only. v4.1 stays reproducible: "
+         "`python -m dancecap.film_recap_flow build --version v4.1` -> `v4/direction/v4.1/` (its review there). Nothing was recorded.", "",
+         "## v4.1 against v4.2", ""]
+    L += _md_table(["", "v4.1", "v4.2", "rule"], v42_rows(res))
+    L += ["", "Sampled numbers: the plan's poses (`PoseModel`, 30 Hz; 16:9 uses radius_m). Unity re-measures the live camera (`hm_film_flow --action check`), "
+          "which also applies the inline lift, FitSpan and (9:16) the vertical band.", "",
+          "## The physics meter (flow.meter)", "",
+          f"One window per switch-on of the physics view in the layer timeline ({meter['switch_ons']} switch-ons): fade in {meter['fade_in_s']} s, shown until "
+          f"{meter['hold_s']} s after its start, fade out {meter['fade_out_s']} s (smootherstep). Place: the very top of the safe area, top right "
+          f"(9:16: {V42_METER_PLACE['vertical']['top_px_at_1080w']} px down at 1080 x 1920, scale {V42_METER_PLACE['vertical']['scale']}; 16:9: "
+          f"{V42_METER_PLACE['horizontal']['top_px_at_1080h']:g} px down, right edge at the title-safe margin, scale {V42_METER_PLACE['horizontal']['scale']}).", ""]
+    L += _md_table(["switch-on (film s)", "segment", "window", "delay", "why"],
+                   [[w["on_s"], w["segment"], f"{w['start_s']}-{w['end_s']} (full {w['full_s']}-{w['fade_s']})", f"{w['delay_s']} s",
+                     ("after the " + w["after"][-1]) if w["after"] else "at the switch-on"] for w in meter["windows"]])
+    L += [f"- {n}" for n in meter.get("notes", [])]
+    mm = met.get("meter") or {}
+    hc = mm.get("holds_clear") or {}
+    L += ["", f"Shown {mm.get('shown_s')} s of the {mm.get('physics_on_s')} s of physics; frames shown without physics: {mm.get('frames_shown_without_physics')}, "
+          f"over a chapter card: {mm.get('frames_shown_over_a_card')}. In the 9:16 phone-hold frames it shows over, the teachers' box is clear of it in "
+          f"{100 * (1 - hc.get('under_legend_share', 1.0)):.1f} % of {hc.get('frames')} frames.", "",
+          "## The closer orbits", "",
+          f"Every slow-orbit block (the orbits; the 6 pivots, the physics views and the replay ride on it) at {V42_CLOSER} x its v4.1 eye offset about the "
+          "couple: both radii and the eye's height above the look point (the same look-down angle: the eye moves in along its line of sight), and the "
+          "inline lift's cap. `lens_distance_scale` 1.25 makes Unity choose the lens of the v4.1 distance (CoupleFov), so the dancers fill 1.25 x more of the "
+          "frame: with the v4.1 lens rule alone the lens widens with the closeness and the 16:9 picture would keep the couple at the same size. The ways "
+          "blend the live orbit states (C2 as before); the cranes' ground end is the closer orbit, their top end and the overheads stay.", "",
+          "The phone ways: with the orbit at 0.8 x everywhere, the ways into and out of the phones had to cover more distance in their v4.1 time and "
+          "their eye speed rose over the 1.2 m/s cap (first build: 9:16 1.27 m/s, 16:9 1.56 m/s; the 16:9 v4.1 ways already peak at 1.2). So the orbit "
+          f"is at v4.1's distance at each phone way and eases to 0.8 x over {V42_CLOSER_EASE_S:g} s inside the orbit (smootherstep, `closer_in_s` / "
+          "`closer_out_s`; the lens stays v4.1's: a slow dolly in with a fixed lens, peak about 0.28 m/s); the phone ways are then exactly v4.1's. "
+          "Next to a crane or the replay the orbit stays at 0.8 x (a crane's eye speed has no cap, its pitch is unchanged).", "",
+          f"The framing bands: with the dancers 1.25 x larger, v4.1's 9:16 band (0.31-0.77 of the height from the bottom, made to keep them under the "
+          f"always-on legend) put their feet onto the caption block, and so did the 16:9 framing (editor stills at 60 s). v4.2: 9:16 "
+          f"{V42_BAND_V['band_lo']}-{V42_BAND_V['band_hi']} (the meter now shows over a 3D view only at its 274-279 s window), 16:9 "
+          f"{V42_BAND_H['band_lo']}-{V42_BAND_H['band_hi']} (new: the couple's floor .. {V42_BAND_H['top_m']} m between the captions and the frame top; the "
+          "lens widens only where they would not fit).", ""]
+    L += _md_table(["orbit part", "ease", "film s", "length"], [[e["segment"], e["side"], f"{e['film'][0]}-{e['film'][1]}", f"{e['T']} s"] for e in cl.get("eases", [])])
+    L += [""]
+    L += _md_table(["run", "film s", "drift", "9:16 radius", "16:9 radius", "eye height + lift", "eye distance 9:16 / 16:9"],
+                   [[x["run"], f"{x['film'][0]:.1f}-{x['film'][1]:.1f}", x["drift_deg_s"], f"{x['v41']['radius_vertical_m']} -> {x['v42']['radius_vertical_m']}",
+                     f"{x['v41']['radius_m']} -> {x['v42']['radius_m']}", f"{x['v41']['height_m']} + {x['v41']['inline_lift_max_m']} -> {x['v42']['height_m']} + "
+                     f"{x['v42']['inline_lift_max_m']}", f"{(x['eye_distance_m']['vertical'] or {}).get('v41')} -> {(x['eye_distance_m']['vertical'] or {}).get('v42')} / "
+                     f"{(x['eye_distance_m']['horizontal'] or {}).get('v41')} -> {(x['eye_distance_m']['horizontal'] or {}).get('v42')}"] for x in cl["runs"]])
+    L += ["", ("Clear radius: " + "; ".join(f"{c['segment']}: {c['why']}" for c in cl["clamped"])) if cl["clamped"] else
+          "Clear radius: 0.8 x keeps every orbit outside the couple's 1.4-m clear radius; no radius had to stop at it.", "",
+          "Per way (planned peaks: turn about the couple deg/s / view rotation deg/s / eye speed m/s / crane pitch deg/s):", ""]
+    p41 = {p["k"]: p for p in res["metrics41"]["ways"].get("peaks", [])}
+    p41h = {p["k"]: p for p in res["metrics41_16x9"]["ways"].get("peaks", [])}
+    p42h = {p["k"]: p for p in res["metrics_16x9"]["ways"].get("peaks", [])}
+
+    def f4(p):
+        return " / ".join("-" if p.get(k) is None else f"{p[k]:g}" for k in ("peak_az_deg_s", "peak_rot_deg_s", "peak_speed_m_s", "peak_pitch_deg_s")) if p else "-"
+    L += _md_table(["#", "type", "film s", "T", "v4.1 9:16", "v4.2 9:16", "v4.1 16:9", "v4.2 16:9"],
+                   [[p["k"], p["type"], p["start"], p["T"], f4(p41.get(p["k"])), f4(p), f4(p41h.get(p["k"])), f4(p42h.get(p["k"]))] for p in met["ways"].get("peaks", [])])
+    L += ["", "## Face swap on the splat dancers only", "",
+          "`dancecap.film_faceswap` swaps a face only where the face sidecar says that dancer's face is a splat-dancer render (`d[].layer == \"splat\"`; weight "
+          "x its opacity `d[].la` x (1 - the phone video's opacity)): never on a phone's own full-frame video, a frustum picture (`surfaces`), a skeleton-only "
+          "or mesh-avatar view or any other layer. The recorder writes the layer per dancer and frame (FilmFaceSidecar); a sidecar without it falls back to "
+          "the frame's `splats` share (0 = no swap). It runs once, on the final recording, after the render.", "",
+          "## Checks", ""]
+    L += [f"- {'OK' if t['ok'] else 'MISSED'}: {t['target']}: want {t['want']}, measured {t['measured']}" for t in ch["targets"]]
+    L += [f"- PROBLEM: {b}" for b in ch["bad"]] + [f"- {n}" for n in ch["notes"]]
+    return "\n".join(L) + "\n"
+
+
+def contract_v42_md(res: dict) -> str:
+    """the v4.2 section that heads UNITY_CONTRACT_v4.md (generic words only: lead / follow / the recap capture)"""
+    meter = res["doc"]["flow"]["meter"]
+    pv, ph = V42_METER_PLACE["vertical"], V42_METER_PLACE["horizontal"]
+    x0, x1, y0, y1 = legend_rect(pv)
+    hx0, hx1, hy0, hy1 = legend_rect_h(ph)
+    cl = res["closer"]["runs"][0]
+    L = ["# Unity contract: the v4 class-recap direction (`hm film flow v2`, revision 4.2)", "",
+         "Source: `dancecap/work/larissa_kadu_recap/v4/direction/direction.json` (`flow.revision` \"4.2\"; v4.1 in `v4/direction/v4.1/`, v4.0 in "
+         "`v4/direction/v4.0/`). Built by `python -m dancecap.film_recap_flow build --version v4.2`, checked by `... check --version v4`. Write no names "
+         "into head-movement: say lead / follow / \"the recap capture\".", "",
+         "## v4.2: what changes for the Unity director (on top of v4.1 A-G and v4.0 1-9 below)", "",
+         "| # | what | where | v4.1 |", "|---|---|---|---|",
+         "| H | the physics meter shows only in its windows (about 4 s at each switch-on of the physics view, 0.3-s fade in, 1-s fade out), at the very top of the "
+         "safe area in both aspects | `flow.meter.windows`, `flow.meter.place`, FlowTimeline.MeterAlpha, FilmOverlay.Tick | always while the load colours are on |",
+         "| I | the slow orbits 0.8 x closer about the couple; the lens chosen for the v4.1 distance | the slow-orbit blocks (radius_m, radius_vertical_m, height_m, "
+         "inline_lift_max_m, `lens_distance_scale`), `camera.v4.closer` | 3.6 / 4.3 m, CoupleFov(distance) |",
+         "| J | the face sidecar says which layer each dancer's face is on | FilmFaceSidecar `d[].layer` / `d[].la` | (not written) |", "",
+         "**H. The meter.** alpha(t) = max over the windows of: smootherstep((t - start_s) / (full_s - start_s)) until full_s, 1 until fade_s, "
+         "1 - smootherstep((t - fade_s) / (end_s - fade_s)) until end_s, 0 outside (FlowMath.Smootherstep, the quintic). SkeletonLegend.Alpha = alpha(t) x "
+         "(1 - max(chapter card alpha, title alpha)); the legend's own Show (the physics layer) still gates it. Place: 9:16 top = safe.top_frac x H + 8 x "
+         f"W / 1080 ({pv['top_px_at_1080w']} px), right edge {pv['right_px_at_1080w']:g} px in, scale {pv['scale']} (x {100 * x0:.1f}-{100 * x1:.1f} %, y "
+         f"{100 * y0:.2f}-{100 * y1:.2f} %); 16:9 top = safe.top_frac x H + 8 x H / 1080 ({ph['top_px_at_1080h']:g} px), right edge at the title-safe margin "
+         f"({ph['right_px_at_1920w']:g} px), scale {ph['scale']} (x {100 * hx0:.1f}-{100 * hx1:.1f} %, y {100 * hy0:.2f}-{100 * hy1:.2f} %). It never moves. "
+         "While it shows (alpha > 0.05) its rectangle is an obstacle for the call-out labels and LabelCeiling stays under its bottom + 10 x unit, in both "
+         "aspects; the face sidecar lists it in `ui` only while it shows. The windows (film s):", ""]
+    L += _md_table(["switch-on", "start", "full", "fade", "end"], [[w["on_s"], w["start_s"], w["full_s"], w["fade_s"], w["end_s"]] for w in meter["windows"]])
+    L += ["", "A window that met a chapter card starts 0.2 s after the card (the card's pill sits in the same top band): the meter never shows over a card.", "",
+          f"**I. Closer orbits.** Every block with `v4.role` slow_orbit: radius_m {cl['v41']['radius_m']} -> {cl['v42']['radius_m']}, radius_vertical_m "
+          f"{cl['v41']['radius_vertical_m']} -> {cl['v42']['radius_vertical_m']}, height_m {cl['v41']['height_m']} -> {cl['v42']['height_m']} (look_height_m "
+          f"0.95 kept: the same look-down angle), inline_lift_max_m {cl['v41']['inline_lift_max_m']} -> {cl['v42']['inline_lift_max_m']}, and "
+          f"`lens_distance_scale` {cl['v42']['lens_distance_scale']}: FilmCamera.Orbit sets Fov = CoupleFov(|eye - look| x lens_distance_scale) (the lens of "
+          "the v4.1 distance) before fov_scale, FitSpan and the 9:16 vertical band, so the dancers fill 1.25 x more of the frame. FitSpan and the band may "
+          "still widen the lens (never narrower) and back the eye off at the lens limit - the check reports where. The ways need nothing new: they blend "
+          "the live orbit states (C2); a crane's ground end is the closer orbit, the overheads stay.", "",
+          "The ease (keeps the phone ways v4.1's): a block next to a phone way carries `closer_in_s` [a, b] (after a phone way out) and / or `closer_out_s` "
+          "[c, d] (before a phone way in), film seconds. w(t) = Ramp(t, a, b) x (1 - Ramp(t, c, d)) (smootherstep, a missing window counts as 1); the "
+          "factor on the block's eye offset about the look point is f = 1 + (1 / k - 1)(1 - w), k = `v4.closer.scale` (FlowMath.CloserFactor): radius x f, "
+          "height_m = look_height_m + (height_m - look_height_m) x f, the inline lift's cap x f, and the lens CoupleFov(|eye - look| x lens_distance_scale / f) "
+          "(v4.1's lens throughout). At a phone way f = 1.25: the way's 3D end is v4.1's orbit.", "",
+          f"The framing bands: 9:16 `vertical_band` {json.dumps(V42_BAND_V)} (v4.1: 0.31-0.77, under the always-on legend), and new in 16:9 "
+          f"`horizontal_band` {json.dumps(V42_BAND_H)}: FilmCamera.Orbit applies FitBand(ref p, couple floor point, top_m, band_lo, band_hi, max(24, fov), "
+          "55) after FitSpan in 16:9, as the 9:16 band (66). With the dancers 1.25 x larger the v4.1 bands put their feet onto the caption block.", ""]
+    L += _md_table(["orbit part", "ease", "film s"], [[e["segment"], e["side"], f"{e['film'][0]}-{e['film'][1]}"] for e in res["closer"].get("eases", [])])
+    L += ["",
+          "**J. The face sidecar.** Per dancer and frame: `layer` = \"splat\" (that dancer's splats are drawn: SplatDancers on, its splat avatar loaded, "
+          "its avatar slot visible), \"avatar\" (the mesh avatar is drawn instead), \"skeleton\" (neither: lines only) or \"none\" (no head pose); `la` = "
+          "that layer's opacity now (the splats' composite opacity: the phone-video fade). dancecap.film_faceswap swaps a face only on layer \"splat\", "
+          "with weight x la x (1 - video_alpha), never behind a frustum surface.", "",
+          "Everything below (v4.1's contract) still holds, except where H-J replace it (v4.1 B: the legend's place in 9:16 is kept, its 'always on' is not).", ""]
+    return "\n".join(L) + "\n"
+
+
+def write_all_v42(res: dict, out: Path) -> None:
+    doc, tl = res["doc"], res["tl"]
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "narration").mkdir(parents=True, exist_ok=True)
+    (out / "audio").mkdir(exist_ok=True)
+    (out / "direction.json").write_text(json.dumps(doc, indent=1, ensure_ascii=False), encoding="utf-8")
+    caps.write_timeline(out / "narration" / "timeline.json", tl)
+    ch = []
+    for i, c in enumerate(doc["chapters"]):
+        ch.append({"title": c["title"], "startS": c["film_s"], "endS": doc["chapters"][i + 1]["film_s"] if i + 1 < len(doc["chapters"]) else doc["timeline"]["film_duration_s"],
+                   "segment": c["segment"]})
+    (out / "chapters.json").write_text(json.dumps({"schema": "dancecap.film_recap/1/chapters", "film_duration_s": doc["timeline"]["film_duration_s"], "chapters": ch},
+                                                  indent=1, ensure_ascii=False), encoding="utf-8")
+    cols = [("v4.1", res["metrics41"]), ("v4.2", res["metrics"])]
+    ba = {"schema": "dancecap.film_recap_flow/v4.2/before_after", "columns": ["v4.1", "v4.2"], "v42_rows": v42_rows(res),
+          "rows": before_after_rows_n(cols, res["targets"]), "metrics": {lab: _metrics_public(m) for lab, m in cols},
+          "metrics_16x9": {"v4.1": _metrics_public(res["metrics41_16x9"]), "v4.2": _metrics_public(res["metrics_16x9"])}, "closer": res["closer"],
+          "meter": doc["flow"]["meter"], "check_targets": res["checks"]["targets"]}
+    (out / "before_after.json").write_text(json.dumps(ba, indent=1, default=str), encoding="utf-8")
+    rep = {"schema": "dancecap.film_recap_flow/2.2/report", "checks": res["checks"], "targets": res["targets"], "metrics": _metrics_public(res["metrics"]),
+           "metrics_16x9": _metrics_public(res["metrics_16x9"]), "metrics_v41": _metrics_public(res["metrics41"]), "closer": res["closer"], "meter": doc["flow"]["meter"],
+           "runs": [{k: v for k, v in r.items() if k != "q"} | {"quality": r.get("q")} for r in res["runs"]], "ways": res["sched"]["ways"],
+           "orbits": res["sched"]["plans"], "dp": res["dp"], "clips": res["clips"], "pivots": res["pivots"], "replay": res["replay"],
+           "physics": [{k: r[k] for k in ("id", "film", "mode", "on", "why")} for r in res["phys_rows"]], "physics_timeline": physics_timeline(doc)}
+    (out / "direction_report.json").write_text(json.dumps(rep, indent=1, ensure_ascii=False, default=str), encoding="utf-8")
+    (out / "clips.json").write_text(json.dumps({"what": "per phone: the master-second ranges of video the v4.2 direction needs (phone holds + frustum ways in / out, "
+                                                        "padded 0.5 s; = v4.1's)", "phones": res["clips"]}, indent=1), encoding="utf-8")
+    (out / "review_v4.2.md").write_text(review_v42_md(res), encoding="utf-8")
+    res["ghost"] = ghost_overlap(doc, res["metrics"], res["geo4"], res["cfg4"])
+    r4 = dict(res, cfg4=dataclasses_replace(res["cfg4"], version="4.1"))         # v4.1's sections, with v4.2's blocks and numbers
+    base = contract_v41_md(r4) + "\n" + contract_md(r4).split("\n", 1)[1]
+    (out / "UNITY_CONTRACT_v4.md").write_text(contract_v42_md(res) + "\n" + base.split("\n", 1)[1], encoding="utf-8")
+    (out / "audio" / "make_film_mix.py").write_text(MIX_SCRIPT.replace("the v3 direction", "the v4.2 direction"), encoding="utf-8")
+    m, c4 = res["metrics"], res["cfg4"]
+    sheet_v4(m, doc, res["geo4"], out / "flow_sheet.png",
+             f"v4.2 camera flow (the v4.1 plan, orbits 0.8 x closer): {m['moves']['total']} moves, {m['phone_holds']['n']} phone holds (mean {m['phone_holds']['mean_s']} s), "
+             f"slow orbits {', '.join(str(x) for x in m['three_d']['drift_rates_deg_s'])} deg/s; physics meter {len(doc['flow']['meter']['windows'])} windows",
+             band=c4.orbit_rate_deg_s, cap=c4.cap_az_deg_s, label="v4.2")
+
+
+VERSIONS = ("v3", "v4", "v4.0", "v4.1", "v4.2")       # v4 = the latest v4 (v4.2)
 
 
 def _v4_out(version: str) -> Path:
-    return OUT_V40 if version == "v4.0" else OUT_V4
+    return OUT_V40 if version == "v4.0" else OUT_V41 if version == "v4.1" else OUT_V4
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -6069,8 +6837,10 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     b = sub.add_parser("build")
     b.add_argument("--version", choices=VERSIONS, default="v3", help="v3 (default: v3/direction/, reproducible as it was); v4.0 (owner 2026-10-22 first: "
-                   "fewer, longer shots, slow orbits, C2 glides, faint frustums -> v4/direction/v4.0/); v4 = v4.1 (owner 2026-10-22 after the v3 films: "
-                   "holds >= 20 s placed by Jev's need_3d, orbits <= 6 deg/s, ways >= 4 s under 12 deg/s, the legend in the 9:16 top band -> v4/direction/)")
+                   "fewer, longer shots, slow orbits, C2 glides, faint frustums -> v4/direction/v4.0/); v4.1 (owner 2026-10-22 after the v3 films: "
+                   "holds >= 20 s placed by Jev's need_3d, orbits <= 6 deg/s, ways >= 4 s under 12 deg/s, the legend in the 9:16 top band -> v4/direction/v4.1/); "
+                   "v4 = v4.2 (owner 2026-10-22 after v4.1: the v4.1 plan, the physics meter only for a few seconds at each switch-on, the slow orbits 0.8 x "
+                   "closer -> v4/direction/)")
     b.add_argument("--plan", choices=("meaning", "share"), default="meaning", help="v4.1: meaning-first (the most phone time whose holds stay clearly under "
                    "the 3D views' Jev need) or share-first (the least multiplier that fills the 45 %% phone share, or the most phone time when none does)")
     b.add_argument("--out", default=None, help="write here instead of the version's folder")
@@ -6092,7 +6862,7 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_clips(a.no_install, a.priority, OUT if a.version == "v3" else _v4_out(a.version))
     if a.cmd == "sheet":
         if a.version != "v3":
-            r = build_v4(write=False) if a.version == "v4.0" else build_v41(write=False)
+            r = build_v4(write=False) if a.version == "v4.0" else build_v41(write=False) if a.version == "v4.1" else build_v42(write=False)
             m, c4 = r["metrics"], r["cfg4"]
             print(sheet_v4(m, r["doc"], r["geo4"], _v4_out(a.version) / "flow_sheet.png", f"{a.version} camera flow: {m['moves']['total']} moves, "
                            f"{m['phone_holds']['n']} phone holds", band=c4.orbit_rate_deg_s, cap=c4.cap_az_deg_s, label=a.version))
@@ -6104,6 +6874,8 @@ def main(argv: list[str] | None = None) -> int:
         out = Path(a.out) if a.out else _v4_out(a.version)
         if a.version == "v4.0":
             r = build_v4(hand_events=a.hand_events, out=out)
+        elif a.version in ("v4", "v4.2"):
+            r = build_v42(hand_events=a.hand_events, out=out)
         else:
             cfg4 = dataclasses_replace(v41_cfg(), plan=a.plan)
             alt = Path(a.alt) if a.alt else (OUT_V4 / "v4.1_share" if a.plan == "meaning" else None)

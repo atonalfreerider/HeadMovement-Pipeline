@@ -302,7 +302,9 @@ No other env and no system setting was touched.
 
     cd dancecap
     conda run -n facefusion --no-capture-output python -m dancecap.film_faceswap swap --film <rec>.mp4 --out <rec>_faceswap.mp4 \
-        [--sidecar <rec>.faces.json] [--start S --end S] [--side-by-side <sbs>.mp4] [--lossless] [--phone-shots off|swap]
+        --sidecar <rec>.faces.json [--start S --end S] [--side-by-side <sbs>.mp4] [--lossless]
+        # v4.2: the sidecar is required (it says which faces are splat-dancer renders); --heuristic for a prototype run without one;
+        # --phone-shots swap is retired (the swap applies to the splat dancers only)
     ... -m dancecap.film_faceswap verify --report <out>.report.json     # bit-exact / PSNR outside the faces + flicker ratio
     ... -m dancecap.film_faceswap sheet --report <out>.report.json --out sheet.jpg [--frames N ...] [--dets]
     ... -m dancecap.film_faceswap canon-points                          # face_points_canonical.json (below)
@@ -359,7 +361,8 @@ One JSON file per recording, next to the MP4. One entry per recorded frame, in r
              "ui": [[x, y, w, h], ...],
              "surfaces": [ {"phone": "02", "alpha": 0..1, "quad": [[x, y] x 4], "z": [m x 4], "role": "enter" | "leave", "full": 0 | 1}, ... ],
              "d": [ {"k": "lead", "in": 1, "lm": [[x, y] x 5], "z": [m x 5], "yaw": deg, "pitch": deg, "roll": deg, "iod": px, "size": px,
-                     "vis": 0..1, "by": "partner" | "self" | ""}, {"k": "follow", ...} ] }, ... ] }
+                     "vis": 0..1, "by": "partner" | "self" | "", "layer": "splat" | "avatar" | "skeleton" | "none", "la": 0..1},
+                    {"k": "follow", ...} ] }, ... ] }
 
 - Pixels: the recorded MP4's pixels, origin top-left, y down; a pixel's centre is at +0.5. `t` = film seconds of the frame (frame index / 30),
   `dt` = the dance (master) time the dancers were posed at (sub-frame). `video_alpha` = the phone video's opacity in that frame
@@ -397,8 +400,16 @@ One JSON file per recording, next to the MP4. One entry per recorded frame, in r
   against the splat depth would also catch hair; it is not needed for v1 because FaceFusion's xseg occlusion mask handles hair and hands
   in the picture.
 
-`film_faceswap.validate_sidecar` checks format, landmark order, dancers, size, frame count and the `surfaces` entries (alpha 0..1, a
-polygon of >= 3 points, one `z` per point). A mock sidecar made from a heuristic run (`mock-sidecar`) exercises the sidecar path until the
+- `layer` / `la` (v4.2, owner 2026-10-22: "apply the face fusion to the gauss splats only"): the layer this dancer's face is drawn on in
+  this frame and that layer's opacity - "splat" (the dancer's splats are drawn: `SplatDancers.ShownFor`, la = the splats' composite
+  opacity, i.e. the phone-video fade), "avatar" (the mesh avatar instead, la = its opacity), "skeleton" (neither: lines and overlays only,
+  or the body hidden under a phone's video; la 0), "none" (no head pose; `in` 0). **Reader rule** (`film_faceswap.splat_share`): a face
+  is swapped only on layer "splat", with weight x la x (1 - video_alpha), and never behind a frustum surface (above). A sidecar recorded
+  before v4.2 has no `layer`: the frame's `splats` share decides (0 = the splat dancers are off: no swap); a sidecar with neither swaps
+  nothing. `swap` refuses to run without a sidecar unless `--heuristic` asks for a prototype.
+
+`film_faceswap.validate_sidecar` checks format, landmark order, dancers, size, frame count, the `surfaces` entries (alpha 0..1, a
+polygon of >= 3 points, one `z` per point) and each dancer's `layer` / `la` (one of the four layers, 0..1). A mock sidecar made from a heuristic run (`mock-sidecar`) exercises the sidecar path until the
 recorder writes real ones.
 
 **Unity stage (not done in this workflow; Unity was in use by another one):**
@@ -964,3 +975,74 @@ In the two grey flash frames at 253.67-253.70 s (measured on the vertical) the s
 those 2 frames (a flatness test - strokes have luma std <= 3, the washed faces 7-19 - would separate them; not built). Red / orange
 tension strokes are left to xseg. Superseded outputs (the shifted first run, the run without the stroke restore) are in
 `head-movement/Recordings/v3_faces_superseded/`.
+
+## v4.2 (owner 2026-10-22): the physics meter only at each switch-on, the orbits 20 % closer, the face swap on the splats only
+
+Owner, after v4.1: "just show the physics meter at the very top of the frame for a few seconds every time we switch physics mode on and then
+fade it out. I like the camera motions, but in gauss splat mode let's get 20% closer to the dancers when we orbit. on the very final pass
+let's apply the face fusion to the gauss splats only ... just plan the motion and render once and I'll review". Nothing was recorded for
+v4.2 (editor stills and play-mode sweeps only); the render is one later pass.
+
+    python -m dancecap.film_recap_flow build --version v4      # = v4.2 -> work/larissa_kadu_recap/v4/direction/ (review_v4.2.md, UNITY_CONTRACT_v4.md)
+    python -m dancecap.film_recap_flow build --version v4.1    # v4.1 as it was -> v4/direction/v4.1/
+    python -m dancecap.film_recap_flow check --version v4      # the v4.1 targets + v4.2's (meter, closer orbits, 16:9 ways)
+
+**How it is built.** `build_v42` rebuilds the v4.1 plan (meaning-first: every move, its timing and every orbit rate stay v4.1's - 17 moves,
+ways 4.0-6.35 s, orbits 2.6 / 3.0 / 3.4 / 4.5 deg/s, 4 phone holds, mean 25.36 s) and changes only:
+
+1. **The meter** (`flow.meter`, schema "hm film meter v1"). From the layer timeline (each segment's layers from its layer start, as Unity's
+   FlowTimeline.LayerStart; transit layers count) one window per switch-on of the physics view: fade in 0.3 s, shown to 4 s after its start,
+   fade out 1 s (smootherstep). A window that would meet a chapter card or the title starts 0.2 s after the card; a physics view too short
+   for a window (under fade-in + 1 s + half the fade-out) gets none. This film: 3 switch-ons (20.78, 271.10, 349.99 s) -> windows 20.78-25.78,
+   274.25-279.25 and 353.14-358.14 s (the last two after chapter 9's and 12's cards); 14.8 s of meter in 320.1 s of physics colours; 0 frames
+   without physics, 0 over a card. Place: the very top of the safe area, top right, in both aspects (9:16 276.8 px down, 1.65 x - the place
+   v4.1 had; 16:9 62 px down at the title-safe side margin, 1.5 x - new). Unity: FlowTimeline.MeterWindows / MeterAlpha, FilmOverlay sets
+   SkeletonLegend.Alpha = meter alpha x (1 - card / title alpha); its rectangle is a label obstacle in both aspects (9:16 also lowers the
+   label ceiling); the face sidecar lists the legend in `ui` only while it shows.
+2. **The closer orbits.** Every slow-orbit block (the orbits; the pivots, the physics views and the replay ride on it) at 0.8 x v4.1's eye
+   offset about its look point: radius 4.3 -> 3.44 m (9:16), 3.6 -> 2.88 m (16:9), eye height 2.15 -> 1.91 m (the same look-down angle), the
+   inline lift's cap 0.25 -> 0.2 m; the eye distance to the look point 4.46 -> 3.57 m / 3.80 -> 3.04 m. `lens_distance_scale` 1.25: Unity
+   chooses the lens for the v4.1 distance - with v4.1's lens rule (CoupleFov of the distance) the lens would widen with the closeness and the
+   16:9 couple would stay the same size. No radius reaches the 1.4-m clear radius.
+   - **The phone ways keep v4.1's paths.** With the orbit at 0.8 x everywhere the phone ways (same durations) had to cover more distance and
+     their eye speed rose over the 1.2 m/s cap (python, first build: 9:16 1.27, 16:9 1.56 m/s). So the orbit is at v4.1's distance at each
+     phone way and eases to 0.8 x over 6 s inside the orbit (`closer_in_s` / `closer_out_s`, smootherstep, the lens fixed: a slow dolly,
+     about 0.28 m/s at its peak); 7 eases, 141.7 of 172.9 s of settled orbit at the full 0.8 x. Next to a crane or the replay the orbit
+     stays at 0.8 x.
+   - **The framing bands.** With the dancers larger, v4.1's 9:16 band (0.31-0.77 of the height, made to keep them under the always-on legend)
+     put their feet onto the caption block, and so did the 16:9 framing (editor stills at 60 s). v4.2: 9:16 `vertical_band` 0.34-0.84, and a
+     new 16:9 `horizontal_band` 0.24-0.99 (floor .. 1.9 m; the near foot sits about 6 % below the couple centre's floor point the band fits).
+3. **The face swap** (`film_faceswap`): with a sidecar a face is swapped only where the recorder says it is a splat-dancer render (per dancer
+   `layer` "splat", weight x `la` x (1 - video_alpha)); never the phones' own video, a frustum picture, a mesh-avatar or skeleton-only view.
+   FilmFaceSidecar writes `layer` / `la` (SplatDancers.ShownFor); an older sidecar falls back to the frame's `splats` share. `swap` refuses
+   to run without a sidecar unless `--heuristic`; `--phone-shots swap` is retired. Run it once, on the final recording.
+
+**Measured** (python PoseModel on the plan; Unity `hm_film_flow --action check` on the live director in Play mode, whole film, both aspects,
+v4.1 and v4.2; the sweeps are in `v4/direction/stills_v4.2/flowcheck_*.json`):
+
+|  | v4.1 9:16 | v4.2 9:16 | v4.1 16:9 | v4.2 16:9 |
+|---|---|---|---|---|
+| block radius about the couple (m) | 4.30 | 3.44 | 3.60 | 2.88 |
+| eye distance to the couple, settled orbits, median (Unity) (m) | 4.47 | 3.59 | 3.80 | 3.06 |
+| orbit lens, median (Unity) (deg) | 60.0 | 60.0 | 39.7 | 43.3 |
+| couple's height in the frame at 60 s (editor still, read off by eye, heads to feet) | about 645 px (34 %) | about 800 px (42 %) | about 680 px (63 %) | about 775 px (72 %) |
+| closest the eye comes to a dancer (Unity, pelvis, horizontal) (m) | 3.25 | 2.83 | 2.71 | 2.27 |
+| phone ways: peak turn / view rotation / eye speed (Unity) | 7.41 / 8.60 / 0.886 | 7.41 / 9.66 / 0.886 | 7.43 / 9.13 / 1.207 | 7.43 / 10.08 / 1.207 |
+| cranes: peak pitch (Unity) (deg/s) | 19.75 | 19.10 | 19.27 | 18.45 |
+| jumps / stutters / eye outside 0.5-2.4 m / heads out of frame (3D) (Unity) | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 |
+| heads under the meter while it shows (3D / phone frames) (Unity) | - | 0 / 0 | - | 0 / 0 |
+
+(the 16:9 v4.1 phone ways already peak at 1.207 m/s; the 16:9 band widens the lens a little, so the 16:9 dancers are about 1.14 x v4.1's
+size, the 9:16 about 1.24 x. The 16:9 hand-off lines read "CHECK fills 0.5" in both versions: the portrait phone clip is a centred panel
+there, a property of the check, not a change.)
+
+**Looked at** (editor stills, `v4/direction/stills_v4.2/`): 22.0 s 9:16 and 16:9 (phone 00 hold just after the first switch-on: the meter
+at the top, clear of the heads and the POV pill), 26.0 s 9:16 (the same hold 4 s later: load colours on, meter gone), 60.0 s 9:16 and 16:9
+(a settled orbit at 0.8 x, with v4.1's frame at 60.0 s next to it), 274.6 s both aspects (the second window over the orbit as the crane
+starts: the heads under the meter's bottom edge, the feet above the captions). The editor's own "Enter VR" button shows at the top right of
+the Play-mode stills.
+
+Tests: `dancecap/tests/test_film_recap_flow.py` (meter windows, layer starts and transit layers, closer blocks, the eases), `test_film_faceswap.py`
+(only splat-dancer faces swapped; no swap without a sidecar), `test_film_jev.py`; Unity HmFilmFlow edit-mode 26/26 (new: the meter's fade,
+the closer factor, and on the v4.2 direction itself: one window per switch-on, 0.3 / 4 / 1 s, none over a card, 0.8 x radii, the eases at
+every phone way).

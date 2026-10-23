@@ -111,11 +111,17 @@ def _face(cx=500.0, cy=800.0, d=40.0):
     return [[cx - d / 2, cy], [cx + d / 2, cy], [cx, cy + 0.45 * d], [cx - 0.4 * d, cy + 0.9 * d], [cx + 0.4 * d, cy + 0.9 * d]]
 
 
-def _sidecar(n, surfaces_at=None, z_face=3.0):
+def _sidecar(n, surfaces_at=None, z_face=3.0, layer_at=None):
+    """a 3D-view sidecar: the lead's face on the splat dancers (v4.2 per-dancer layer) unless layer_at(k) says (layer, la, video_alpha, splats)"""
     fr = []
     for k in range(n):
-        e = {"t": k / 30, "view": "3d", "video_alpha": 0.0, "ui": [],
-             "d": [{"k": "lead", "in": 1, "lm": _face(), "z": [z_face] * 5, "yaw": 0.0, "pitch": 0.0, "vis": 1.0}]}
+        lay, la, va, sv = layer_at(k) if layer_at else ("splat", 1.0, 0.0, 1.0)
+        d = {"k": "lead", "in": 1, "lm": _face(), "z": [z_face] * 5, "yaw": 0.0, "pitch": 0.0, "vis": 1.0}
+        if lay is not None:
+            d.update(layer=lay, la=la)
+        e = {"t": k / 30, "view": "3d", "video_alpha": va, "ui": [], "d": [d]}
+        if sv is not None:
+            e["splats"] = sv
         if surfaces_at:
             sf = surfaces_at(k)
             if sf:
@@ -300,3 +306,52 @@ def test_overlay_strokes_over_a_face_are_kept_and_skin_eyes_and_hair_are_not():
     assert (U == 210).sum() > 0 and (U == 60).sum() > 0
     # a face without strokes: nothing restored
     assert not fs.overlay_mask(np.full((h, w, 3), (126, 145, 202), np.uint8)).any()
+
+
+# ---------------------------------------------------------------------------------------------- v4.2: the splat dancers only
+def test_only_a_splat_dancer_face_is_swapped_never_a_phone_video_avatar_or_skeleton_view():
+    """owner 2026-10-22: 'apply the face fusion to the gauss splats only' - the sidecar's per-dancer layer decides"""
+    cfg = fs.Cfg()
+    n = 300
+
+    def layer_at(k):
+        if k < 60:
+            return ("splat", 1.0, 0.0, 1.0)            # the splat dancers in a 3D view: swapped
+        if k < 100:
+            return ("avatar", 0.35, 0.0, 0.0)          # the mesh avatars (splats off)
+        if k < 140:
+            return ("skeleton", 0.0, 0.0, 0.0)         # skeleton lines only
+        if k < 180:
+            return ("splat", 1.0, 1.0, 1.0)            # a phone's own full-frame video over everything
+        if k < 220:
+            return ("splat", 0.0, 0.0, 0.0)            # the splats hidden (a phone's window)
+        return ("splat", 1.0, 0.0, 1.0)
+    frames = [{"dets": []} for _ in range(n)]
+    for k in range(60, 220):                           # a real face detected right on the projected points: it must not re-enable anything
+        frames[k]["dets"] = [{"lm5": (np.asarray(_face()) + 1.0).tolist()}]
+    p = _lead(fs.plan_sidecar(frames, _sidecar(n, layer_at=layer_at), 0, n, cfg))
+    w = p["w"]
+    assert w[:45].min() == 1.0 and w[60:220].max() == 0.0 and w[240:].min() == 1.0
+    assert np.abs(np.diff(w)).max() <= 1.0 / (cfg.fade_frames // 2 * 2 + 1) + 1e-9           # fades only
+    assert p["layers"] == {"splat": 220, "avatar": 40, "skeleton": 40}
+    # a half-faded splat body swaps at its own opacity; the phone video's opacity multiplies in
+    assert fs.splat_share({"splats": 1.0}, {"layer": "splat", "la": 0.4}) == pytest.approx(0.4)
+    assert fs.splat_share({"splats": 1.0}, {"layer": "avatar", "la": 1.0}) == 0.0
+    # an older sidecar (no per-dancer layer): the frame's splats share; nothing said: no swap
+    assert fs.splat_share({"splats": 0.0}, {}) == 0.0 and fs.splat_share({"splats": 1.0}, {}) == 1.0 and fs.splat_share({}, {}) == 0.0
+    old = _sidecar(n, layer_at=lambda k: (None, None, 0.0, 1.0 if k < 150 else 0.0))
+    w = _lead(fs.plan_sidecar([{"dets": []} for _ in range(n)], old, 0, n, cfg))["w"]
+    assert w[:130].min() == 1.0 and w[150:].max() == 0.0
+    # the validator knows the layers
+    bad = _sidecar(2, layer_at=lambda k: ("phone", 1.0, 0.0, 1.0))
+    assert any("layer" in x for x in fs.validate_sidecar(bad, None))
+    assert fs.validate_sidecar(_sidecar(2), None) == []
+
+
+def test_swap_refuses_to_run_without_a_sidecar_unless_asked_for_a_prototype(tmp_path, monkeypatch):
+    monkeypatch.setattr(fs, "ffprobe", lambda path: {"width": 64, "height": 112, "fps": 30.0, "frames": 3, "v_start": 0.0, "fmt_start": 0.0,
+                                                     "duration": 0.1, "has_audio": False})
+    with pytest.raises(SystemExit, match="sidecar"):
+        fs.main(["swap", "--film", str(tmp_path / "f.mp4"), "--out", str(tmp_path / "o.mp4")])
+    with pytest.raises(SystemExit):
+        fs.main(["swap", "--film", str(tmp_path / "f.mp4"), "--out", str(tmp_path / "o.mp4"), "--phone-shots", "swap"])

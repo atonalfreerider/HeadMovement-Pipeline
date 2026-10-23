@@ -24,6 +24,12 @@ How it works (docs/RECAP_FILM.md, section "Face swap of the recorded film"):
     the audio is copied (an excerpt: the same instant re-cut as AAC 192k); a whole film is remuxed afterwards so its video starts
     where the recording's does (0.033 s; restore_start).
 
+Splat dancers only (owner 2026-10-22, v4.2: "on the very final pass let's apply the face fusion to the gauss splats only"): with a sidecar a
+face is swapped only where the recorder says that dancer's face is a splat-dancer render (per dancer `layer` "splat", weight x its opacity `la`
+x (1 - the phone video's opacity)); never on a phone's own video, a frustum picture, a mesh-avatar or skeleton-only view or any other layer. An
+older sidecar without `layer` falls back to the frame's `splats` share (0 = the splat dancers are off: no swap). Without a sidecar `swap` refuses
+(the layer is unknown) unless --heuristic asks for a prototype run. The swap runs once, on the final recording, after the render.
+
 Runs in the 'facefusion' conda env (Python 3.13, onnxruntime-gpu 1.30, CUDA 13), not in dancecap's env, from the dancecap root:
     conda run -n facefusion --no-capture-output python -m dancecap.film_faceswap swap --film F.mp4 --out O.mp4 \
         [--start S --end S] [--sidecar F.faces.json] [--direction work/larissa_kadu_recap/film/direction.json] [--side-by-side SBS.mp4]
@@ -63,6 +69,7 @@ SPLATS = Path("C:/Users/johnb/Desktop/HeadMovement/head-movement/Assets/Streamin
 LANDMARKS5 = ("eye_r", "eye_l", "nose_tip", "mouth_r", "mouth_l")
 SIDECAR_FORMAT = "hm film faces"
 PHONE_MODES = ("camera_tour", "fly_to_camera")
+FACE_LAYERS = ("splat", "avatar", "skeleton", "none")   # sidecar d[].layer (FilmFaceSidecar, v4.2): only "splat" is ever swapped
 
 
 @dataclass
@@ -95,7 +102,7 @@ class Cfg:
     gap_fill: int = 4                   # frames a track may miss and be interpolated
     smooth_window: int = 7
     identity_min: float = 0.35          # |mean identity score| of a track below this: unknown, not swapped
-    phone_shots: str = "off"            # off | swap (sidecar only): swap the two teachers on a phone's own video too
+    phone_shots: str = "off"            # off only (v4.2: the splat dancers only; v3's "swap" of the teachers on a phone's own video is retired)
     mix_lead_s: float = 0.8             # heuristic: the 3D -> phone flight (fly_to_camera) and ...
     mix_after_phone_s: float = 0.7      # ... the phone -> 3D blend are left alone (the phone's video shows through)
     color_match: float = 0.0            # 0..1: move the swapped face's LAB mean / std toward the original's (0 = FaceFusion's look)
@@ -527,6 +534,10 @@ def validate_sidecar(sc: dict, info: dict | None = None) -> list:
             if d.get("in") and (len(d.get("lm", [])) != 5 or any(len(q) != 2 for q in d["lm"])):
                 p.append(f"frame entry {i}: dancer {d.get('k')} 'lm' is not 5 x [x, y]")
                 break
+            la = d.get("la")
+            if d.get("layer") is not None and (d["layer"] not in FACE_LAYERS or (la is not None and not 0.0 <= float(la) <= 1.0)):
+                p.append(f"frame entry {i}: dancer {d.get('k')} layer {d.get('layer')!r} / la {la!r} (want one of {FACE_LAYERS}, la 0..1)")
+                break
         for sf in e.get("surfaces", []) or []:
             q = sf.get("quad", [])
             if not (0.0 <= float(sf.get("alpha", -1)) <= 1.0) or len(q) < 3 or any(len(x) != 2 for x in q):
@@ -555,6 +566,19 @@ def surface_depth_at(pts: np.ndarray, quad: np.ndarray, z: np.ndarray) -> np.nda
     P = np.asarray(pts, float).reshape(-1, 2)
     coef, *_ = np.linalg.lstsq(np.c_[q, np.ones(len(q))], 1.0 / np.maximum(1e-6, np.asarray(z, float)), rcond=None)
     return 1.0 / np.maximum(1e-6, np.c_[P, np.ones(len(P))] @ coef)
+
+
+def splat_share(e: dict, d: dict) -> float:
+    """how much of this dancer's face in this sidecar frame is a splat-dancer render, 0..1 (v4.2: only those faces are swapped). The recorder's
+    per-dancer `layer` / `la` (FilmFaceSidecar): `la` on layer "splat", 0 on any other layer (a mesh avatar, skeleton lines only, no pose); an
+    older sidecar without `layer`: the frame's `splats` (the splat dancers' composite opacity, 0 while they are off); neither: 0"""
+    if d.get("layer") is not None:
+        if d["layer"] != "splat":
+            return 0.0
+        return float(np.clip(float(d["la"]) if d.get("la") is not None else 1.0, 0.0, 1.0))
+    if e.get("splats") is not None:
+        return float(np.clip(float(e["splats"]), 0.0, 1.0))
+    return 0.0
 
 
 def surface_hit(lm: np.ndarray, zf, surfaces: list, cfg: Cfg) -> str | None:
@@ -597,8 +621,7 @@ def analyse(ff: FF, film: Path, info: dict, first: int, count: int, shot_w: np.n
         need = shot_w[k] > 0
         if sidecar is not None:
             e = sidecar["f"][i]
-            need = cfg.phone_shots == "swap" or e.get("video_alpha", 0.0) < 0.999
-            need = need and any(d.get("in") for d in e.get("d", []))
+            need = e.get("video_alpha", 0.0) < 0.999 and any(d.get("in") and splat_share(e, d) > 0.0 for d in e.get("d", []))
         rec = {"i": i, "dets": []}
         if need:
             bgr = cv2.cvtColor(buf.reshape(h * 3 // 2, w), cv2.COLOR_YUV2BGR_I420)
@@ -881,6 +904,7 @@ def plan_sidecar(frames: list, sidecar: dict, first: int, count: int, cfg: Cfg) 
         offs = np.full((count, 2), np.nan)
         ious = []
         behind = {}                              # frames where a phone's frustum video surface hides the face: phone -> n
+        layers: dict = {}                        # frames per face layer (sidecar d[].layer; an older sidecar: "splats")
         for k in range(count):
             e = sidecar["f"][first + k]
             d = next((q for q in e.get("d", []) if q.get("k") == role), None)
@@ -909,7 +933,9 @@ def plan_sidecar(frames: list, sidecar: dict, first: int, count: int, cfg: Cfg) 
                 lm[k] = best[1]
                 src[k] = 2
             va = float(e.get("video_alpha", 0.0))
-            shot[k] = 1.0 if cfg.phone_shots == "swap" else 1.0 - va
+            lay = d.get("layer") or ("splats" if e.get("splats") is not None else "unknown")
+            layers[lay] = layers.get(lay, 0) + 1
+            shot[k] = splat_share(e, d) * (1.0 - va)        # v4.2: only a splat-dancer face, by its opacity
             g[k] = gate(di, float(d.get("yaw", 0.0)), float(d.get("pitch", 0.0)), cfg, float(d.get("vis", 1.0)))
             yaw[k] = float(d.get("yaw", np.nan))
         # sidecar-only frames get the running registration offset of the detector (median over +-15 frames)
@@ -934,7 +960,7 @@ def plan_sidecar(frames: list, sidecar: dict, first: int, count: int, cfg: Cfg) 
         med_iod = float(np.median(ious)) if ious else 0.0
         out.append({"track": len(out), "role": role, "score": None, "k0": 0, "k1": count - 1, "n_det": int((src == 2).sum()),
                     "n_sidecar_only": int((src == 1).sum()), "boost": boost_for(med_iod), "median_iod": round(med_iod, 1),
-                    "behind_surface": behind, "lm": lm, "w": w, "w_raw": w_raw, "yaw": yaw})
+                    "behind_surface": behind, "layers": layers, "lm": lm, "w": w, "w_raw": w_raw, "yaw": yaw})
     return out
 
 
@@ -1125,7 +1151,12 @@ def cmd_swap(a):
     count = max(1, min(last, info["frames"] or last) - first)
     out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
+    if not a.sidecar and not a.heuristic:
+        raise SystemExit("[faceswap] swap needs the recorder's face sidecar (--sidecar <recording>.faces.json): only it says which faces are splat-dancer "
+                         "renders (v4.2: the swap applies to the splat dancers only); --heuristic for a prototype run without one")
     sidecar = load_sidecar(Path(a.sidecar), first, count, info) if a.sidecar else None
+    if sidecar is not None and not any("layer" in d for e in sidecar["f"][first:first + count] for d in e.get("d", [])):
+        print("[faceswap] this sidecar has no per-dancer 'layer' (recorded before v4.2): the frame's 'splats' share decides (0 = no swap)", flush=True)
     shot_w, cards = shot_weights(None if sidecar else Path(a.direction) if a.direction else None, first, count, fps, cfg)
     report = {"film": str(film), "out": str(out), "side_by_side": a.side_by_side, "first_frame": first, "frames": count,
               "film_s": [first / fps, (first + count) / fps], "mode": "sidecar" if sidecar else "heuristic",
@@ -1257,6 +1288,7 @@ def cmd_mock_sidecar(a):
     for k in range(an["count"]):
         i = an["first"] + k
         fr[i]["video_alpha"] = float(1.0 - shot_w[k])
+        fr[i]["splats"] = float(shot_w[k])
         fr[i]["view"] = "3d" if shot_w[k] > 0.5 else "video"
         fr[i]["ui"] = heuristic_ui(info["width"], info["height"], i / info["fps"], cards)
         for p in plan:
@@ -1264,7 +1296,8 @@ def cmd_mock_sidecar(a):
                 lm = p["lm"][k - p["k0"]] + rng.normal(0, 1.0, (5, 2))
                 yv = p["yaw"][k - p["k0"]]
                 fr[i]["d"].append({"k": p["role"], "in": 1, "lm": np.round(lm, 1).tolist(), "yaw": float(0 if np.isnan(yv) else yv),
-                                   "pitch": 0.0, "roll": 0.0, "iod": round(iod(lm), 1), "vis": 1.0, "by": ""})
+                                   "pitch": 0.0, "roll": 0.0, "iod": round(iod(lm), 1), "vis": 1.0, "by": "",
+                                   "layer": "splat" if shot_w[k] > 0 else "skeleton", "la": float(shot_w[k])})
     sc = {"format": SIDECAR_FORMAT, "version": 1, "recording": Path(rep["film"]).name, "mock": True, "width": info["width"],
           "height": info["height"], "fps": info["fps"], "frames": n, "landmarks": list(LANDMARKS5),
           "dancers": [{"key": r, "name": NAMES[r]} for r in ROLES], "f": fr}
@@ -1391,7 +1424,8 @@ def main(argv=None):
     s.add_argument("--sidecar")
     s.add_argument("--direction", default=str(DIRECTION))
     s.add_argument("--side-by-side")
-    s.add_argument("--phone-shots", choices=("off", "swap"), default="off")
+    s.add_argument("--phone-shots", choices=("off",), default="off", help="retired: v4.2 swaps the splat dancers' faces only, never a phone's video")
+    s.add_argument("--heuristic", action="store_true", help="allow a run without a sidecar (a prototype: the layer is unknown, the direction's 3D shots count)")
     s.add_argument("--color-match", type=float, default=0.0)
     s.add_argument("--detector", default="yolo_face", choices=("yolo_face", "retinaface", "scrfd", "many"))
     s.add_argument("--crf", type=int, default=14)
