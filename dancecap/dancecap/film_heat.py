@@ -61,6 +61,9 @@ DEFAULTS = {
     # point-of-view shots: the camera ids of the capture (cameras/cameras.json), the eligibility table (pov-table), the shot rhythm
     "pov_cameras": [], "pov_table": "", "pov_s": 9.0, "pov_every_s": 26.0, "pov_first_s": 9.0, "pov_shift_max_s": 8.0, "pov_min_ok": 0.9,
     "pov_fly_s": 1.4, "pov_fade_s": 0.5, "pov_pull_s": 1.1, "pov_gap_s": 3.0,
+    # per camera: "3d_over_video" (the dancers drawn over the camera's video: needs a pose that registers them) or "video_over_3d" (the
+    # video covers the 3D while it holds: for a camera attached through the dancers, whose overlay is only approximately registered)
+    "pov_composite": {},
 }
 
 def layer_set(cfg: dict, overhead: bool) -> dict:
@@ -243,13 +246,14 @@ def place_povs(shots: list[dict], film_end: float, cfg: dict, table: dict | None
     return out
 
 
-def pov_camera_block(cam: str, length_s: float, cfg: dict) -> dict:
+def pov_camera_block(cam: str, length_s: float, cfg: dict) -> dict:  # noqa: D103
     """fly in (pov_fly_s), the camera's video fades in (pov_fade_s), holds, fades out, the eye pulls back out (pov_pull_s): the parts add up
     to the shot's length"""
     fly, fade, pull = float(cfg["pov_fly_s"]), float(cfg["pov_fade_s"]), float(cfg["pov_pull_s"])
     hold = max(1.0, length_s - fly - 2 * fade - pull)
     return {"mode": "fly_to_camera", "camera": cam, "fly_s": fly, "fade_in_s": fade, "hold_s": round(hold, 3), "fade_out_s": fade,
-            "pull_back_s": pull, "composite": "3d_over_video", "skeletons_on_top": True, "scene_geometry": "all"}
+            "pull_back_s": pull, "composite": str((cfg.get("pov_composite") or {}).get(cam, "3d_over_video")),
+            "skeletons_on_top": True, "scene_geometry": "all"}
 
 
 def orbit_camera(index: int, length_s: float, cfg: dict) -> dict:
@@ -415,7 +419,7 @@ def _wav_seconds(path: Path) -> float:
 
 
 def pov_table(take: str, cams: list[str], dt: float = 0.25, margin: float = 0.02, min_conf: float = 0.3, jev_blocked: float = 0.6,
-              jev_view: float = 1.5) -> dict:
+              jev_view: float = 1.5, max_dancer_pct: float = 8.0) -> dict:
     """{take, cams: {cam: {t0, dt, ok: [0/1 ...], share}}}: per dt step of the take's reference clock, whether the camera can be shown in a
     POV shot: its pose solved (cameras/<cam>.npz ok) AND both dancers inside its picture (people/teachers_<cam>.npz boxes inside the frame
     by `margin` of its size, row confidence >= min_conf) for most (>= 80 %) of the step's frames."""
@@ -431,6 +435,8 @@ def pov_table(take: str, cams: list[str], dt: float = 0.25, margin: float = 0.02
         t = np.asarray(z["t"], float)
         fi = np.asarray(z["frame_index"], int) if "frame_index" in z.files else np.arange(len(t))
         ok = np.asarray(z["ok"], bool) if "ok" in z.files else np.ones(len(t), bool)
+        if "dancer_pct" in z.files:   # a camera attached through the dancers (cameras.attach_moving): its registration per frame
+            ok = ok & (np.nan_to_num(np.asarray(z["dancer_pct"], float), nan=1e9) <= max_dancer_pct)
         W, H = (int(v) for v in np.asarray(tp["size"]).ravel()[:2])
         box = np.asarray(tp["box"], float)[np.clip(fi, 0, len(tp["box"]) - 1)]
         conf = np.asarray(tp["conf"], float)[np.clip(fi, 0, len(tp["conf"]) - 1)]
