@@ -65,6 +65,17 @@ def edge_path() -> str | None:
             p = Path(base) / "Microsoft" / "Edge" / "Application" / "msedge.exe"
             if p.exists():
                 return str(p)
+    if os.name != "nt":
+        # Linux / macOS: any Chromium browser takes the same --app / --headless=new / --screenshot flags (Ubuntu PC, 2026-10-23)
+        import shutil
+        for name in ("microsoft-edge", "microsoft-edge-stable", "google-chrome", "google-chrome-stable", "chromium",
+                     "chromium-browser"):
+            p = shutil.which(name)
+            if p:
+                return p
+        mac = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+        if mac.exists():
+            return str(mac)
     return None
 
 
@@ -293,7 +304,7 @@ def launch(take: str | None = None, view: str | None = None, replace: bool = Fal
     flags = (CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP) if os.name == "nt" else 0
     from ..paths import REAL_ROOT
     subprocess.Popen(args, cwd=str(REAL_ROOT), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                     stderr=subprocess.DEVNULL, creationflags=flags, close_fds=True)
+                     stderr=subprocess.DEVNULL, creationflags=flags, close_fds=True, start_new_session=os.name != "nt")
     t0 = time.time()
     while time.time() - t0 < 25:
         sj = _running_server()
@@ -414,7 +425,7 @@ def ensure_running(reason: str, lease: bool = True, wait_s: float = 0.0, route: 
         flags = (CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP) if os.name == "nt" else 0
         subprocess.Popen([_monitor_python(), "-m", "dancecap.pipeline", "monitor", "--serve"], cwd=str(P.REAL_ROOT),
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         creationflags=flags, close_fds=True)
+                         creationflags=flags, close_fds=True, start_new_session=os.name != "nt")
         _log("launcher", f"auto-start for {reason!r} (pid {os.getpid()})")
         t0 = time.time()
         while time.time() - t0 < wait_s:

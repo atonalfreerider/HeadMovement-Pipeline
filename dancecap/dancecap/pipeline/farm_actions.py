@@ -138,7 +138,7 @@ def start(label: str, dance: str, steps: list[dict], meta: dict | None = None) -
     flags = (NO_WINDOW | NEW_GROUP) if os.name == "nt" else 0
     proc = subprocess.Popen([_py(), "-m", "dancecap.pipeline.farm_actions", "_exec", str(_rec_path(aid))],
                             cwd=str(paths.root()), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL, creationflags=flags, close_fds=True, env=_env())
+                            stderr=subprocess.DEVNULL, creationflags=flags, close_fds=True, start_new_session=os.name != "nt", env=_env())
     rec["pid"], rec["started"] = proc.pid, time.time()
     try:
         import psutil

@@ -113,7 +113,7 @@ def start(kind: str, module_argv: list[str], take: str | None = None, stages: li
         flags = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | (BELOW_NORMAL if heavy else 0)
     with open(d / "output.log", "ab") as log:
         p = subprocess.Popen(argv, cwd=str(paths.root()), env=cenv, stdin=subprocess.DEVNULL, stdout=log,
-                             stderr=subprocess.STDOUT, creationflags=flags, close_fds=True)
+                             stderr=subprocess.STDOUT, creationflags=flags, close_fds=True, start_new_session=os.name != "nt")
     write_json_atomic(d / "launcher.json", {"launcher_pid": p.pid, "at": time.time()})
     return describe(rid)
 
