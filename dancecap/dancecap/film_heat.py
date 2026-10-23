@@ -60,7 +60,7 @@ DEFAULTS = {
     "avatar_opacity": 0.95, "room": True, "skeleton_lines": 0.0, "rhythm_score": False,
     # point-of-view shots: the camera ids of the capture (cameras/cameras.json), the eligibility table (pov-table), the shot rhythm
     "pov_cameras": [], "pov_table": "", "pov_s": 9.0, "pov_every_s": 26.0, "pov_first_s": 9.0, "pov_shift_max_s": 8.0, "pov_min_ok": 0.9,
-    "pov_fly_s": 1.4, "pov_fade_s": 0.5, "pov_pull_s": 1.1, "pov_gap_s": 3.0,
+    "pov_fly_s": 1.4, "pov_fade_s": 0.5, "pov_pull_s": 1.1, "pov_gap_s": 3.0, "pov_min_s": 5.0,
     # per camera: "3d_over_video" (the dancers drawn over the camera's video: needs a pose that registers them) or "video_over_3d" (the
     # video covers the 3D while it holds: for a camera attached through the dancers, whose overlay is only approximately registered)
     "pov_composite": {},
@@ -197,40 +197,72 @@ def pov_ok_fraction(table: dict | None, cam: str, a: float, b: float) -> float:
 
 
 def place_povs(shots: list[dict], film_end: float, cfg: dict, table: dict | None) -> list[dict]:
-    """POV shots inserted into an orbit / overhead plan: every pov_every_s from pov_first_s, each pushed later (by up to pov_shift_max_s,
-    1 s steps) until a camera of pov_cameras can show it (pov_ok_fraction >= pov_min_ok), the cameras taking turns (the other one when
-    the turn's camera cannot), never within pov_gap_s of an overhead nor leaving an orbit shorter than min_shot_s. -> the new plan."""
+    """POV shots inserted into an orbit / overhead plan: about every pov_every_s from pov_first_s, each slot moved by up to
+    pov_shift_max_s either way (1 s steps, nearest first) and shortened down to pov_min_s until a camera of pov_cameras can show it
+    (pov_ok_fraction >= pov_min_ok), the cameras taking turns (another one when the turn's camera cannot), never within pov_gap_s of
+    an overhead or another POV, nor leaving an orbit shorter than min_shot_s. A camera that got no slot that way gets its best window
+    anywhere, an overhead in its way giving up its place (lucas_luiza: the Steadicam can be shown only at 22-31 s and 113-120 s, the
+    first under an overhead). -> the new plan."""
     cams = [str(c) for c in (cfg.get("pov_cameras") or [])]
     if not cams:
         return shots
-    L, gap, min_orbit = float(cfg["pov_s"]), float(cfg["pov_gap_s"]), float(cfg["min_shot_s"])
+    L, Lmin, gap, min_orbit = float(cfg["pov_s"]), float(cfg.get("pov_min_s") or cfg["pov_s"]), float(cfg["pov_gap_s"]), float(cfg["min_shot_s"])
     fixed = [s for s in shots if s["kind"] == "overhead"]
     povs: list[dict] = []
+    lengths = [L] + [x for x in (L - 1.0, L - 2.0, L - 3.0) if x >= Lmin]
+    shifts = sorted(range(-int(cfg["pov_shift_max_s"]), int(cfg["pov_shift_max_s"]) + 1), key=lambda d: (abs(d), d < 0))
+
+    def fits(a: float, b: float, busy: list[dict]) -> bool:
+        if a < min_orbit or b > film_end - min_orbit:
+            return False
+        if any(a < o["end"] + gap and b > o["start"] - gap for o in busy):
+            return False
+        prev_end = max([0.0] + [o["end"] for o in busy if o["end"] <= a])
+        next_start = min([film_end] + [o["start"] for o in busy if o["start"] >= b])
+        return a - prev_end >= min_orbit and next_start - b >= min_orbit
+
+    def showable(cam: str, a: float, b: float) -> bool:
+        return pov_ok_fraction(table, cam, a, b) >= float(cfg["pov_min_ok"])
+
     turn = 0
     t = float(cfg["pov_first_s"])
-    while t + L <= film_end - min_orbit:
+    while t + Lmin <= film_end - min_orbit:
+        order = cams[turn % len(cams):] + cams[:turn % len(cams)]
         placed = None
-        for shift in range(0, int(cfg["pov_shift_max_s"]) + 1):
-            a, b = t + shift, t + shift + L
-            if b > film_end - min_orbit:
-                break
-            busy = fixed + povs
-            if any(a < o["end"] + gap and b > o["start"] - gap for o in busy):
-                continue
-            # the orbits on both sides must keep min_shot_s (to the previous / next fixed shot or the film's ends)
-            prev_end = max([0.0] + [o["end"] for o in busy if o["end"] <= a])
-            next_start = min([film_end] + [o["start"] for o in busy if o["start"] >= b])
-            if a - prev_end < min_orbit or next_start - b < min_orbit:
-                continue
-            order = cams[turn % len(cams):] + cams[:turn % len(cams)]
-            cam = next((c for c in order if pov_ok_fraction(table, c, a, b) >= float(cfg["pov_min_ok"])), None)
-            if cam is not None:
-                placed = {"kind": "pov", "start": a, "end": b, "camera": cam}
-                turn = cams.index(cam) + 1
+        for cam in order:
+            for ln in lengths:
+                for d in shifts:
+                    a, b = t + d, t + d + ln
+                    if fits(a, b, fixed + povs) and showable(cam, a, b):
+                        placed = {"kind": "pov", "start": float(a), "end": float(b), "camera": cam}
+                        break
+                if placed:
+                    break
+            if placed:
                 break
         if placed:
             povs.append(placed)
+            turn = cams.index(placed["camera"]) + 1
         t += float(cfg["pov_every_s"])
+    # every camera at least once: its best window anywhere (longest, then the highest share), an overhead in the way gives way
+    for cam in cams:
+        if any(p["camera"] == cam for p in povs):
+            continue
+        best = None
+        for ln in lengths:
+            for a in [x * 0.5 for x in range(int(2 * min_orbit), int(2 * (film_end - min_orbit - ln)) + 1)]:
+                b = a + ln
+                if not showable(cam, a, b) or not fits(a, b, povs):
+                    continue
+                sc = pov_ok_fraction(table, cam, a, b)
+                if best is None or sc > best[0]:
+                    best = (sc, a, b)
+            if best:
+                break
+        if best:
+            _, a, b = best
+            fixed = [o for o in fixed if not (a < o["end"] + gap and b > o["start"] - gap)]
+            povs.append({"kind": "pov", "start": float(a), "end": float(b), "camera": cam})
     if not povs:
         return shots
     fixed = sorted(fixed + povs, key=lambda s: s["start"])
@@ -484,10 +516,12 @@ def main(argv: list[str] | None = None) -> int:
     pt.add_argument("--take", required=True)
     pt.add_argument("--cams", required=True, help="comma list of camera ids")
     pt.add_argument("--out", help="default work/<take>/film/pov_table.json")
+    pt.add_argument("--margin", type=float, default=0.02, help="a dancer's box must stay this share of the picture inside its edges (0 for a "
+                    "tightly framing camera: Jev's view judgment then decides what is cut off)")
     a = ap.parse_args(argv)
     if a.cmd == "pov-table":
         from .take import PACKAGE_ROOT
-        tab = pov_table(a.take, [c for c in a.cams.split(",") if c])
+        tab = pov_table(a.take, [c for c in a.cams.split(",") if c], margin=a.margin)
         out = Path(a.out) if a.out else PACKAGE_ROOT / "work" / a.take / "film" / "pov_table.json"
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(tab), encoding="utf-8")

@@ -192,3 +192,15 @@ def test_a_pov_camera_block_fills_its_shot():
     c = FH.pov_camera_block("01", 9.0, cfg)
     assert c["mode"] == "fly_to_camera" and c["camera"] == "01" and c["composite"] == "3d_over_video"
     assert abs(c["fly_s"] + c["fade_in_s"] + c["hold_s"] + c["fade_out_s"] + c["pull_back_s"] - 9.0) < 1e-6
+
+
+def test_a_rarely_showable_camera_still_gets_its_best_window_and_an_overhead_gives_way():
+    from dancecap import film_heat as FH
+    cfg = _pov_cfg(pov_min_s=5.0)
+    # camera 02 can be shown only 22-31 s, under the first overhead (22-28 s)
+    shots = FH.place_povs(FH.shot_plan(199.0, cfg), 199.0, cfg, _table(lambda t: 1, lambda t: 1 if 22.0 <= t < 31.0 else 0))
+    p02 = [s for s in shots if s["kind"] == "pov" and s["camera"] == "02"]
+    assert len(p02) == 1 and 22.0 <= p02[0]["start"] and p02[0]["end"] <= 31.0
+    assert not any(s["kind"] == "overhead" and s["start"] < p02[0]["end"] and s["end"] > p02[0]["start"] for s in shots)
+    for a, b in zip(shots, shots[1:]):
+        assert abs(a["end"] - b["start"]) < 1e-6
