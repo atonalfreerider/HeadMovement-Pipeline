@@ -1046,3 +1046,31 @@ Tests: `dancecap/tests/test_film_recap_flow.py` (meter windows, layer starts and
 (only splat-dancer faces swapped; no swap without a sidecar), `test_film_jev.py`; Unity HmFilmFlow edit-mode 26/26 (new: the meter's fade,
 the closer factor, and on the v4.2 direction itself: one window per switch-on, 0.3 / 4 / 1 s, none over a card, 0.8 x radii, the eases at
 every phone way).
+
+## The v4.2 films, rendered once (2026-10-22: recorded 19:23-19:50, face-swapped 19:50-21:45 local; work/unity.lock held 19:09-21:53)
+
+**Vertical final** - `head-movement/Recordings/06_LarissaKaduRecap_vertical_2026-10-22_v4.2_faces.mp4` (423.7 MB, 1080x1920, 30 fps,
+11032 frames = 6:07.7, AAC 48 kHz; phone copy `..._v4.2_faces_phone576x1024.mp4`, 63.1 MB, the same frames and the same AAC track
+bit for bit). The whole v4.2 film: the physics meter only in its three switch-on windows (sidecar: 20.87-25.57, 274.30-279.03,
+353.20-357.93 s, 0 frames outside), the slow orbits at 0.8 x, the splat dancers with the swinging hair (D3D12), the faces of the splat
+dancers swapped. Made: `hm_film record --aspect vertical --capture 06_LarissaKaduRecap --readback ordered --audiofix on --faces on --tag v4.2`
+(v4/direction found by FindDirection; installed lead motion sha256 8bd1d1ad...; the recorder first rebuilt the soundtrack mix, older
+than the direction) -> the raw recording `..._v4.2.mp4` (542.7 MB; report PASS 11/11, 20.9 frames/s, ordered readback at most 1
+pending, 0 timeouts; audio fix PASS: video md5 unchanged, first picture at 0.000 s with the sound from 0.000 s, 0.0 ms in 30 windows,
+-16.0 LUFS / -1.3 dBTP, 0 burst blocks; the recorder's track with its 56.86-s burst kept as `_rawaudio.mp4`), then `film_faceswap swap
+--sidecar <rec>.faces.json` + `verify` (FaceFusion v4, inswapper_128, the two headshots): 2102 face-frames swapped (Kadu 827 in 8
+spans, Larissa 1275 in 14; shortest 1.23 / 0.97 s), every one on the splat layer, none on a phone's video (max video_alpha 0) or behind
+a frustum picture, 0 px changed outside the faces before encoding, luma PSNR outside the faces 49.6 dB (CRF 14), flicker ratio 0.991;
+audio stream identical to the recording's, A/V start 0 frames apart. Logs, checks and the contact sheet (stills every 15 s + one in
+each meter window, looked at once: no black or broken frame, dancers in every 3D still, the meter only in its windows) are in
+`work/larissa_kadu_recap/v4/final_v4.2/`.
+
+**Horizontal final** - `head-movement/Recordings/06_LarissaKaduRecap_horizontal_2026-10-22_v4.2_faces.mp4` (384.6 MB, 1920x1080,
+30 fps, 11032 frames = 6:07.7; phone copy `..._v4.2_faces_phone1024x576.mp4`, 57.4 MB, same frames, same AAC track). The same film in
+16:9 (meter 62 px down at the title-safe side margin, the same three windows and 0 frames outside them). Made the same way right after
+the vertical (`--aspect horizontal`): raw recording `..._v4.2.mp4` (538.0 MB; report PASS 11/11, 21.3 frames/s, ordered readback, 0
+timeouts; audio fix PASS with the same start shift, 0.0 ms in 30 windows, 0 burst blocks), then the face swap + verify: 2232
+face-frames swapped (Kadu 908 in 8 spans, Larissa 1324 in 15; shortest 1.23 / 0.97 s), all on the splat layer, none on phone video
+or behind a frustum picture, 0 px changed outside the faces before encoding, PSNR outside the faces 50.4 dB, flicker ratio 0.992,
+A/V start 0 frames apart. Contact sheet and checks next to the vertical's; nothing blocking was seen (both films open on the title's
+fade from black at 0 s, as designed), so neither aspect was re-rendered.
