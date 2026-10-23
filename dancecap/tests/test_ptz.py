@@ -140,3 +140,18 @@ def test_refine_frame_robust_drops_a_bad_reference():
     assert 7 not in used and len(used) == 2
     assert np.linalg.norm(rv - rv0[6]) < np.linalg.norm(rv_plain - rv0[6])
     assert np.linalg.norm(rv - rv0[6]) < 0.0008
+
+
+def test_best_root_skips_a_badly_linked_first_frame():
+    from dancecap.cameras import ptz as P
+    # frame 0 links only to 1 (a fade from black); 2..9 form the well-linked chain
+    edges = {(0, 1): None}
+    for i in range(2, 9):
+        edges[(i, i + 1)] = None
+        if i + 2 <= 9:
+            edges[(i, i + 2)] = None
+    r = P.best_root(10, edges)
+    assert 2 <= r <= 9
+    full = {(i, i + 1): None for i in range(9)}
+    assert P.best_root(10, full) in (1, 2, 3, 4, 5, 6, 7, 8)   # interior frames have the most edges
+    assert P.best_root(1, {}) == 0

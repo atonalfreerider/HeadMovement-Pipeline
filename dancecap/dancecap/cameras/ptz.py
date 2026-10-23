@@ -12,7 +12,8 @@ Model (all pixels are image pixels, y down)
   R_i = rotation reference frame -> camera i (frame 0 is the reference: R_0 = I).
 
   solve_ptz()     robust sparse Levenberg-Marquardt over the pairwise point transfer errors of every matched pair
-  init_chain()    spanning-tree initialisation from the pairwise homographies (focal ratio from the local scale)
+  init_chain()    spanning-tree initialisation from the pairwise homographies (focal ratio from the local scale), rooted
+                  at best_root() (the best-connected frame of the largest component; frame 0 unless it is badly linked)
   refine_frame()  one more frame (a video frame between two solved ones) with everything else fixed
 
 Pure numpy / scipy: no GPU, no files. The matching lives in dancecap.cameras.ptz_feats.
@@ -294,6 +295,28 @@ def homography_rotation(H: np.ndarray, f_i: float, f_j: float, c: np.ndarray) ->
     if np.linalg.det(R) < 0:
         R = -R
     return R
+
+
+def best_root(n: int, edges) -> int:
+    """The root for init_chain: the best-connected frame (most edges) of the largest connected component of the homography graph.
+    Frame 0 is not always usable: a video that opens on a fade from black (lucas_luiza_h: an edit's title fade) links frame 0 to
+    almost nothing, and a chain from it reached 3 of 400 skeleton frames. Ties go to the lowest index (frame 0 when it is fine)."""
+    parent = list(range(n))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    deg = np.zeros(n, int)
+    for i, j in edges:
+        deg[i] += 1
+        deg[j] += 1
+        parent[find(i)] = find(j)
+    comp = np.array([find(k) for k in range(n)])
+    sizes = np.bincount(comp, minlength=n)
+    big = comp == int(np.argmax(sizes))
+    return int(np.flatnonzero(big)[np.argmax(deg[big])]) if big.any() else 0
 
 
 def init_chain(n: int, edges: dict[tuple[int, int], np.ndarray], lens: Lens, f_start: float,

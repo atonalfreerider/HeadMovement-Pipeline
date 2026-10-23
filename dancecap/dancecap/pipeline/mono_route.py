@@ -340,20 +340,44 @@ def step_beats(ctx: Ctx) -> str:
     return f"beat grid: {bpm} BPM, no-beat {seg.get('no_beat')}" if bpm else "beat grid written (song/)"
 
 
+TRACK_S_PER_FRAME = 0.62     # one track shard on a 4090, measured (lucas_luiza_h, 2026-10-23: 960 frames in 593 s per shard, 2 shards)
+
+
+def video_frame_count(video: Path) -> int:
+    import cv2
+    cap = cv2.VideoCapture(str(video))
+    try:
+        return int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    finally:
+        cap.release()
+
+
+def camera_track_budget(frames: int) -> tuple[int, int]:
+    """(shards, timeout minutes) of the camera job's per-frame track: 2 shards up to 3000 frames (the 25-min timeout the short
+    clips were tuned on), one more per 1500 frames up to 4 (the GPU sat at 36 % with 2), and a timeout of 1.6 x the measured
+    rate for one shard's frames (+5 min for the model load), never below 25 min. A 200-s video at 30 fps had 2 shards and 25 min
+    for ~31 min of work."""
+    shards = int(min(4, max(2, math.ceil(frames / 1500.0))))
+    return shards, int(max(25, math.ceil(1.6 * TRACK_S_PER_FRAME * frames / shards / 60.0) + 5))
+
+
 def step_camera(ctx: Ctx) -> str:
     """Pod: the phone's per-frame rotation and focal (PTZ skeleton + track, people masked) and MoGe-2 on wide frames."""
     cw = ctx.work / "camera_work"
     v = ctx.video_arg
     common = f"--take {ctx.take} --video {v}"
+    shards, track_min = camera_track_budget(video_frame_count(ctx.video))
     job = ctx.write_job({
-        "name": f"{ctx.take}_camera"[:60], "max_minutes": 40, "needs": ["cameras"], "min_vram_gb": 24,
+        # each track shard holds ~9.3 GB (YOLO-seg + ALIKED / LightGlue: 18.7 GB for 2 on a 4090): 3-4 shards need a 48 GB card
+        "name": f"{ctx.take}_camera"[:60], "max_minutes": max(40, 20 + track_min), "needs": ["cameras"],
+        "min_vram_gb": 24 if shards <= 2 else 48,
         "inputs": [ctx.video_input()], "exclude": EXCLUDE + ["mamma-turing"],
         "env": {"YOLO_CONFIG_DIR": "/tmp/Ultralytics", "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
                 "HF_HOME": "/workspace/hf_home", "TORCH_HOME": "/workspace/torch_home", "PYTHONUNBUFFERED": "1"},
         "setup": [CONSTRAINTS, ULTRALYTICS, MOGE],
         "commands": [{"name": "probe", "timeout_min": 3, "cmd": f"python -m dancecap.cameras.mono_cam probe {common}"},
                      {"name": "skeleton", "timeout_min": 15, "cmd": f"python -m dancecap.cameras.mono_cam skeleton {common}"},
-                     {"name": "track", "timeout_min": 25, "cmd": f"python -m dancecap.cameras.mono_cam track {common} --shards 2"},
+                     {"name": "track", "timeout_min": track_min, "cmd": f"python -m dancecap.cameras.mono_cam track {common} --shards {shards}"},
                      {"name": "moge", "timeout_min": 10, "cmd": f"python -m dancecap.cameras.mono_cam moge {common}"}],
         "outputs": [ctx.ws(cw) + "/"],
         "verify": [ctx.ws(cw / "skel" / "skeleton.npz"), ctx.ws(cw / "probe.json")],
