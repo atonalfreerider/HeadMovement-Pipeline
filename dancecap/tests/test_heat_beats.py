@@ -223,3 +223,16 @@ def test_a_bass_less_clip_that_is_music_all_through_still_gets_a_grid():
     assert b["span"] is None and b["music_band"] is None              # noise only: still no music
     c = hb.analyse(synth(30.0), SR, fake_tracker(30.0), 30.0)
     assert c["music_band"] == "bass_30_150"                           # a bass kick keeps the original rule
+
+
+def test_span_input_silences_outside_and_keeps_inside_beats():
+    import numpy as np
+    from dancecap import heat_beats as H
+    sr = 100
+    x = np.ones(1000)
+    tr = {"beats_refined": np.array([1.0, 3.0, 5.0, 8.0]), "downbeats_refined": np.array([1.0, 8.0]), "beat_prob": np.ones(500)}
+    y, out = H.span_input(x, tr, (2.0, 6.0), sr)
+    assert y[:200].sum() == 0 and y[600:].sum() == 0 and y[200:600].sum() == 400
+    assert out["beats_refined"].tolist() == [3.0, 5.0]
+    assert out["downbeats_refined"].tolist() == []
+    assert len(out["beat_prob"]) == 500

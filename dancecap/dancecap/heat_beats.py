@@ -21,6 +21,18 @@ audio (the song is not known), so the heat's recording IS the evidence and the g
     python -m dancecap.heat_beats run --take john_lula --phase 2       # force a bar phase (pulse index mod 4)
     python -m dancecap.heat_beats follow --take john_lula --steps <timing.json | steps.json>   # step phase lock
 
+A heat with SEVERAL songs (lucas_luiza_h, 2026-10-23: two songs at 90 and ~87 BPM, mixed by the DJ) has no single lattice: the straight-line fit
+locks onto one song and calls the other "no beat". Fit each song inside its own span, then merge:
+
+    python -m dancecap.heat_beats run --take T --span 0 121 --label song1      # -> song/seg_song1/ (the files below, for that span only)
+    python -m dancecap.heat_beats run --take T --span 118 200 --label song2    # -> song/seg_song2/
+    python -m dancecap.heat_beats merge --take T --labels song1,song2           # -> song/ (one governing grid, one timeline per song)
+
+A span run silences the audio outside the span and keeps beat_this's beats inside it (the tracker runs once on the whole heat, cached).
+merge concatenates the governing grids in time (a later song's measures that start before the earlier song's music ends replace the
+earlier song's from there: the DJ's hand-over), timeline states = the labels (plus "intro" / "gap" / "outro" = no beat), tempo.json the
+duration-weighted BPM with every song's own fit under "songs", beats_merged.json with a "song" column (dancecap.rhythm reads it).
+
 Outputs (work/<take>/song/, git-ignored; times on the take's reference clock = the single video's own time; the demo's layout
 with the studio file left out; NO audio is written except a clicks overlay of the heat's own sound):
   beats_heat.json           GOVERNING grid [[t, type]], whole measures inside the music span (bare list, measure = index // 8:
@@ -187,9 +199,11 @@ def fold_lag(F: np.ndarray, dt: float, pulses: np.ndarray, max_s: float = 0.08, 
 
 
 # ------------------------------------------------------------------------------------------------ the analysis
-def analyse(x: np.ndarray, sr: int, tr: dict, duration: float, phase: int | None = None) -> dict:
+def analyse(x: np.ndarray, sr: int, tr: dict, duration: float, phase: int | None = None,
+            music: tuple[float, float] | None = None) -> dict:
     """The whole grid analysis on the heat audio x and beat_this's outputs `tr` (beats_refined, downbeats_refined, beat_prob).
-    Pure: no files, no model."""
+    `music` = the music span given from outside (a quiet song in a loud room shows no lattice contrast although its pulses are
+    tracked: lucas_luiza_h's first song, z <= 1 in every band, its tempo confirmed by the studio file's clock). Pure: no files, no model."""
     hop = int(round(S.HOP_S * sr))
     dt = hop / sr
     model = C.fit_pulses(tr["beats_refined"])
@@ -228,6 +242,9 @@ def analyse(x: np.ndarray, sr: int, tr: dict, duration: float, phase: int | None
             raw_ok = np.where(bass_db >= level_floor)[0]
             near = raw_ok[(t_bass[raw_ok] >= best[0] - 0.5) & (t_bass[raw_ok] <= best[1] + 0.5)]
             span = (float(t_bass[near[0]]), float(t_bass[near[-1]])) if len(near) else (best[0], best[1])
+    if music is not None:
+        span = (max(0.0, float(music[0])), min(duration, float(music[1])))
+        music_band = "given"
     k_all_lo = int(math.ceil((0.0 - t0) / P))
     k_all_hi = int(math.floor((duration - t0) / P))
     edges_k = []
@@ -419,8 +436,8 @@ def track(x: np.ndarray, sr: int, cache: Path, device: str | None, fresh: bool =
     return {n: z[n] for n in z.files}, dev
 
 
-def write_outputs(take: Take, a: dict, val: dict, tr: dict, dev: str, extra: dict) -> dict:
-    sd = song_dir(take.name)
+def write_outputs(take: Take, a: dict, val: dict, tr: dict, dev: str, extra: dict, sd: Path | None = None) -> dict:
+    sd = sd or song_dir(take.name)
     sd.mkdir(parents=True, exist_ok=True)
     model, P = a["model"], a["model"]["period"]
     w = lambda name, obj, indent=1: S.write_json(sd / name, obj, indent=indent)  # noqa: E731
@@ -479,13 +496,13 @@ def write_outputs(take: Take, a: dict, val: dict, tr: dict, dev: str, extra: dic
     return {"governing_measures": int(len(gov) // 8), "music_span": segments["music_span"], "files": sorted(p.name for p in sd.glob("*.json"))}
 
 
-def clicks_overlay(take: Take, x: np.ndarray, gov: np.ndarray) -> None:
+def clicks_overlay(take: Take, x: np.ndarray, gov: np.ndarray, sd: Path | None = None) -> None:
     clicks = B.click_track(len(x), SR, gov[:, :2], 0.0)
     mix = 0.7 * x / max(1e-9, float(np.abs(x).max())) + clicks
-    S.write_private_wav(song_dir(take.name) / "heat_clicks_overlay.wav", mix / max(1.0, float(np.abs(mix).max()) / 0.98), SR)
+    S.write_private_wav((sd or song_dir(take.name)) / "heat_clicks_overlay.wav", mix / max(1.0, float(np.abs(mix).max()) / 0.98), SR)
 
 
-def review_plot(take: Take, a: dict, val: dict, tr: dict, x: np.ndarray) -> Path:
+def review_plot(take: Take, a: dict, val: dict, tr: dict, x: np.ndarray, label: str | None = None) -> Path:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -517,7 +534,7 @@ def review_plot(take: Take, a: dict, val: dict, tr: dict, x: np.ndarray) -> Path
     ax[3].set_xlabel("video time (s)")
     fig.suptitle(f"{take.name}: {60 / a['model']['period']:.2f} BPM, phase {a['phase']}, music "
                  f"{'-' if a['span'] is None else '%.1f-%.1f s' % a['span']}", fontsize=11)
-    out = take.work / "review" / f"{take.name}_beats.png"
+    out = take.work / "review" / f"{take.name}_beats{'_' + label if label else ''}.png"
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.tight_layout()
     fig.savefig(out, dpi=75)
@@ -525,7 +542,23 @@ def review_plot(take: Take, a: dict, val: dict, tr: dict, x: np.ndarray) -> Path
     return out
 
 
-def run(take_name: str, device: str | None = None, phase: int | None = None, fresh: bool = False, plot: bool = True) -> dict:
+def span_input(x: np.ndarray, tr: dict, span: tuple[float, float], sr: int = SR) -> tuple[np.ndarray, dict]:
+    """The heat audio silenced outside [t0, t1] and beat_this's beats / downbeats kept inside it: what analyse() sees for ONE song
+    of a multi-song heat (the frame-wise beat probability is kept: it is only read at the lattice's pulse times)."""
+    t0, t1 = float(span[0]), float(span[1])
+    y = np.zeros_like(x)
+    a, b = max(0, int(round(t0 * sr))), min(len(x), int(round(t1 * sr)))
+    y[a:b] = x[a:b]
+    out = dict(tr)
+    for n in ("beats_refined", "downbeats_refined", "beats", "downbeats"):
+        if n in out:
+            v = np.asarray(out[n], float)
+            out[n] = v[(v >= t0) & (v <= t1)]
+    return y, out
+
+
+def run(take_name: str, device: str | None = None, phase: int | None = None, fresh: bool = False, plot: bool = True,
+        span: tuple[float, float] | None = None, label: str | None = None, music: tuple[float, float] | None = None) -> dict:
     warnings.filterwarnings("ignore")
     t_start = time.time()
     take = Take.load(take_name)
@@ -534,14 +567,25 @@ def run(take_name: str, device: str | None = None, phase: int | None = None, fre
     duration = float(len(x) / SR)
     cache = work_dir(take.name) / "song" / "_cache" / "beat_this_heat.npz"
     tr, dev = track(x, SR, cache, device, fresh)
-    a = analyse(x, SR, tr, duration, phase)
+    sd = None
+    if span is not None:
+        label = label or f"{span[0]:g}_{span[1]:g}"
+        sd = song_dir(take.name) / f"seg_{label}"
+        x, tr = span_input(x, tr, span)
+    a = analyse(x, SR, tr, duration, phase, music)
     val = validate(x, SR, a, tr)
     extra = {"placement": S.beat_placement(x, SR, a["t_pulse"][(a["t_pulse"] > 0.2) & (a["t_pulse"] < duration - 0.2)])}
-    res = write_outputs(take, a, val, tr, dev, extra)
+    if span is not None:
+        extra["placement"] = S.beat_placement(x, SR, a["t_pulse"][(a["t_pulse"] > span[0] + 0.2) & (a["t_pulse"] < span[1] - 0.2)])
+    res = write_outputs(take, a, val, tr, dev, extra, sd)
+    if span is not None:
+        S.write_json(sd / "span.json", {"span": [float(span[0]), float(span[1])], "label": label,
+                                        "music_given": None if music is None else [float(music[0]), float(music[1])]})
+        res["span"], res["label"] = [float(span[0]), float(span[1])], label
     if len(a["gov"]):
-        clicks_overlay(take, x, a["gov"])
+        clicks_overlay(take, x, a["gov"], sd)
     if plot:
-        res["plot"] = review_plot(take, a, val, tr, x).as_posix()
+        res["plot"] = review_plot(take, a, val, tr, x, label if span is not None else None).as_posix()
     res["seconds"] = round(time.time() - t_start, 1)
     res.update(bpm=round(60.0 / a["model"]["period"], 4), phase=a["phase"], phase_confidence=a["decision"]["confidence"])
     return res
@@ -562,6 +606,85 @@ def follow(take_name: str, steps: Path) -> dict:
     return out
 
 
+def merge(take_name: str, labels: list[str]) -> dict:
+    """One governing grid, timeline and tempo for a multi-song heat from its span runs (song/seg_<label>/, in time order)."""
+    take = Take.load(take_name)
+    sd = song_dir(take.name)
+    segs = []
+    for lab in labels:
+        d = sd / f"seg_{lab}"
+        seg = json.loads((d / "segments.json").read_text(encoding="utf-8"))
+        if not seg.get("music_span"):
+            raise SystemExit(f"[heat_beats] seg_{lab}: no music found in its span")
+        segs.append({"label": lab, "dir": d, "music": [float(v) for v in seg["music_span"]],
+                     "gov": json.loads((d / "beats_heat.json").read_text(encoding="utf-8")),
+                     "merged": json.loads((d / "beats_merged.json").read_text(encoding="utf-8")),
+                     "tempo": json.loads((d / "tempo.json").read_text(encoding="utf-8")),
+                     "downbeats": json.loads((d / "downbeats.json").read_text(encoding="utf-8"))})
+    segs.sort(key=lambda g: g["music"][0])
+    duration = max(float(json.loads((g["dir"] / "segments.json").read_text(encoding="utf-8"))["timeline"][-1]["to_s"]) for g in segs)
+    # governing measures in time order; where a later song's music starts inside an earlier one's, the later song governs from its first
+    # whole measure (8 eighths per measure: whole measures are kept whole)
+    gov_rows, timeline, merged_rows_, downbeats = [], [], [], []
+    cut_end = [g["music"][1] for g in segs]
+    for i in range(len(segs) - 1):
+        nxt = segs[i + 1]["gov"]
+        if nxt and nxt[0][0] < cut_end[i]:
+            cut_end[i] = float(nxt[0][0])
+    m_off = 0
+    for g, end in zip(segs, cut_end):
+        rows = g["gov"]
+        meas = [rows[j:j + 8] for j in range(0, len(rows) - len(rows) % 8, 8)]
+        keep = [m for m in meas if m[-1][0] < end]
+        g["governing"] = [keep[0][0][0], keep[-1][-1][0]] if keep else None
+        gov_rows += [r for m in keep for r in m]
+        cols = g["merged"]["columns"]
+        ci = {c: i for i, c in enumerate(cols)}
+        kept_t = {round(r[0], 6) for m in keep for r in m}
+        for r in g["merged"]["rows"]:
+            r = list(r)
+            r[ci["governing"]] = round(r[ci["t"]], 6) in kept_t
+            r[ci["measure_in_take"]] = int(r[ci["measure_in_take"]]) + m_off
+            merged_rows_.append(r + [g["label"]])
+        m_off = max((int(r[ci["measure_in_take"]]) for r in merged_rows_), default=-1) + 1
+        downbeats += [dict(d, song=g["label"]) for d in g["downbeats"]]
+    merged_rows_.sort(key=lambda r: r[0])
+    # timeline: intro / song / gap / song ... / outro (song = its music span, cut at the next song's governing start)
+    t = 0.0
+    for g, end in zip(segs, cut_end):
+        a, b = g["music"][0], min(g["music"][1], end) if end > g["music"][0] else g["music"][1]
+        a = max(a, t)
+        if a > t + 1e-6:
+            timeline.append({"from_s": round(t, 3), "to_s": round(a, 3), "state": "intro" if not timeline else "gap"})
+        timeline.append({"from_s": round(a, 3), "to_s": round(b, 3), "state": g["label"], "songs": [g["label"]]})
+        t = b
+    if t < duration:
+        timeline.append({"from_s": round(t, 3), "to_s": round(duration, 3), "state": "outro"})
+    no_beat = [[x["from_s"], x["to_s"]] for x in timeline if x["state"] in ("intro", "gap", "outro")]
+    w = lambda name, obj, indent=1: S.write_json(sd / name, obj, indent=indent)  # noqa: E731
+    w("beats_heat.json", sorted(gov_rows, key=lambda r: r[0]), indent=None)
+    cols = segs[0]["merged"]["columns"] + ["song"]
+    w("beats_merged.json", {"columns": cols, "rows": merged_rows_,
+                            "note": "the songs' span runs concatenated (heat_beats merge); governing = the merged grid's measures; "
+                                    "measure_in_take continues from song to song"}, indent=None)
+    w("downbeats.json", sorted(downbeats, key=lambda d: d["t"]), indent=None)
+    spans = [x for x in timeline if x["state"] not in ("intro", "gap", "outro")]
+    total = sum(x["to_s"] - x["from_s"] for x in spans) or 1.0
+    bpm = sum(g["tempo"]["bpm"] * (x["to_s"] - x["from_s"]) for g, x in zip(segs, spans)) / total
+    first = segs[0]["tempo"]
+    w("tempo.json", {"version": VERSION, "bpm": round(bpm, 4), "pulse_s": round(60.0 / bpm, 6), "measure_s": round(240.0 / bpm, 5),
+                     "bar_phase": first.get("bar_phase"), "note": "several songs: bpm is the duration-weighted mean; every song's own fit is under songs",
+                     "songs": {g["label"]: dict(g["tempo"], governing=g["governing"], music_span=g["music"]) for g in segs}})
+    w("segments.json", {"version": VERSION, "timeline": timeline, "no_beat": no_beat,
+                        "governing": {g["label"]: g["governing"] for g in segs},
+                        "danced_span": [float(v) for v in take.window],
+                        "music_span": [spans[0]["from_s"], spans[-1]["to_s"]] if spans else None,
+                        "songs": [g["label"] for g in segs],
+                        "no_beat_note": "intro / gap / outro: no song's music (heat_beats merge of the span runs)"})
+    return {"songs": {g["label"]: {"bpm": g["tempo"]["bpm"], "music": g["music"], "governing": g["governing"]} for g in segs},
+            "timeline": timeline, "governing_measures": len(gov_rows) // 8, "bpm_weighted": round(bpm, 3)}
+
+
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="dancecap.heat_beats", description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -571,12 +694,23 @@ def main(argv: list[str] | None = None) -> None:
     r.add_argument("--phase", type=int, default=None, help="force the bar phase (pulse index mod 4)")
     r.add_argument("--fresh", action="store_true", help="re-run beat_this")
     r.add_argument("--no-plot", action="store_true")
+    r.add_argument("--span", type=float, nargs=2, metavar=("T0", "T1"), help="fit ONE song inside [T0, T1] (seconds) -> song/seg_<label>/")
+    r.add_argument("--label", help="the span's name (the song's state in the merged timeline)")
+    r.add_argument("--music", type=float, nargs=2, metavar=("T0", "T1"),
+                   help="the music span, given (when the bass lattice contrast cannot see a quiet song; check its tempo another way)")
+    m = sub.add_parser("merge", help="merge span runs (song/seg_<label>/) into one grid / timeline / tempo in song/")
+    m.add_argument("--take", required=True)
+    m.add_argument("--labels", required=True, help="comma list of span labels")
     f = sub.add_parser("follow", help="step phase lock against the pulse lattice")
     f.add_argument("--take", required=True)
     f.add_argument("--steps", type=Path, required=True)
     args = ap.parse_args(argv)
     if args.cmd == "run":
-        print(json.dumps(run(args.take, args.device, args.phase, args.fresh, not args.no_plot), indent=1, default=S._np))
+        print(json.dumps(run(args.take, args.device, args.phase, args.fresh, not args.no_plot,
+                             tuple(args.span) if args.span else None, args.label, tuple(args.music) if args.music else None),
+                         indent=1, default=S._np))
+    elif args.cmd == "merge":
+        print(json.dumps(merge(args.take, [x for x in args.labels.split(",") if x]), indent=1, default=S._np))
     else:
         print(json.dumps(follow(args.take, args.steps), indent=1, default=S._np)[:3000])
 
