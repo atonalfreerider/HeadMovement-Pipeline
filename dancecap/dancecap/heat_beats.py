@@ -297,6 +297,10 @@ def analyse(x: np.ndarray, sr: int, tr: dict, duration: float, phase: int | None
     tracked = np.array([np.abs(tr["beats_refined"] - t).min() < C.BEAT_TOL * P for t in tk])
     z_at = np.interp(tk, centres, np.nan_to_num(z_best, nan=0.0))
     aud = presence_ramp(z_at)
+    if music is not None and span is not None:
+        # a GIVEN music span was verified another way (the studio file's clock and downbeats): the heat audio's lattice contrast
+        # is no evidence against the pulses inside it (lucas_luiza_h song 1: z <= 1, so every beat had ~0 confidence)
+        aud = np.where((tk >= span[0]) & (tk <= span[1]), 1.0, aud)
     conf_pulse = np.round(np.clip(p_track, 0, 1) * aud * np.where(tracked, 1.0, 0.7), 4)
     support = {n: np.array([_support(flux[n], dt, t) for t in tk]) for n in BANDS}
     rows_all = C.zouk_rows(model, k_all_lo, k_all_hi, chosen)  # every whole measure of the audible lattice
