@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import time
 from pathlib import Path
@@ -70,6 +71,9 @@ CHUNK = 200
 MIN_MASK_PX = 1500                         # 538 x 960: a dancer's median mask is 23-29 k px (zoomed in up to 170 k)
 MIN_BOX_H = 80
 MIN_VISIBLE = 0.15
+# Hugging Face token of an account with access to the gated facebook/sam-3d-body-dinov3 (a key FILE, never its value; sent to the pod as
+# a runner secret): DANCECAP_HF_KEY_FILE, else ~/Desktop/sam3d-body-key-hf.txt (the Windows PC kept it on its Desktop too)
+HF_KEY_FILE = os.environ.get("DANCECAP_HF_KEY_FILE", str(Path.home() / "Desktop" / "sam3d-body-key-hf.txt")).replace("\\", "/")
 TRIMMED_SMPLX = PACKAGE_ROOT / "work" / "larissa_kadu_38" / "mono4d" / "sam3d_body" / "input" / "smplx" / "SMPLX_NEUTRAL.npz"
 POD_ROOT = "/workspace/s3db_cand"
 LICENCE = ("SAM 3D Body code + checkpoint: SAM License (Meta; gated on Hugging Face); DINOv3 code: DINOv3 licence; MHR "
@@ -262,7 +266,7 @@ def job(max_minutes: float = 75, chunk: int = CHUNK, reserve_min: float = 30.0, 
          "base": False,
          "inputs": [_ws(INPUT) + "/", *frames_in, _ws(WORK / "people" / f"masks_{CAM}.npz")],
          "exclude": ["dancecap/work/runpod/pywheels", "dancecap/work/runpod/wheelhouse", "mamma-turing"],
-         "secrets": {"HF_TOKEN": "C:/Users/johnb/Desktop/sam3d-body-key-hf.txt"},
+         "secrets": {"HF_TOKEN": HF_KEY_FILE},
          "env": {"S3DB_ROOT": POD_ROOT, "S3DB_COMMIT": "b5c765a0d89d789985e186d396315e7590887b94",
                  "S3DB_HF_REPO": "facebook/sam-3d-body-dinov3", "S3DB_HF_REV": "11aaa346c7204874a1cbafe3d39a979080b2c55a",
                  "DINOV3_COMMIT": "5aa7e93ab42ae3526291f6b4e3fcd22637e03326",

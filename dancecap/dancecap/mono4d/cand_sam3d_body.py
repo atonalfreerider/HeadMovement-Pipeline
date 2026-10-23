@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -57,6 +58,9 @@ import numpy as np
 from ..take import PACKAGE_ROOT, WORKSPACE
 from . import candidates as C
 
+# Hugging Face token of an account with access to the gated facebook/sam-3d-body-dinov3 (a key FILE, never its value; sent to the pod as
+# a runner secret): DANCECAP_HF_KEY_FILE, else ~/Desktop/sam3d-body-key-hf.txt (the Windows PC kept it on its Desktop too)
+HF_KEY_FILE = os.environ.get("DANCECAP_HF_KEY_FILE", str(Path.home() / "Desktop" / "sam3d-body-key-hf.txt")).replace("\\", "/")
 TAKE, CAM = "larissa_kadu_38", "06"
 WINDOW = (58.0, 62.0)
 WORK = PACKAGE_ROOT / "work" / TAKE
@@ -186,7 +190,7 @@ def job(max_minutes: float = 25, limit: int = 0) -> Path:
          "inputs": [_ws(INPUT) + "/"],
          # no MAMMA code, body models or cached wheels: frames + masks + code only over the shared 2.5 MB/s uplink
          "exclude": ["dancecap/work/runpod/pywheels", "dancecap/work/runpod/wheelhouse", "mamma-turing"],
-         "secrets": {"HF_TOKEN": "C:/Users/johnb/Desktop/sam3d-body-key-hf.txt"},
+         "secrets": {"HF_TOKEN": HF_KEY_FILE},
          "env": {"S3DB_ROOT": root, "S3DB_COMMIT": S3DB_COMMIT, "S3DB_HF_REPO": HF_REPO, "S3DB_HF_REV": HF_REV,
                  "DINOV3_COMMIT": DINOV3_COMMIT, "MHR_COMMIT": MHR_COMMIT, "MHR_ASSETS_RELEASE": MHR_ASSETS_RELEASE,
                  "TORCH_HOME": f"{root}/torch_home", "HF_HOME": f"{root}/hf_home", "UV_LINK_MODE": "hardlink",
@@ -405,7 +409,7 @@ def do_import(sid: str | None = None, score: bool = True) -> dict:
     return out
 
 
-KEY_FILE = "C:/Users/johnb/Desktop/sam3d-body-key-hf.txt"
+KEY_FILE = HF_KEY_FILE
 
 
 def check_access(key_file: str = KEY_FILE) -> dict:
