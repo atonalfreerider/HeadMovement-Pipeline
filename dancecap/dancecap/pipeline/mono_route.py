@@ -340,7 +340,8 @@ def step_beats(ctx: Ctx) -> str:
     return f"beat grid: {bpm} BPM, no-beat {seg.get('no_beat')}" if bpm else "beat grid written (song/)"
 
 
-TRACK_S_PER_FRAME = 0.62     # one track shard on a 4090, measured (lucas_luiza_h, 2026-10-23: 960 frames in 593 s per shard, 2 shards)
+TRACK_FPS = 3.2     # per-frame track throughput of ONE GPU, whatever the shards (lucas_luiza_h, 2026-10-23: 2 shards on a 4090 0.62 s
+                    # per frame each; 4 shards on an L40S 1.2-1.3 s per frame each: the same ~3.2 frames/s in total)
 
 
 def video_frame_count(video: Path) -> int:
@@ -353,12 +354,10 @@ def video_frame_count(video: Path) -> int:
 
 
 def camera_track_budget(frames: int) -> tuple[int, int]:
-    """(shards, timeout minutes) of the camera job's per-frame track: 2 shards up to 3000 frames (the 25-min timeout the short
-    clips were tuned on), one more per 1500 frames up to 4 (the GPU sat at 36 % with 2), and a timeout of 1.6 x the measured
-    rate for one shard's frames (+5 min for the model load), never below 25 min. A 200-s video at 30 fps had 2 shards and 25 min
-    for ~31 min of work."""
-    shards = int(min(4, max(2, math.ceil(frames / 1500.0))))
-    return shards, int(max(25, math.ceil(1.6 * TRACK_S_PER_FRAME * frames / shards / 60.0) + 5))
+    """(shards, timeout minutes) of the camera job's per-frame track: 2 shards (more do not add throughput: the GPU / CPU pair is
+    the limit), and a timeout of 1.6 x the measured throughput for all the frames (+5 min for the model load), never below the
+    25 min the short clips were tuned on. A 200-s video at 30 fps timed out twice at 25 / 30 min (~31 min of work)."""
+    return 2, int(max(25, math.ceil(1.6 * frames / TRACK_FPS / 60.0) + 5))
 
 
 def step_camera(ctx: Ctx) -> str:
@@ -368,9 +367,7 @@ def step_camera(ctx: Ctx) -> str:
     common = f"--take {ctx.take} --video {v}"
     shards, track_min = camera_track_budget(video_frame_count(ctx.video))
     job = ctx.write_job({
-        # each track shard holds ~9.3 GB (YOLO-seg + ALIKED / LightGlue: 18.7 GB for 2 on a 4090): 3-4 shards need a 48 GB card
-        "name": f"{ctx.take}_camera"[:60], "max_minutes": max(40, 20 + track_min), "needs": ["cameras"],
-        "min_vram_gb": 24 if shards <= 2 else 48,
+        "name": f"{ctx.take}_camera"[:60], "max_minutes": max(40, 20 + track_min), "needs": ["cameras"], "min_vram_gb": 24,
         "inputs": [ctx.video_input()], "exclude": EXCLUDE + ["mamma-turing"],
         "env": {"YOLO_CONFIG_DIR": "/tmp/Ultralytics", "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
                 "HF_HOME": "/workspace/hf_home", "TORCH_HOME": "/workspace/torch_home", "PYTHONUNBUFFERED": "1"},
@@ -387,24 +384,36 @@ def step_camera(ctx: Ctx) -> str:
     return f"camera track: {json.dumps({k: info[k] for k in list(info)[:6]}, default=str)[:300]}" if info else "camera track pulled"
 
 
+# people job, measured on a 4090 (2026-10-23, 1280x720 / 720x1280 cuts of ~5900 frames): detect 0.14 s per frame (a close
+# Steadicam: 0.142), SAM up to 0.31 s per frame (the Steadicam's large dancers: 18 s per anchor; a far tripod 0.11)
+PEOPLE_S_PER_FRAME = {"detect": 0.145, "sam": 0.31, "refine": 0.31}
+PEOPLE_MIN = {"detect": 15, "sam": 20, "refine": 30}
+
+
+def people_budget(frames: int) -> dict:
+    """Timeout minutes of the people job's long commands: 1.6 x the slowest measured rate, never below the short-clip values."""
+    return {k: int(max(PEOPLE_MIN[k], math.ceil(1.6 * PEOPLE_S_PER_FRAME[k] * frames / 60.0))) for k in PEOPLE_MIN}
+
+
 def step_people(ctx: Ctx) -> str:
     """Pod: everybody detected, the couple picked and told apart (lead / follow), SAM 2.1 masks both ways, RTMW whole body."""
     pe = ctx.work / "people"
     common = f"--take {ctx.take} --video {ctx.video_arg}"
+    tm = people_budget(video_frame_count(ctx.video))
     job = ctx.write_job({
-        "name": f"{ctx.take}_people"[:60], "max_minutes": 50, "needs": ["dancers"], "min_vram_gb": 24,
+        "name": f"{ctx.take}_people"[:60], "max_minutes": max(50, sum(tm.values()) + 25), "needs": ["dancers"], "min_vram_gb": 24,
         "inputs": [ctx.video_input()] + ([ctx.ws(pe / "roles_override.json")] if (pe / "roles_override.json").exists() else []),
         "exclude": EXCLUDE + ["mamma-turing"],
         "env": {"YOLO_CONFIG_DIR": "/tmp/Ultralytics", "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
                 "TORCH_HOME": "/workspace/torch_home", "PYTHONUNBUFFERED": "1"},
         "setup": [CONSTRAINTS, ULTRALYTICS, RTMW],
         "commands": [{"name": "fetch_sam2", "timeout_min": 5, "cmd": "python -m dancecap.front_pod fetch-sam2"},
-                     {"name": "detect", "timeout_min": 15, "cmd": f"python -m dancecap.people_mono detect {common}"},
+                     {"name": "detect", "timeout_min": tm["detect"], "cmd": f"python -m dancecap.people_mono detect {common}"},
                      {"name": "anchors", "timeout_min": 10, "cmd": f"python -m dancecap.people_mono anchors {common}"},
-                     {"name": "sam", "timeout_min": 20, "cmd": f"python -m dancecap.people_mono sam {common}"},
+                     {"name": "sam", "timeout_min": tm["sam"], "cmd": f"python -m dancecap.people_mono sam {common}"},
                      {"name": "masks", "timeout_min": 10, "cmd": f"python -m dancecap.people_mono masks {common}"},
                      {"name": "pose", "timeout_min": 15, "cmd": f"{NV_LIBS} && python -m dancecap.people_mono pose {common}"},
-                     {"name": "refine", "timeout_min": 30, "cmd": f"{NV_LIBS} && python -m dancecap.people_mono refine {common}"},
+                     {"name": "refine", "timeout_min": tm["refine"], "cmd": f"{NV_LIBS} && python -m dancecap.people_mono refine {common}"},
                      {"name": "finalize", "timeout_min": 10, "cmd": f"python -m dancecap.people_mono finalize {common}"}],
         "outputs": [ctx.ws(pe) + "/teachers_01.npz", ctx.ws(pe) + "/masks_01.npz", ctx.ws(pe) + "/teachers.json",
                     ctx.ws(pe) + "/identity.json", ctx.ws(pe) + "/coverage.json", ctx.ws(pe) + "/verification.json",
