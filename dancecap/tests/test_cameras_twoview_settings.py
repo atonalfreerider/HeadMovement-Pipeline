@@ -797,3 +797,21 @@ def test_sam_memory_sizes_landscape_qa_frames(tmp_path, monkeypatch):
     assert rf.sam_mem_gb(chunk, "01") == _old_sam_gb(n, 720, 1280)
     assert rf.sam_mem_gb(chunk, "02") == pytest.approx(_old_sam_gb(n, 1280, 720) + n * 3 * (1707 - 540) * 960 * 1.1 / 2**30,
                                                        abs=0.11)
+
+
+def test_a_moving_camera_pairs_with_its_own_images_only_within_seq_only_s():
+    """lucas_luiza: the Steadicam's images minutes apart, facing look-alike walls, formed a self-consistent copy of the
+    room; its own pairs are now limited to seq_only_s (the dense exhaustive set too), cross-camera pairs are unchanged."""
+    from dancecap.cameras.features import ImageRec
+    from dancecap.cameras.mapping import MapSettings, map_pairs
+    imgs = [ImageRec(c, "win", i, 10.0 + 2.0 * i, f"frames/{c}/{i:06d}.jpg", "") for c in ("01", "02") for i in range(30)]
+    dense = {r.key for r in imgs if r.index % 3 == 0}
+    s = MapSettings(seq_only_cams=("01",), seq_only_s=8.0)
+    pairs = map_pairs(imgs, dense, s)
+    same01 = [(a, b) for a, b in pairs if imgs[a].cam == imgs[b].cam == "01"]
+    assert same01 and all(abs(imgs[a].t - imgs[b].t) <= 8.0 for a, b in same01)
+    assert any(abs(imgs[a].t - imgs[b].t) > 8.0 for a, b in pairs if imgs[a].cam == imgs[b].cam == "02")
+    old = map_pairs(imgs, dense, MapSettings())
+    cross = lambda P: {(a, b) for a, b in P if imgs[a].cam != imgs[b].cam}  # noqa: E731
+    assert cross(pairs) == cross(old)
+    assert map_settings({"cameras": {"map": {"seq_only_cams": "01"}}}).seq_only_cams == ("01",)

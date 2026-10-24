@@ -50,6 +50,12 @@ class MapSettings:
     shared_intrinsics: tuple = field(default_factory=tuple)  # cameras (no zoom) whose map images share ONE COLMAP
     #   camera: one focal + k1 for the video, refined by every image (a per-image focal is weakly observable)
     focal_prior_px: dict = field(default_factory=dict)  # {cam: prior focal (px)} instead of focal_prior x max dim
+    seq_only_cams: tuple = field(default_factory=tuple)  # moving cameras whose map images pair with their OWN camera's
+    #   only within seq_only_s (the exhaustive dense set and the temporal neighbours alike): a Steadicam's images minutes
+    #   apart facing look-alike walls (identical doors, EXIT signs) matched each other and formed a self-consistent copy
+    #   of the room (lucas_luiza: 24 of 65 judged images on the wrong wall, supporting each other across 61-201 s); its
+    #   images then chain along its path and close loops only through the other cameras (cross-camera pairs unchanged)
+    seq_only_s: float = 8.0
     doppelganger_check: bool = True  # deregister map images outside their camera's band of centres before the
     #   final refine (cameras.plausible: a repeated-structure copy of the room; lucas_luiza 2026-10-24)
 
@@ -71,6 +77,9 @@ def map_settings(take_cfg: dict | None = None) -> MapSettings:
         if zoom:
             raise ValueError(f"[cameras] map: shared_intrinsics {zoom} declared zoom = true in their [cameras.\"NN\"] "
                              "block: a zooming video needs a focal per image (drop it from shared_intrinsics)")
+    if "seq_only_cams" in over:
+        v = over["seq_only_cams"]
+        over["seq_only_cams"] = (str(v),) if isinstance(v, str) else tuple(str(c) for c in v)
     if "focal_prior_px" in over:
         over["focal_prior_px"] = {str(c): float(f) for c, f in over["focal_prior_px"].items()}
     return replace(MapSettings(), **over)
@@ -112,17 +121,25 @@ def select_map_images(recs: dict[str, list[ImageRec]], s: MapSettings) -> tuple[
 
 
 def map_pairs(images: list[ImageRec], dense: set[str], s: MapSettings) -> list[tuple[int, int]]:
-    """Index pairs (i < j) into images: exhaustive over the dense set + per-camera temporal neighbours."""
+    """Index pairs (i < j) into images: exhaustive over the dense set + per-camera temporal neighbours; a camera in
+    s.seq_only_cams pairs with its own images only within s.seq_only_s."""
     idx = {r.key: i for i, r in enumerate(images)}
+    seq_only = set(s.seq_only_cams)
+
+    def allowed(a: int, b: int) -> bool:
+        ra, rb = images[a], images[b]
+        return not (ra.cam == rb.cam and ra.cam in seq_only and abs(ra.t - rb.t) > s.seq_only_s)
+
     pairs = set()
     d = [i for i, r in enumerate(images) if r.key in dense]
-    pairs.update((min(a, b), max(a, b)) for a, b in combinations(d, 2))
+    pairs.update((min(a, b), max(a, b)) for a, b in combinations(d, 2) if allowed(a, b))
     for cam in sorted({r.cam for r in images}):
         seq = sorted((r for r in images if r.cam == cam), key=lambda r: r.t)
         for k, r in enumerate(seq):
             for q in seq[k + 1:k + 1 + s.seq_neighbours]:
                 a, b = idx[r.key], idx[q.key]
-                pairs.add((min(a, b), max(a, b)))
+                if allowed(a, b):
+                    pairs.add((min(a, b), max(a, b)))
     return sorted(pairs)
 
 
