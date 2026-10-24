@@ -10,15 +10,25 @@ below the scalp) to the Unity guides, offline and deterministically, by filling 
 frame (Assets/Splats/Avatar/Core/Shaders/HM_SkinSplats.compute kernels HairSegments + SkinHair; the CPU reference is
 Assets/Splats/Avatar/Core/SplatHairBinding.cs; the full rule is docs/SPLAT_AVATAR_FORMAT.md section 6).
 
-    python -m dancecap.mono4d.recap_splat_hair bind     [--dump unity_hair_dump_frame0.json] [--install]
-    python -m dancecap.mono4d.recap_splat_hair sheet    # LOOK: binding sheet (strand colours + guides) and posed previews
-    python -m dancecap.mono4d.recap_splat_hair verify   # re-read the installed file: records, sha, binding round trip
+    python -m dancecap.mono4d.recap_splat_hair bind     [--take T] [--dump unity_hair_dump_frame0.json] [--install]
+    python -m dancecap.mono4d.recap_splat_hair select   [--take T]   # LOOK before any dump: rigid / free / fringe counts + sheet
+    python -m dancecap.mono4d.recap_splat_hair sheet    [--take T]   # LOOK: binding sheet (strand colours + guides), posed previews
+    python -m dancecap.mono4d.recap_splat_hair verify   [--take T]   # re-read the installed file: records, sha, binding round trip
+    python -m dancecap.mono4d.recap_splat_hair finish   --take T --dump <hm_hair dump.json>   # ONE command after the Unity dump:
+        copy the dump to <out>/unity_hair_dump_frame0.json, bind + install, verify, sheet, and write the Quest re-distill
+        commands of the bound follow (<out>/finish.json; the Quest sets must carry the binding: quest_distill prepare --roles follow)
 
-Inputs: work/larissa_kadu_recap/lhmpp/follow.splatav + .json (the recap-avatars export, unbound; never modified here) and
-a dump of the Unity guides (`unity command hm_hair --action dump` in Play mode with 06_LarissaKaduRecap loaded:
+TAKE PROFILES (2026-10-23, HAIR_PROFILES): no --take = the class recap (Larissa's RED hair: the GREY fringe rule below);
+--take carlos_aline = Aline's long near-black hair (her top is red, the recap's red / grey rules mis-select): the BLACK
+rule: a free Gaussian keeps its LBS when it is lighter than BRIGHT_L (the white fringe) or NOT hair-coloured by
+splat_hair.select_hair's learned colour model (crown vs face + torso front, Mahalanobis in Lab: the red top, her skin
+under the hair, edges of the white crop stay on the body). Everything else (binding, posing, file) is take-agnostic.
+
+Inputs: work/<take>/lhmpp/follow.splatav + .json (the recap_splatav export, unbound; never modified here) and
+a dump of the Unity guides (`unity command hm_hair --action dump` in Play mode with the take's capture loaded:
 `rest` = the settled rest shape in HEAD-BONE space, i.e. relative to the avatar skin's head joint 15, axes = Unity axes in
-the T-pose). Output: work/larissa_kadu_recap/splat_hair_unity/follow.splatav + .json (bound), sheets, report.json;
-`--install` copies the pair to head-movement/Assets/StreamingAssets/06_LarissaKaduRecap/splats/ (git-ignored likeness data).
+the T-pose). Output: work/<take>/splat_hair_unity/follow.splatav + .json (bound), sheets, report.json;
+`--install` copies the pair to head-movement/Assets/StreamingAssets/<capture>/splats/ (git-ignored likeness data).
 
 SELECTION (which Gaussians swing): splat_hair.select_hair, style "loose" (the other hair workflow's selection, reused):
 RIGID = scalp-level hair (within 3 cm of the head capsule, above the head joint) keeps LHM++'s LBS (head weight >= 0.91,
@@ -47,11 +57,13 @@ POSING (what the Unity runtime does; pose_reference() below is its CPU reference
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
 import json
 import math
 import shutil
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -78,6 +90,102 @@ BRIGHT_L = 55.0   # free Gaussians lighter than this (CIE L*, hair Lab mean ~33)
 GREY_A = 15.0     # ... and free Gaussians with CIE a* below this that are not near-black (L* > GREY_DARK_L): grey, not red
 GREY_DARK_L = 15.0  # hair (a* 5th percentile 18 on this export): the mic pack clipped at her lower back under the hair tips
                   # and the edges of the white top; they stay on the body (LBS) instead of flying out as grey spikes
+
+
+HAIR_LOOK_BLACK = {
+    # (2026-10-23 fix round 1; Aline's near-black hair; see apply_look): LHM++ drew her hair with few large opaque Gaussians,
+    # often 2-8 near-copies stacked within 2 mm (composite opacity up to 0.99); a strand that swings out alone carried them as
+    # round black discs onto his white shirt / her red top. The bound hair becomes strand-shaped and translucent per clump:
+    "needle_across_m": 0.003,   # bound hair: longest axis along its rest segment, both across sigmas <= 3 mm ...
+    "needle_along_max_m": 0.05,  # ... the along sigma grown to keep the projected area (sigma_max * sigma_mid / across), <= 5 cm
+    "stack_cap": 0.25,          # bound hair: composite opacity of a 2 mm stack of near-copies capped at 0.25
+    "stack_link_m": 0.002,
+    "paint_fade": 0.03,         # unbound hair PAINT on the torso back (a layer ~1.5 cm over the top's own surface, dark and
+    "paint_ytop_m": 0.03,       # achromatic): opacity x 0.03, spine1 .. neck + 3 cm (the top's red shows when the hair swings)
+    "under_tint": {"max_chroma": 15.0, "l_range": [12.0, 35.0], "near_paint_m": 0.025, "dark_l": 12.0, "dark_chroma": 20.0,
+                   "red_chroma": 25.0, "red_hue_deg": [15.0, 40.0], "radii_m": [0.03, 0.05, 0.08, 0.12], "min_red": 8,
+                   "l_ratio_clip": [0.7, 1.3],
+                   "tint_paint": True},
+    # (fix round 2) what the faded paint exposed: LHM++ painted the top's own back GREY under the hair (Lab ~23 / 13 / 4,
+    # opacity ~0.45, at the top's depth) - a pale blotch whenever the hair swings off her back - plus dark brown smudges
+    # (L* < 12, C* < 20) beside the shoulder blades. Each group takes the local colour of the top (under_mask / under_tint:
+    # the opacity-weighted median of the clearly red Gaussians nearby: C* >= red_chroma = the top's 10th percentile, hue
+    # in red_hue_deg = the top's 28-31 deg, not her skin's ~47; the group's own shading kept); the faded paint is tinted the same way (it stays faded: opaque red paint 1.5 cm over the
+    # top drew red fog through the hair in fix round 1).
+    "crown": {"el_from": 10.0, "el_full": 30.0, "face_az": 50.0, "face_above_hairline": 6.0, "max_chroma": 15.0, "shell_m": 0.03},
+    # unbound scalp hair above the crown, outside the face box: luminance toward the hanging hair's (LHM++ guessed a grey top
+    # the head-height cameras never saw); scale = opacity-weighted mean L* ratio, clamped at the hanging hair's p90, hue kept.
+    # Candidates: the hair byte, and any head Gaussian within shell_m of the head capsule (the white fringe / highlights on the
+    # crown that select_hair did not flag as hair); the chroma limit keeps skin out
+}
+
+
+@dataclass(frozen=True)
+class HairProfile:
+    """The take-dependent part of the hair stage: paths and the fringe rule ("grey" = the recap's red hair, "black");
+    look = the black-hair look fixes (apply_look; None = none, the recap)."""
+    take: str
+    capture: str
+    fringe: str = "grey"
+    out_dir: str | None = None        # override of work/<take>/splat_hair_unity (dry runs)
+    look: dict | None = None
+
+    @property
+    def work(self) -> Path:
+        return PACKAGE_ROOT / "work" / self.take
+
+    @property
+    def src(self) -> Path:
+        return self.work / "lhmpp"
+
+    @property
+    def out(self) -> Path:
+        return Path(self.out_dir) if self.out_dir else self.work / "splat_hair_unity"
+
+    @property
+    def unity_dir(self) -> Path:
+        return WORKSPACE / "head-movement" / "Assets" / "StreamingAssets" / self.capture / "splats"
+
+    @property
+    def groom(self) -> Path:
+        return WORKSPACE / "head-movement" / "Assets" / "StreamingAssets" / self.capture / "hair_groom.json"
+
+
+HAIR_PROFILES = {"larissa_kadu_recap": HairProfile(TAKE, CAPTURE, "grey"),
+                 "carlos_aline": HairProfile("carlos_aline", "07_CarlosAline", "black", look=HAIR_LOOK_BLACK)}
+HAIR_PROFILES["recap"] = HAIR_PROFILES["larissa_kadu_recap"]
+HP: HairProfile = HAIR_PROFILES[TAKE]
+
+
+def use(take: str | None = None, **over) -> HairProfile:
+    """Make a take's hair profile the active one (None = the class recap)."""
+    global HP
+    key = take or TAKE
+    if key not in HAIR_PROFILES:
+        raise SystemExit(f"recap_splat_hair: no take profile {key!r} (known: {', '.join(sorted(HAIR_PROFILES))})")
+    HP = dataclasses.replace(HAIR_PROFILES[key], **over) if over else HAIR_PROFILES[key]
+    return HP
+
+
+def fringe_mask(lab: np.ndarray, free: np.ndarray, hair_colour, rule: str) -> tuple[np.ndarray, dict]:
+    """Free Gaussians that keep their LBS instead of being bound (module doc): the white fringe (L* > BRIGHT_L) plus
+    "grey": CIE a* < GREY_A and L* > GREY_DARK_L (not red: the mic pack, the top's edges; red hair only), or
+    "black": not hair-coloured by select_hair's learned crown model (hair_colour False). -> (mask, counts)."""
+    light = lab[:, 0] > BRIGHT_L
+    if rule == "grey":
+        other = (lab[:, 1] < GREY_A) & (lab[:, 0] > GREY_DARK_L)
+        name = "free_grey_kept_lbs"
+    elif rule == "black":
+        if hair_colour is None:
+            raise ValueError("fringe rule 'black' needs select_hair's hair_colour mask")
+        other = ~np.asarray(hair_colour, bool)
+        name = "free_not_hair_coloured_kept_lbs"
+    else:
+        raise ValueError(f"unknown fringe rule {rule!r} (grey | black)")
+    m = free & (light | other)
+    return m, {"free_light_fringe_kept_lbs": int((free & light).sum()), name: int((free & other & ~light).sum())}
+
+
 RECORD = np.dtype([("mean", "<f4", 3), ("rotation", "<f4", 4), ("log_scale", "<f4", 3), ("opacity", "<f4"),
                    ("sh0", "<f4", 3), ("joints", "<u2", 4), ("weights", "<f4", 4), ("hair", "u1"), ("reserved", "u1", 3),
                    ("strand", "<i4"), ("segment", "<i4"), ("local_offset", "<f4", 3), ("local_rotation", "<f4", 4)])
@@ -261,6 +369,275 @@ def pose_reference(c: np.ndarray, q: np.ndarray, b: dict, rest_bind: np.ndarray,
     return pos, rot
 
 
+# ================================================================================================ black-hair look (fix round 1)
+def needle_shape(q: np.ndarray, log_scale: np.ndarray, tangent: np.ndarray, across: float,
+                 along_max: float) -> tuple[np.ndarray, np.ndarray]:
+    """Strand-shaped bound hair. q (n, 4) xyzw canonical rotations, log_scale (n, 3), tangent (n, 3) rest tangents of the
+    bound segments (same axes) -> new (q, log_scale): local x = the tangent, local y = the old middle axis made orthogonal
+    to it (an arbitrary orthogonal axis when parallel), z = x cross y; sigmas (along, min(mid, across), min(min, across)),
+    along = max(sigma_max, min(sigma_max * sigma_mid / min(mid, across), along_max)): the largest face's projected area is
+    kept (a round clump becomes a streak along its strand, never shorter than it was)."""
+    q = np.asarray(q, float)
+    t = np.asarray(tangent, float)
+    t = t / np.linalg.norm(t, axis=1, keepdims=True)
+    S = np.exp(np.asarray(log_scale, float))
+    n = len(q)
+    ar = np.arange(n)
+    order = np.argsort(S, 1, kind="stable")
+    s_min, s_mid, s_max = S[ar, order[:, 0]], S[ar, order[:, 1]], S[ar, order[:, 2]]
+    mid_axis = q_to_mat(q)[ar, :, order[:, 1]]                       # columns of R = the local axes
+    y = mid_axis - (mid_axis * t).sum(1, keepdims=True) * t
+    parallel = np.linalg.norm(y, axis=1) < 1e-6
+    ref = np.where((np.abs(t[:, 1]) > 0.9)[:, None], np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0]))
+    y = np.where(parallel[:, None], np.cross(t, ref), y)
+    y /= np.linalg.norm(y, axis=1, keepdims=True)
+    z = np.cross(t, y)
+    c_mid, c_min = np.minimum(s_mid, across), np.minimum(s_min, across)
+    along = np.maximum(s_max, np.minimum(s_max * s_mid / c_mid, along_max))
+    return q_from_mat(np.stack([t, y, z], -1)), np.log(np.stack([along, c_mid, c_min], 1))
+
+
+def stack_cap(centres: np.ndarray, opacity: np.ndarray, cap: float, link: float) -> tuple[np.ndarray, dict]:
+    """Groups of near-copies (centres connected within link metres) keep a composite opacity 1 - prod(1 - a) <= cap: each
+    member's ln(1 - a) is scaled by ln(1 - cap) / ln(1 - composite) where the composite is above cap (members keep their
+    ratios; groups under the cap are unchanged). -> (opacity, counts)"""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    from scipy.spatial import cKDTree
+    c = np.asarray(centres, float)
+    a = np.clip(np.asarray(opacity, float), 0.0, 1.0 - 1e-7)
+    n = len(c)
+    pr = cKDTree(c).query_pairs(link, output_type="ndarray") if n > 1 else np.zeros((0, 2), int)
+    k, lab = connected_components(coo_matrix((np.ones(len(pr)), (pr[:, 0], pr[:, 1])), shape=(n, n)), directed=False)
+    nl = np.log1p(-a)
+    tot = np.bincount(lab, weights=nl, minlength=k)
+    over = -np.expm1(tot) > cap
+    s = np.ones(k)
+    s[over] = np.log1p(-cap) / tot[over]
+    return -np.expm1(nl * s[lab]), {"groups": int(k), "groups_capped": int(over.sum()),
+                                    "gaussians_capped": int(over[lab].sum()), "in_groups_ge2": int((np.bincount(lab)[lab] >= 2).sum())}
+
+
+def paint_mask(mean_unity: np.ndarray, J: np.ndarray, normal_z_world: np.ndarray, lab: np.ndarray, unbound: np.ndarray,
+               rigid: np.ndarray, hair_colour: np.ndarray, ytop: float) -> np.ndarray:
+    """Hair PAINT on the torso back: unbound, not the rigid scalp, facing back (body normal z < -0.2 in the dancecap world,
+    where the front is +z), between spine1 (J3) and the neck (J12) + ytop, within 22 cm of the spine sideways, achromatic
+    (C* < 12) and dark (L* < 20) or hair-coloured. Mean / J in Unity coordinates (x, y as the dancecap world)."""
+    m = np.asarray(mean_unity, float)
+    C = np.hypot(lab[:, 1], lab[:, 2])
+    zone = ((np.asarray(normal_z_world) < -0.2) & (m[:, 1] > J[3, 1]) & (m[:, 1] < J[12, 1] + ytop)
+            & (np.abs(m[:, 0] - J[9, 0]) < 0.22))
+    return zone & unbound & ~rigid & (C < 12) & ((lab[:, 0] < 20) | hair_colour)
+
+
+def back_zone(mean_unity: np.ndarray, J: np.ndarray, normal_z_world: np.ndarray, ytop: float) -> np.ndarray:
+    """The torso back of paint_mask: facing back (body normal z < -0.2 in the dancecap world), spine1 (J3) .. neck (J12) +
+    ytop, within 22 cm of the spine sideways."""
+    m = np.asarray(mean_unity, float)
+    return ((np.asarray(normal_z_world) < -0.2) & (m[:, 1] > J[3, 1]) & (m[:, 1] < J[12, 1] + ytop)
+            & (np.abs(m[:, 0] - J[9, 0]) < 0.22))
+
+
+def under_mask(mean_unity: np.ndarray, J: np.ndarray, normal_z_world: np.ndarray, lab: np.ndarray, unbound: np.ndarray,
+               rigid: np.ndarray, hair_byte: np.ndarray, paint: np.ndarray, ytop: float, cfg: dict) -> tuple[np.ndarray, np.ndarray]:
+    """What the faded paint leaves showing on the torso back (back_zone, unbound, not rigid, not paint, within near_paint_m
+    of a paint Gaussian): GREY = not hair-flagged, C* < max_chroma, L* in l_range (LHM++'s guess of the top under the hair);
+    DARK = L* < dark_l and C* < dark_chroma (brown-black streaks beside the shoulder blades, hair-flagged or not).
+    -> (grey, dark) masks."""
+    from scipy.spatial import cKDTree
+    m = np.asarray(mean_unity, float)
+    n = len(m)
+    L, C = lab[:, 0], np.hypot(lab[:, 1], lab[:, 2])
+    if not np.any(paint):
+        return np.zeros(n, bool), np.zeros(n, bool)
+    d, _ = cKDTree(m[paint]).query(m, k=1)
+    base = back_zone(m, J, normal_z_world, ytop) & unbound & ~rigid & ~paint & (d <= cfg["near_paint_m"])
+    grey = base & ~np.asarray(hair_byte, bool) & (C < cfg["max_chroma"]) & (L >= cfg["l_range"][0]) & (L <= cfg["l_range"][1])
+    dark = base & ~grey & (L < cfg["dark_l"]) & (C < cfg["dark_chroma"])
+    return grey, dark
+
+
+def _wmedian(v: np.ndarray, w: np.ndarray) -> float:
+    o = np.argsort(v, kind="stable")
+    cw = np.cumsum(w[o])
+    return float(v[o][min(int(np.searchsorted(cw, 0.5 * cw[-1])), len(v) - 1)])
+
+
+def under_tint(mean: np.ndarray, lab: np.ndarray, opacity: np.ndarray, targets: np.ndarray, red: np.ndarray,
+               cfg: dict) -> tuple[np.ndarray, dict]:
+    """The local colour of the top for each target: the red Gaussians (mask `red`, targets excluded) within the first of
+    cfg radii_m that holds >= min_red of them; L*, a*, b* = their opacity-weighted medians (Lr, ar, br); the target keeps
+    its shading: L' = Lr * clip(L / Lt, l_ratio_clip), Lt = the targets' opacity-weighted median L*; a*, b* scaled by L'/Lr
+    (the red's hue and saturation at that lightness). Targets with fewer red neighbours at the largest radius keep their
+    colour. -> (lab with the targets recoloured, info)"""
+    from scipy.spatial import cKDTree
+    lab = np.asarray(lab, float)
+    out = lab.copy()
+    ti = np.nonzero(np.asarray(targets, bool))[0]
+    ri = np.nonzero(np.asarray(red, bool) & ~np.asarray(targets, bool))[0]
+    info = {"targets": int(len(ti)), "red_reference": int(len(ri)), "tinted": 0, "kept_no_red": 0,
+            "radius_used_m": {str(r): 0 for r in cfg["radii_m"]}}
+    if not len(ti) or not len(ri):
+        info["kept_no_red"] = int(len(ti))
+        return out, info
+    m = np.asarray(mean, float)
+    op = np.asarray(opacity, float)
+    tree = cKDTree(m[ri])
+    Lt = _wmedian(lab[ti, 0], np.maximum(op[ti], 1e-6))
+    lo, hi = cfg["l_ratio_clip"]
+    for i in ti:
+        nb = []
+        for r in cfg["radii_m"]:
+            nb = tree.query_ball_point(m[i], r)
+            if len(nb) >= cfg["min_red"]:
+                info["radius_used_m"][str(r)] += 1
+                break
+        if len(nb) < cfg["min_red"]:
+            info["kept_no_red"] += 1
+            continue
+        ii = ri[np.asarray(nb, int)]
+        w = np.maximum(op[ii], 1e-6)
+        Lr, ar, br = (_wmedian(lab[ii, c], w) for c in range(3))
+        Ln = Lr * float(np.clip(lab[i, 0] / max(Lt, 1e-6), lo, hi))
+        f = Ln / max(Lr, 1e-6)
+        out[i] = (Ln, ar * f, br * f)
+        info["tinted"] += 1
+    t = out[ti]
+    info["L_target_wmedian_before"] = round(Lt, 2)
+    info["lab_median_before"] = [round(float(v), 2) for v in np.median(lab[ti], 0)]
+    info["lab_median_after"] = [round(float(v), 2) for v in np.median(t, 0)]
+    info["chroma_median_after"] = round(float(np.median(np.hypot(t[:, 1], t[:, 2]))), 2)
+    return out, info
+
+
+def crown_tone(lab: np.ndarray, opacity: np.ndarray, el: np.ndarray, az: np.ndarray, hairline: np.ndarray,
+               candidates: np.ndarray, bound: np.ndarray, cfg: dict) -> tuple[np.ndarray, np.ndarray, dict]:
+    """The crown's luminance toward the hanging (bound) hair's. candidates = unbound scalp hair (hair byte, head joints);
+    the crown = candidates with elevation > el_from, outside the face box (|az| < face_az and el < hairline +
+    face_above_hairline) and chroma < max_chroma; weight w = smoothstep(el_from .. el_full). L' = min(L * s, p90 of the
+    bound hair's L*), s = opacity-weighted mean L* of the bound hair / of the full-weight crown; L = (1 - w) L + w min(L, L');
+    a*, b* scaled with L (hue kept). -> (lab, w, info)"""
+    lab = np.asarray(lab, float)
+    L, C = lab[:, 0], np.hypot(lab[:, 1], lab[:, 2])
+    face = (np.abs(az) < cfg["face_az"]) & (el < hairline + cfg["face_above_hairline"])
+    crown = candidates & (el > cfg["el_from"]) & ~face & (C < cfg["max_chroma"])
+    x = np.clip((el - cfg["el_from"]) / (cfg["el_full"] - cfg["el_from"]), 0.0, 1.0)
+    w = np.where(crown, x * x * (3 - 2 * x), 0.0)
+    full = crown & (w >= 1.0)
+    ob = opacity[bound]
+    lb_mean = float((L[bound] * ob).sum() / max(ob.sum(), 1e-9))
+    lb_p90 = float(np.percentile(L[bound], 90)) if bound.any() else float("nan")
+    of = opacity[full]
+    lc_mean = float((L[full] * of).sum() / max(of.sum(), 1e-9)) if full.any() else float("nan")
+    s = lb_mean / lc_mean if full.any() and lc_mean > 0 else 1.0
+    Ln = np.where(crown, (1 - w) * L + w * np.minimum(L, np.minimum(L * s, lb_p90)), L)
+    f = np.where(L > 1e-6, Ln / np.maximum(L, 1e-6), 1.0)
+    out = lab.copy()
+    out[:, 0] = Ln
+    out[:, 1:] *= f[:, None]
+    oc = opacity[crown]
+    info = {"crown": int(crown.sum()), "full_weight": int(full.sum()), "scale": round(s, 4),
+            "bound_L_wmean": round(lb_mean, 2), "bound_L_p90": round(lb_p90, 2), "crown_L_wmean_full": round(lc_mean, 2),
+            "crown_L_wmean_before": round(float((L[crown] * oc).sum() / max(oc.sum(), 1e-9)), 2) if crown.any() else None,
+            "crown_L_wmean_after": round(float((Ln[crown] * oc).sum() / max(oc.sum(), 1e-9)), 2) if crown.any() else None}
+    return out, w, info
+
+
+def lab_to_sh0(lab: np.ndarray) -> np.ndarray:
+    """CIE Lab (cv2 float convention, L* 0..100) -> the record's sh0 (DC term: rgb = 0.5 + C0 sh0, sRGB 0..1)."""
+    import cv2
+    if len(lab) == 0:
+        return np.zeros((0, 3))
+    rgb = cv2.cvtColor(np.asarray(lab, np.float32)[None], cv2.COLOR_LAB2RGB)[0].astype(np.float64)
+    return (np.clip(rgb, 0.0, 1.0) - 0.5) / SH.SH_C0
+
+
+def _sigmoid(x):
+    return 1.0 / (1.0 + np.exp(-np.asarray(x, np.float64)))
+
+
+def _logit(p):
+    p = np.clip(np.asarray(p, np.float64), 1e-7, 1 - 1e-7)
+    return np.log(p / (1 - p))
+
+
+def apply_look(out: np.ndarray, idx: np.ndarray, b: dict, rest: np.ndarray, J: np.ndarray, lab: np.ndarray,
+               rigid: np.ndarray, sel: dict, look: dict) -> tuple[np.ndarray, dict]:
+    """The black-hair look fixes (HAIR_LOOK_BLACK) on the bound records `out` (in place; the binding itself - strand,
+    segment, local offset - is unchanged, so every posed centre is the same as without them):
+    1. needle_shape on the bound hair (rotation, log scale; local_rotation re-expressed in its segment frame);
+    2. stack_cap on the bound hair's opacity;
+    3. paint_mask (torso-back hair paint) opacity x paint_fade;
+    3b. under_tint (fix round 2): the grey / dark layer the faded paint exposes, and the paint itself, take the top's local
+        red (sh0; opacity unchanged);
+    4. crown_tone on the unbound scalp hair (sh0).
+    Only the changed records are written. -> (canonical rotations of the bound Gaussians, info)"""
+    from .. import hair_groom as HG
+    info: dict = {"params": look}
+    op0 = _sigmoid(out["opacity"])
+    S0 = np.exp(out["log_scale"].astype(np.float64))
+    big0 = (S0.max(1) > 0.008) & (op0 > 0.5)
+    s_, k_ = b["strand"], b["segment"]
+    F = segment_frames(rest)[s_, k_]
+    q0 = out["rotation"][idx].astype(np.float64)
+    q0 /= np.linalg.norm(q0, axis=1, keepdims=True)
+    q2, ls2 = needle_shape(q0, out["log_scale"][idx], rest[s_, k_ + 1] - rest[s_, k_], look["needle_across_m"],
+                           look["needle_along_max_m"])
+    out["rotation"][idx] = q2.astype(np.float32)
+    out["log_scale"][idx] = ls2.astype(np.float32)
+    out["local_rotation"][idx] = q_mul(q_conj(q_from_mat(F)), q2).astype(np.float32)
+    S2 = np.exp(ls2)
+    info["needle"] = {"bound": int(len(idx))}
+    if len(idx):
+        info["needle"].update({"along_mm_p50_p90": [round(float(v) * 1000, 1) for v in np.percentile(S2[:, 0], [50, 90])],
+                               "across_mm_p50": round(float(np.median(S2[:, 1])) * 1000, 2),
+                               "sigma_max_mm_p50_before": round(float(np.median(S0[idx].max(1))) * 1000, 1)})
+    op2, ci = stack_cap(out["mean"][idx], op0[idx], look["stack_cap"], look["stack_link_m"])
+    ch = ~np.isclose(op2, op0[idx], rtol=0, atol=1e-9)
+    out["opacity"][idx[ch]] = _logit(op2[ch]).astype(np.float32)
+    info["stack_cap"] = {**ci, "cap": look["stack_cap"], "link_m": look["stack_link_m"]}
+    unbound = out["strand"] < 0
+    f = sel["features"]
+    pm = paint_mask(out["mean"], J, f["normal"][:, 2], lab, unbound, rigid, sel["hair_colour"], look["paint_ytop_m"])
+    out["opacity"][pm] = _logit(op0[pm] * look["paint_fade"]).astype(np.float32)
+    info["paint_fade"] = {"n": int(pm.sum()), "opacity_gt_0.3_before": int((pm & (op0 > 0.3)).sum()), "factor": look["paint_fade"],
+                          "body_sd_mm_p50": round(float(np.median(f["sd"][pm])) * 1000, 1) if pm.any() else None}
+    shell = f["dh"] <= look["crown"].get("shell_m", 0.0)
+    cand = ((out["hair"] == 1) | shell) & unbound & np.isin(f["dom"], SH.HEAD_JOINTS)
+    lab2, w, cinfo = crown_tone(lab, op0, f["el"], f["az"], HG.hairline_el(f["az"]), cand, ~unbound, look["crown"])
+    cm = w > 0
+    out["sh0"][cm] = lab_to_sh0(lab2[cm]).astype(np.float32)
+    cinfo["not_hair_flagged"] = int((cm & (out["hair"] == 0)).sum())
+    info["crown"] = cinfo
+    ut = look.get("under_tint")
+    if ut:
+        grey, dark = under_mask(out["mean"], J, f["normal"][:, 2], lab, unbound, rigid, out["hair"] == 1, pm,
+                                look["paint_ytop_m"], ut)
+        grey &= ~cm
+        dark &= ~cm
+        C, hue = np.hypot(lab[:, 1], lab[:, 2]), np.degrees(np.arctan2(lab[:, 2], lab[:, 1]))
+        red = (unbound & ~rigid & (out["hair"] == 0) & (C >= ut["red_chroma"]) & (hue >= ut["red_hue_deg"][0])
+               & (hue <= ut["red_hue_deg"][1]) & ~pm & ~grey & ~dark & ~cm)
+        groups = [("grey", grey), ("dark", dark)] + ([("paint", pm & ~cm)] if ut.get("tint_paint") else [])
+        tinfo = {"red_reference_rule": f"unbound, not hair-flagged, C* >= {ut['red_chroma']}, hue {ut['red_hue_deg']} deg"}
+        for name, mk in groups:
+            lab3, ti = under_tint(out["mean"], lab, op0, mk, red, ut)
+            done = mk & np.any(lab3 != lab, axis=1)
+            if done.any():
+                out["sh0"][done] = lab_to_sh0(lab3[done]).astype(np.float32)
+            ti["opacity_median"] = round(float(np.median(op0[mk])), 3) if mk.any() else None
+            tinfo[name] = ti
+        info["under_tint"] = tinfo
+    op3 = _sigmoid(out["opacity"])
+    S3 = np.exp(out["log_scale"].astype(np.float64))
+    bm = np.zeros(len(out), bool)
+    bm[idx] = True
+    info["large_opaque_bound"] = {"before": int((big0 & bm).sum()),
+                                  "after": int(((S3.max(1) > 0.008) & (op3 > 0.5) & bm).sum()),
+                                  "rule": "sigma_max > 8 mm and opacity > 0.5"}
+    return q2, info
+
+
 # ================================================================================================ stage
 def select(src_splatav: Path, header_json: dict) -> dict:
     g = SH.load_gaussians(src_splatav)
@@ -269,13 +646,15 @@ def select(src_splatav: Path, header_json: dict) -> dict:
     return {"g": g, "rest": rest, "sel": sel}
 
 
-def run_bind(dump_path: Path, install: bool = False, src: Path = SRC / "follow.splatav") -> dict:
+def run_bind(dump_path: Path, install: bool = False, src: Path | None = None) -> dict:
     t0 = time.time()
+    OUT, UNITY_DIR, GROOM, WORK = HP.out, HP.unity_dir, HP.groom, HP.work
+    src = Path(src) if src else HP.src / "follow.splatav"
     OUT.mkdir(parents=True, exist_ok=True)
     hjson = json.loads(src.with_suffix(".json").read_text())
     assert hjson.get("role") == "follow", hjson.get("role")
     head, rec, tail = read_splatav(src)
-    assert (rec["strand"] < 0).all(), "the source is already bound: bind from the recap-avatars export (lhmpp/)"
+    assert (rec["strand"] < 0).all(), "the source is already bound: bind from the recap_splatav export (lhmpp/)"
     dump = load_dump(dump_path)
     rest = dump["rest"]
     J = np.asarray(hjson["rest_joints"], float)
@@ -283,9 +662,7 @@ def run_bind(dump_path: Path, install: bool = False, src: Path = SRC / "follow.s
     sel = s["sel"]
     free, rigid = sel["free"], sel["rigid"]
     lab = SH._lab(s["g"]["rgb"])
-    light = lab[:, 0] > BRIGHT_L
-    grey = (lab[:, 1] < GREY_A) & (lab[:, 0] > GREY_DARK_L)
-    fringe = free & (light | grey)
+    fringe, fcount = fringe_mask(lab, free, sel.get("hair_colour"), HP.fringe)
     # reuse check: the other hair workflow's saved selection of the same file, if present, must agree
     prev = WORK / "splat_hair" / "follow_hair.npz"
     reuse = None
@@ -309,6 +686,9 @@ def run_bind(dump_path: Path, install: bool = False, src: Path = SRC / "follow.s
     out["segment"][idx] = b["segment"]
     out["local_offset"][idx] = b["local_offset"].astype(np.float32)
     out["local_rotation"][idx] = b["local_rotation"].astype(np.float32)
+    look_info = None
+    if HP.look:      # the black-hair look fixes (apply_look): rotations / scales / opacities / crown colour; binding unchanged
+        q, look_info = apply_look(out, idx, b, rest, J, lab, rigid, sel, HP.look)
     # round trip in float32 (what Unity reads): canonical centre / rotation back from the binding
     F = segment_frames(rest)[b["strand"], b["segment"]]
     c_back = rest[b["strand"], b["segment"]] + np.einsum("nij,nj->ni", F, out["local_offset"][idx].astype(np.float64))
@@ -329,13 +709,16 @@ def run_bind(dump_path: Path, install: bool = False, src: Path = SRC / "follow.s
         "select_info": sel["info"],
         "reuse_check": reuse,
         "hair_count": int(out["hair"].sum()), "bound": int(len(idx)), "rigid_scalp": int(rigid.sum()),
-        "free_selected": int(free.sum()), "free_light_fringe_kept_lbs": int((free & light).sum()),
-        "free_grey_kept_lbs": int((free & grey & ~light).sum()), "bright_l": BRIGHT_L, "grey_a": GREY_A, "grey_dark_l": GREY_DARK_L,
+        "free_selected": int(free.sum()), **fcount,
+        "bright_l": BRIGHT_L, **({"grey_a": GREY_A, "grey_dark_l": GREY_DARK_L} if HP.fringe == "grey" else
+                                 {"fringe_rule": HP.fringe,
+                                  "hair_colour_model": "splat_hair.select_hair hair_colour (crown vs face + torso front, "
+                                                       "Mahalanobis in Lab)"}),
         "exporter_flag": int(exporter_hair.sum()), "exporter_only": int((exporter_hair & ~free & ~rigid).sum()),
         "binding": "unity_hair_strands",
         "binding_info": {
             "tool": "dancecap.mono4d.recap_splat_hair bind",
-            "source": "head-movement HairStrands rest guides (unity command hm_hair --action dump, Play mode, 06_LarissaKaduRecap)",
+            "source": f"head-movement HairStrands rest guides (unity command hm_hair --action dump, Play mode, {HP.capture})",
             "dump": _ws(dump_path), "groom": _ws(GROOM), "groom_sha256": groom_sha,
             "guides": int(rest.shape[0]), "points": int(rest.shape[1]), "rest_sha256": rest_sha(rest),
             "rest_space": "head-bone space: Unity coordinates relative to the head joint (15), T-pose axes; the Gaussian "
@@ -358,6 +741,8 @@ def run_bind(dump_path: Path, install: bool = False, src: Path = SRC / "follow.s
             "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
         },
     }
+    if look_info:
+        info["look"] = look_info
     js = dict(hjson)
     js["hair"] = info
     js["hair_count"] = int(out["hair"].sum())
@@ -393,12 +778,13 @@ def _palette(n: int) -> np.ndarray:
     return rng.uniform(0.15, 1.0, (n, 3))
 
 
-def sheet(dumps: list[Path] | None = None) -> list[Path]:
+def sheet(dumps: list[Path] | None = None, device: str = "cpu") -> list[Path]:
     """binding_sheet.jpg: canonical hair, (1) as is, (2) bound Gaussians coloured by guide, (3) + the guides, 5 azimuths;
     posed_<t>.jpg per Unity dump: head + hair (rigid scalp + bound hair posed by pose_reference with the simulated
     guides of that frame, the head held fixed: the swing relative to the head), rigid (LHM++ LBS stand-in: head-rigid)
     vs swinging, 4 azimuths around the head."""
     import cv2
+    OUT = HP.out
     hjson = json.loads((OUT / "follow.json").read_text())
     _, rec, _ = read_splatav(OUT / "follow.splatav")
     z = np.load(OUT / "binding.npz")
@@ -422,7 +808,7 @@ def sheet(dumps: list[Path] | None = None) -> list[Path]:
             R, t = SH.look_at(C, ctr)
             m = np.ones(len(rec), bool)
             im = SH.render_check(g["xyz"][m], g["quat"][m], g["scale"][m], g["opacity"][m],
-                                 (g["rgb"] if mode == "plain" else tint)[m], R, t, K, W, H)
+                                 (g["rgb"] if mode == "plain" else tint)[m], R, t, K, W, H, device=device)
             im = np.ascontiguousarray(im)
             if mode == "guides":
                 SH.draw_strands(im, guides_w, R, t, K, colour=(20, 20, 20), thick=1)
@@ -460,7 +846,8 @@ def sheet(dumps: list[Path] | None = None) -> list[Path]:
                 for az in (0, 90, 180, 270):
                     C = ctr + 1.9 * np.array([math.sin(math.radians(az)), 0.12, math.cos(math.radians(az))])
                     R, t = SH.look_at(C, ctr)
-                    im = np.ascontiguousarray(SH.render_check(X[m], Q[m], g["scale"][m], g["opacity"][m], g["rgb"][m], R, t, K, W, H))
+                    im = np.ascontiguousarray(SH.render_check(X[m], Q[m], g["scale"][m], g["opacity"][m], g["rgb"][m], R, t, K, W, H,
+                                                              device=device))
                     if label.endswith("guides"):
                         SH.draw_strands(im, sim_w, R, t, K, colour=(20, 120, 255), thick=1)
                     cv2.putText(im, f"{label} az{az}", (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1, cv2.LINE_AA)
@@ -474,7 +861,8 @@ def sheet(dumps: list[Path] | None = None) -> list[Path]:
     return out
 
 
-def verify(path: Path = UNITY_DIR / "follow.splatav") -> dict:
+def verify(path: Path | None = None) -> dict:
+    path = Path(path) if path else HP.unity_dir / "follow.splatav"
     js = json.loads(path.with_suffix(".json").read_text())
     _, rec, _ = read_splatav(path)
     ok_sha = _sha256(path) == js["data_sha256"]
@@ -492,23 +880,146 @@ def verify(path: Path = UNITY_DIR / "follow.splatav") -> dict:
     return res
 
 
+def _disc_view(xyz, rgb, scale, opac, R, t, K, W, H) -> np.ndarray:
+    """Quick CPU LOOK render: every Gaussian with opacity >= 0.3 as an opaque disc of 1.5 sigma, far to near (not the
+    splat look; recap_splatav.splat_view's rule with per-Gaussian colours)."""
+    import cv2
+    Xc = xyz @ R.T + t
+    z = Xc[:, 2]
+    keep = (z > 0.05) & (opac >= 0.3)
+    uv = Xc[:, :2] / np.maximum(z, 1e-6)[:, None] * np.array([K[0, 0], K[1, 1]]) + K[:2, 2]
+    rad = np.maximum(1, np.round(1.5 * scale.max(1) * K[0, 0] / np.maximum(z, 1e-3))).astype(int)
+    img = np.full((H, W, 3), 255, np.uint8)
+    col = (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
+    for k in np.nonzero(keep)[0][np.argsort(-z[keep])]:
+        c = col[k]
+        cv2.circle(img, (int(uv[k, 0]), int(uv[k, 1])), int(min(rad[k], 12)), (int(c[2]), int(c[1]), int(c[0])), -1)
+    return img
+
+
+def selection_sheet(g: dict, J: np.ndarray, bound: np.ndarray, fringe: np.ndarray, rigid: np.ndarray, path: Path) -> Path:
+    """LOOK at a hair selection (canonical pose, head and upper body only): rows = as is / bound to the strands GREEN, kept
+    on LBS (fringe rule) RED, rigid scalp BLUE / the bound Gaussians alone; columns = 4 azimuths around the head."""
+    import cv2
+    x = g["xyz"]
+    head = J[HEAD] * np.array([1.0, 1.0, -1.0])
+    near = np.linalg.norm(x - head, axis=1) < 0.75
+    ctr = head + np.array([0.0, -0.22, 0.0])
+    W, H = 360, 480
+    K = np.array([[900.0, 0, W / 2], [0, 900.0, H / 2], [0, 0, 1]])
+    tint = g["rgb"].copy()
+    for m, c in ((bound, (0.1, 0.85, 0.1)), (fringe, (0.95, 0.1, 0.1)), (rigid, (0.1, 0.3, 0.95))):
+        tint[m] = 0.3 * tint[m] + 0.7 * np.array(c)
+    rows = []
+    for mode in ("plain", "tint", "bound"):
+        m = near & (bound if mode == "bound" else np.ones(len(x), bool))
+        cols = []
+        for az in (0, 90, 180, 270):
+            C = ctr + 1.6 * np.array([math.sin(math.radians(az)), 0.1, math.cos(math.radians(az))])
+            R, t = SH.look_at(C, ctr)
+            im = _disc_view(x[m], (tint if mode == "tint" else g["rgb"])[m], g["scale"][m], g["opacity"][m], R, t, K, W, H)
+            cv2.putText(im, f"{mode} az{az}", (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 2, cv2.LINE_AA)
+            cols.append(im)
+        rows.append(np.concatenate(cols, 1))
+    path = Path(path)
+    cv2.imwrite(str(path), np.concatenate(rows, 0), [cv2.IMWRITE_JPEG_QUALITY, 88])     # _disc_view draws BGR
+    return path
+
+
+def select_report(src: Path | None = None) -> dict:
+    """Before any Unity dump: the hair selection of the export (rigid scalp / free / fringe kept LBS by the profile's
+    rule) with counts -> <out>/select_report.json, and a quick LOOK sheet select_sheet.jpg (selection_sheet)."""
+    src = Path(src) if src else HP.src / "follow.splatav"
+    hjson = json.loads(src.with_suffix(".json").read_text())
+    s = select(src, hjson)
+    sel = s["sel"]
+    lab = SH._lab(s["g"]["rgb"])
+    fringe, fcount = fringe_mask(lab, sel["free"], sel.get("hair_colour"), HP.fringe)
+    HP.out.mkdir(parents=True, exist_ok=True)
+    bound = sel["free"] & ~fringe
+    rep = {"take": HP.take, "source": _ws(src), "fringe_rule": HP.fringe, "rigid_scalp": int(sel["rigid"].sum()),
+           "free_selected": int(sel["free"].sum()), **fcount, "would_bind": int(bound.sum()),
+           "hair_byte": int((sel["free"] | sel["rigid"]).sum()),
+           "bound_lab_mean": [round(float(v), 2) for v in lab[bound].mean(0)] if bound.any() else None,
+           "fringe_lab_mean": [round(float(v), 2) for v in lab[fringe].mean(0)] if fringe.any() else None,
+           "select_info": sel["info"]}
+    (HP.out / "select_report.json").write_text(json.dumps(rep, indent=1, default=float))
+    try:
+        p = selection_sheet(s["g"], np.asarray(hjson["rest_joints"], float), bound, fringe, sel["rigid"],
+                            HP.out / "select_sheet.jpg")
+        rep["sheet"] = _ws(p)
+    except Exception as e:  # noqa: BLE001 - a sheet is a LOOK aid; the counts stand without it
+        rep["sheet_error"] = f"{type(e).__name__}: {e}"
+    (HP.out / "select_report.json").write_text(json.dumps(rep, indent=1, default=float))
+    log(f"select: rigid {rep['rigid_scalp']}, free {rep['free_selected']}, would bind {rep['would_bind']}, {fcount}")
+    return rep
+
+
+QUEST_WORK = {"carlos_aline": "work/quest_distill_ca_hair"}     # the follow's Quest re-distill run folder after the bind
+QUEST_LESSON = {"carlos_aline": "carlos_aline", "larissa_kadu_recap": "recap"}
+
+
+def finish(dump: Path, quest_max_cost: float = 1.0, device: str = "cpu") -> dict:
+    """After the Unity stage's `unity command hm_hair --action dump` (Play mode, the take's capture loaded): the whole hair
+    stage in one call. The dump is copied to <out>/unity_hair_dump_frame0.json (kept with the binding), then bind +
+    install into StreamingAssets/<capture>/splats/follow.*, verify (records, sha, binding round trip) and the binding
+    sheet (LOOK). Returns / writes <out>/finish.json with the follow's Quest re-distill commands (the distilled sets copy
+    the strand binding from the bound full avatar: they must be made again from the bound file)."""
+    dump = Path(dump)
+    HP.out.mkdir(parents=True, exist_ok=True)
+    keep = HP.out / "unity_hair_dump_frame0.json"
+    if dump.resolve() != keep.resolve():
+        shutil.copyfile(dump, keep)
+    rep = run_bind(keep, install=True)
+    ver = verify()
+    sheets = [_ws(p) for p in sheet(sorted(HP.out.glob("unity_hair_dump_t*.json")), device=device)]
+    lesson = QUEST_LESSON.get(HP.take, HP.take)
+    qw = QUEST_WORK.get(HP.take, f"work/quest_distill_{HP.take}_hair")
+    nxt = [f"python -m dancecap.mono4d.quest_distill prepare --lessons {lesson} --roles follow --work {qw}",
+           f"python -m dancecap remote run --jobs {qw}/pod_job.json --max-cost {quest_max_cost}",
+           f"python -m dancecap.mono4d.quest_distill import --work {qw}"]
+    out = {"take": HP.take, "dump": _ws(dump), "kept_dump": _ws(keep), "bind": {k: rep[k] for k in ("bound", "out", "installed")
+                                                                                 if k in rep},
+           "binding_info": rep.get("binding_info"), "verify": ver, "sheets": sheets,
+           "ok": bool(ver["sha256_ok"] and ver["bound"] > 0 and ver["in_range"] and ver["unbound_zero"]),
+           "next_quest_redistill": nxt}
+    (HP.out / "finish.json").write_text(json.dumps(out, indent=1, default=str))
+    log(f"finish: ok {out['ok']}, bound {ver['bound']}; next (from dancecap/):\n  " + "\n  ".join(nxt))
+    return out
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="python -m dancecap.mono4d.recap_splat_hair")
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--take", default=None, help="hair profile (default: the class recap)")
+    common.add_argument("--out-dir", default=None, help="write work/<take>/splat_hair_unity outputs here instead (dry runs)")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    a = sub.add_parser("bind")
-    a.add_argument("--dump", default=str(OUT / "unity_hair_dump_frame0.json"))
+    a = sub.add_parser("bind", parents=[common])
+    a.add_argument("--dump", default=None, help="default <out>/unity_hair_dump_frame0.json")
     a.add_argument("--install", action="store_true")
-    a = sub.add_parser("sheet")
+    a = sub.add_parser("sheet", parents=[common])
     a.add_argument("--dumps", nargs="*", default=None)
-    sub.add_parser("verify")
+    a.add_argument("--device", default="cpu", help="torch device of the LOOK renders (cuda: seconds instead of minutes)")
+    sub.add_parser("verify", parents=[common])
+    sub.add_parser("select", parents=[common])
+    a = sub.add_parser("finish", parents=[common])
+    a.add_argument("--dump", required=True, help="the hm_hair --action dump file (its returned path)")
+    a.add_argument("--quest-max-cost", type=float, default=1.0,
+                   help="the printed re-distill session cap (the worst case of a 68-min A40 session is about $0.67)")
+    a.add_argument("--device", default="cpu", help="torch device of the binding sheet renders (cuda: seconds instead of minutes)")
     args = ap.parse_args(argv)
+    use(args.take, **({"out_dir": args.out_dir} if args.out_dir else {}))
     if args.cmd == "bind":
-        run_bind(Path(args.dump), install=args.install)
+        run_bind(Path(args.dump) if args.dump else HP.out / "unity_hair_dump_frame0.json", install=args.install)
     elif args.cmd == "sheet":
-        d = args.dumps if args.dumps is not None else sorted(str(p) for p in OUT.glob("unity_hair_dump_t*.json"))
-        sheet([Path(p) for p in d])
+        d = args.dumps if args.dumps is not None else sorted(str(p) for p in HP.out.glob("unity_hair_dump_t*.json"))
+        sheet([Path(p) for p in d], device=args.device)
     elif args.cmd == "verify":
         verify()
+    elif args.cmd == "select":
+        select_report()
+    elif args.cmd == "finish":
+        finish(Path(args.dump), args.quest_max_cost, args.device)
     return 0
 
 

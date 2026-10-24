@@ -133,6 +133,10 @@ smplx_dir = "smplx_rf2_noslip"
 # C6 2026-10-10: the viewer floor is turned to the room's wall: work/carlos_aline/room/room_model.json room_frame.yaw_deg 1.0 +- 2.0 (wall direction (cos 1, 0, sin 1)
 # in the world frame, i.e. 1 degree clockwise seen from above; world X is camera 02's mean right vector, so the room is nearly axis-aligned). The demo's 30 is its own room.
 floor_yaw_deg = -1.0
+# Owner 2026-10-23 ("let's also get gauss splats and make them default for Carlos Aline"): the LHM++ splat dancers
+# (StreamingAssets/07_CarlosAline/splats/, mono4d.recap_splatav --take carlos_aline) are shown by default in the desktop viewer
+# (capture.json splat_dancers -> CaptureManifest.splat_dancers; hm_splatdancers on | off still wins). export_unity.resolve_splat_dancers.
+splat_dancers = "on"
 
 # Rest-shape edits (dancecap.shape_edits, applied by every export; validated by `python -m dancecap.ca_avatars body-shape` / `head-review`, AVATAR_PLAN.md
 # in work/carlos_aline/; agent C5, 2026-10-10). The identity files are FLAME identities fitted (SMIRK + landmark refinement on a Runpod CPU pod) to each

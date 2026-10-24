@@ -22,7 +22,10 @@ Files written (all little-endian):
                           kinematics spline) in reference seconds
   physics.json            copy of physics/physics.json (world frame; Unity converts (x,y,z) -> (x,y,-z))
   (capture.json also carries, from the take TOML: floor_yaw_deg [export], role_hidden [export], props [dancers.<role>.props.<kind>]: head-worn
-   props such as the teacher's headset microphone, built by the viewer on the head mesh - resolve_props)
+   props such as the teacher's headset microphone, built by the viewer on the head mesh - resolve_props; splat_dancers [export]:
+   "on" = the viewer shows the capture's splat dancers by default - resolve_splat_dancers)
+  The install into StreamingAssets/<Capture>/ replaces the folder but KEEPS an existing splats/ (KEEP_ON_INSTALL: the splat dancers
+  are written by mono4d.recap_splatav / recap_splat_hair / quest_distill, not by this exporter, so a re-export must not delete them).
 
   <role>_albedo.png       photoreal albedo (copy of work/<take>/avatar/<role>_albedo.png, SMPL-X UV layout) when the
                           texture stage ran; the skin is split at the UV seams so it can carry it (skin version 2)
@@ -657,6 +660,78 @@ def resolve_floor_yaw(take: str, toml: Path | None = None) -> float | None:
     return float(v)
 
 
+SPLAT_DANCERS_VALUES = ("on", "off")
+
+
+def resolve_splat_dancers(take: str, toml: Path | None = None) -> str | None:
+    """takes/<take>.toml [export] splat_dancers = "on" | "off" (or true / false): the viewer's default for the capture's
+    Gaussian-splat dancers (written to capture.json splat_dancers -> CaptureManifest.splat_dancers -> SplatDancers). "on" = the
+    desktop viewer (Editor; Windows player outside VR) shows the capture's splat dancers by default when it has splats/ and the
+    device can draw them (D3D12 / Vulkan / Metal + compute), unless the toggle was set by hand (hm_splatdancers on | off);
+    "off" = the viewer default (off on the desktop). None = the key is absent (no capture.json key: the viewer default).
+    Owner 2026-10-23: "let's also get gauss splats and make them default for Carlos Aline" (takes/carlos_aline.toml)."""
+    toml = Path(toml) if toml else PACKAGE_ROOT / "takes" / f"{take}.toml"
+    if not toml.exists():
+        return None
+    import tomllib
+    v = (tomllib.loads(toml.read_text(encoding="utf-8")).get("export") or {}).get("splat_dancers")
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return "on" if v else "off"
+    if not isinstance(v, str) or v.strip().lower() not in SPLAT_DANCERS_VALUES:
+        raise ValueError(f'{toml.name} [export] splat_dancers must be "on" or "off" (or true / false), got {v!r}')
+    return v.strip().lower()
+
+
+KEEP_ON_INSTALL = ("splats",)   # capture sub-folders other stages write into StreamingAssets/<capture>/ (kept by a re-install)
+
+
+def manifest_extras(take: str, toml: Path | None = None) -> dict:
+    """The capture.json keys export() takes from takes/<take>.toml, in this order, each only when the TOML sets it:
+    floor_yaw_deg (resolve_floor_yaw: the floor visuals' yaw, CCW seen from above), role_hidden (resolve_role_hidden: capture-
+    clock spans a role is hidden in), props (resolve_props: head-worn props per role, built by the viewer on the head mesh),
+    splat_dancers (resolve_splat_dancers: "on" = the viewer shows the capture's splat dancers by default)."""
+    out: dict = {}
+    floor_yaw = resolve_floor_yaw(take, toml)
+    if floor_yaw is not None:
+        out["floor_yaw_deg"] = floor_yaw
+    role_hidden = resolve_role_hidden(take, toml)
+    if role_hidden:
+        out["role_hidden"] = role_hidden
+    props = resolve_props(take, toml)
+    if props:
+        out["props"] = props
+    splat_dancers = resolve_splat_dancers(take, toml)
+    if splat_dancers is not None:
+        out["splat_dancers"] = splat_dancers
+    return out
+
+
+def install_capture(src: Path, dst: Path, keep: tuple = KEEP_ON_INSTALL) -> list[str]:
+    """Mirror an export folder into StreamingAssets/<capture>/: everything there is replaced EXCEPT the entries named in `keep`
+    (and their Unity .meta files), which stay as they are (the splat dancers: a re-export must not delete them; an export
+    folder never contains them). -> the kept names."""
+    src, dst = Path(src), Path(dst)
+    keep_names = set(keep) | {f"{k}.meta" for k in keep}
+    present = sorted(c.name for c in dst.iterdir() if c.name in keep_names) if dst.exists() else []
+    clash = sorted(c.name for c in src.iterdir() if c.name in keep_names) if src.exists() else []
+    if clash and present:     # checked BEFORE anything is deleted: a refused install leaves dst as it was
+        raise ValueError(f"export {src} carries {clash}, which the install keeps from {dst}: refusing to merge them")
+    kept: list[str] = []
+    if dst.exists():
+        for child in sorted(dst.iterdir()):
+            if child.name in keep_names:
+                kept.append(child.name)
+                continue
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+    shutil.copytree(src, dst, dirs_exist_ok=True)
+    return kept
+
+
 def resolve_role_hidden(take: str, toml: Path | None = None) -> dict | None:
     """takes/<take>.toml [export] role_hidden = { lead = [ { from = 0.0, to = 4.0, fade_in = 1.0 } ] }: spans, in CAPTURE seconds
     (seconds from the capture's first frame = the viewer HUD's clock; NOT the reference clock, which is negative before the music's
@@ -914,15 +989,7 @@ def export(take: str, capture: str | None = None, model: Path | None = None, aud
     if absent_rep:
         manifest["absent"] = absent_rep
         report["absent"] = absent_rep
-    floor_yaw = resolve_floor_yaw(take)
-    if floor_yaw is not None:
-        manifest["floor_yaw_deg"] = floor_yaw   # the floor visuals' yaw, CCW seen from above (the room in the videos)
-    role_hidden = resolve_role_hidden(take)
-    if role_hidden:
-        manifest["role_hidden"] = role_hidden   # capture-clock spans a role is hidden in, with a fade-in after each (see resolve_role_hidden)
-    props = resolve_props(take)
-    if props:
-        manifest["props"] = props   # head-worn props per role (the headset): built by the viewer on the head mesh (see resolve_props)
+    manifest.update(manifest_extras(take))   # floor_yaw_deg, role_hidden, props, splat_dancers from the take TOML
     edit_cfg = {}
     if shape_edits:
         from . import shape_edits as se
@@ -1014,8 +1081,9 @@ def export(take: str, capture: str | None = None, model: Path | None = None, aud
 
     if install:
         dst = Path(streaming_assets) / capture
-        if dst.exists():
-            shutil.rmtree(dst)
-        shutil.copytree(out, dst)
+        kept = install_capture(out, dst)
         report["installed"] = str(dst)
+        if kept:
+            report["kept_on_install"] = kept
+            print(f"[export] kept {', '.join(kept)} in {dst} (written by other stages)")
     return report

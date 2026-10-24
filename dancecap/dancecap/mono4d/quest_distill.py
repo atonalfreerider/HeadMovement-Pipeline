@@ -3,11 +3,14 @@ but splat looked correct. try deep compression"). A compact Gaussian set per dan
 (160,000 Gaussians), so the headset draws far fewer and smaller Gaussians; the PC files stay untouched.
 
     python -m dancecap.mono4d.quest_distill prepare [--lessons recap,john_lula] [--sizes 40000,25000,15000]   (local)
-        -> work/quest_distill/bundle/ (the full avatars + sampled poses) + work/quest_distill/pod_job.json
-    python -m dancecap remote run --jobs work/quest_distill/pod_job.json --max-cost <cap> --gpus "..."        (the pod)
+                                                    [--roles lead,follow] [--work work/quest_distill]
+        -> <work>/bundle/ (the full avatars + sampled poses) + <work>/pod_job.json
+    python -m dancecap remote run --jobs <work>/pod_job.json --max-cost <cap> --gpus "..."                    (the pod)
         runs: python -m dancecap.mono4d.quest_distill distill --bundle ... --out ...
-    python -m dancecap.mono4d.quest_distill import [--sid <session>]                                          (local)
+    python -m dancecap.mono4d.quest_distill import [--sid <session>] [--work work/quest_distill]               (local)
         -> head-movement/Assets/StreamingAssets/<capture>/splats/quest_<N>/<role>.{splatav,json} (git-ignored)
+    --work: a folder of its own per run (e.g. work/quest_distill_ca for carlos_aline), so a new lesson does not upload the
+    other lessons' bundle; --roles: only these dancers (e.g. the follow again after her hair binding).
 
 Method (per dancer, per target count N; gsplat 1.5.3 on the pod, `--renderer torch` = a dense pure-torch rasteriser for a
 local smoke test only):
@@ -26,6 +29,13 @@ local smoke test only):
     end; hair flags from the nearest teacher Gaussian; a hair Gaussian whose nearest teacher Gaussian is bound to a strand gets
     that strand / segment, its local offset / rotation recomputed from its own centre and rotation in the rest segment frame
     (format section 6, recap_splat_hair.segment_frames).
+  * the strand look (2026-10-23 fix round 2): when the teacher's hair carries recap_splat_hair's look (json hair.look.params:
+    needle-shaped, stack-capped bound hair, e.g. Aline's black hair), the students that sit on bound hair keep it too -
+    while fitting (every step: per-Gaussian opacity <= the stack cap, across sigmas <= needle_across_m, along <=
+    needle_along_max_m; every 100 steps and at the end: recap_splat_hair.needle_shape along the bound segment's rest
+    tangent, and at the end stack_cap) and in the written set (bound_look) - otherwise the fit re-grows them into large
+    opaque Gaussians (480 / 310 / 200 in the 40k / 25k / 15k sets of fix round 1), the black discs a swinging strand
+    carries. Teachers without a look (the recap, every lead) are fitted exactly as before.
   * scores on held-out views (16 canonical + 8 held-out poses x 2): PSNR / SSIM / LPIPS (alex, when installed) on the dancer
     crop over grey, against the teacher; the same for the load-time thinning of the viewer (SplatAvatarData.Reduce rule:
     the N largest opacity x (sigma_mid sigma_max)^0.25) at the same N; fill ratio vs the teacher at a Quest-like eye.
@@ -50,7 +60,7 @@ WORK = PACKAGE_ROOT / "work" / "quest_distill"
 BUNDLE = WORK / "bundle"
 POD_OUT = WORK / "pod_out"
 SA = WORKSPACE / "head-movement" / "Assets" / "StreamingAssets"
-LESSONS = {"recap": "06_LarissaKaduRecap", "john_lula": "08_JohnLula"}
+LESSONS = {"recap": "06_LarissaKaduRecap", "john_lula": "08_JohnLula", "carlos_aline": "07_CarlosAline"}
 ROLES = ("lead", "follow")
 SIZES = (40000, 25000, 15000)
 SH_C0 = 0.28209479177387814
@@ -165,12 +175,20 @@ def fk_skin(rest: np.ndarray, parents: np.ndarray, quats_xyzw: np.ndarray) -> tu
 
 
 # ================================================================================================ prepare (local)
-def prepare(lessons: list[str], sizes: list[int], n_poses: int = 32, iters: int = 4000) -> Path:
+def _work(work: Path | str | None) -> Path:
+    w = Path(work) if work else WORK
+    return w if w.is_absolute() else PACKAGE_ROOT / w
+
+
+def prepare(lessons: list[str], sizes: list[int], n_poses: int = 32, iters: int = 4000, work: Path | str | None = None,
+            roles: tuple = ROLES) -> Path:
+    work = _work(work)
+    BUNDLE = work / "bundle"
     BUNDLE.mkdir(parents=True, exist_ok=True)
     man = {"created": time.strftime("%Y-%m-%dT%H:%M:%S"), "sizes": sizes, "iters": iters, "dancers": []}
     for lesson in lessons:
         cap = LESSONS[lesson]
-        for role in ROLES:
+        for role in roles:
             src = SA / cap / "splats"
             js, sv = src / f"{role}.json", src / f"{role}.splatav"
             if not js.exists():
@@ -191,29 +209,38 @@ def prepare(lessons: list[str], sizes: list[int], n_poses: int = 32, iters: int 
                                    "pose_frames": idx[ok].tolist(), "motion_frames": T})
             log(f"{cap} {role}: {sv.stat().st_size / 1e6:.1f} MB, {int(ok.sum())} poses")
     (BUNDLE / "manifest.json").write_text(json.dumps(man, indent=1))
-    rel = "dancecap/work/quest_distill"
-    job = {
-        "schema": "dancecap.pod_job/1", "name": "quest_distill", "take": "quest_distill",
+    job = job_spec(work, iters)
+    p = work / "pod_job.json"
+    p.write_text(json.dumps(job, indent=1))
+    log(f"bundle {BUNDLE} ({sum(f.stat().st_size for f in BUNDLE.rglob('*') if f.is_file()) / 1e6:.0f} MB), job {p}")
+    return p
+
+
+def job_spec(work: Path | str | None = None, iters: int = 4000) -> dict:
+    """The distill pod job of a run folder (work/quest_distill by default; any folder under dancecap/)."""
+    work = _work(work)
+    relw = work.resolve().relative_to(PACKAGE_ROOT.resolve()).as_posix()      # e.g. work/quest_distill
+    rel = f"dancecap/{relw}"
+    return {
+        "schema": "dancecap.pod_job/1", "name": "quest_distill" if work == WORK else f"quest_distill_{work.name}",
+        "take": "quest_distill",
         "max_minutes": 50, "needs": ["gsplat"],
         "inputs": [f"{rel}/bundle/"],
         "exclude": ["dancecap/work/runpod/pywheels", "mamma-turing"],   # the wheelhouse goes up: the cached gsplat wheel
         "env": {"PYTHONUNBUFFERED": "1"},
         "setup": ["pip install -q --no-deps lpips==0.1.4 || echo 'lpips unavailable: LPIPS is skipped'"],
         "commands": [{"name": "distill", "timeout_min": 45,
-                      "cmd": f"python -m dancecap.mono4d.quest_distill distill --bundle work/quest_distill/bundle "
-                             f"--out work/quest_distill/pod_out --iters {iters} --time-budget-min 40"}],
+                      "cmd": f"python -m dancecap.mono4d.quest_distill distill --bundle {relw}/bundle "
+                             f"--out {relw}/pod_out --iters {iters} --time-budget-min 40"}],
         "outputs": [f"{rel}/pod_out/"],
         "verify": [f"{rel}/pod_out/distill_report.json"],
-        "after_download": ["python -m dancecap.mono4d.quest_distill import"],
+        "after_download": ["python -m dancecap.mono4d.quest_distill import"
+                           + ("" if work == WORK else f" --work {relw}")],
         "notes": ["Quest-only distilled splat dancers: compact Gaussian sets fitted to renders of the full LHM++ avatars "
                   "(canonical + posed views), max-scale and fill penalties; scores vs the full model on held-out views",
                   "likeness data goes to our own pod only (owner consent 2026-10-19); outputs stay in work/ and the "
                   "git-ignored StreamingAssets"],
     }
-    p = WORK / "pod_job.json"
-    p.write_text(json.dumps(job, indent=1))
-    log(f"bundle {BUNDLE} ({sum(f.stat().st_size for f in BUNDLE.rglob('*') if f.is_file()) / 1e6:.0f} MB), job {p}")
-    return p
 
 
 # ================================================================================================ torch side
@@ -466,6 +493,84 @@ def transfer_weights(mu, d: Dancer, k: int = 6):
     return j4, w4, idx[:, 0], dist[:, 0]
 
 
+def look_params(header: dict) -> dict | None:
+    """The teacher's strand look (recap_splat_hair.apply_look params in json hair.look.params), or None."""
+    hs = header.get("hair")
+    lk = ((hs.get("look") or {}).get("params")) if isinstance(hs, dict) else None
+    return lk if isinstance(lk, dict) and "needle_across_m" in lk and "stack_cap" in lk else None
+
+
+def rest_guides(header: dict) -> np.ndarray | None:
+    """The Unity hair guides' rest points of a bound file (json hair.binding_info.rest_points), (guides, points, 3)."""
+    hs = header.get("hair")
+    hb = hs.get("binding_info") if isinstance(hs, dict) else None
+    if not hb or "rest_points" not in hb:
+        return None
+    return np.asarray(hb["rest_points"], float).reshape(int(hb["guides"]), int(hb["points"]), 3)
+
+
+def _large_opaque(op: np.ndarray, S: np.ndarray, idx: np.ndarray) -> int:
+    return int(((S.max(1) > 0.008) & (op > 0.5))[idx].sum())
+
+
+def bound_look(rec: np.ndarray, header: dict) -> tuple[np.ndarray, dict]:
+    """The teacher's strand look on a set's bound records (strand >= 0; in place): recap_splat_hair.needle_shape along the
+    rest tangent of each record's segment (local_rotation re-expressed in the segment frame) and stack_cap on the opacity.
+    No look in the header or nothing bound: unchanged. -> (rec, info)"""
+    from . import recap_splat_hair as RH
+    lk, rest = look_params(header), rest_guides(header)
+    b = np.nonzero(rec["strand"] >= 0)[0]
+    if lk is None or rest is None or not len(b):
+        return rec, {"applied": False}
+    op = 1 / (1 + np.exp(-rec["opacity_logit"].astype(np.float64)))
+    before = _large_opaque(op, np.exp(rec["log_scale"].astype(np.float64)), b)
+    s_, k_ = rec["strand"][b].astype(int), rec["segment"][b].astype(int)
+    q = rec["rotation"][b].astype(np.float64)
+    q /= np.linalg.norm(q, axis=1, keepdims=True)
+    q2, ls2 = RH.needle_shape(q, rec["log_scale"][b], rest[s_, k_ + 1] - rest[s_, k_], lk["needle_across_m"],
+                              lk["needle_along_max_m"])
+    F = RH.segment_frames(rest)[s_, k_]
+    lrot = RH.q_mul(RH.q_conj(RH.q_from_mat(F)), q2)
+    rec["rotation"][b] = q2
+    rec["log_scale"][b] = ls2
+    rec["local_rotation"][b] = lrot / np.linalg.norm(lrot, axis=1, keepdims=True)
+    o2, ci = RH.stack_cap(rec["mean"][b].astype(np.float64), op[b], lk["stack_cap"], lk["stack_link_m"])
+    o2 = np.clip(o2, 1e-6, 1 - 1e-6)
+    ch = ~np.isclose(o2, op[b], rtol=0, atol=1e-9)
+    rec["opacity_logit"][b[ch]] = np.log(o2[ch] / (1 - o2[ch]))
+    op3 = 1 / (1 + np.exp(-rec["opacity_logit"].astype(np.float64)))
+    S3 = np.exp(rec["log_scale"].astype(np.float64))
+    return rec, {"applied": True, "bound": int(len(b)), "stack_cap": ci,
+                 "large_opaque_bound": {"before": before, "after": _large_opaque(op3, S3, b),
+                                        "rule": "sigma_max > 8 mm and opacity > 0.5"},
+                 "opacity_max": round(float(op3[b].max()), 4), "across_mm_max": round(float(S3[b].min(1).max()) * 1e3, 3)}
+
+
+def look_project(lk: dict, sb, log_s, logit, q=None, tangents=None) -> None:
+    """In-training projection of the students on bound hair (sb: bool mask tensor): opacity <= the stack cap, the two
+    smaller sigmas <= across, the largest <= along max; with q (wxyz) / tangents (numpy, one per masked student) also the
+    needle orientation (recap_splat_hair.needle_shape). In place on .data."""
+    torch = _torch()
+    if not bool(sb.any()):
+        return
+    with torch.no_grad():
+        ii = sb.nonzero().flatten()
+        logit.data[ii] = logit.data[ii].clamp(max=math.log(lk["stack_cap"] / (1 - lk["stack_cap"])))
+        ls = log_s.data[ii]
+        srt, order = ls.sort(dim=1)
+        hi = torch.tensor([math.log(lk["needle_across_m"]), math.log(lk["needle_across_m"]),
+                           math.log(lk["needle_along_max_m"])], dtype=ls.dtype, device=ls.device)
+        log_s.data[ii] = torch.empty_like(ls).scatter_(1, order, torch.minimum(srt, hi))
+        if q is not None and tangents is not None:
+            from . import recap_splat_hair as RH
+            qw = q.data[ii].cpu().numpy().astype(np.float64)
+            qx = np.concatenate([qw[:, 1:], qw[:, :1]], 1)
+            q2, ls2 = RH.needle_shape(qx, log_s.data[ii].cpu().numpy().astype(np.float64), tangents,
+                                      lk["needle_across_m"], lk["needle_along_max_m"])
+            q.data[ii] = torch.as_tensor(np.concatenate([q2[:, 3:], q2[:, :3]], 1), dtype=q.dtype, device=q.device)
+            log_s.data[ii] = torch.as_tensor(ls2, dtype=log_s.dtype, device=log_s.device)
+
+
 def init_student(d: Dancer, n: int, seed: int):
     torch = _torch()
     g = torch.Generator(device="cpu").manual_seed(seed)
@@ -514,6 +619,19 @@ def distill_one(d: Dancer, n: int, iters: int, renderer, args, seed: int = 0) ->
                             {"params": [rgb], "lr": 2.5e-3, "name": "c"}], eps=1e-15)
     j4, w4, near, _ = transfer_weights(mu, d)
     cap = args.cap_m if args.cap_m > 0 else {40000: 0.012, 25000: 0.016, 15000: 0.02}.get(n, 0.02)
+    lk, rest_g = look_params(d.header), rest_guides(d.header)
+    tb_np = (d.rec["strand"] >= 0) & (d.rec["hair"] != 0)
+    if lk is not None and rest_g is not None and tb_np.any():      # the teacher's strand look (module doc)
+        tan_np = np.zeros((len(d.rec), 3))
+        bi = np.nonzero(tb_np)[0]
+        s_t, k_t = d.rec["strand"][bi].astype(int), d.rec["segment"][bi].astype(int)
+        tan_np[bi] = rest_g[s_t, k_t + 1] - rest_g[s_t, k_t]
+        tb = torch.as_tensor(tb_np, device=dev)
+        sb = tb[near]
+        log(f"  N={n}: strand look on {int(sb.sum())} students over bound hair (cap {lk['stack_cap']}, across "
+            f"{lk['needle_across_m'] * 1e3:.1f} mm)")
+    else:
+        lk = None
     t0 = time.time()
     hist = []
     B = args.batch
@@ -559,6 +677,12 @@ def distill_one(d: Dancer, n: int, iters: int, renderer, args, seed: int = 0) ->
             log_s.data.clamp_(math.log(2e-4), math.log(0.06))
         if it % 250 == 249:
             j4, w4, near, _ = transfer_weights(mu, d)
+            if lk is not None:
+                sb = tb[near]
+        if lk is not None:
+            orient = it % 100 == 99
+            look_project(lk, sb, log_s, logit, q if orient else None,
+                         tan_np[near[sb].cpu().numpy()] if orient else None)
         if it % 300 == 299 and frac < 0.7:
             with torch.no_grad():
                 so = torch.sigmoid(logit)
@@ -589,9 +713,21 @@ def distill_one(d: Dancer, n: int, iters: int, renderer, args, seed: int = 0) ->
             if it % 1000 == 0 or it == iters - 1:
                 log(f"  N={n} step {it + 1}/{iters}: {hist[-1]}")
     j4, w4, near, dnear = transfer_weights(mu, d)
+    look_info = None
+    if lk is not None:   # the written set's look (bound_look) on the tensors too, so the scores below are the file's
+        sb = tb[near]
+        look_project(lk, sb, log_s, logit, q, tan_np[near[sb].cpu().numpy()])
+        if bool(sb.any()):
+            from . import recap_splat_hair as RH
+            ii = sb.nonzero().flatten()
+            o_np = torch.sigmoid(logit.data[ii]).cpu().numpy().astype(np.float64)
+            o2, ci = RH.stack_cap(mu.data[ii].cpu().numpy().astype(np.float64), o_np, lk["stack_cap"], lk["stack_link_m"])
+            o2 = np.clip(o2, 1e-6, 1 - 1e-6)
+            logit.data[ii] = torch.as_tensor(np.log(o2 / (1 - o2)), dtype=logit.dtype, device=logit.device)
+            look_info = {"students_on_bound_hair": int(sb.sum()), "stack_cap": ci}
     out = {k_: v.detach() for k_, v in {"mu": mu, "q": q, "log_s": log_s, "logit": logit, "rgb": rgb}.items()}
     out.update(j4=j4, w4=w4, near=near, dnear=dnear, hist=hist, steps=it + 1, seconds=round(time.time() - t0, 1), cap=cap,
-               test_poses=test_p)
+               test_poses=test_p, look=look_info)
     return out
 
 
@@ -693,7 +829,33 @@ def to_records(d: Dancer, st: dict) -> tuple[np.ndarray, dict]:
             rec["local_rotation"][bound] = lrot / np.linalg.norm(lrot, axis=1, keepdims=True)
             info["bound"] = int(bound.sum())
             info["distance_to_teacher_mm_p50_p90"] = [round(float(np.percentile(st["dnear"].cpu().numpy()[bound], q_)) * 1e3, 2) for q_ in (50, 90)]
+            if look_params(d.header) is not None:
+                rec, info["look"] = bound_look(rec, d.header)
+                if st.get("look"):
+                    info["look"]["fit"] = st["look"]
     return rec, info
+
+
+def recount_hair(h: dict, rec: np.ndarray) -> dict:
+    """A distilled set's json header copies the teacher's (the full avatar's) hair section: rewrite its counts from the SET's
+    own records (hair_count, hair.hair_count, hair.bound, hair.binding_info.bound); the teacher's numbers are kept as
+    hair.teacher_hair_count / hair.teacher_bound. -> h (changed in place)"""
+    hair_n = int((rec["hair"] != 0).sum())
+    bound_n = int((rec["strand"] >= 0).sum())
+    h["hair_count"] = hair_n
+    hs = h.get("hair")
+    if isinstance(hs, dict):
+        if "teacher_hair_count" not in hs and "hair_count" in hs:
+            hs["teacher_hair_count"] = hs["hair_count"]
+        if "teacher_bound" not in hs and "bound" in hs:
+            hs["teacher_bound"] = hs["bound"]
+        if "hair_count" in hs:
+            hs["hair_count"] = hair_n
+        if "bound" in hs or bound_n:
+            hs["bound"] = bound_n
+        if isinstance(hs.get("binding_info"), dict):
+            hs["binding_info"]["bound"] = bound_n
+    return h
 
 
 def write_student(dest: Path, d: Dancer, rec: np.ndarray, extra: dict) -> dict:
@@ -714,6 +876,7 @@ def write_student(dest: Path, d: Dancer, rec: np.ndarray, extra: dict) -> dict:
         bi["bound"] = extra.get("hair", {}).get("bound")
         bi["distilled_note"] = "strand / segment of the nearest bound teacher Gaussian; local offset / rotation recomputed"
         h["hair"]["binding_info"] = bi
+    recount_hair(h, rec)
     h["quest_distill"] = extra
     (dest / f"{role}.json").write_text(json.dumps(h, indent=1))
     return h
@@ -804,8 +967,9 @@ def distill(args) -> dict:
 
 
 # ================================================================================================ import (local)
-def import_run(sid: str | None = None, src: Path | None = None) -> dict:
-    src = src or POD_OUT
+def import_run(sid: str | None = None, src: Path | None = None, work: Path | str | None = None) -> dict:
+    work = _work(work)
+    src = src or work / "pod_out"
     rep = json.loads((src / "distill_report.json").read_text())
     rows = []
     for e in rep["dancers"]:
@@ -817,6 +981,10 @@ def import_run(sid: str | None = None, src: Path | None = None) -> dict:
                 shutil.copy2(s / f, dest / f)
             h = json.loads((dest / f"{e['role']}.json").read_text())
             assert sha256(dest / f"{e['role']}.splatav") == h["data_sha256"]
+            old = json.dumps(h, sort_keys=True)
+            recount_hair(h, read_splatav(dest / f"{e['role']}.splatav"))        # the set's own counts (not the teacher's)
+            if json.dumps(h, sort_keys=True) != old:
+                (dest / f"{e['role']}.json").write_text(json.dumps(h, indent=1))
             sc = e["eval"].get(f"distilled_{int(n_s) // 1000}k", {})
             th = e["eval"].get(f"thinned_{int(n_s) // 1000}k", {})
             rows.append({"capture": e["capture"], "role": e["role"], "n": int(n_s), "psnr": sc.get("psnr"), "ssim": sc.get("ssim"),
@@ -824,7 +992,7 @@ def import_run(sid: str | None = None, src: Path | None = None) -> dict:
                          "thinned_lpips": th.get("lpips"), "thinned_fill_ratio": th.get("fill_ratio"), "dest": str(dest)})
             log(f"{e['capture']} {e['role']} {n_s}: PSNR {sc.get('psnr')} (thinned {th.get('psnr')}), LPIPS {sc.get('lpips')} "
                 f"(thinned {th.get('lpips')}), fill {sc.get('fill_ratio')} (thinned {th.get('fill_ratio')}) -> {dest}")
-    (WORK / "import.json").write_text(json.dumps({"session": sid, "rows": rows}, indent=1))
+    (work / "import.json").write_text(json.dumps({"session": sid, "rows": rows}, indent=1))
     return {"rows": rows}
 
 
@@ -835,6 +1003,8 @@ def main(argv=None) -> int:
     p.add_argument("--lessons", default="recap,john_lula")
     p.add_argument("--sizes", default=",".join(str(s) for s in SIZES))
     p.add_argument("--iters", type=int, default=4000)
+    p.add_argument("--work", default=None, help="the run's folder (default work/quest_distill)")
+    p.add_argument("--roles", default=",".join(ROLES))
     p = sub.add_parser("distill")
     p.add_argument("--bundle", default=str(BUNDLE))
     p.add_argument("--out", default=str(POD_OUT))
@@ -853,14 +1023,16 @@ def main(argv=None) -> int:
     p = sub.add_parser("import")
     p.add_argument("--sid", default=None)
     p.add_argument("--src", default=None)
+    p.add_argument("--work", default=None, help="the run's folder (default work/quest_distill)")
     a = ap.parse_args(argv)
     if a.cmd == "prepare":
-        prepare(a.lessons.split(","), [int(s) for s in a.sizes.split(",")], iters=a.iters)
+        prepare(a.lessons.split(","), [int(s) for s in a.sizes.split(",")], iters=a.iters, work=a.work,
+                roles=tuple(r for r in a.roles.split(",") if r))
     elif a.cmd == "distill":
         a.sec_per_iter = 0.05
         distill(a)
     else:
-        import_run(a.sid, Path(a.src) if a.src else None)
+        import_run(a.sid, Path(a.src) if a.src else None, a.work)
     return 0
 
 
