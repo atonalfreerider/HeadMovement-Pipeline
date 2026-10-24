@@ -39,6 +39,19 @@ Runs in the 'facefusion' conda env (Python 3.13, onnxruntime-gpu 1.30, CUDA 13),
     ... -m dancecap.film_faceswap sheet --report R.json    # before / after face crops of sampled frames, for looking
     ... -m dancecap.film_faceswap restore-start --report R.json   # a whole-film output whose video starts at 0: video start as recorded
 The GPU passes hold dancecap's work/gpu.lock. Likeness data (headshots, films, sheets) stays in work/ and Recordings/ (git-ignored).
+The identities: --headshots lead=PATH,follow=PATH, else $HM_FACESWAP_HEADSHOTS (same form), else HEADSHOTS (the recap's two portraits).
+
+On a Runpod GPU (v4.3, 2026-10-23: the local swap took 57-58 min per aspect), from the dancecap env (.venv-nopo4d), in one command:
+    python -m dancecap.film_faceswap pod --film REC.mp4 --sidecar REC.faces.json [--start S --end S] [--out REC_faces.mp4] --max-cost 1.5
+  = a VIDEO-ONLY stream copy of the recording (the recordings carry the class voices: "PRIVATE RENDER ... Local only; no upload", so
+  the audio never leaves the PC; a bundle with any audio file or a video with an audio stream is refused), the sidecar, the
+  headshots, face_points_canonical.json and a `git archive` of the pinned FaceFusion commit -> remote/faceswap/pod_job_template.json
+  -> `python -m dancecap remote run --jobs <job.json> --max-cost X` (install.sh: python 3.13 venv, onnxruntime-gpu on CUDA, the
+  models from FaceFusion's hosts; run.sh: swap + verify) -> the recording's own audio put back locally (stream copy; the audio md5,
+  the frame count and the A/V start are checked) -> REC_faces.mp4 + its report with local paths.
+    ... -m dancecap.film_faceswap compare --report A.report.json --ref B_faces.mp4 --ref-report B.report.json [--sheet S.jpg]
+  = two swaps of the same recording on the same frames: swapped face-frames per dancer, PSNR inside the faces (A vs B) and outside
+  them (each vs the recording).
 """
 from __future__ import annotations
 
@@ -46,6 +59,8 @@ import argparse
 import json
 import math
 import os
+import re
+import shutil
 import subprocess
 import sys
 import time
@@ -62,6 +77,7 @@ DIRECTION = WORK / "film" / "direction.json"
 FACEFUSION = Path(os.environ.get("FACEFUSION_ROOT", "C:/Users/johnb/Desktop/facefusion"))
 HEADSHOTS = {"lead": Path("C:/Users/johnb/Videos/Zouk/larissa-kadu-counter-recap/kadu.jpg"),
              "follow": Path("C:/Users/johnb/Videos/Zouk/larissa-kadu-counter-recap/larissa.jpg")}
+HEADSHOTS_ENV = "HM_FACESWAP_HEADSHOTS"     # "lead=PATH,follow=PATH": the identities on a pod (or of another take)
 NAMES = {"lead": "Kadu", "follow": "Larissa"}
 ROLES = ("lead", "follow")
 SPLATS = Path("C:/Users/johnb/Desktop/HeadMovement/head-movement/Assets/StreamingAssets/06_LarissaKaduRecap/splats")
@@ -109,6 +125,42 @@ class Cfg:
     crf: int = 14
     preset: str = "slow"
     lossless: bool = False
+
+
+def parse_headshots(spec: str) -> dict:
+    """'lead=PATH,follow=PATH' -> {role: absolute Path}; both roles, nothing else; a relative path is taken from the current
+    directory (resolved here: FF chdirs into FaceFusion's folder)."""
+    out: dict = {}
+    for part in (p.strip() for p in str(spec).split(",")):
+        if not part:
+            continue
+        role, sep, path = part.partition("=")
+        role, path = role.strip(), path.strip()
+        if not sep or role not in ROLES or not path or role in out:
+            raise SystemExit(f"[faceswap] headshots: {part!r} is not role=path once per role (roles {ROLES}); want lead=PATH,follow=PATH")
+        out[role] = Path(path).expanduser().resolve()
+    missing = [r for r in ROLES if r not in out]
+    if missing:
+        raise SystemExit(f"[faceswap] headshots: no {missing} in {spec!r}; want lead=PATH,follow=PATH")
+    return {r: out[r] for r in ROLES}
+
+
+def headshots(flag: str | None = None) -> dict:
+    """The swap's identities {role: Path}: --headshots, else $HM_FACESWAP_HEADSHOTS, else HEADSHOTS (the recap's two portraits)."""
+    spec = (flag or "").strip() or os.environ.get(HEADSHOTS_ENV, "").strip()
+    return parse_headshots(spec) if spec else dict(HEADSHOTS)
+
+
+def _clock(s: float) -> str:
+    """tqdm's elapsed / remaining form (mm:ss, h:mm:ss): the runner's frame counter (progress.py 'tqdm') reads it from a pod log"""
+    s = int(max(0.0, s))
+    return f"{s // 3600}:{s // 60 % 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60:02d}:{s % 60:02d}"
+
+
+def progress_line(what: str, done: int, total: int, t0: float) -> str:
+    el = time.time() - t0
+    rate = done / max(1e-6, el)
+    return f"[faceswap] {what} {done}/{total} [{_clock(el)}<{_clock((total - done) / max(1e-6, rate))}] {rate:.1f} fps"
 
 
 # ----------------------------------------------------------------------------------------------------------------------------- io
@@ -274,14 +326,15 @@ class GpuLock:
 class FF:
     """FaceFusion v4 used as a library: state initialised from a `run` command line, then its modules called directly."""
 
-    def __init__(self, cfg: Cfg, film: Path):
+    def __init__(self, cfg: Cfg, film: Path, heads: dict | None = None):
         root = cfg.facefusion
+        heads = heads or HEADSHOTS
         if str(root) not in sys.path:
             sys.path.insert(0, str(root))
         os.environ.setdefault("OMP_NUM_THREADS", "1")
         os.chdir(root)          # FaceFusion finds its processors (and its .caches) relative to the working directory
         argv = ["facefusion.py", "run", "--config-path", str(root / "facefusion.ini"),
-                "-s", str(HEADSHOTS["lead"]), str(HEADSHOTS["follow"]), "-t", str(film), "-o", str(OUT_DIR),
+                "-s", str(heads["lead"]), str(heads["follow"]), "-t", str(film), "-o", str(OUT_DIR),
                 "--processors", "face_swapper", "--face-swapper-model", cfg.swapper_model,
                 "--face-detector-model", cfg.detector, "--face-detector-score", str(cfg.det_score),
                 "--face-aligner-model", "2dfan4",
@@ -318,6 +371,12 @@ class FF:
         import onnxruntime
         print(f"[faceswap] FaceFusion v4 at {root}, onnxruntime {onnxruntime.__version__} {onnxruntime.get_available_providers()}",
               flush=True)
+        # the providers a session really got (v4.3, the pod route: onnxruntime falls back to the CPU with only a log line when
+        # the CUDA / cuDNN libraries do not load; a whole film on the CPU would take hours): stop instead
+        on = list(face_swapper.get_inference_pool().get("face_swapper").get_providers())
+        print(f"[faceswap] face_swapper session on {on}", flush=True)
+        if "cuda" in cfg.providers and "CUDAExecutionProvider" not in on:
+            raise SystemExit(f"[faceswap] CUDA was asked for but the swapper session runs on {on}: stopping (no silent CPU run)")
 
     # -- detection ----------------------------------------------------------------------------------------------------------
     def detect(self, bgr: np.ndarray) -> list:
@@ -645,7 +704,7 @@ def analyse(ff: FF, film: Path, info: dict, first: int, count: int, shot_w: np.n
                     "red": round(red_hair(bgr, np.asarray(f.bounding_box, float)), 4)})
         frames.append(rec)
         if (k + 1) % 60 == 0:
-            print(f"[faceswap] analysis {k + 1}/{count} frames, {(k + 1) / (time.time() - t0):.1f} fps", flush=True)
+            print(progress_line("analysis", k + 1, count, t0), flush=True)
     return frames
 
 
@@ -1126,7 +1185,7 @@ def run_swap(ff: FF, film: Path, info: dict, first: int, count: int, plan: list,
         stats["per_frame"].append({"i": first + k, "faces": boxes})
         stats["frames"] += 1
         if (k + 1) % 60 == 0:
-            print(f"[faceswap] swap {k + 1}/{count} frames, {(k + 1) / (time.time() - t0):.1f} fps", flush=True)
+            print(progress_line("swap", k + 1, count, t0), flush=True)
     writer.close()
     if sbs_writer:
         sbs_writer.close()
@@ -1154,6 +1213,10 @@ def cmd_swap(a):
     if not a.sidecar and not a.heuristic:
         raise SystemExit("[faceswap] swap needs the recorder's face sidecar (--sidecar <recording>.faces.json): only it says which faces are splat-dancer "
                          "renders (v4.2: the swap applies to the splat dancers only); --heuristic for a prototype run without one")
+    heads = headshots(getattr(a, "headshots", None))
+    gone = [str(p) for p in heads.values() if not p.is_file()]
+    if gone:
+        raise SystemExit(f"[faceswap] headshot(s) not found: {gone}")
     sidecar = load_sidecar(Path(a.sidecar), first, count, info) if a.sidecar else None
     if sidecar is not None and not any("layer" in d for e in sidecar["f"][first:first + count] for d in e.get("d", [])):
         print("[faceswap] this sidecar has no per-dancer 'layer' (recorded before v4.2): the frame's 'splats' share decides (0 = no swap)", flush=True)
@@ -1162,12 +1225,12 @@ def cmd_swap(a):
               "film_s": [first / fps, (first + count) / fps], "mode": "sidecar" if sidecar else "heuristic",
               "sidecar": a.sidecar, "direction": None if sidecar else a.direction, "cfg": {k: (str(v) if isinstance(v, Path) else v)
                                                                                          for k, v in asdict(cfg).items()},
-              "sources": {r: str(HEADSHOTS[r]) for r in ROLES}}
+              "sources": {r: str(heads[r]) for r in ROLES}}
     with GpuLock(f"film_faceswap {out.name}"):
-        ff = FF(cfg, film)
+        ff = FF(cfg, film, heads)
         sources = {}
         for r in ROLES:
-            face, emb = ff.source(HEADSHOTS[r])
+            face, emb = ff.source(heads[r])
             sources[r] = {"emb": emb, "norm": np.asarray(face.embedding_norm, float), "gender": face.gender,
                           "iod": iod(np.asarray(face.landmark_set.get("5/68")))}
         report["source_faces"] = {r: {"gender": sources[r]["gender"], "iod_px": round(sources[r]["iod"], 1),
@@ -1327,6 +1390,7 @@ def cmd_verify(a):
     diff_px, n_px, se, n_face_frames = 0, 0, 0.0, 0
     prev = None
     jit_src, jit_out, jit_n = 0.0, 0.0, 0
+    t_v = time.time()
     for k, (a_buf, b_buf) in enumerate(zip(src, dst)):
         Ya, _, _ = planes(a_buf, w, h)
         Yb, _, _ = planes(b_buf, w, h)
@@ -1351,12 +1415,15 @@ def cmd_verify(a):
         diff_px += int(np.count_nonzero(d))
         se += float(np.sum(d.astype(np.float64) ** 2))
         n_px += int(keep.sum())
+        if (k + 1) % 600 == 0:
+            print(progress_line("verify", k + 1, count, t_v), flush=True)
     mse = se / max(1, n_px)
     psnr = float("inf") if mse == 0 else 10 * math.log10(255 ** 2 / mse)
     res = {"frames": count, "frames_with_faces": n_face_frames, "luma_px_outside_faces": n_px, "differing_px": diff_px,
            "psnr_outside_faces_db": psnr, "face_pairs_full_weight": jit_n,
            "face_frame_change_src": round(jit_src / max(1, jit_n), 3), "face_frame_change_out": round(jit_out / max(1, jit_n), 3),
-           "flicker_ratio_out_vs_src": round(jit_out / max(1e-6, jit_src), 3) if jit_n else None}
+           "flicker_ratio_out_vs_src": round(jit_out / max(1e-6, jit_src), 3) if jit_n else None,
+           "verify_seconds": round(time.time() - t_v, 1)}
     print(json.dumps(res))
     rep["verify"] = res
     Path(a.report).write_text(json.dumps(rep, indent=1))
@@ -1413,6 +1480,470 @@ def cmd_sheet(a):
     print(f"[faceswap] sheet {a.out}: {len(cells)} rows")
 
 
+# ------------------------------------------------------------------------------------- the pod route (v4.3 track F, 2026-10-23)
+POD_TEMPLATE = ROOT / "remote" / "faceswap" / "pod_job_template.json"
+POD_STAGE = "faceswap_pod"              # work/<take>/faceswap_pod/<pod stem>/{in,out}: what goes up, what comes back (git-ignored)
+FF_COMMIT = "57c01ed6f1e512a9730bfaefec893ce88a7861ea"      # FaceFusion v4 (branch v4, "improve upload lock"): the local checkout
+# the FaceFusion models FF.__init__'s pre_checks load, by release (install.sh fetches them on the pod; each .onnx is checked
+# against its .hash = crc32, and that against the local copy's .hash)
+FF_MODELS = (("models-3.0.0", ("yoloface_8n", "2dfan4", "fan_68_5", "arcface_w600k_r50", "fairface", "inswapper_128",
+                               "bisenet_resnet_34")),
+             ("models-3.1.0", ("xseg_1",)),
+             ("models-3.3.0", ("nsfw_1", "nsfw_2", "nsfw_3")))
+AUDIO_EXT = (".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".oga", ".opus", ".wma", ".aif", ".aiff", ".ac3", ".mka", ".caf")
+VIDEO_EXT = (".mp4", ".mov", ".m4v", ".mkv", ".avi", ".webm", ".mts", ".m2ts", ".ts", ".mpg", ".mpeg", ".3gp")
+# the pod commands' time limits (a kill switch, not the expected time; with the price they bound the session's worst case, which
+# --max-cost must cover): frames x twice the rate measured on a pod + a fixed part (FaceFusion init, models, first kernels). The
+# 2026-10-23 excerpt on an L40 (28-CPU quota): analysis 19.6 + swap 41.6 frames/s = 0.075 s per frame, verify 109 frames/s =
+# 0.009 s per frame (the PC: 0.249 and 0.054); install 24 s (venv + onnxruntime-gpu + the 1.5 GB of models, next to the upload)
+POD_S_PER_FRAME = {"swap": 0.15, "verify": 0.025}
+POD_INSTALL_MIN = 10
+
+
+def probe_streams(path: Path) -> list:
+    out = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
+                          "stream=index,codec_type,codec_name,start_time,time_base,nb_frames", "-of", "json", str(path)],
+                         capture_output=True, text=True, check=True).stdout
+    return json.loads(out).get("streams", [])
+
+
+def count_packets(path: Path, stream: str = "v") -> int:
+    """the packets of the first such stream, counted by reading the file (not the header's nb_frames)"""
+    out = subprocess.run(["ffprobe", "-v", "error", "-count_packets", "-select_streams", f"{stream}:0", "-show_entries",
+                          "stream=nb_read_packets", "-of", "csv=p=0", str(path)], capture_output=True, text=True, check=True).stdout
+    return int((out.strip().split(",")[0] or "0").strip() or 0)
+
+
+def _start(streams: list, kind: str) -> float | None:
+    s = next((x for x in streams if x.get("codec_type") == kind), None)
+    return None if s is None or s.get("start_time") in (None, "N/A") else float(s["start_time"])
+
+
+def pod_stem(stem: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", str(stem))
+
+
+def video_only_copy(film: Path, dst: Path) -> dict:
+    """The recording's VIDEO stream alone (stream copy: the same coded bits) - what goes to the pod. The recordings carry the class
+    voices (the recorder report: "PRIVATE RENDER ... Local only; no upload"): the audio never leaves the PC. Checked: the copy has
+    one stream, a video stream; its packets' md5 = the recording's video md5; the same frame count and video start. Reused when
+    its .json says it was made from this very file (size + mtime) and passed."""
+    film, dst = Path(film), Path(dst)
+    st = film.stat()
+    meta = dst.with_suffix(".json")
+    key = {"film": str(film), "size": st.st_size, "mtime_ns": st.st_mtime_ns}
+    if dst.is_file() and meta.is_file():
+        try:
+            m = json.loads(meta.read_text())
+            if m.get("made_from") == key and m.get("ok") and dst.stat().st_size == m.get("bytes"):
+                return m | {"reused": True}
+        except (OSError, ValueError):
+            pass
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(dst.stem + "_part" + dst.suffix)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-nostdin", "-i", str(film), "-map", "0:v:0", "-c", "copy", "-an", "-sn", "-dn",
+                    "-map_metadata", "-1", "-map_chapters", "-1", "-movflags", "+faststart", str(tmp)], check=True)
+    types = [s.get("codec_type") for s in probe_streams(tmp)]
+    src, got = ffprobe(film), ffprobe(tmp)
+    v_src, v_dst = stream_md5(film, "v"), stream_md5(tmp, "v")
+    res = {"made_from": key, "streams": types, "video_md5": v_dst, "video_md5_equals_recording": v_src == v_dst,
+           "frames": count_packets(tmp, "v"), "frames_recording": src["frames"],
+           "video_start_s": round(got["v_start"] - got["fmt_start"], 6),
+           "video_start_s_recording": round(src["v_start"] - src["fmt_start"], 6),
+           "recording_has_audio": src["has_audio"], "bytes": tmp.stat().st_size, "recording_bytes": st.st_size}
+    res["ok"] = bool(types == ["video"] and res["video_md5_equals_recording"] and res["frames"] == src["frames"]
+                     and abs(res["video_start_s"] - res["video_start_s_recording"]) < 5e-4)
+    if not res["ok"]:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(f"[faceswap] the video-only copy failed its checks: {res}")
+    os.replace(tmp, dst)
+    meta.write_text(json.dumps(res, indent=1))
+    return res
+
+
+def audio_problems(paths) -> list:
+    """Why some of these files must not leave the PC: an audio file, or a video / container with any stream that is not video
+    (the recordings' audio carries the class voices). Empty = nothing audible among them."""
+    bad = []
+    for p in map(Path, paths):
+        ext = p.suffix.lower()
+        if ext in AUDIO_EXT:
+            bad.append(f"{p}: an audio file")
+        elif ext in VIDEO_EXT:
+            try:
+                types = [s.get("codec_type") for s in probe_streams(p)]
+            except (subprocess.CalledProcessError, OSError, ValueError) as e:
+                bad.append(f"{p}: could not be probed ({type(e).__name__}): refused")
+                continue
+            if any(t != "video" for t in types):
+                bad.append(f"{p}: streams {types}: only a video stream may leave the PC")
+    return bad
+
+
+def ff_archive(dst_dir: Path, root: Path | None = None, commit: str = FF_COMMIT) -> Path:
+    """`git archive` of the pinned FaceFusion commit (the code the local runs use; ~0.2 MB, no models, no .git)."""
+    root = Path(root or FACEFUSION)
+    out = Path(dst_dir) / f"facefusion_{commit[:7]}.tar.gz"
+    if out.is_file() and out.stat().st_size > 0:
+        return out
+    git = ["git", "-C", str(root)]
+    head = subprocess.run(git + ["rev-parse", f"{commit}^{{commit}}"], capture_output=True, text=True)
+    if head.returncode or head.stdout.strip() != commit:
+        raise SystemExit(f"[faceswap] FaceFusion commit {commit[:7]} is not in {root}")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_name(out.stem + "_part.gz")
+    subprocess.run(git + ["archive", "--format=tar.gz", "-o", str(tmp), commit], check=True)
+    os.replace(tmp, out)
+    return out
+
+
+def ff_local_state(root: Path | None = None) -> dict:
+    """the local FaceFusion checkout: HEAD and whether its tracked files are unmodified (the local runs use the working tree)"""
+    git = ["git", "-C", str(root or FACEFUSION)]
+    head = subprocess.run(git + ["rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    dirty = subprocess.run(git + ["status", "--porcelain", "--untracked-files=no"], capture_output=True, text=True).stdout.strip()
+    return {"head": head, "head_is_pinned": head == FF_COMMIT, "tracked_files_clean": not dirty}
+
+
+def ff_models_env(root: Path | None = None) -> str:
+    """FF_MODELS for install.sh: '<release>/<name>=<crc32 of the local copy's .hash>' (no '=...' without a local copy)"""
+    items = []
+    for rel, names in FF_MODELS:
+        for n in names:
+            h = Path(root or FACEFUSION) / ".assets" / "models" / f"{n}.hash"
+            want = h.read_text().strip() if h.is_file() else ""
+            items.append(f"{rel}/{n}" + (f"={want}" if re.fullmatch(r"[0-9a-f]{8}", want) else ""))
+    return " ".join(items)
+
+
+def _fill(x, tokens: dict):
+    if isinstance(x, str):
+        for k, v in tokens.items():
+            x = x.replace(f"@@{k}@@", str(v))
+        return x
+    if isinstance(x, list):
+        return [_fill(v, tokens) for v in x]
+    if isinstance(x, dict):
+        return {k: _fill(v, tokens) for k, v in x.items()}
+    return x
+
+
+def range_tag(start: float | None, end: float | None) -> str:
+    """'' for a whole film, '_60-120' for an excerpt (file and job names)"""
+    if start is None and end is None:
+        return ""
+    return f"_{start or 0:g}-" + (f"{end:g}" if end is not None else "end")
+
+
+def build_pod_job(*, film_video: Path, sidecar: Path, stem: str, take: str, heads: dict, archive: Path, frames: int,
+                  start: float | None = None, end: float | None = None, name: str | None = None, ff_models: str = "",
+                  face_points: Path | None = None, swap_args: str = "", template: Path | None = None) -> dict:
+    """The pod job (dancecap.pod_job/1) of one swap: remote/faceswap/pod_job_template.json with its @@tokens@@ filled and the
+    time limits set from the frame count. Pod paths are workspace-relative, dancecap/work/<take>/faceswap_pod/<pod stem>/{in,out};
+    the commands run from dancecap/. face_points goes where FACE_POINTS is read (pnp_pose uses its take-independent 'generic'
+    head), so the pod's film_faceswap finds it unchanged."""
+    ps = pod_stem(stem)
+    tag = range_tag(start, end)
+    rel = f"work/{take}/{POD_STAGE}/{ps}"
+    fp = Path(face_points or FACE_POINTS)
+    names = {r: f"headshot_{r}{Path(heads[r]).suffix.lower() or '.jpg'}" for r in ROLES}
+    rng = (f" --start {start:g}" if start is not None else "") + (f" --end {end:g}" if end is not None else "")
+    out_name = f"{ps}_faces_video{tag}.mp4"
+    tokens = {"job": pod_stem(name or f"faceswap{tag}"), "take": take, "stem": ps, "dir": f"dancecap/{rel}", "wdir": rel,
+              "film_video": Path(film_video).resolve(), "sidecar": Path(sidecar).resolve(),
+              "headshot_lead": Path(heads["lead"]).resolve(), "headshot_follow": Path(heads["follow"]).resolve(),
+              "headshot_lead_name": names["lead"], "headshot_follow_name": names["follow"],
+              "ff_archive": Path(archive).resolve(), "ff_archive_name": Path(archive).name, "ff_commit": FF_COMMIT,
+              "ff_models": ff_models, "face_points": fp.resolve(), "face_points_pod": f"dancecap/{FACE_POINTS.relative_to(ROOT).as_posix()}",
+              "out_name": out_name, "report_name": Path(out_name).with_suffix(".report.json").name, "range": rng,
+              "swap_args": f" {swap_args.strip()}" if swap_args.strip() else ""}
+    d = _fill(json.loads(Path(template or POD_TEMPLATE).read_text(encoding="utf-8")), tokens)
+    left = re.findall(r"@@\w+@@", json.dumps(d))
+    if left:
+        raise ValueError(f"[faceswap] pod job template: unfilled tokens {sorted(set(left))}")
+    t_swap = math.ceil(frames * POD_S_PER_FRAME["swap"] / 60) + 8
+    t_verify = math.ceil(frames * POD_S_PER_FRAME["verify"] / 60) + 3
+    for c in d["commands"]:
+        c["timeout_min"] = {"install": POD_INSTALL_MIN, "swap": t_swap, "verify": t_verify}.get(c["name"], c.get("timeout_min", 30))
+    d["max_minutes"] = sum(c["timeout_min"] for c in d["commands"])
+    d["notes"] = list(d.get("notes", [])) + [f"{frames} frames{' (' + tag[1:] + ' s)' if tag else ' (the whole film)'} of {stem}"]
+    return d
+
+
+def remux_audio(video: Path, film: Path, out: Path, first: int = 0, count: int | None = None) -> dict:
+    """The pod's swapped picture (no audio) + the recording's OWN audio -> out. A whole film: both streams copied (bits unchanged,
+    -copyts: the recorded A/V relation) and checked - the audio md5 = the recording's, the video md5 = the pod's, the counted frames
+    = the recording's, the video and audio starts as recorded. An excerpt: the same instant of the audio re-cut as AAC 192k (what
+    Writer does for a local excerpt; not bit-exact)."""
+    video, film, out = Path(video), Path(film), Path(out)
+    src, vin = ffprobe(film), ffprobe(video)
+    whole = first == 0 and (count is None or count >= src["frames"])
+    n = vin["frames"] if count is None else count
+    tb = next((s.get("time_base") for s in probe_streams(video) if s.get("codec_type") == "video"), "1/15360")
+    scale = int(str(tb).split("/")[1]) if "/" in str(tb) else 15360
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_name(out.stem + "_part" + out.suffix)
+    cmd = ["ffmpeg", "-v", "error", "-y", "-nostdin"]
+    if not src["has_audio"]:
+        cmd += ["-i", str(video), "-map", "0:v:0", "-c", "copy"]
+        audio = "none (the recording has no audio)"
+    elif whole:
+        cmd += ["-copyts", "-i", str(video), "-i", str(film), "-map", "0:v:0", "-map", "1:a:0", "-c", "copy"]
+        audio = "the recording's own track, stream copy"
+    else:
+        t0 = src["v_start"] + first / src["fps"] - src["fmt_start"]
+        cmd += ["-i", str(video), "-ss", f"{t0:.6f}", "-t", f"{n / src['fps']:.6f}", "-i", str(film), "-map", "0:v:0", "-map", "1:a:0",
+                "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest"]
+        audio = f"the recording's audio {t0:.3f}-{t0 + n / src['fps']:.3f} s re-cut as AAC 192k (an excerpt: not bit-exact)"
+    cmd += ["-video_track_timescale", str(scale), "-movflags", "+faststart", str(tmp)]
+    subprocess.run(cmd, check=True)
+    s_film, s_out = probe_streams(film), probe_streams(tmp)
+    v_pod, v_out = stream_md5(video, "v"), stream_md5(tmp, "v")
+    res = {"whole_film": whole, "audio": audio, "video_md5": v_out, "video_md5_equals_pod": v_pod == v_out,
+           "frames": count_packets(tmp, "v"), "frames_pod": count_packets(video, "v"), "frames_expected": src["frames"] if whole else n}
+    ok = res["video_md5_equals_pod"] and res["frames"] == res["frames_pod"] == res["frames_expected"]
+    if src["has_audio"]:
+        res["audio_md5"] = stream_md5(tmp, "a")
+        if whole:
+            res["audio_md5_recording"] = stream_md5(film, "a")
+            res["audio_md5_equals_recording"] = res["audio_md5"] == res["audio_md5_recording"]
+            vf, af, vo, ao = _start(s_film, "video"), _start(s_film, "audio"), _start(s_out, "video"), _start(s_out, "audio")
+            fps = src["fps"]
+            res.update(video_start_s=vo, audio_start_s=ao, video_start_s_recording=vf, audio_start_s_recording=af,
+                       av_start_frames_apart=None if vo is None or ao is None else round((vo - ao) * fps, 3),
+                       av_start_frames_apart_recording=None if vf is None or af is None else round((vf - af) * fps, 3))
+            ok = ok and res["audio_md5_equals_recording"] and vo is not None and ao is not None and \
+                abs(vo - vf) < 5e-4 and abs(ao - af) < 5e-4
+    res["ok"] = bool(ok)
+    if not ok:
+        raise RuntimeError(f"[faceswap] the remux with the recording's audio failed its checks (kept {tmp}): {res}")
+    os.replace(tmp, out)
+    return res
+
+
+def localize_report(pod_report: Path, final: Path, film: Path, sidecar: Path, heads: dict, extra: dict) -> Path:
+    """The pod's report next to the final (final.report.json, + its .analysis.json), with the local paths: 'film' = the recording
+    (its video bits are the pod's input, see 'pod.video_only'), 'out' = the final, so verify / sheet / compare run on it here; the
+    pod's own paths are kept under 'pod_paths'."""
+    pod_report, final = Path(pod_report), Path(final)
+    rep = json.loads(pod_report.read_text())
+    rep["pod_paths"] = {k: rep.get(k) for k in ("film", "out", "sidecar", "sources")}
+    rep.update(film=str(Path(film).resolve()), out=str(final.resolve()), sidecar=str(Path(sidecar).resolve()),
+               sources={r: str(heads[r]) for r in ROLES})
+    rep.update(extra)
+    rp = final.with_suffix(".report.json")
+    rp.write_text(json.dumps(rep, indent=1))
+    an = pod_report.with_name(pod_report.name.replace(".report.json", ".analysis.json"))
+    if an.is_file():
+        shutil.copyfile(an, final.with_suffix(".analysis.json"))
+    return rp
+
+
+def _remote_run(job_path: Path, max_cost: float, gpus: str | None, session: str | None, dry_run: bool) -> dict:
+    """`python -m dancecap remote run --jobs <job.json> --max-cost X` from the dancecap root (the only way pods are made), its
+    output passed through; -> the session result it prints last."""
+    cmd = [sys.executable, "-m", "dancecap", "remote", "run", "--jobs", str(job_path), "--max-cost", f"{max_cost:g}"]
+    cmd += (["--gpus", gpus] if gpus else []) + (["--session", session] if session else []) + (["--dry-run"] if dry_run else [])
+    print("[faceswap] " + " ".join(cmd[1:]), flush=True)
+    p = subprocess.Popen(cmd, cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+                         encoding="utf-8", errors="replace")
+    lines = []
+    for line in p.stdout:
+        lines.append(line)
+        print(line, end="", flush=True)
+    rc = p.wait()
+    start = max((k for k, ln in enumerate(lines) if ln.rstrip() == "{"), default=None)
+    try:
+        res = json.loads("".join(lines[start:])) if start is not None else {}
+    except ValueError:
+        res = {}
+    res["_rc"] = rc
+    return res
+
+
+def cmd_pod(a):
+    """One command: video-only copy -> pod job -> remote run (swap + verify on a Runpod GPU) -> the recording's audio back ->
+    the final film + its report with local paths."""
+    film, sidecar = Path(a.film).resolve(), Path(a.sidecar).resolve()
+    info = ffprobe(film)
+    sc = json.loads(sidecar.read_text())
+    problems = validate_sidecar(sc, info)
+    if problems:
+        raise SystemExit("[faceswap] sidecar invalid:\n  " + "\n  ".join(problems[:20]))
+    take = a.take or sc.get("direction") or "larissa_kadu_recap"
+    heads = headshots(a.headshots)
+    gone = [str(p) for p in heads.values() if not p.is_file()]
+    if gone:
+        raise SystemExit(f"[faceswap] headshot(s) not found: {gone}")
+    fps = info["fps"]
+    first = int(round((a.start or 0.0) * fps))
+    last = info["frames"] if a.end is None else int(round(a.end * fps))
+    count = max(1, min(last, info["frames"]) - first)
+    tag = range_tag(a.start, a.end)
+    final = Path(a.out).resolve() if a.out else film.with_name(f"{film.stem}_faces{tag}.mp4")
+    if final.exists() and not a.force and not a.dry_run:
+        raise SystemExit(f"[faceswap] {final} exists (--force to replace it)")
+    ps = pod_stem(film.stem)
+    stage = ROOT / "work" / take / POD_STAGE / ps
+    t0 = time.time()
+    print(f"[faceswap] pod route: {film.name}, frames {first}..{first + count - 1} ({count}), take {take}, stage {stage}", flush=True)
+    vo = video_only_copy(film, stage / "in" / f"{ps}_video.mp4")
+    print(f"[faceswap] video-only copy {'reused' if vo.get('reused') else 'made'}: streams {vo['streams']}, video md5 = the recording's: "
+          f"{vo['video_md5_equals_recording']}, {vo['frames']} frames, {vo['bytes'] / 1e6:.1f} MB "
+          f"(the recording with its audio: {vo['recording_bytes'] / 1e6:.1f} MB)", flush=True)
+    arch = ff_archive(stage / "in")
+    aspect = pod_stem(sc.get("aspect") or "film")
+    job = build_pod_job(film_video=stage / "in" / f"{ps}_video.mp4", sidecar=sidecar, stem=film.stem, take=take, heads=heads,
+                        archive=arch, frames=count, start=a.start, end=a.end, name=f"faceswap_{aspect}{tag}",
+                        ff_models=ff_models_env(), swap_args=a.swap_args or "")
+    job_path = stage / f"faceswap_job{tag}.json"
+    job_path.write_text(json.dumps(job, indent=1))
+    from . import remote_jobs as rj    # the dancecap env (this wrapper runs there; the swap itself runs on the pod)
+    spec = rj.load_job(job_path)
+    files = rj.bundle_files([spec])
+    bad = audio_problems([f.local for f in files])
+    if bad:
+        raise SystemExit("[faceswap] refusing to ship audio (the class voices stay on this PC):\n  " + "\n  ".join(bad))
+    media = [f.arc for f in files if Path(f.arc).suffix.lower() in VIDEO_EXT]
+    print(f"[faceswap] job {job_path} ({spec.name}): bundle {len(files)} files, {sum(f.size for f in files) / 1e6:.1f} MB raw; "
+          f"no audio file and no audio stream among them (videos: {media})", flush=True)
+    ff_state = ff_local_state()
+    res = _remote_run(job_path, a.max_cost, a.gpus, a.session, a.dry_run)
+    if a.dry_run:
+        print(f"[faceswap] dry run: job {job_path}; nothing sent", flush=True)
+        return
+    st = (res.get("jobs") or {}).get(spec.name, {})
+    if res.get("_rc") or st.get("status") != "ok":
+        raise SystemExit(f"[faceswap] the pod job did not finish: rc {res.get('_rc')}, status {st.get('status')!r}, "
+                         f"error {res.get('error')!r}; session {res.get('sid')} ({res.get('dir')})")
+    out_dir = ROOT.parent / job["outputs"][0]
+    pod_out = out_dir / f"{ps}_faces_video{tag}.mp4"
+    pod_rep = pod_out.with_suffix(".report.json")
+    t_r = time.time()
+    rm = remux_audio(pod_out, film, final, first, count)
+    rm["seconds"] = round(time.time() - t_r, 1)
+    timings = {t["step"]: t["seconds"] for t in res.get("timings", []) if "step" in t and "seconds" in t}
+    pod = res.get("pod") or {}
+    extra = {"pod": {"sid": res.get("sid"), "session_dir": res.get("dir"), "job": spec.name, "job_json": str(job_path),
+                     "gpu": pod.get("gpu"), "cost_per_hr": pod.get("cost_per_hr"), "ledger_cost": pod.get("ledger_cost"),
+                     "lifetime_s": pod.get("lifetime_s"), "machine": pod.get("machine"), "timings_s": timings,
+                     "video_only": {k: vo.get(k) for k in ("streams", "video_md5", "video_md5_equals_recording", "frames", "bytes")},
+                     "facefusion": {"commit": FF_COMMIT, "archive": arch.name, "local": ff_state},
+                     "wall_s": round(time.time() - t0, 1)},
+             "remux": rm}
+    rp = localize_report(pod_rep, final, film, sidecar, heads, extra)
+    rep = json.loads(rp.read_text())
+    summary = {"final": str(final), "report": str(rp), "frames": count, "gpu": pod.get("gpu"), "cost_usd": pod.get("ledger_cost"),
+               "wall_min": round((time.time() - t0) / 60, 2), "analysis_fps": rep.get("analysis_fps"), "swap_fps": rep.get("swap_fps"),
+               "faces_swapped": rep.get("faces_swapped"), "changed_outside_support": rep.get("changed_outside_support"),
+               "swap_spans": {r: {k: v.get(k) for k in ("n", "shortest_s")} for r, v in (rep.get("swap_spans") or {}).items()},
+               "verify": rep.get("verify"), "remux_ok": rm["ok"], "audio_md5_equals_recording": rm.get("audio_md5_equals_recording"),
+               "pod_steps_s": {k: v for k, v in timings.items() if not k.startswith("bundle")}}
+    (stage / f"pod_run{tag}.json").write_text(json.dumps(summary, indent=1))
+    print("[faceswap] pod route done: " + json.dumps(summary, indent=1), flush=True)
+
+
+def _psnr(se: float, n: int) -> float | None:
+    if n <= 0:
+        return None
+    return float("inf") if se == 0 else round(10 * math.log10(255 ** 2 * n / se), 3)
+
+
+def cmd_compare(a):
+    """Two swaps of one recording on the same frames (e.g. the pod's excerpt vs the local whole-film final): the swapped
+    face-frames per dancer, the weight agreement, the luma PSNR inside the faces (A vs B; and each vs the recording) and outside
+    them (each vs the recording, and A vs B). 'Inside' = the union of both reports' paste boxes of the frame."""
+    import cv2
+    rep, ref_rep = json.loads(Path(a.report).read_text()), json.loads(Path(a.ref_report).read_text())
+    film, out = Path(a.film or rep["film"]), Path(rep["out"])
+    ref = Path(a.ref or ref_rep["out"])
+    info, oinfo, rinfo = ffprobe(film), ffprobe(out), ffprobe(ref)
+    w, h = info["width"], info["height"]
+    a_first, a_count, rfirst = rep["first_frame"], rep["frames"], ref_rep["first_frame"]
+    first = max(a_first, int(round(a.start * info["fps"]))) if a.start is not None else a_first
+    stop = min(a_first + a_count, int(round(a.end * info["fps"]))) if a.end is not None else a_first + a_count
+    count = stop - first
+    if count <= 0 or not (rfirst <= first and stop <= rfirst + ref_rep["frames"]):
+        raise SystemExit("[faceswap] the reference report does not cover these frames (or the window is empty)")
+    ref_pf = {e["i"]: e["faces"] for e in ref_rep["per_frame"]}
+    pf = {e["i"]: e["faces"] for e in rep["per_frame"]}
+    face_ks = [k for k in range(count) if pf.get(first + k) or ref_pf.get(first + k)]
+    pick = set(face_ks[int(j)] for j in np.linspace(0, len(face_ks) - 1, min(a.sheet_n, len(face_ks)))) if (a.sheet and face_ks) else set()
+    acc: dict = {}
+
+    def add(key, d, n):
+        s = acc.setdefault(key, [0.0, 0])
+        s[0] += float(np.sum(d.astype(np.float64) ** 2))
+        s[1] += int(n)
+    counts = {"a": {r: 0 for r in ROLES}, "b": {r: 0 for r in ROLES}, "both": {r: 0 for r in ROLES}}
+    wdiff = {r: [] for r in ROLES}
+    rows = []
+    t0 = time.time()
+    readers = zip(YuvReader(film, info, first, count), YuvReader(out, oinfo, first - a_first, count),
+                  YuvReader(ref, rinfo, first - rfirst, count))
+    for k, (bs, bo, br) in enumerate(readers):
+        i = first + k
+        fa, fb = pf.get(i, []), ref_pf.get(i, [])
+        ra, rb = {f["role"]: f for f in fa}, {f["role"]: f for f in fb}
+        for r in ROLES:
+            counts["a"][r] += r in ra
+            counts["b"][r] += r in rb
+            counts["both"][r] += r in ra and r in rb
+            if r in ra or r in rb:
+                wdiff[r].append(abs((ra[r]["w"] if r in ra else 0.0) - (rb[r]["w"] if r in rb else 0.0)))
+        if not (fa or fb) and (k % max(1, a.every)):
+            continue
+        Ys, Yo, Yr = (planes(b, w, h)[0].astype(np.int16) for b in (bs, bo, br))
+        inside = np.zeros((h, w), bool)
+        for r in ROLES:
+            m = np.zeros((h, w), bool)
+            for f in (ra.get(r), rb.get(r)):
+                if f:
+                    x1, y1, x2, y2 = f["box"]
+                    m[y1:y2, x1:x2] = True
+            if m.any():
+                add(f"in_{r}_a_vs_b", Yo[m] - Yr[m], m.sum())
+                add(f"in_{r}_a_vs_rec", Yo[m] - Ys[m], m.sum())
+                add(f"in_{r}_b_vs_rec", Yr[m] - Ys[m], m.sum())
+            inside |= m
+        if inside.any():
+            add("in_a_vs_b", Yo[inside] - Yr[inside], inside.sum())
+        if k % max(1, a.every) == 0:
+            o = ~inside
+            add("out_a_vs_rec", Yo[o] - Ys[o], o.sum())
+            add("out_b_vs_rec", Yr[o] - Ys[o], o.sum())
+            add("out_a_vs_b", Yo[o] - Yr[o], o.sum())
+        if k in pick:
+            bgr = [cv2.cvtColor(b.reshape(h * 3 // 2, w), cv2.COLOR_YUV2BGR_I420) for b in (bs, br, bo)]
+            ys, xs = np.where(inside)
+            cx, cy = (xs.min() + xs.max()) / 2, (ys.min() + ys.max()) / 2
+            side = max(xs.max() - xs.min(), ys.max() - ys.min()) * 1.5 + 24
+            X1, Y1 = int(max(0, cx - side / 2)), int(max(0, cy - side / 2))
+            X2, Y2 = int(min(w, cx + side / 2)), int(min(h, cy + side / 2))
+            S = a.cell
+            cells = [cv2.resize(img[Y1:Y2, X1:X2], (S, S), interpolation=cv2.INTER_CUBIC) for img in bgr]
+            for c, lab in zip(cells, ("recording", a.label_b, a.label_a)):
+                cv2.putText(c, lab, (4, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 255, 255), 1, cv2.LINE_AA)
+            row = np.hstack([cv2.copyMakeBorder(c, 2, 2, 2, 2, cv2.BORDER_CONSTANT, value=(40, 40, 40)) for c in cells])
+            roles = "+".join(sorted(set(ra) | set(rb)))
+            cv2.putText(row, f"f{i} {i / info['fps']:.2f}s {roles}", (6, S - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1,
+                        cv2.LINE_AA)
+            rows.append(row)
+        if (k + 1) % 600 == 0:
+            print(progress_line("compare", k + 1, count, t0), flush=True)
+    res = {"frames": count, "film_s": [first / info["fps"], (first + count) / info["fps"]], "a": str(out), "b": str(ref),
+           "face_frames": counts, "weight_abs_diff": {r: {"mean": round(float(np.mean(v)), 4), "max": round(float(np.max(v)), 4)}
+                                                       for r, v in wdiff.items() if v},
+           "psnr_db": {k: _psnr(*v) for k, v in sorted(acc.items())}, "px": {k: v[1] for k, v in sorted(acc.items())},
+           "outside_every": a.every, "seconds": round(time.time() - t0, 1)}
+    print(json.dumps(res, indent=1))
+    if a.json:
+        Path(a.json).write_text(json.dumps(res, indent=1))
+    if rows:
+        cv2.imwrite(a.sheet, np.vstack(rows), [cv2.IMWRITE_JPEG_QUALITY, 90])
+        print(f"[faceswap] sheet {a.sheet}: {len(rows)} rows (recording | {a.label_b} | {a.label_a})")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="python -m dancecap.film_faceswap", description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1431,7 +1962,38 @@ def main(argv=None):
     s.add_argument("--crf", type=int, default=14)
     s.add_argument("--lossless", action="store_true")
     s.add_argument("--reuse-analysis", action="store_true")
+    s.add_argument("--headshots", help=f"lead=PATH,follow=PATH (default ${HEADSHOTS_ENV}, else the recap's two portraits)")
     s.set_defaults(fn=cmd_swap)
+    po = sub.add_parser("pod", help="the swap on a Runpod GPU in one command: video-only copy up, swap + verify, audio back locally")
+    po.add_argument("--film", required=True, help="the raw recording (its audio stays here)")
+    po.add_argument("--sidecar", required=True, help="the recorder's <recording>.faces.json")
+    po.add_argument("--start", type=float)
+    po.add_argument("--end", type=float)
+    po.add_argument("--out", help="the final film (default <recording>_faces[_S-E].mp4 next to the recording)")
+    po.add_argument("--take", help="work/<take>/faceswap_pod/ holds the shipped copies (default: the sidecar's direction)")
+    po.add_argument("--headshots", help=f"lead=PATH,follow=PATH (default ${HEADSHOTS_ENV}, else the recap's two portraits)")
+    po.add_argument("--max-cost", type=float, required=True, help="the session's worst-case $ (price x max minutes), remote run --max-cost")
+    po.add_argument("--gpus", help="remote run --gpus (default: the runner's ladder, 4090 first)")
+    po.add_argument("--session", help="remote run --session: resume this session id")
+    po.add_argument("--swap-args", help="extra film_faceswap swap arguments for the pod, e.g. '--crf 14'")
+    po.add_argument("--force", action="store_true", help="replace an existing --out")
+    po.add_argument("--dry-run", action="store_true", help="copy, job json, audio check and the runner's bundle + estimate; no pod")
+    po.set_defaults(fn=cmd_pod)
+    cp = sub.add_parser("compare", help="two swaps of the same recording on the same frames: face-frames, PSNR inside / outside the faces")
+    cp.add_argument("--report", required=True, help="A: a swap report (its frames are compared)")
+    cp.add_argument("--ref-report", required=True, help="B: the reference swap's report (covers A's frames)")
+    cp.add_argument("--ref", help="B's film (default: its report's out)")
+    cp.add_argument("--film", help="the recording (default: A's report's film)")
+    cp.add_argument("--start", type=float, help="only this window of A's frames (film seconds)")
+    cp.add_argument("--end", type=float)
+    cp.add_argument("--every", type=int, default=1, help="outside the faces: every Nth frame (faces: every frame)")
+    cp.add_argument("--json")
+    cp.add_argument("--sheet", help="a JPEG of face crops: recording | B | A")
+    cp.add_argument("--sheet-n", type=int, default=10)
+    cp.add_argument("--cell", type=int, default=224)
+    cp.add_argument("--label-a", default="A")
+    cp.add_argument("--label-b", default="B")
+    cp.set_defaults(fn=cmd_compare)
     c = sub.add_parser("canon-points")
     c.add_argument("--smplx", default=str(Path("C:/Users/johnb/Desktop/HeadMovement/mamma/data/body_models/smplx_locked_head/smplx/SMPLX_NEUTRAL.npz")))
     c.add_argument("--splats", default=str(SPLATS))

@@ -1,0 +1,47 @@
+{
+ "schema": "dancecap.pod_job/1",
+ "name": "@@job@@",
+ "take": "@@take@@",
+ "max_minutes": 90,
+ "base": false,
+ "cpu": false,
+ "needs": ["ffmpeg"],
+ "models": "none",
+ "min_vcpu": 8,
+ "exclude": [
+  "mamma-turing",
+  "dancecap/work/runpod/pywheels",
+  "dancecap/work/runpod/wheelhouse"
+ ],
+ "inputs": [
+  {"local": "@@film_video@@", "pod": "@@dir@@/in/@@stem@@_video.mp4"},
+  {"local": "@@sidecar@@", "pod": "@@dir@@/in/@@stem@@.faces.json"},
+  {"local": "@@headshot_lead@@", "pod": "@@dir@@/in/@@headshot_lead_name@@"},
+  {"local": "@@headshot_follow@@", "pod": "@@dir@@/in/@@headshot_follow_name@@"},
+  {"local": "@@ff_archive@@", "pod": "@@dir@@/in/@@ff_archive_name@@"},
+  {"local": "@@face_points@@", "pod": "@@face_points_pod@@"}
+ ],
+ "env": {
+  "FF_HOME": "/workspace/ff",
+  "FACEFUSION_ROOT": "/workspace/ff/facefusion",
+  "FACEFUSION_COMMIT": "@@ff_commit@@",
+  "FACEFUSION_ARCHIVE": "@@wdir@@/in/@@ff_archive_name@@",
+  "FF_MODELS": "@@ff_models@@",
+  "FF_ORT": "auto",
+  "HM_FACESWAP_HEADSHOTS": "lead=@@wdir@@/in/@@headshot_lead_name@@,follow=@@wdir@@/in/@@headshot_follow_name@@",
+  "UV_LINK_MODE": "hardlink"
+ },
+ "commands": [
+  {"name": "install", "timeout_min": 10, "cmd": "bash remote/faceswap/install.sh"},
+  {"name": "swap", "timeout_min": 60,
+   "cmd": "bash remote/faceswap/run.sh swap --film @@wdir@@/in/@@stem@@_video.mp4 --sidecar @@wdir@@/in/@@stem@@.faces.json --out @@wdir@@/out/@@out_name@@@@range@@@@swap_args@@"},
+  {"name": "verify", "timeout_min": 20, "cmd": "bash remote/faceswap/run.sh verify --report @@wdir@@/out/@@report_name@@"}
+ ],
+ "outputs": ["@@dir@@/out/"],
+ "verify": ["@@dir@@/out/@@out_name@@", "@@dir@@/out/@@report_name@@"],
+ "notes": [
+  "The splat-only face swap of one recorded film (dancecap.film_faceswap swap + verify) on a Runpod GPU, made by `python -m dancecap.film_faceswap pod`, which fills this template (its tokens; the time limits follow the frame count) and runs it with `python -m dancecap remote run --jobs <job.json> --max-cost X`.",
+  "Only the VIDEO stream of the recording leaves the PC (a stream copy, the same coded bits): the recordings carry the class voices ('PRIVATE RENDER ... Local only; no upload'), so the audio never goes up; the wrapper refuses a bundle with any audio file or a video with an audio stream, and puts the recording's own audio back locally (stream copy, md5-checked).",
+  "Also shipped: the recorder's face sidecar, the two headshots, face_points_canonical.json and a `git archive` of the pinned FaceFusion v4 commit (~0.2 MB). FaceFusion's models (~1.5 GB) are fetched on the pod from FaceFusion's own hosts and checked against the local copies' crc32; onnxruntime-gpu runs on the CUDAExecutionProvider or the job stops (install.sh check, film_faceswap's session check)."
+ ]
+}

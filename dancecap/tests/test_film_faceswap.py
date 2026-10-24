@@ -355,3 +355,222 @@ def test_swap_refuses_to_run_without_a_sidecar_unless_asked_for_a_prototype(tmp_
         fs.main(["swap", "--film", str(tmp_path / "f.mp4"), "--out", str(tmp_path / "o.mp4")])
     with pytest.raises(SystemExit):
         fs.main(["swap", "--film", str(tmp_path / "f.mp4"), "--out", str(tmp_path / "o.mp4"), "--phone-shots", "swap"])
+
+
+# ---------------------------------------------------------------------------------------------- v4.3: the swap on a Runpod GPU
+_HAVE_FFMPEG = __import__("shutil").which("ffmpeg") is not None and __import__("shutil").which("ffprobe") is not None
+
+
+def _run(*cmd):
+    __import__("subprocess").run([str(c) for c in cmd], check=True)
+
+
+def _recording(path, frames=30, audio=True):
+    """a tiny 'recording': video (30 fps, timescale 30000 like the recorder's) + an AAC voice track, both starting at 0"""
+    base = path.with_name(path.stem + "_base.mp4")
+    src = ["-f", "lavfi", "-i", f"nullsrc=s=64x112:r=30:d={frames / 30},geq=lum='mod(N*40+X*2+Y,256)':cb=128:cr=128"]
+    if audio:
+        src += ["-f", "lavfi", "-i", f"sine=frequency=440:duration={frames / 30 + 0.01}"]
+    _run("ffmpeg", "-v", "error", "-y", *src, "-c:v", "libx264", "-pix_fmt", "yuv420p", *(["-c:a", "aac", "-shortest"] if audio else []),
+         "-video_track_timescale", "30000", base)
+    base.replace(path)
+    return path
+
+
+def test_headshots_come_from_the_flag_then_the_environment_then_the_recap_default(tmp_path, monkeypatch):
+    monkeypatch.delenv(fs.HEADSHOTS_ENV, raising=False)
+    assert fs.headshots() == fs.HEADSHOTS and fs.headshots("") == fs.HEADSHOTS
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(fs.HEADSHOTS_ENV, "lead=in/a.jpg, follow=in/b.png")
+    got = fs.headshots()
+    assert got == {"lead": (tmp_path / "in" / "a.jpg").resolve(), "follow": (tmp_path / "in" / "b.png").resolve()}
+    assert list(got) == list(fs.ROLES) and all(p.is_absolute() for p in got.values())   # resolved before FF chdirs away
+    flag = fs.headshots("follow=C:/x/f.jpg,lead=C:/x/l.jpg")                           # the flag wins; order free; drive letters ok
+    assert flag["lead"].name == "l.jpg" and flag["follow"].name == "f.jpg"
+    for bad in ("lead=a.jpg", "lead=a.jpg,partner=b.jpg", "lead=a.jpg,lead=b.jpg,follow=c.jpg", "lead:a.jpg,follow=b.jpg", "lead=,follow=b"):
+        with pytest.raises(SystemExit, match="headshots"):
+            fs.parse_headshots(bad)
+
+
+def test_swap_refuses_a_missing_headshot_before_touching_the_gpu(tmp_path, monkeypatch):
+    monkeypatch.setattr(fs, "ffprobe", lambda path: {"width": 64, "height": 112, "fps": 30.0, "frames": 3, "v_start": 0.0, "fmt_start": 0.0,
+                                                     "duration": 0.1, "has_audio": False})
+    monkeypatch.setattr(fs, "GpuLock", None)          # never reached
+    with pytest.raises(SystemExit, match="headshot"):
+        fs.main(["swap", "--film", str(tmp_path / "f.mp4"), "--out", str(tmp_path / "o.mp4"), "--sidecar", str(tmp_path / "s.json"),
+                 "--headshots", f"lead={tmp_path / 'no_l.jpg'},follow={tmp_path / 'no_f.jpg'}"])
+
+
+def test_progress_lines_feed_the_runners_frame_counter():
+    from dancecap import progress
+    line = fs.progress_line("analysis", 600, 11032, __import__("time").time() - 75)
+    m = progress.R["tqdm"].search(line)
+    assert m and (m.group(1), m.group(2)) == ("600", "11032") and line.startswith("[faceswap] analysis 600/11032 [01:15<")
+    assert fs._clock(3725) == "1:02:05" and fs._clock(65) == "01:05"
+
+
+def _job(tmp_path, start=None, end=None, frames=11032):
+    film = tmp_path / "in" / "rec_video.mp4"
+    film.parent.mkdir(parents=True, exist_ok=True)
+    for p in ("rec_video.mp4", "rec.faces.json", "kadu.jpg", "larissa.JPG", "facefusion_57c01ed.tar.gz"):
+        (tmp_path / "in" / p).write_bytes(b"x")
+    heads = {"lead": tmp_path / "in" / "kadu.jpg", "follow": tmp_path / "in" / "larissa.JPG"}
+    return fs.build_pod_job(film_video=film, sidecar=tmp_path / "in" / "rec.faces.json", stem="06_Rec vertical v4.2", take="larissa_kadu_recap",
+                            heads=heads, archive=tmp_path / "in" / "facefusion_57c01ed.tar.gz", frames=frames, start=start, end=end,
+                            name="faceswap_vertical" + fs.range_tag(start, end), ff_models="models-3.0.0/inswapper_128=7057c6ea",
+                            face_points=tmp_path / "in" / "kadu.jpg")
+
+
+def test_the_pod_job_is_a_valid_runner_job_that_ships_only_the_picture(tmp_path):
+    from dancecap import remote_jobs as rj
+    d = _job(tmp_path, 60, 120, frames=1800)
+    assert "@@" not in __import__("json").dumps(d)
+    job = rj.parse_job(d, "test")
+    assert job.name == "faceswap_vertical_60-120" and job.take == "larissa_kadu_recap" and not job.base and job.cpu is False
+    assert job.needs == ["ffmpeg"] and rj.job_features(job) == ["ffmpeg"] and rj.needed_features([job]) == ["ffmpeg"]   # no torch stack
+    assert rj.job_models(job) == "none" and "mamma-turing" in job.exclude
+    assert [c.name for c in job.commands] == ["install", "swap", "verify"]
+    assert [c.name for _, c in rj.early_commands([job])] == ["install"]          # the venv / models start next to the upload
+    stage = "dancecap/work/larissa_kadu_recap/faceswap_pod/06_Rec_vertical_v4.2"   # a name the shell needs no quotes for
+    pods = [p for _, p in job.inputs]
+    assert pods[:5] == [f"{stage}/in/06_Rec_vertical_v4.2_video.mp4", f"{stage}/in/06_Rec_vertical_v4.2.faces.json",
+                        f"{stage}/in/headshot_lead.jpg", f"{stage}/in/headshot_follow.jpg", f"{stage}/in/facefusion_57c01ed.tar.gz"]
+    assert pods[5] == "dancecap/" + fs.FACE_POINTS.relative_to(fs.ROOT).as_posix()       # where the pod's film_faceswap reads it
+    assert not any(p.lower().endswith(fs.AUDIO_EXT) for p in pods)
+    # the commands run from dancecap/: their paths and the headshot override name the shipped files
+    wdir = stage[len("dancecap/"):]
+    assert job.cwd == "dancecap" and job.env["HM_FACESWAP_HEADSHOTS"] == f"lead={wdir}/in/headshot_lead.jpg,follow={wdir}/in/headshot_follow.jpg"
+    assert job.env["FACEFUSION_COMMIT"] == fs.FF_COMMIT and job.env["FACEFUSION_ARCHIVE"] == f"{wdir}/in/facefusion_57c01ed.tar.gz"
+    swap = job.commands[1].cmd
+    assert swap.startswith("bash remote/faceswap/run.sh swap --film " + f"{wdir}/in/06_Rec_vertical_v4.2_video.mp4 --sidecar ")
+    assert swap.endswith(f"--out {wdir}/out/06_Rec_vertical_v4.2_faces_video_60-120.mp4 --start 60 --end 120")
+    assert job.commands[2].cmd.endswith(f"--report {wdir}/out/06_Rec_vertical_v4.2_faces_video_60-120.report.json")
+    assert job.outputs == [f"{stage}/out/"] and job.verify[0].endswith("_faces_video_60-120.mp4")
+    # the time limits follow the frame count (a kill switch at twice the measured pod rate + a fixed part)
+    whole = rj.parse_job(_job(tmp_path, frames=11032), "test")
+    t = {c.name: c.timeout_min for c in job.commands}
+    tw = {c.name: c.timeout_min for c in whole.commands}
+    per = fs.POD_S_PER_FRAME["swap"]
+    assert t["install"] == tw["install"] == fs.POD_INSTALL_MIN and tw["swap"] > 11032 * per / 60 > t["swap"] > 1800 * per / 60
+    assert tw["swap"] > 2 * 11032 * 0.075 / 60 and tw["verify"] > 2 * 11032 * 0.009 / 60   # > 2x the L40's measured 2026-10-23 rates
+    assert job.max_minutes == sum(t.values()) and whole.max_minutes == sum(tw.values()) and "--start" not in whole.commands[1].cmd
+    assert whole.name == "faceswap_vertical" and whole.commands[1].cmd.endswith("_faces_video.mp4")
+    # the shipped scripts exist and are the ones the commands name
+    for s in ("install.sh", "run.sh", "pod_job_template.json"):
+        assert (fs.ROOT / "remote" / "faceswap" / s).is_file()
+
+
+def test_the_models_env_carries_the_local_copies_crc32(tmp_path):
+    m = tmp_path / ".assets" / "models"
+    m.mkdir(parents=True)
+    (m / "inswapper_128.hash").write_text("7057c6ea")
+    (m / "xseg_1.hash").write_text("not a hash")
+    env = fs.ff_models_env(tmp_path).split()
+    assert "models-3.0.0/inswapper_128=7057c6ea" in env and "models-3.1.0/xseg_1" in env and "models-3.3.0/nsfw_3" in env
+    assert len(env) == sum(len(n) for _, n in fs.FF_MODELS)
+    assert fs.range_tag(None, None) == "" and fs.range_tag(60, 120) == "_60-120" and fs.range_tag(None, 12.5) == "_0-12.5"
+
+
+@pytest.mark.skipif(not _HAVE_FFMPEG, reason="ffmpeg / ffprobe not on PATH")
+def test_only_the_picture_leaves_and_the_recordings_own_audio_comes_back(tmp_path):
+    """the pod route end to end without a pod: the video-only copy (same video bits, no audio), the audio guard, a stand-in for
+    the pod's swapped output, and the remux that puts the recording's own audio back (md5, frames, A/V start)"""
+    rec = _recording(tmp_path / "rec.mp4")
+    copy = tmp_path / "stage" / "rec_video.mp4"
+    vo = fs.video_only_copy(rec, copy)
+    assert vo["ok"] and vo["streams"] == ["video"] and vo["video_md5_equals_recording"] and vo["frames"] == 30 and vo["recording_has_audio"]
+    assert fs.video_only_copy(rec, copy).get("reused")                         # made once per recording
+    assert fs.stream_md5(copy, "v") == fs.stream_md5(rec, "v") and not fs.ffprobe(copy)["has_audio"]
+    # the guard: the recording itself, any audio file - refused; the copy, json and code pass
+    (tmp_path / "voice.wav").write_bytes(b"RIFF")
+    (tmp_path / "notes.json").write_text("{}")
+    bad = fs.audio_problems([rec, tmp_path / "voice.wav", copy, tmp_path / "notes.json", fs.ROOT / "dancecap" / "film_faceswap.py"])
+    assert len(bad) == 2 and "rec.mp4" in bad[0] and "audio" in bad[0] and "voice.wav" in bad[1]
+    assert fs.audio_problems([copy, tmp_path / "notes.json"]) == []
+    # the pod's whole-film output: the picture re-encoded from the copy (no audio), its start restored as the swap does
+    info = fs.ffprobe(copy)
+    pod_out = tmp_path / "pod_out.mp4"
+    w = fs.Writer(pod_out, copy, info, 0, info["frames"], info["width"], info["height"], fs.Cfg())
+    for buf in fs.YuvReader(copy, info, 0, info["frames"]):
+        w.write(buf)
+    w.close()
+    fs.restore_start(pod_out, copy)
+    assert not fs.ffprobe(pod_out)["has_audio"]
+    final = tmp_path / "rec_faces.mp4"
+    rm = fs.remux_audio(pod_out, rec, final)
+    assert rm["ok"] and rm["whole_film"] and rm["audio_md5_equals_recording"] and rm["video_md5_equals_pod"]
+    assert rm["frames"] == rm["frames_pod"] == 30 and rm["av_start_frames_apart"] == rm["av_start_frames_apart_recording"]
+    assert fs.stream_md5(final, "a") == fs.stream_md5(rec, "a") and fs.stream_md5(final, "v") == fs.stream_md5(pod_out, "v")
+    # an excerpt (frames 10-19): the same instant of the audio, re-cut
+    part = tmp_path / "pod_part.mp4"
+    w = fs.Writer(part, copy, info, 10, 10, info["width"], info["height"], fs.Cfg())
+    for buf in fs.YuvReader(copy, info, 10, 10):
+        w.write(buf)
+    w.close()
+    rx = fs.remux_audio(part, rec, tmp_path / "rec_faces_part.mp4", first=10, count=10)
+    assert rx["ok"] and not rx["whole_film"] and rx["frames"] == 10 and "re-cut" in rx["audio"]
+    assert fs.ffprobe(tmp_path / "rec_faces_part.mp4")["has_audio"]
+    # a pod output that lost a frame never becomes the final
+    short = tmp_path / "short.mp4"
+    _run("ffmpeg", "-v", "error", "-y", "-i", pod_out, "-frames:v", "29", "-c", "copy", short)
+    with pytest.raises(RuntimeError, match="remux"):
+        fs.remux_audio(short, rec, tmp_path / "bad.mp4")
+    assert not (tmp_path / "bad.mp4").exists()
+
+
+def test_the_pod_report_gets_local_paths_and_its_analysis(tmp_path):
+    import json
+    pod = tmp_path / "out"
+    pod.mkdir()
+    (pod / "x_faces_video.report.json").write_text(json.dumps(
+        {"film": "/workspace/HeadMovement/in/x_video.mp4", "out": "/workspace/HeadMovement/out/x_faces_video.mp4", "sidecar": "/w/s.json",
+         "sources": {"lead": "/w/l.jpg", "follow": "/w/f.jpg"}, "first_frame": 0, "frames": 3, "verify": {"psnr_outside_faces_db": 50.0}}))
+    (pod / "x_faces_video.analysis.json").write_text('{"frames": []}')
+    heads = {"lead": tmp_path / "l.jpg", "follow": tmp_path / "f.jpg"}
+    rp = fs.localize_report(pod / "x_faces_video.report.json", tmp_path / "x_faces.mp4", tmp_path / "x.mp4", tmp_path / "x.faces.json",
+                            heads, {"pod": {"gpu": "RTX 4090"}, "remux": {"ok": True}})
+    rep = json.loads(rp.read_text())
+    assert rp == tmp_path / "x_faces.report.json" and rep["film"] == str((tmp_path / "x.mp4").resolve())
+    assert rep["out"] == str((tmp_path / "x_faces.mp4").resolve()) and rep["sources"]["lead"] == str(heads["lead"])
+    assert rep["pod_paths"]["out"].startswith("/workspace") and rep["pod"]["gpu"] == "RTX 4090" and rep["verify"]["psnr_outside_faces_db"] == 50.0
+    assert (tmp_path / "x_faces.analysis.json").read_text() == '{"frames": []}'
+
+
+@pytest.mark.skipif(not _HAVE_FFMPEG, reason="ffmpeg / ffprobe not on PATH")
+def test_compare_two_swaps_inside_and_outside_the_faces(tmp_path):
+    """compare: A and B paint the same face box (lossless) 10 levels apart; outside the box both are the decoded recording"""
+    import json
+    rec = _recording(tmp_path / "rec.mp4", audio=False)
+    info = fs.ffprobe(rec)
+    box = [8, 16, 40, 48]
+
+    def swapped(path, level, frames_with_face):
+        w = fs.Writer(path, rec, info, 0, 30, 64, 112, fs.Cfg(lossless=True))
+        for k, buf in enumerate(fs.YuvReader(rec, info, 0, 30)):
+            if k in frames_with_face:
+                Y, _, _ = fs.planes(buf, 64, 112)
+                Y[box[1]:box[3], box[0]:box[2]] = level
+            w.write(buf)
+        w.close()
+        pf = [{"i": k, "faces": [{"role": "follow", "w": 1.0, "box": box}] if k in frames_with_face else []} for k in range(30)]
+        rp = path.with_suffix(".report.json")
+        rp.write_text(json.dumps({"film": str(rec), "out": str(path), "first_frame": 0, "frames": 30, "per_frame": pf}))
+        return rp
+    ra = swapped(tmp_path / "a.mp4", 200, set(range(5, 15)))
+    rb = swapped(tmp_path / "b.mp4", 190, set(range(5, 16)))
+    out_json = tmp_path / "cmp.json"
+    fs.main(["compare", "--report", str(ra), "--ref-report", str(rb), "--json", str(out_json), "--sheet", str(tmp_path / "s.jpg"),
+             "--sheet-n", "3"])
+    res = json.loads(out_json.read_text())
+    assert res["face_frames"]["a"]["follow"] == 10 and res["face_frames"]["b"]["follow"] == 11 and res["face_frames"]["both"]["follow"] == 10
+    assert res["face_frames"]["a"]["lead"] == 0 and res["weight_abs_diff"]["follow"]["max"] == 1.0
+    assert res["px"]["in_a_vs_b"] == 11 * 32 * 32 and res["px"]["in_follow_a_vs_b"] == 11 * 32 * 32
+    # 10 frames exactly 10 levels apart (28.13 dB alone) + 1 frame where only B painted: lower; outside: the same lossless pixels
+    assert 0 < res["psnr_db"]["in_a_vs_b"] < 28.13 and res["psnr_db"]["out_a_vs_b"] == float("inf")
+    assert res["psnr_db"]["out_a_vs_rec"] == res["psnr_db"]["out_b_vs_rec"]
+    assert (tmp_path / "s.jpg").is_file() and cv2.imread(str(tmp_path / "s.jpg")).shape[0] == 3 * (224 + 4)
+    # a window of A's frames (film 0.4-0.6 s = frames 12-17): B's extra face frame 15 is in it, the pixels line up
+    fs.main(["compare", "--report", str(ra), "--ref-report", str(rb), "--json", str(out_json), "--start", "0.4", "--end", "0.6"])
+    win = json.loads(out_json.read_text())
+    assert win["frames"] == 6 and win["face_frames"]["a"]["follow"] == 3 and win["face_frames"]["b"]["follow"] == 4
+    assert win["psnr_db"]["out_a_vs_b"] == float("inf") and win["px"]["in_a_vs_b"] == 4 * 32 * 32
