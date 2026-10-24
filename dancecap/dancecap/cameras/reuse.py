@@ -178,12 +178,12 @@ def presolve_sub(take: Take, cam: str) -> int:
     from .. import gpu
     from .features import Features, FeatureSettings
     from .localize import Localizer, LocSettings, localize_camera
-    from .mapping import model_cams
+    from .mapping import map_settings, model_cams
     from .pipeline import _cached, _file_key, loc_settings, map_images
     work = take.work.resolve()
     ls = loc_settings(take)
     recs = list_images(work, [s.id for s in take.sources])
-    images, _ = map_images(work, recs, None)
+    images, _ = map_images(work, recs, map_settings(take.cfg))
     subs = []
     for d in sorted((work / "cameras" / "sfm_work").glob("sub_*/best")):
         if (d / "images.bin").exists():

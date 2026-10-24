@@ -13,7 +13,7 @@ from ..take import Take
 from . import report as qa
 from .features import Features, FeatureSettings, ImageRec, list_images
 from .localize import FramePose, Localizer, LocSettings, localize_camera
-from .mapping import (MapSettings, build_database, link_components, map_pairs, match_pairs, model_cams,
+from .mapping import (MapSettings, build_database, link_components, map_pairs, map_settings, match_pairs, model_cams,
                       refine_model, run_mapper, run_sub_mapper, select_map_images, targeted_pairs)
 from .depth_guard import DepthGuardSettings, apply as depth_guard
 from .smooth import smooth_track
@@ -35,17 +35,100 @@ def _K(f: np.ndarray, w: int, h: int) -> np.ndarray:
 
 def map_images(work: Path, recs: dict, ms: MapSettings | None) -> tuple[list[ImageRec], set[str]]:
     """The map's images: select_map_images, or - for a map reused from another take of the same recordings
-    (cameras/reuse.py) - exactly the images of the reused models (cameras/sfm_work/map_images.json)."""
+    (cameras/reuse.py) - exactly the images of the reused models (cameras/sfm_work/map_images.json).
+    The list stage_map recorded (sfm_work/map.json map_images) wins over the selection when the two differ for the
+    cameras of `recs` - [cameras] map edited after the map was built: the Localizer keeps only listed images as
+    references, so the new settings would silently drop map images (a loud WARNING says so). Same lists: the selection
+    as it was. ms=None: the recorded list (RuntimeError without one)."""
     p = work / "cameras" / "sfm_work" / "map_images.json"
     if p.exists():
         from .reuse import reused_images
         return reused_images(work, json.loads(p.read_text())), set()
-    return select_map_images(recs, ms)
+    mp = work / "cameras" / "sfm_work" / "map.json"
+    built = json.loads(mp.read_text()).get("map_images") if mp.exists() else None
+    if built is not None:
+        built = {k for k in built if k.split("/")[0] in recs}
+
+    def recorded():  # in select_map_images' order: per camera its window images, then its keyframes
+        return [r for rs in recs.values() for kind in ("win", "kf") for r in rs if r.kind == kind and r.key in built]
+    if ms is None:
+        if built is None:
+            raise RuntimeError(f"[cameras] map images: no MapSettings given and {mp} records no map_images")
+        return recorded(), set()
+    images, dense = select_map_images(recs, ms)
+    if built is None or built == {r.key for r in images}:  # no map yet / a map.json from before the list / unchanged
+        return images, dense
+    have = {r.key for r in images}
+    print(f"[cameras] WARNING map images: the [cameras] map settings select {len(have - built)} image(s) the map was "
+          f"not built with and miss {len(built - have)} of its {len(built)} (cameras {sorted(recs)}): the localisation "
+          f"uses the map's own list (sfm_work/map.json); restore the settings or re-run --stages map", flush=True)
+    return recorded(), dense & built
 
 
 def loc_settings(take: Take) -> LocSettings:
     """LocSettings with takes/<take>.toml [cameras] loc = {...} overrides (e.g. kf_by_time for a reused map)."""
     return LocSettings(**((take.cfg.get("cameras") or {}).get("loc") or {}))
+
+
+def world_x_cam(take_cfg: dict, main_cams: list[str], types: dict | None = None) -> tuple[str, str]:
+    """(camera whose mean right vector is the world X axis, why): takes/<take>.toml [cameras] x_cam, else the first
+    main-model camera of a tripod class (one centre: a stable yaw; an orbiting camera's mean right vector nearly
+    cancels and leaves the yaw arbitrary), else '06' when it is in the main model, else the first main camera.
+    types: {cam: camera_types.StageType} as applied (camera_types_for)."""
+    x = ((take_cfg or {}).get("cameras") or {}).get("x_cam")
+    if x is not None and str(x) in main_cams:
+        return str(x), "[cameras] x_cam"
+    late = "" if x is None else f" ([cameras] x_cam {x!r} is not a main-model camera)"
+    for c in main_cams:
+        st = (types or {}).get(c)
+        if st is not None and st.cls.startswith("tripod"):
+            return c, f"first main-model tripod ({st.cls}){late}"
+    return ("06", f"camera 06 in the main model{late}") if "06" in main_cams else (main_cams[0], f"first main camera{late}")
+
+
+def few_main_reason(reg_cams: list[str]) -> str:
+    """Why attach and world are skipped (report.json) instead of crashing in world.bootstrap: the main MODEL holds
+    fewer than 2 cameras. (Fewer than 2 localised cameras of a larger model is an error: require_main_tracks.)"""
+    return (f"the main model holds only {len(reg_cams)} camera(s) {list(reg_cams)}: the dancers cannot be "
+            "triangulated (attach and world need >= 2; a two-camera take whose second camera is not in the main "
+            "model: see cameras/sfm_work/map.json strong_link_groups)")
+
+
+def require_main_tracks(reg: dict, tracks: dict, what: str) -> None:
+    """RuntimeError, before anything is skipped or deleted, when the main model holds >= 2 cameras but fewer than 2 of
+    them have a localisation in this run: a --cams subset without them, or a missing cameras/cache/loc_<cam>.npz."""
+    have = sorted(c for c in reg if c in tracks)
+    if len(have) < 2:
+        raise RuntimeError(f"[cameras] {what} needs the main-model cameras' localisations: the main model holds "
+                           f"{sorted(reg)}, this run has {have} - pass --cams with all of them, or run --stages loc "
+                           "(front_pod loc-part / loc-join) for the missing ones")
+
+
+TWO_VIEW_SYNC = "two_view_epipolar"  # sync/offsets.json method of cameras.twoview sync
+
+
+def world_sync_tracks(work: Path, tracks: dict) -> tuple[dict, dict | None]:
+    """(main tracks to triangulate the world's dancers from, sync record or None). A two-camera take's audio clocks are
+    off by tens of ms, which biases every triangulated joint of a moving dancer and with them the chain scale and the
+    ankle floor: when sync/offsets.json is a two-view epipolar sync (cameras.twoview sync; it needs no world frame),
+    the frame times are shifted by it (mamma_dyn.apply_offset, as world_scale chain) before the triangulation. Any
+    other offsets file (dancecap.sync) is not applied: those takes' worlds stay on the audio clocks, as before.
+    Refuses (SystemExit) offsets measured on other audio clocks (mamma_dyn.read_sync_offsets)."""
+    p = work / "sync" / "offsets.json"
+    try:
+        raw = json.loads(p.read_text()) if p.exists() else {}
+    except ValueError:
+        raw = {}
+    if not isinstance(raw, dict) or raw.get("method") != TWO_VIEW_SYNC:
+        return tracks, None
+    from ..mamma_dyn import apply_offset, read_sync_offsets
+    off = read_sync_offsets(work)
+    out = {c: {**tr, "t": apply_offset(tr["t"], off[c])} if c in off else tr for c, tr in tracks.items()}
+    rec = {"applied": True, "file": "sync/offsets.json", "method": raw["method"], "gauge": raw.get("gauge"),
+           "offsets_ms": {c: round(1000 * float(off[c]["delta"]), 2) for c in sorted(tracks) if c in off},
+           "rate_ms_per_100s": {c: round(1e5 * float(off[c].get("rate", 0.0)), 3) for c in sorted(tracks) if c in off},
+           "not_in_file": sorted(c for c in tracks if c not in off)}
+    return out, rec
 
 
 def stage_map(work: Path, recs: dict, F: Features, ms: MapSettings) -> dict:
@@ -71,7 +154,10 @@ def stage_map(work: Path, recs: dict, F: Features, ms: MapSettings) -> dict:
           flush=True)
     for cp, e in sorted(st["per_campair"].items()):
         print(f"[cameras]   {cp}: {e['pairs']} pairs, max {e['max_inliers']} inliers", flush=True)
-    st.pop("pair_inliers")
+    if any(e["mode"] != "per_image" for e in st["intrinsics"].values()):
+        print("[cameras] intrinsics: " + ", ".join(f"{c} {e['mode']} ({e['cameras']} camera(s), prior {e['focal_prior_px']:.0f} px)"
+                                                   for c, e in st["intrinsics"].items()), flush=True)
+    st.pop("pair_inliers")  # per_campair keeps the counts: pairs, max / sum inliers, link_pairs (>= link_min_inliers)
     main_cams = groups[0]
     db = sw / "database.db"
     if len(groups) > 1:
@@ -93,6 +179,8 @@ def stage_map(work: Path, recs: dict, F: Features, ms: MapSettings) -> dict:
     info = {"images": len(images), "dense": len(dense), "pairs": len(matches), "match_s": round(t_match, 1),
             "mapping_s": round(time.time() - t0, 1), "verification": st,
             "strong_link_groups": [sorted(g) for g in groups], "main_cams": sorted(main_cams),
+            "intrinsics_mode": {**{c: e["mode"] for c, e in st["intrinsics"].items()},  # the model each camera is in
+                                **{c: m for v in subs.values() if v for c, m in v["intrinsics_mode"].items()}},
             "models": raw_models, "refine": refine, "sub_models": subs,
             "map_images": [r.key for r in images]}
     (sw / "map.json").write_text(json.dumps(info, indent=1, default=str))
@@ -104,13 +192,14 @@ def stage_map(work: Path, recs: dict, F: Features, ms: MapSettings) -> dict:
 
 def build_sub_models(work: Path, F: Features, images: list[ImageRec], matches: dict, groups: list[set],
                      ms: MapSettings) -> dict:
-    """One COLMAP sub-model per weakly linked camera group -> sfm_work/sub_<name>/best (used by attach)."""
+    """One COLMAP sub-model per weakly linked camera group -> sfm_work/sub_<name>/best (used by attach). Each entry
+    records its cameras' intrinsics_mode ('single' for a one-camera group: map.json's intrinsics_mode takes it)."""
     sw = work / "cameras" / "sfm_work"
     subs: dict = {}
     for g in groups:
         name = "_".join(sorted(g))
         sdb = sw / f"database_sub_{name}.db"
-        build_database(work, F, images, matches, sdb, ms, cams=g, single_camera=len(g) == 1)
+        sst = build_database(work, F, images, matches, sdb, ms, cams=g, single_camera=len(g) == 1)
         if (sw / f"sub_{name}").exists():
             shutil.rmtree(sw / f"sub_{name}")
         sb = run_sub_mapper(work, sdb, sw / f"sub_{name}", ms)
@@ -119,7 +208,8 @@ def build_sub_models(work: Path, F: Features, images: list[ImageRec], matches: d
             print(f"[cameras] sub-model {name}: mapping failed", flush=True)
             continue
         subs[name] = {"images": sb.num_reg_images(), "points": sb.num_points3D(), "cams": model_cams(sb),
-                      "refine": refine_model(sb, ms.refine_px)}
+                      "refine": refine_model(sb, ms.refine_px),
+                      "intrinsics_mode": {c: e["mode"] for c, e in sst["intrinsics"].items()}}
         (sw / f"sub_{name}" / "best").mkdir(parents=True, exist_ok=True)
         sb.write_binary(str(sw / f"sub_{name}" / "best"))
         print(f"[cameras] sub-model {name}: {subs[name]}", flush=True)
@@ -289,6 +379,13 @@ def stage_attach(work: Path, recs: dict, F: Features, ls: LocSettings, ms: MapSe
     info: dict = {}
     if not missing:
         return info
+    if len(reg) < 2:  # the dancers the attach is fitted to need >= 2 main-model views (bootstrap would raise)
+        why = few_main_reason(sorted(reg))
+        for cam in missing:  # as every camera that is not attached: no placement in this model, no stale loc cache
+            info[cam] = {"attached": False, "reason": why}
+            print(f"[cameras] {cam}: NOT attached - {why}", flush=True)
+            (work / "cameras" / "cache" / f"loc_{cam}.npz").unlink(missing_ok=True)
+        return info
     images, _ = map_images(work, recs, ms)
     subs = []
     for d in sorted((work / "cameras" / "sfm_work").glob("sub_*/best")):
@@ -297,6 +394,7 @@ def stage_attach(work: Path, recs: dict, F: Features, ls: LocSettings, ms: MapSe
             subs.append((d.parent.name, m, model_cams(m)))
     main_cams = [c for c in cams if c in reg]
     main_tracks = stage_smooth(work, main_cams, sigma_s, max_reproj_px, write=False, types=types)
+    require_main_tracks(reg, main_tracks, "attach")  # a subset run (--cams 05) raises here, as before, deleting nothing
     vert = main_vertical(work, main_tracks, main_cams)
     u_main = np.asarray(vert["fused"]["u"])
     dancers3d = grid = floor_main = None
@@ -533,6 +631,14 @@ def reproj_cv(R, t, K, k1, xyz, xy) -> np.ndarray:
     return np.where(vis, np.linalg.norm(uv - xy, axis=1), np.inf)
 
 
+def adopted_track(work: Path, cam: str) -> Path | None:
+    """cameras/orig/<cam>_loc.npz when cameras/<cam>.npz is an ADOPTED track (`cameras.twoview ptz --adopt` moves the
+    localisation there and installs the PTZ track): stage_smooth then keeps cameras/<cam>.npz instead of rewriting it
+    from cache/loc_<cam>.npz or deleting it. Moving cameras/orig/<cam>_loc.npz back undoes the adoption."""
+    o = work / "cameras" / "orig" / f"{cam}_loc.npz"
+    return o if o.exists() and (work / "cameras" / f"{cam}.npz").exists() else None
+
+
 def stage_smooth(work: Path, cams: list[str], sigma_s: float, max_reproj_px: float,
                  write: bool = True, attach_bad_px: float = 60.0, types: dict | None = None,
                  typed_settings: TypedSettings | None = None) -> dict[str, dict]:
@@ -543,14 +649,19 @@ def stage_smooth(work: Path, cams: list[str], sigma_s: float, max_reproj_px: flo
     for a tripod, ...) and skips the zoom-depth guard; the general class runs exactly today's code.
     A locked tripod's keyframes-only localisation (loc_mode 'keyframes') is valid only for the constant pose: with any
     other model the camera is not exported (write=True raises KeyframeCacheError after the other cameras; write=False
-    returns the track marked keyframes_only)."""
+    returns the track marked keyframes_only). An adopted track (adopted_track) is never overwritten or deleted; the
+    returned track is still the localisation's."""
     tracks = {}
     types = camera_types_for(work, types)
     sparse_bad: dict[str, str] = {}
     for cam in cams:
         p = work / "cameras" / "cache" / f"loc_{cam}.npz"
+        kept = adopted_track(work, cam) if write else None
+        if kept is not None:
+            print(f"[cameras] {cam}: cameras/{cam}.npz is an adopted track (cameras/orig/{kept.name} holds the "
+                  f"localisation it replaced): kept, not rewritten - move that file back to re-export", flush=True)
         if not p.exists():
-            if write:  # no track for this camera any more: never leave a stale contract file behind
+            if write and kept is None:  # no track for this camera any more: never leave a stale contract file behind
                 (work / "cameras" / f"{cam}.npz").unlink(missing_ok=True)
             continue
         d = dict(np.load(p))
@@ -614,7 +725,7 @@ def stage_smooth(work: Path, cams: list[str], sigma_s: float, max_reproj_px: flo
         n_in = np.where(ok, d["n_inliers"], 0).astype(np.int32)
         typed_keys = {} if ctype is None else {  # additive contract keys (CONTRACTS.md cameras/<cam>.npz)
             "camera_class": np.str_(ctype["class"]), "type_model": np.str_(ctype["model"]), "type_held": held}
-        if write:
+        if write and kept is None:
             np.savez(work / "cameras" / f"{cam}.npz", t=d["t"], K=K, R=R_out, tvec=t_out, dist=k1, ok=ok,
                      reproj_px=rp, n_inliers=n_in, attached=np.bool_(attached),
                      axis_sd=d["axis_sd"].astype(np.float32), recentred=d["recentred"], **typed_keys)
@@ -674,13 +785,16 @@ def focal_stats(tr: dict, spike_pct: float = 2.0) -> dict:
 def run(take: Take, cams: list[str] | None = None, stages: tuple[str, ...] = STAGES, sigma_s: float = 0.04,
         max_reproj_px: float = 4.0, camera_types: str | None = None) -> dict:
     """camera_types: policy for the per-video camera types (user | auto | off; None = DANCECAP_CAMERA_TYPES or
-    'user': confirmed answers only). See dancecap.camera_types and cameras/typed.py."""
+    'user': confirmed answers only). See dancecap.camera_types and cameras/typed.py.
+    The world's dancers are triangulated on a two-view sync's clocks when sync/offsets.json is one (world_sync_tracks;
+    run `cameras.twoview sync` before --stages world). A main model of < 2 cameras skips attach / world with the reason
+    in report.json (few_main_reason)."""
     work = take.work.resolve()
     cams = cams or [s.id for s in take.sources]
     out = work / "cameras"
     out.mkdir(parents=True, exist_ok=True)
     recs = list_images(work, cams)
-    fs, ms, ls = FeatureSettings(), MapSettings(), loc_settings(take)
+    fs, ms, ls = FeatureSettings(), map_settings(take.cfg), loc_settings(take)
     F = Features(work, out / "cache", fs)
     rep_p = out / "report.json"
     rep = json.loads(rep_p.read_text()) if rep_p.exists() else {}
@@ -710,18 +824,39 @@ def run(take: Take, cams: list[str] | None = None, stages: tuple[str, ...] = STA
     sim3 = None
     sim3_p = out / "world_from_sfm.json"
     dancers = None
-    main_cams = sorted(c for c in model_cams(model) if c in tracks)  # world axes from the main model only
-    if "world" in stages and tracks:
+    reg_main = model_cams(model)
+    main_cams = sorted(c for c in reg_main if c in tracks)  # world axes from the main model only
+    skip_rec = (rep.get("world") or {}).get("solved") is False  # report.json holds an earlier run's skip record
+    world_skipped = "world" in stages and len(reg_main) < 2  # with or without this run's tracks: no world frame
+    if world_skipped:  # no world frame instead of a crash in bootstrap; the reason goes to report.json
+        moved = None
+        if sim3_p.exists():  # an earlier run's world frame (maybe of another map): out of every reader's way
+            sim3_p.replace(out / "world_from_sfm.prev.json")
+            moved = "an earlier run's world_from_sfm.json, moved to world_from_sfm.prev.json"
+        rep["world"] = {"solved": False, "reason": few_main_reason(sorted(reg_main)), "world_from_sfm": moved}
+        print(f"[cameras] WARNING world NOT solved - {rep['world']['reason']}" + (f" ({moved})" if moved else ""),
+              flush=True)
+    elif "world" in stages and tracks:
+        require_main_tracks(reg_main, tracks, "world")
+        if skip_rec:
+            rep.pop("world")
         main_tr = {c: tracks[c] for c in main_cams}
-        dancers = triangulate_dancers(work, main_tr)  # attached cameras were fitted TO these: never feed them back
+        tri_tr, world_sync = world_sync_tracks(work, main_tr)  # a two-view sync's clocks, else the audio clocks
+        if world_sync is not None:
+            print(f"[cameras] world dancers on the two-view sync clocks: {world_sync['offsets_ms']} ms", flush=True)
+        dancers = triangulate_dancers(work, tri_tr)  # attached cameras were fitted TO these: never feed them back
         st, src = statures_from_take(take.cfg)
         vert = main_vertical(work, main_tr, main_cams)
         soles, sole_src = sole_from_take(take.cfg)
-        sim3 = bootstrap(main_tr, dancers, pts, st, src, x_cam="06" if "06" in main_cams else main_cams[0],
+        x_cam, x_why = world_x_cam(take.cfg, main_cams, types)
+        print(f"[cameras] world X axis: camera {x_cam} ({x_why})", flush=True)
+        sim3 = bootstrap(main_tr, dancers, pts, st, src, x_cam=x_cam,
                          up_cams=main_cams, vertical=vert["fused"], scale_rule=scale_rule_from_take(take.cfg),
                          sole_m=soles)  # per dancer (chain rule); the floor uses their mean
         sim3["diagnostics"]["sole_source"] = sole_src
         sim3["diagnostics"]["dancer_roles"] = roles_coverage(work, main_cams)
+        if world_sync is not None:  # only then: every other take's world_from_sfm.json is unchanged
+            sim3["diagnostics"]["world_sync"] = world_sync
         ref = reference_from_take(take.cfg)  # [cameras] scale_reference: inherit a betas-corrected scale
         if ref is not None:
             sim3, _ = adopt_reference(work, sim3, ref["work"], ref["sim3"], soles, ref_name=ref["take"],
@@ -746,12 +881,16 @@ def run(take: Take, cams: list[str] | None = None, stages: tuple[str, ...] = STA
               f"statures barefoot?); {sim3['gravity_source']}; {sim3['floor_source']}")
     elif sim3_p.exists():
         sim3 = json.loads(sim3_p.read_text())
+        if skip_rec:  # a world file is back (restored by hand) and used: the skip record is stale
+            rep.pop("world")
     if "qa" in stages:
         rep.update(build_report(work, cams, recs, model, tracks, pts, rgb, sim3, rep.get("map", {}), sigma_s,
-                                max_reproj_px, rep.get("attach")))
+                                max_reproj_px, rep.get("attach"), n_take=len(take.sources)))
         camera_type_probe(work, tracks, sim3, sigma_s, max_reproj_px, rep)
         rep["camera_types"]["localised"] = localisation_record(work, cams)
         rep_p.write_text(json.dumps(rep, indent=1, default=_np))
+    elif world_skipped or ("attach" in stages and rep.get("attach") and len(reg_main) < 2):
+        rep_p.write_text(json.dumps(rep, indent=1, default=_np))  # without qa the skip reason still reaches report.json
     return rep
 
 
@@ -1122,8 +1261,23 @@ def _model_errors(model) -> dict[str, list[float]]:
     return out
 
 
+def store_dancer_px(work: Path, cam: str, per_frame: np.ndarray | None) -> bool:
+    """The per-frame dancer residual (dancer_check) into cameras/<cam>.npz as the additive key dancer_px. Not into an
+    adopted track (adopted_track): the residual was measured on the localisation, not on the installed track."""
+    npz = work / "cameras" / f"{cam}.npz"
+    if per_frame is None or not npz.exists() or adopted_track(work, cam) is not None:
+        return False
+    d = dict(np.load(npz))
+    d["dancer_px"] = per_frame.astype(np.float32)
+    np.savez(npz, **d)
+    return True
+
+
 def build_report(work: Path, cams, recs, model, tracks, pts, rgb, sim3, map_info, sigma_s, max_reproj_px,
-                 attach: dict | None = None) -> dict:
+                 attach: dict | None = None, n_take: int | None = None) -> dict:
+    """cameras/report.json's per-camera record, the dancers' check, the QA plots and gate G2a (n_take: the take's
+    camera count, for cameras_registered; None = len(cams)). cams.<cam>.adopted names the localisation an adopted
+    cameras/<cam>.npz replaced: that camera's statistics here describe the localisation, not the contract file."""
     import cv2
     qa_dir = work / "cameras" / "qa"
     qa_dir.mkdir(parents=True, exist_ok=True)
@@ -1154,6 +1308,9 @@ def build_report(work: Path, cams, recs, model, tracks, pts, rgb, sim3, map_info
              "map_reproj_median_px": float(np.median(per_img_err[cam])) if cam in per_img_err else float("nan")}
         if att:
             e["attach"] = att
+        kept = adopted_track(work, cam)
+        if kept is not None:  # only then: every other take's report is unchanged
+            e["adopted"] = str(kept.relative_to(work))
         tr = tracks.get(cam)
         if tr is not None:
             src = tr["source"]
@@ -1183,11 +1340,7 @@ def build_report(work: Path, cams, recs, model, tracks, pts, rgb, sim3, map_info
         for cam, v in dl.items():  # per-frame dancer residual into the contract file (additive key)
             pf = v.pop("per_frame", None)
             projs[cam] = v.pop("_proj", {})
-            npz = work / "cameras" / f"{cam}.npz"
-            if pf is not None and npz.exists():
-                d = dict(np.load(npz))
-                d["dancer_px"] = pf.astype(np.float32)
-                np.savez(npz, **d)
+            store_dancer_px(work, cam, pf)
         rep["dancer_loo_check"] = dl
         if sim3 is not None:
             rep["vertical_check"] = vertical_check(work, tracks, sim3, main_cams)
@@ -1204,7 +1357,7 @@ def build_report(work: Path, cams, recs, model, tracks, pts, rgb, sim3, map_info
                 ra = attach_review(work, tracks, sim3, projs, att_cams + main_cams[:1],
                                    work / "review" / "cameras_attach_check.jpg", dl)
                 rep["qa_review"]["attach_check"] = str(ra)
-    rep["gates_G2a"] = qa.gates(rep, len(cams), sim3)
+    rep["gates_G2a"] = qa.gates(rep, len(cams), sim3, n_take=n_take)
     # plots
     if tracks:
         wt = {}

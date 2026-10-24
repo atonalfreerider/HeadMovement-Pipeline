@@ -641,7 +641,8 @@ def _sam_mem(n: int, w: int, h: int) -> float:
     """front_pod._sam_mem_gb from the planned frame count (frames.json does not exist before the pod ingests)."""
     px = w * h
     work_px = min(1.0, 1280 / max(w, h)) ** 2 * px
-    return round((n * (3 * px + 2 * px + 2 * work_px + 960 * 540 * 3)) / 2**30 * 1.1 + 3.0, 1)
+    from .front_pod import _qa_frame_px   # a landscape video's QA frames are 1707x960, not 960x540
+    return round((n * (3 * px + 2 * px + 2 * work_px + 3 * _qa_frame_px(w, h))) / 2**30 * 1.1 + 3.0, 1)
 
 
 def build_tasks(R: fp.Runner, plan: dict, segs: list[str], cpus: int) -> dict:

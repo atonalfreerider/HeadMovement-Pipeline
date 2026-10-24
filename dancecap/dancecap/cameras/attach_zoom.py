@@ -212,7 +212,7 @@ def reattach(work: Path, cams: list[str], backup: str = "s2_gate_backup", log=pr
     from ..take import Take
     from . import pipeline as P
     from .features import Features, FeatureSettings, list_images
-    from .mapping import MapSettings
+    from .mapping import map_settings
     P.LOOSE_FILE_KEYS = True      # the cached sub-model localisations are keyed by mtimes that a pod download changed
     work = Path(work).resolve()
     take = Take.load(work.name)
@@ -228,7 +228,7 @@ def reattach(work: Path, cams: list[str], backup: str = "s2_gate_backup", log=pr
     for c in cams:
         align_sub_mtime(work, c, log)
     recs = list_images(work, main_cams + list(cams))
-    fs, ms, ls = FeatureSettings(), MapSettings(), P.loc_settings(take)
+    fs, ms, ls = FeatureSettings(), map_settings(take.cfg), P.loc_settings(take)
     F = Features(work, work / "cameras" / "cache", fs)
     from .world import scale_rule_from_take, statures_from_take
     from .. import camera_types as ct

@@ -115,7 +115,7 @@ def _kp_index(kpts: np.ndarray, xy: np.ndarray) -> np.ndarray:
 def extend(take_name: str, cam: str, dry_run: bool = False) -> dict:
     from .cameras.features import Features, FeatureSettings, list_images
     from .cameras.localize import FramePose, Localizer, Ref
-    from .cameras.mapping import MapSettings
+    from .cameras.mapping import map_settings
     from .cameras.pipeline import load_model, loc_settings, map_images
     take = Take.load(take_name)
     work = take.work.resolve()
@@ -125,7 +125,7 @@ def extend(take_name: str, cam: str, dry_run: bool = False) -> dict:
     meta = json.loads((work / "frames" / cam / "frames.json").read_text())
     w, h = int(meta["width"]), int(meta["height"])
     F = Features(work, cache, FeatureSettings())
-    images, _ = map_images(work, recs, MapSettings())
+    images, _ = map_images(work, recs, map_settings(take.cfg))  # the map's own settings: references = its images
     ls = loc_settings(take)
     main_p, sub_p = cache / f"loc_{cam}.npz", cache / f"locsub_{cam}.pkl"
     t_start = time.time()

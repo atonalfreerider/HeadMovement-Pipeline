@@ -865,7 +865,8 @@ def sam_sizes(take: str, work: Path = WORK) -> dict:
             return {}  # one camera without its size: rank by frames (front_dag's fallback), never mixed units
         px = w * h
         work_px = min(1.0, 1280 / max(w, h)) ** 2 * px
-        out[f.parent.name] = round((n * (3 * px + 2 * px + 2 * work_px + 960 * 540 * 3)) / 2 ** 30 * 1.1 + 3.0, 1)
+        from .front_pod import _qa_frame_px   # a landscape video's QA frames are 1707x960, not 960x540
+        out[f.parent.name] = round((n * (3 * px + 2 * px + 2 * work_px + 3 * _qa_frame_px(w, h))) / 2 ** 30 * 1.1 + 3.0, 1)
     return out
 
 

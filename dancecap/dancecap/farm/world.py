@@ -275,8 +275,8 @@ def member_specs(spec) -> list[Member]:
         _file(alg, "shared/alignment_studio.json"), _rel_ws(alg))
     add("clock_gauge", POSE_SCOPE, "the reference take's measured per-camera video offsets (segment sync is gauge-pinned to them)",
         _file(ref / "sync" / "offsets.json", "ref/sync/offsets.json"), _rel_ws(ref / "sync" / "offsets.json"))
-    cams = {c: {k: v[k] for k in ("mount", "zoom", "source") if k in v}
-            for c, v in sorted((cfg.get("cameras") or {}).items()) if isinstance(v, dict)}
+    from ..camera_types import cam_tables
+    cams = {c: {k: v[k] for k in ("mount", "zoom", "source") if k in v} for c, v in sorted(cam_tables(cfg).items())}
     add("camera_types", POSE_SCOPE, "per-camera mount / zoom (user-confirmed), without timestamps",
         [Entry("shared/camera_types.json", data=_json_bytes({"schema": SCHEMA + "/camera_types", "cameras": cams}))],
         f"takes/{spec.name}.toml [cameras]")
@@ -880,8 +880,8 @@ def compare_take(take: str, dance: str = DEFAULT_DANCE, world_id: str | None = N
         f"{cfg['alignment']} vs the world's alignment_studio.json")
     # camera types
     wt = w.load_json("shared/camera_types.json")["cameras"]
-    mt = {c: {k: v[k] for k in ("mount", "zoom", "source") if k in v} for c, v in (cfg.get("cameras") or {}).items()
-          if isinstance(v, dict) and "mount" in v}
+    from ..camera_types import cam_tables
+    mt = {c: {k: v[k] for k in ("mount", "zoom", "source") if k in v} for c, v in cam_tables(cfg).items() if "mount" in v}
     diff = {c: (mt[c], wt.get(c)) for c in mt if wt.get(c) != mt[c]}
     if not mt:
         chk("camera_types", None, "no [cameras] blocks: this take was solved with the general handheld + zoom model")

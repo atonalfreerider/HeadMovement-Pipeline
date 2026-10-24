@@ -5,12 +5,17 @@ exhaustive over the "dense" set (keyframes + every `dense_step`-th window frame)
 inside each camera over the whole map set. ALIKED/LightGlue matches are verified with pycolmap's two-view
 geometry (F/E/H, LO-RANSAC) and imported into a COLMAP database; incremental mapping runs with ONE camera
 PER IMAGE (phones zoom), SIMPLE_RADIAL, focal prior 1.2 x max image dimension (has_prior_focal_length).
+A video listed in MapSettings.shared_intrinsics (no zoom) gets ONE camera for all its images instead.
+
+The settings come from map_settings(take.cfg): the defaults + takes/<take>.toml [cameras] map = {...}. Every builder
+of a take's map-image list (stage_map / loc / attach, front_pod loc-part, map_extend, attach_zoom) uses it, so the
+localisation references are exactly the map's images.
 """
 from __future__ import annotations
 
 import shutil
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field, fields, replace
 from itertools import combinations
 from pathlib import Path
 
@@ -42,6 +47,46 @@ class MapSettings:
     link_min_inliers: int = 150  # a strong static link between two cameras ...
     link_min_pairs: int = 3  # ... needs this many image pairs with link_min_inliers
     ba_global_ratio: float = 1.3  # global BA after the model grew by 30 % (COLMAP default 1.1: slow here)
+    shared_intrinsics: tuple = field(default_factory=tuple)  # cameras (no zoom) whose map images share ONE COLMAP
+    #   camera: one focal + k1 for the video, refined by every image (a per-image focal is weakly observable)
+    focal_prior_px: dict = field(default_factory=dict)  # {cam: prior focal (px)} instead of focal_prior x max dim
+
+
+def map_settings(take_cfg: dict | None = None) -> MapSettings:
+    """MapSettings with takes/<take>.toml [cameras] map = {...} overrides (e.g. win_step_s, dense_step_s,
+    shared_intrinsics = ["01"], focal_prior_px = {"01" = 1100.0}); no table = the defaults. A shared_intrinsics camera
+    whose [cameras."NN"] block declares zoom = true is refused (ValueError): one focal for a zooming video is wrong."""
+    from ..camera_types import cam_tables
+    over = dict(((take_cfg or {}).get("cameras") or {}).get("map") or {})
+    unknown = sorted(set(over) - {f.name for f in fields(MapSettings)})
+    if unknown:
+        raise ValueError(f"[cameras] map: unknown setting(s) {unknown} (MapSettings: "
+                         f"{', '.join(f.name for f in fields(MapSettings))})")
+    if "shared_intrinsics" in over:  # TOML arrays are lists; a lone "01" is one camera, not two characters
+        v = over["shared_intrinsics"]
+        over["shared_intrinsics"] = (str(v),) if isinstance(v, str) else tuple(str(c) for c in v)
+        zoom = [c for c in over["shared_intrinsics"] if cam_tables(take_cfg or {}).get(c, {}).get("zoom") is True]
+        if zoom:
+            raise ValueError(f"[cameras] map: shared_intrinsics {zoom} declared zoom = true in their [cameras.\"NN\"] "
+                             "block: a zooming video needs a focal per image (drop it from shared_intrinsics)")
+    if "focal_prior_px" in over:
+        over["focal_prior_px"] = {str(c): float(f) for c, f in over["focal_prior_px"].items()}
+    return replace(MapSettings(), **over)
+
+
+def intrinsics_modes(cams, s: MapSettings, single_camera: bool = False) -> dict[str, str]:
+    """{cam: how build_database gives its images COLMAP cameras}: 'single' (single_camera: ONE camera for every image
+    of the database), 'shared' (one camera per video: s.shared_intrinsics) or 'per_image' (one camera per image: zoom)."""
+    return {c: "single" if single_camera else "shared" if c in s.shared_intrinsics else "per_image" for c in sorted(cams)}
+
+
+def prior_focal_px(cam: str, w: int, h: int, s: MapSettings, ref_dim: int | None = None) -> float:
+    """Prior focal (px) of a camera's COLMAP camera of size w x h: s.focal_prior_px[cam] - the focal at the video's
+    largest image size in the map, ref_dim = its max dimension (a smaller image gets it scaled by max(w, h) / ref_dim)
+    - else s.focal_prior x max(w, h)."""
+    if cam in s.focal_prior_px:
+        return float(s.focal_prior_px[cam]) * (max(w, h) / ref_dim if ref_dim else 1.0)
+    return float(s.focal_prior * max(w, h))
 
 
 def select_map_images(recs: dict[str, list[ImageRec]], s: MapSettings) -> tuple[list[ImageRec], set[str]]:
@@ -134,9 +179,10 @@ def camera_model(w: int, h: int, s: MapSettings) -> str:
     return s.hd_model if max(w, h) >= 1280 else s.sd_model
 
 
-def prior_camera(w: int, h: int, factor: float, model: str = "SIMPLE_RADIAL", camera_id: int = 0):
+def prior_camera(w: int, h: int, factor: float, model: str = "SIMPLE_RADIAL", camera_id: int = 0,
+                 focal_px: float | None = None):
     import pycolmap
-    f = factor * max(w, h)
+    f = factor * max(w, h) if focal_px is None else float(focal_px)
     cam = pycolmap.Camera.create_from_model_name(camera_id, model, f, w, h)
     cam.has_prior_focal_length = True
     return cam
@@ -160,7 +206,12 @@ def build_database(work: Path, F: Features, images: list[ImageRec], matches: dic
 
     One camera per image (zoom) by default; single_camera=True shares ONE camera (one focal) between all images -
     used for single-phone sub-models of mostly-rotating phones, whose per-image focal is not observable (+-10 %
-    scatter seen on cam05)."""
+    scatter seen on cam05). A camera listed in s.shared_intrinsics (a video without zoom) gets ONE camera for all its
+    images, frames and keyframes (one per image size, should they differ), SIMPLE_RADIAL; the others stay per image.
+    Prior focal: prior_focal_px (s.focal_prior_px[cam] at the video's largest image size, scaled for a smaller one;
+    else focal_prior x max dim). stats['intrinsics'] = {cam: mode, prior focal of its first image, COLMAP cameras};
+    stats['per_campair'][pair]['link_pairs'] = its image pairs with >= link_min_inliers inliers (link_components needs
+    link_min_pairs of them; both thresholds are in the stats)."""
     import pycolmap
     if db_path.exists():
         db_path.unlink()
@@ -170,26 +221,56 @@ def build_database(work: Path, F: Features, images: list[ImageRec], matches: dic
     ro.camera_model = "SIMPLE_RADIAL"
     ro.default_focal_length_factor = s.focal_prior
     use = [k for k, r in enumerate(images) if cams is None or r.cam in cams]
-    mode = pycolmap.CameraMode.SINGLE if single_camera else pycolmap.CameraMode.PER_IMAGE
-    pycolmap.import_images(db_path, work, mode, [images[k].name for k in use], ro)
+    modes = intrinsics_modes({images[k].cam for k in use}, s, single_camera)
+    shared = sorted(c for c, m in modes.items() if m == "shared")
+    if not shared:
+        mode = pycolmap.CameraMode.SINGLE if single_camera else pycolmap.CameraMode.PER_IMAGE
+        pycolmap.import_images(db_path, work, mode, [images[k].name for k in use], ro)
+    else:
+        for c in shared:  # one import = one camera; COLMAP skips an image of another size, which the next round takes
+            left = [images[k].name for k in use if images[k].cam == c]
+            while left:
+                pycolmap.import_images(db_path, work, pycolmap.CameraMode.SINGLE, left, ro)
+                db = pycolmap.Database.open(db_path)
+                have = {im.name for im in db.read_all_images()}
+                db.close()
+                if not have & set(left):
+                    raise RuntimeError(f"[cameras] map: camera {c}: {len(left)} images could not be imported")
+                left = [n for n in left if n not in have]
+        rest = [images[k].name for k in use if modes[images[k].cam] != "shared"]
+        if rest:
+            pycolmap.import_images(db_path, work, pycolmap.CameraMode.PER_IMAGE, rest, ro)
     db = pycolmap.Database.open(db_path)
     by_name = {im.name: im for im in db.read_all_images()}
-    ids, cams_ = {}, {}
+    ref_dim: dict[str, int] = {}  # max dimension of the largest image of each video with a focal_prior_px
+    for k in use:
+        if images[k].cam in s.focal_prior_px:
+            c0 = db.read_camera(by_name[images[k].name].camera_id)
+            ref_dim[images[k].cam] = max(ref_dim.get(images[k].cam, 0), c0.width, c0.height)
+    ids, cams_, made, intr = {}, {}, {}, {}
     for k in use:
         r = images[k]
         im = by_name[r.name]
-        cam = db.read_camera(im.camera_id)
-        if not single_camera or not cams_:  # focal_prior x max dim, refined per image (zoom)
-            cam = prior_camera(cam.width, cam.height, s.focal_prior, camera_model(cam.width, cam.height, s),
-                               cam.camera_id)
+        cam = made.get(im.camera_id)
+        if cam is None:  # the prior, refined per image (zoom), per video (shared) or once (single_camera)
+            cam = db.read_camera(im.camera_id)
+            # a shared camera keeps k1 at any size: one k1 per video is observable, unlike one per 480p image
+            model = s.hd_model if modes[r.cam] == "shared" else camera_model(cam.width, cam.height, s)
+            fp = prior_focal_px(r.cam, cam.width, cam.height, s, ref_dim.get(r.cam)) if r.cam in ref_dim else None
+            cam = prior_camera(cam.width, cam.height, s.focal_prior, model, cam.camera_id, focal_px=fp)
             db.update_camera(cam)
-        else:
-            cam = next(iter(cams_.values()))
+            made[im.camera_id] = cam
+        e = intr.setdefault(r.cam, {"mode": modes[r.cam], "cameras": set(),
+                                    "focal_prior_px": round(prior_focal_px(r.cam, cam.width, cam.height, s,
+                                                                           ref_dim.get(r.cam)), 1)})
+        e["cameras"].add(im.camera_id)
         f = F.get(r)
         db.write_keypoints(im.image_id, (f["kpts"] + 0.5).astype(np.float32))  # COLMAP: pixel corner origin
         ids[k] = im.image_id
         cams_[k] = cam
-    stats = {"pairs": 0, "raw_ok": 0, "verified": 0, "per_campair": {}, "pair_inliers": {}}
+    stats = {"pairs": 0, "raw_ok": 0, "verified": 0, "per_campair": {}, "pair_inliers": {},
+             "intrinsics": {c: {**e, "cameras": len(e["cameras"])} for c, e in sorted(intr.items())},
+             "link_min_inliers": s.link_min_inliers, "link_min_pairs": s.link_min_pairs}
     for (i, j), m in matches.items():
         if i not in ids or j not in ids:
             continue
@@ -207,10 +288,11 @@ def build_database(work: Path, F: Features, images: list[ImageRec], matches: dic
         db.write_two_view_geometry(ids[i], ids[j], tvg)
         stats["verified"] += 1
         cp = "-".join(sorted((a.cam, b.cam)))
-        e = stats["per_campair"].setdefault(cp, {"pairs": 0, "max_inliers": 0, "sum_inliers": 0})
+        e = stats["per_campair"].setdefault(cp, {"pairs": 0, "max_inliers": 0, "sum_inliers": 0, "link_pairs": 0})
         e["pairs"] += 1
         e["max_inliers"] = max(e["max_inliers"], n_in)
         e["sum_inliers"] += n_in
+        e["link_pairs"] += int(n_in >= s.link_min_inliers)  # the count link_components tests against link_min_pairs
     db.close()
     return stats
 
