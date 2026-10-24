@@ -11,7 +11,8 @@ at a time; large npz members (the loc cache's correspondences) are never loaded.
             strong_link_groups, the verified link of every --need pair (verification.per_campair: pairs, max_inliers and
             link_pairs = pairs with >= link_min_inliers inliers; a map.json without link_pairs -> strong_link_groups as a
             yes/no), the refined mean reprojection, each camera's map focal and the doppelganger check of cameras/sfm
-            (cameras.plausible: registered images outside their camera's band of centres; G1 wants 0) ->
+            (cameras.plausible: registered images outside their camera's band of centres AND outside the room; G1
+            wants 0) ->
             cameras/qa/map_gate.json. Exit 3 only when a --need camera has no registered image in the main model (loc
             cannot serve it).
   ptz       --mode check: the tripod's loc track vs the PTZ track of --ptz-take (camera_work/final/track_s*.npz, R_i =
@@ -1529,7 +1530,7 @@ def _plot_atlas(Cs: np.ndarray, Ca: np.ndarray, inl: np.ndarray, world: dict | N
 
 def _model_stats(work: Path) -> dict | None:
     """{cam: {registered, focal_px [min, median, max], colmap_cameras}} of cameras/sfm (+ "_doppelgangers": the
-    cameras.plausible check of the model), or None without the model."""
+    cameras.plausible check of the model, "_reproj_px": its mean reprojection), or None without the model."""
     try:
         import pycolmap
     except ImportError:
@@ -1549,7 +1550,8 @@ def _model_stats(work: Path) -> dict | None:
     dg = check_model(rec)
     return {**{c: {"registered": e["registered"], "focal_px": [_f(min(e["f"]), 2), _f(np.median(e["f"]), 2), _f(max(e["f"]), 2)],
                    "colmap_cameras": len(e["cams"])} for c, e in out.items()},
-            "_doppelgangers": {"flagged": len(dg["flagged"]), "per_cam": dg["per_cam"], "kept_majority": dg["kept_majority"]}}
+            "_doppelgangers": {"flagged": len(dg["flagged"]), "per_cam": dg["per_cam"], "kept_majority": dg["kept_majority"]},
+            "_reproj_px": _f(rec.compute_mean_reprojection_error(), 4)}
 
 
 def cmd_map_gate(work: Path, need: list[str], log=print) -> dict:
@@ -1560,6 +1562,7 @@ def cmd_map_gate(work: Path, need: list[str], log=print) -> dict:
         total[k.split("/")[0]] = total.get(k.split("/")[0], 0) + 1
     model = _model_stats(work)
     dg = model.pop("_doppelgangers", None) if model is not None else None
+    rp_model = model.pop("_reproj_px", None) if model is not None else None  # the written model (after any clean)
     if model is not None:
         reg, reg_src = {c: v["registered"] for c, v in model.items()}, "cameras/sfm"
     else:
@@ -1588,7 +1591,7 @@ def cmd_map_gate(work: Path, need: list[str], log=print) -> dict:
     missing = [c for c in need if per[c]["registered"] == 0]
     doc = {"need": need, "cams": per, "registered_from": reg_src, "main_cams": info.get("main_cams"),
            "strong_link_groups": groups, "links": links,
-           "mean_reproj_px": _f((info.get("refine") or {}).get("mean_reproj_after"), 4),
+           "mean_reproj_px": rp_model if rp_model is not None else _f((info.get("refine") or {}).get("mean_reproj_after"), 4),
            "intrinsics_mode": info.get("intrinsics_mode"), "missing_from_main_model": missing,
            "doppelgangers": dg, "doppelgangers_removed": len((info.get("doppelgangers") or {}).get("flagged") or {}),
            "exit": 3 if missing else 0, "created": time.strftime("%Y-%m-%dT%H:%M:%S")}

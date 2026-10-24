@@ -38,10 +38,46 @@ def test_a_majority_outside_the_band_is_kept_and_reported():
     names, cams, C, U, P = _room()
     keep = np.r_[np.arange(40), np.arange(47, 77)]  # the orbit and the tripod, no copies
     names, cams, C, U = [names[i] for i in keep], cams[keep], C[keep].copy(), U[keep]
-    C[:22, 1] -= 4.0  # 22 of camera 01's 40 images a floor higher (a balcony): 18 left below = 45 % > MAX_SHARE
-    fl, kept = PL.flag(names, cams, C, PL.bands(cams, C, U, P))
+    C[:18, 1] += 9.5  # 18 of camera 01's 40 images (45 % > MAX_SHARE) under the floor
+    B = PL.bands(cams, C, U, P)
+    fl, kept = PL.flag(names, cams, C, B)
     assert not any(n.startswith("frames/01/") for n in fl)
-    assert "01" in kept
+    assert "01" in kept and "01" in B.exempt
+
+
+def test_a_camera_that_moves_inside_the_room_is_not_a_doppelganger():
+    """A tripod carried to another spot for the last 30 % (review of feb7bfe): outside its own band, inside the room."""
+    names, cams, C, U, P = _room()
+    C = C.copy()
+    b = np.flatnonzero(cams == "02")[21:]  # 9 of 30
+    C[b] = [-2.0, -2.5, 3.0]  # 3+ units away and 1.3 higher: a balcony step inside the room
+    B = PL.bands(cams, C, U, P)
+    assert B.cams["02"].xz_tol < 3.0  # outside the band ...
+    fl, _ = PL.flag(names, cams, C, B)
+    assert not any(names[i] in fl for i in b)  # ... but inside the room: kept
+    assert B.why("02", C[b[0]]) is None
+
+
+def test_model_bands_exempt_the_majority_camera_from_the_localiser(monkeypatch):
+    names, cams, C, U, P = _room()
+    keep = np.r_[np.arange(40), np.arange(47, 77)]  # no copies: 18 of camera 01's 40 images (45 %) under the floor
+    names, cams, C, U = [names[i] for i in keep], cams[keep], C[keep].copy(), U[keep]
+    C[:18, 1] += 9.5
+    multi = np.ones(len(P), bool)
+    monkeypatch.setattr(PL, "model_arrays", lambda rec: (names, cams, C, U, P, multi))
+    B = PL.model_bands(object())
+    assert "01" not in B.cams and "01" in B.exempt and "02" in B.cams
+    assert B.why("01", np.array([0.0, 8.0, 0.0])) is None  # no band: never gated
+
+
+def test_sub_model_settings_never_gate_and_keep_the_old_cache_key():
+    from dancecap.cameras.localize import settings_key, sub_settings
+    ls = LocSettings(kf_by_time=True)
+    sub = sub_settings(ls, True)
+    assert sub.fix_focal and not sub.plausible and sub.kf_by_time
+    old = {k: v for k, v in sub.__dict__.items() if k != "plausible"}  # a locsub cache key made before the gate
+    assert settings_key(sub) == dict(sorted(old.items()))
+    assert settings_key(ls)["plausible"] is True
 
 
 def test_a_camera_with_few_images_gets_no_band():
@@ -59,7 +95,9 @@ def test_the_tripod_band_has_the_room_floor():
     b = B.cams["02"]
     assert b.h_tol == B.floor and b.xz_tol == B.floor and B.floor > 0.3  # a still camera: MAD ~0 -> the floor decides
     assert B.why("02", np.array([-5.0, -1.2, 0.2])) is None
-    assert B.why("02", np.array([-5.0, -1.2, 0.0]) + np.array([0, 0, 3 * B.floor])) is not None
+    assert B.why("02", np.array([-5.0, -1.2, 0.0]) + np.array([0, 0, 3 * B.floor])) is None  # outside its band, in the room
+    assert "under the room's floor" in B.why("02", np.array([-5.0, 9.0, 0.0]))
+    assert "room's centre" in B.why("02", np.array([40.0, -1.2, 0.0]))
 
 
 def test_localizer_gate_rejects_an_implausible_pose_and_keeps_a_plausible_one():
@@ -100,6 +138,6 @@ def test_check_and_clean_a_pycolmap_model_with_a_copy():
     doc = PL.check_model(rec)
     assert sorted(doc["flagged"]) == sorted(names[40:47]) and doc["per_cam"] == {"01": 7}
     out = PL.clean_model(rec)
-    assert out["removed"]["images"] == 7
+    assert out["removed"]["images"] == 7 and out["passes"] == 2  # pass 2 finds nothing more
     assert sum(im.has_pose for im in rec.images.values()) == len(names) - 7
     assert PL.check_model(rec)["flagged"] == {}

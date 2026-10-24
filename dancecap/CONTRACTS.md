@@ -1769,12 +1769,17 @@ required = true                              # mamma prepare / the farm refuse w
 cameras/sfm_work/map.json            + intrinsics_mode {<cam>: single | shared | per_image}, verification.per_campair.<a>-<b>.link_pairs
                                        (pairs >= link_min_inliers), link_min_pairs
 cameras/qa/map_gate.json             twoview map-gate: registered / total per camera, link per --need pair, refined reprojection,
-                                       doppelgangers {flagged, per_cam, kept_majority} of cameras/sfm (G1 no_doppelgangers wants 0)
-cameras/sfm_orig/                    cameras.plausible clean: the model before its doppelganger images were deregistered (written once)
-map.json doppelgangers               {flagged {image: why}, kept_majority, per_cam, bands {up, room, floor, cams {<cam>: h_med, h_tol,
-                                       xz_med, xz_tol, n}}, rule, removed {images, frames, points_before, points_after}, at?, how?}:
-                                       stage_map (before the final refine) or `cameras.plausible clean` (in place, no BA: frame kept)
-cameras/cache/loc_<cam>.npz source   + "implausible": the best pose lay outside the camera's band of map centres (ok False, no corr)
+                                       doppelgangers {flagged, per_cam, kept_majority} of cameras/sfm (G1 no_doppelgangers wants 0);
+                                       mean_reproj_px = the written model's (after any clean)
+cameras/sfm_orig/                    cameras.plausible clean: the model before its doppelganger images were deregistered (belongs to
+                                       the current map: stage_map / cameras.reuse remove it when they write a new cameras/sfm)
+map.json doppelgangers               {flagged {image: why}, kept_majority, per_cam, passes, bands {up, room, floor, box {centre, h_lo,
+                                       h_hi, radius, points, n}, exempt, cams {<cam>: h_med, h_tol, xz_med, xz_tol, n}}, rule,
+                                       removed {images, points_before, points_after}, at?, how?, history? [earlier cleans]}: stage_map
+                                       (before the final refine) or `cameras.plausible clean` (in place, no BA: frame kept). Implausible =
+                                       outside the camera's band AND outside the room (points seen by >= 2 cameras)
+cameras/cache/loc_<cam>.npz source   + "implausible": the best pose was implausible (ok False, no corr). Main-model localisation and
+                                       map_extend only: single-camera sub-models (attach, reuse, map_extend) are never gated
 cameras/ptz/<cam>.npz                twoview ptz --mode attach: the tripod's fixed-centre PTZ track in the cameras/<cam>.npz schema
                                        (camera_class tripod_zoom); --adopt installs it, cameras/orig/<cam>_loc.npz + cameras/adopted.json
 cameras/qa/ptz_check.json            check / attach sections; cameras/qa/atlas_check.json + review/atlas_check.png (Atlas = drift check only,

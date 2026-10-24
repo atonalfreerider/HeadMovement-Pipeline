@@ -36,8 +36,22 @@ class LocSettings:
     kf_by_time: bool = False  # True: references = the nearest map images IN TIME of either kind (keyframes too),
     #   and the cross-camera fallback takes each other camera's nearest image of either kind. For a map reused
     #   from another take (cameras/reuse.py) whose window images cover only part of this take's window.
-    plausible: bool = True  # gate every pose with its camera's band of map-image centres (cameras.plausible): a pose
-    #   in a doppelganger copy of the room -> ok False, source "implausible" (lucas_luiza's Steadicam, 2026-10-24)
+    plausible: bool = True  # gate every pose with cameras.plausible (outside its camera's band of map-image centres
+    #   AND outside the room: a doppelganger copy of the room) -> ok False, source "implausible" (lucas_luiza's
+    #   Steadicam, 2026-10-24). Off in single-camera sub-models (sub_settings)
+
+
+def sub_settings(ls: "LocSettings", single: bool) -> "LocSettings":
+    """The settings of a sub-model localisation (attach, reuse presolve, map_extend): fix_focal for a single-camera
+    sub-model and never the plausibility gate - a zooming phone's fixed-focal solutions slide along its axis on purpose
+    (attach_zoom.resolve_zoom re-solves them at the reference centre)."""
+    return LocSettings(**{**ls.__dict__, "fix_focal": single, "plausible": False})
+
+
+def settings_key(ls: "LocSettings") -> dict:
+    """LocSettings as a cache key; `plausible` only when on, so the keys of sub-model caches made before the gate existed
+    still match."""
+    return dict(sorted((k, v) for k, v in ls.__dict__.items() if not (k == "plausible" and not v)))
 
 
 @dataclass

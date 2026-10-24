@@ -858,7 +858,7 @@ def test_cli_exit_codes(tmp_path, monkeypatch):
 
 class _FakeRec:
     """The parts of a pycolmap.Reconstruction the module reads: images (name, has_pose, camera_id, cam_from_world(),
-    points2D), cameras (params, model.name), points3D (xyz)."""
+    points2D), cameras (params, model.name), points3D (xyz), compute_mean_reprojection_error()."""
 
     def __init__(self, cams: list[tuple[str, np.ndarray, np.ndarray, list]], params: dict, points: np.ndarray):
         from types import SimpleNamespace as N
@@ -870,6 +870,9 @@ class _FakeRec:
             p2 = [N(xy=np.asarray(xy, float), point3D_id=pid, has_point3D=lambda: True) for xy, pid in obs]
             self.images[i] = N(name=name, has_pose=True, camera_id=name.split("/")[1], cam_from_world=lambda T=T: T,
                                points2D=p2)
+
+    def compute_mean_reprojection_error(self):
+        return 0.91
 
 
 def test_map_images_of_reads_poses_times_and_pixel_convention(tmp_path, monkeypatch):
@@ -902,6 +905,8 @@ def test_map_images_of_reads_poses_times_and_pixel_convention(tmp_path, monkeypa
     doc = tv.cmd_map_gate(tmp_path, ["01", "02"], log=QUIET)
     assert doc["registered_from"] == "cameras/sfm" and doc["cams"]["02"]["registered"] == 1
     assert doc["cams"]["02"]["focal_px"][1] == 1500.0 and doc["cams"]["01"]["colmap_cameras"] == 1
+    assert doc["mean_reproj_px"] == 0.91  # the written model's, not map.json's pre-clean refine value
+    assert doc["doppelgangers"]["flagged"] == 0
 
 
 def test_cmd_atlas_end_to_end_non_metric_scale(tmp_path, monkeypatch):

@@ -12,7 +12,7 @@ from .. import gpu
 from ..take import Take
 from . import report as qa
 from .features import Features, FeatureSettings, ImageRec, list_images
-from .localize import FramePose, Localizer, LocSettings, localize_camera
+from .localize import FramePose, Localizer, LocSettings, localize_camera, settings_key, sub_settings
 from .mapping import (MapSettings, build_database, link_components, map_pairs, map_settings, match_pairs, model_cams,
                       refine_model, run_mapper, run_sub_mapper, select_map_images, targeted_pairs)
 from .depth_guard import DepthGuardSettings, apply as depth_guard
@@ -182,6 +182,7 @@ def stage_map(work: Path, recs: dict, F: Features, ms: MapSettings) -> dict:
     sfm = out / "sfm"
     sfm.mkdir(parents=True, exist_ok=True)
     best.write_binary(str(sfm))
+    shutil.rmtree(out / "sfm_orig", ignore_errors=True)  # a plausible-clean backup belongs to the map it was made from
     subs = build_sub_models(work, F, images, matches, groups[1:], ms)
     info = {"images": len(images), "dense": len(dense), "pairs": len(matches), "match_s": round(t_match, 1),
             "mapping_s": round(time.time() - t0, 1), "verification": st,
@@ -418,8 +419,8 @@ def stage_attach(work: Path, recs: dict, F: Features, ls: LocSettings, ms: MapSe
         w, h = int(meta["width"]), int(meta["height"])
         sub_bin = work / "cameras" / "sfm_work" / name / "best" / "images.bin"
         single = len({im.camera_id for im in sub.images.values()}) == 1
-        ls_sub = LocSettings(**{**ls.__dict__, "fix_focal": single})
-        loc_key = {"sub": _file_key(sub_bin), "settings": dict(sorted(ls_sub.__dict__.items())),
+        ls_sub = sub_settings(ls, single)
+        loc_key = {"sub": _file_key(sub_bin), "settings": settings_key(ls_sub),
                    "frames": [r.name for r in frames]}
 
         def localise():

@@ -151,7 +151,7 @@ def extend(take_name: str, cam: str, dry_run: bool = False) -> dict:
         import pycolmap
 
         from .cameras.mapping import model_cams
-        from .cameras.localize import LocSettings
+        from .cameras.localize import sub_settings
         kind = "sub"
         doc = pickle.loads(sub_p.read_bytes())
         poses = list(doc["value"])
@@ -163,7 +163,7 @@ def extend(take_name: str, cam: str, dry_run: bool = False) -> dict:
                 subs.append((d.parent.name, m, model_cams(m)))
         name, model, _ = max([x for x in subs if x[2].get(cam, 0) >= 3], key=lambda x: x[2][cam])
         single = len({im.camera_id for im in model.images.values()}) == 1
-        ls = LocSettings(**{**ls.__dict__, "fix_focal": single})
+        ls = sub_settings(ls, single)
     else:
         raise SystemExit(f"[c7] {take_name} {cam}: no localisation output")
     if n != len(frames):
@@ -245,6 +245,8 @@ def extend(take_name: str, cam: str, dry_run: bool = False) -> dict:
             if nm < MIN_MAP_INLIERS:
                 continue
             fp.ok, fp.source = True, "ext"
+            if not L.gate(frames[i], fp).ok:  # cameras.plausible: a pose in a doppelganger copy of the room stays failed
+                continue
             poses[i] = fp
             n_map[i] = nm
             ext_refs[i] = fp.corr

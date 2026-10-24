@@ -8,13 +8,23 @@ nearest map images IN TIME of the same camera and chains the previous frame's co
 around such an image localised into the copy (rp 1.2-1.9 px, 120-800 inliers) and the two-view sync of that stretch
 saw 90 px epipolar residuals. The map gate counted the copy as "registered".
 
-Rule, per camera, from its registered map images (up = the median of the images' up vectors, -row 1 of R; room = the
-p90 horizontal radius of the map's points about their median; floor = floor_frac x room):
-    height       |h - median h| > max(k_h x 1.4826 MAD(h), floor)
-    horizontal   |c - median c| > max(k_xz x median |c - median c|, floor)   (c = the centre's horizontal part)
+Rule: a centre is implausible when it lies outside its camera's BAND and outside the ROOM (both: a camera that really
+moves - a tripod carried to another spot, a walking phone beyond the map images' span - stays inside the room; a copy
+of the room puts it under the floor or past the walls). Up = the median of the images' up vectors (-row 1 of R).
+    band, per camera from its registered map images (room = the p90 horizontal radius of the points about their
+    median; floor = floor_frac x room):
+        height       |h - median h| > max(k_h x 1.4826 MAD(h), floor)
+        horizontal   |c - median c| > max(k_xz x median |c - median c|, floor)   (c = the centre's horizontal part)
+    room, from the points seen by >= 2 cameras (all points when fewer than MIN_MULTI_POINTS: one-camera models):
+        h < p1 - room_v x (p99 - p1)  or  h > p99 + room_v x (p99 - p1)      (under the floor / over the ceiling)
+        |c - median c| > room_x x p99 radius                                 (past the walls)
+lucas_luiza (cameras/sfm_orig): room heights -0.86..4.58, p99 radius 12.5; the copies at h -8.5..-9.8 and r 34-38; the
+real Steadicam h >= -0.89, r <= 17.7; the tripod at r 21 (behind the room: its own band keeps it).
 A camera with fewer than min_images images gets no band (nothing is judged); a camera whose flagged images would be
-more than max_share of its images keeps them all (a doppelganger is a minority: a camera far from the room's points,
-e.g. a tripod facing one wall, is not one) and the case is reported.
+more than max_share of its images keeps them all and gets no band in the localiser either (a doppelganger is a
+minority) and the case is reported. A clean repeats until nothing more is flagged (the bands of the cleaned model are
+tighter: lucas_luiza needed 2 passes before the room test). Single-camera sub-models (attach, reuse, map_extend) are
+never gated: their fixed-focal solutions of a zooming phone slide along the axis on purpose (attach_zoom repairs them).
 
     python -m dancecap.cameras.plausible check <take>            # report only
     python -m dancecap.cameras.plausible clean <take>            # deregister the flagged images of cameras/sfm in place
@@ -31,7 +41,7 @@ import json
 import shutil
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -41,6 +51,10 @@ K_XZ = 6.0
 FLOOR_FRAC = 0.1
 MIN_IMAGES = 8
 MAX_SHARE = 0.4
+ROOM_V = 0.25         # x the room's height span (p1..p99 of the points) under the floor / over the ceiling
+ROOM_X = 2.0          # x the p99 horizontal radius of the points
+MIN_MULTI_POINTS = 100
+MAX_PASSES = 4
 
 
 @dataclass
@@ -57,37 +71,71 @@ class CamBand:
 
 
 @dataclass
+class Room:
+    centre: np.ndarray  # (3,) horizontal part of the points' median
+    h_lo: float  # p1 of the points' heights
+    h_hi: float  # p99
+    radius: float  # p99 horizontal radius
+    points: str  # "multi-camera" | "all"
+    n: int
+
+    def outside(self, h: float, r: float, room_v: float = ROOM_V, room_x: float = ROOM_X) -> str | None:
+        m = room_v * (self.h_hi - self.h_lo)
+        if h < self.h_lo - m:
+            return f"{self.h_lo - h:.2f} under the room's floor (p1 of the points, margin {m:.2f})"
+        if h > self.h_hi + m:
+            return f"{h - self.h_hi:.2f} over the room's ceiling (p99 of the points, margin {m:.2f})"
+        if r > room_x * self.radius:
+            return f"{r:.2f} from the room's centre (> {room_x:g} x its p99 radius {self.radius:.2f})"
+        return None
+
+    def to_json(self) -> dict:
+        return {"centre": [round(float(v), 4) for v in self.centre], "h_lo": round(self.h_lo, 4), "h_hi": round(self.h_hi, 4),
+                "radius": round(self.radius, 4), "points": self.points, "n": self.n}
+
+
+@dataclass
 class Bands:
     up: np.ndarray
     room: float
     floor: float
     cams: dict[str, CamBand]
+    box: Room | None = None
+    exempt: dict = field(default_factory=dict)  # {cam: why}: the majority guard (no band in the localiser)
 
     def horiz(self, X: np.ndarray) -> np.ndarray:
         X = np.asarray(X, float)
         return X - np.multiply.outer(X @ self.up, self.up)
 
     def why(self, cam: str, C: np.ndarray) -> str | None:
-        """None when the centre C (map frame) lies in camera cam's band (or cam has none), else the reason."""
+        """None when the centre C (map frame) is plausible for camera cam (inside its band, or inside the room, or cam
+        has no band), else the reason: outside the band AND outside the room."""
         b = self.cams.get(cam)
-        if b is None or not np.all(np.isfinite(C)):
+        if b is None or self.box is None or not np.all(np.isfinite(C)):
             return None
-        dh = float(np.asarray(C, float) @ self.up) - b.h_med
-        if abs(dh) > b.h_tol:
-            return f"height {dh:+.2f} from the camera's median (tol {b.h_tol:.2f})"
+        C = np.asarray(C, float)
+        h = float(C @ self.up)
+        dh = h - b.h_med
         dxz = float(np.linalg.norm(self.horiz(C) - b.xz_med))
-        if dxz > b.xz_tol:
-            return f"horizontal {dxz:.2f} from the camera's median (tol {b.xz_tol:.2f})"
-        return None
+        if abs(dh) > b.h_tol:
+            band = f"height {dh:+.2f} from the camera's median (tol {b.h_tol:.2f})"
+        elif dxz > b.xz_tol:
+            band = f"horizontal {dxz:.2f} from the camera's median (tol {b.xz_tol:.2f})"
+        else:
+            return None
+        room = self.box.outside(h, float(np.linalg.norm(self.horiz(C) - self.box.centre)))
+        return None if room is None else f"{band}; {room}"
 
     def to_json(self) -> dict:
         return {"up": [round(float(v), 4) for v in self.up], "room": round(self.room, 4), "floor": round(self.floor, 4),
+                "box": None if self.box is None else self.box.to_json(), "exempt": dict(self.exempt),
                 "cams": {c: b.to_json() for c, b in sorted(self.cams.items())}}
 
 
-def bands(cams: np.ndarray, C: np.ndarray, U: np.ndarray, P: np.ndarray, k_h: float = K_H, k_xz: float = K_XZ,
-          floor_frac: float = FLOOR_FRAC, min_images: int = MIN_IMAGES) -> Bands:
-    """Bands from the registered images' camera ids (N,), centres (N, 3), up vectors (N, 3) and the points (M, 3)."""
+def bands(cams: np.ndarray, C: np.ndarray, U: np.ndarray, P: np.ndarray, multi: np.ndarray | None = None, k_h: float = K_H,
+          k_xz: float = K_XZ, floor_frac: float = FLOOR_FRAC, min_images: int = MIN_IMAGES) -> Bands:
+    """Bands from the registered images' camera ids (N,), centres (N, 3), up vectors (N, 3), the points (M, 3) and which
+    points >= 2 cameras see (M,) bool (None: unknown, every point counts for the room)."""
     up = np.median(np.asarray(U, float), axis=0)
     up = up / (np.linalg.norm(up) or 1.0)
     B = Bands(up, 0.0, 0.0, {})
@@ -95,6 +143,12 @@ def bands(cams: np.ndarray, C: np.ndarray, U: np.ndarray, P: np.ndarray, k_h: fl
     if len(P):
         Hp = B.horiz(P)
         B.room = float(np.percentile(np.linalg.norm(Hp - np.median(Hp, axis=0), axis=1), 90))
+        use = np.asarray(multi, bool) if multi is not None and int(np.sum(multi)) >= MIN_MULTI_POINTS else None
+        Q = P[use] if use is not None else P
+        hq, Hq = Q @ up, B.horiz(Q)
+        cq = np.median(Hq, axis=0)
+        B.box = Room(cq, float(np.percentile(hq, 1)), float(np.percentile(hq, 99)),
+                     float(np.percentile(np.linalg.norm(Hq - cq, axis=1), 99)), "multi-camera" if use is not None else "all", len(Q))
     B.floor = floor_frac * B.room
     cams, C = np.asarray(cams), np.asarray(C, float).reshape(-1, 3)
     for c in sorted(set(cams.tolist())):
@@ -112,16 +166,18 @@ def bands(cams: np.ndarray, C: np.ndarray, U: np.ndarray, P: np.ndarray, k_h: fl
 
 
 def flag(names: list[str], cams: np.ndarray, C: np.ndarray, B: Bands, max_share: float = MAX_SHARE) -> tuple[dict, dict]:
-    """({image name: why} to drop, {cam: note} for cameras whose flags were kept as a majority)."""
+    """({image name: why} to drop, {cam: note} for cameras whose flags were kept as a majority). Sets B.exempt to the
+    latter: the localiser then gates none of their frames."""
     out, kept = {}, {}
     cams = np.asarray(cams)
     for c in sorted(B.cams):
         idx = np.flatnonzero(cams == c)
         f = {names[i]: w for i in idx if (w := B.why(c, C[i])) is not None}
         if len(f) > max_share * len(idx):
-            kept[c] = f"{len(f)}/{len(idx)} images outside the band (> {max_share:.0%}): none dropped"
+            kept[c] = f"{len(f)}/{len(idx)} images implausible (> {max_share:.0%}): none dropped, no band"
         else:
             out.update(f)
+    B.exempt = dict(kept)
     return out, kept
 
 
@@ -135,34 +191,51 @@ def _pose(im) -> tuple[np.ndarray, np.ndarray]:
     return R, -R.T @ np.asarray(T.translation)
 
 
-def model_arrays(rec) -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """(names, cams, centres, up vectors, points) of a pycolmap Reconstruction's registered images."""
-    names, cams, C, U = [], [], [], []
-    for im in rec.images.values():
+def model_arrays(rec) -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """(names, cams, centres, up vectors, points, multi) of a pycolmap Reconstruction's registered images; multi = which
+    points >= 2 cameras see (image names carry the camera id)."""
+    names, cams, C, U, cam_of = [], [], [], [], {}
+    for iid, im in rec.images.items():  # {image_id: Image}
         if not im.has_pose:
             continue
         R, c = _pose(im)
         names.append(im.name), cams.append(_cam_of(im.name)), C.append(c), U.append(-R[1])
-    P = np.array([p.xyz for p in rec.points3D.values()]).reshape(-1, 3)
-    return names, np.array(cams), np.array(C).reshape(-1, 3), np.array(U).reshape(-1, 3), P
+        cam_of[iid] = _cam_of(im.name)
+    P, multi = [], []
+    for p in rec.points3D.values():
+        P.append(p.xyz)
+        tr = getattr(p, "track", None)
+        multi.append(tr is not None and len({cam_of.get(e.image_id) for e in tr.elements} - {None}) >= 2)
+    return (names, np.array(cams), np.array(C).reshape(-1, 3), np.array(U).reshape(-1, 3), np.array(P).reshape(-1, 3),
+            np.array(multi, bool))
 
 
 def model_bands(rec, **kw) -> Bands:
-    names, cams, C, U, P = model_arrays(rec)
-    return bands(cams, C, U, P, **kw)
+    """The localiser's bands: those of check_model, without the cameras the majority guard exempts."""
+    names, cams, C, U, P, multi = model_arrays(rec)
+    B = bands(cams, C, U, P, multi, **kw)
+    flag(names, cams, C, B)
+    for c in B.exempt:
+        B.cams.pop(c, None)
+    return B
 
 
 def check_model(rec, **kw) -> dict:
     """{flagged {name: why}, kept_majority {cam: note}, bands, per_cam {cam: flagged n}} for a Reconstruction."""
-    names, cams, C, U, P = model_arrays(rec)
-    B = bands(cams, C, U, P, **kw)
+    names, cams, C, U, P, multi = model_arrays(rec)
+    B = bands(cams, C, U, P, multi, **kw)
     fl, kept = flag(names, cams, C, B)
-    per = {}
-    for n in fl:
-        per[_cam_of(n)] = per.get(_cam_of(n), 0) + 1
-    return {"flagged": fl, "kept_majority": kept, "per_cam": per, "bands": B.to_json(),
+    return {"flagged": fl, "kept_majority": kept, "per_cam": _per_cam(fl), "bands": B.to_json(),
             "rule": {"k_h": kw.get("k_h", K_H), "k_xz": kw.get("k_xz", K_XZ), "floor_frac": kw.get("floor_frac", FLOOR_FRAC),
-                     "min_images": kw.get("min_images", MIN_IMAGES), "max_share": MAX_SHARE}}
+                     "min_images": kw.get("min_images", MIN_IMAGES), "max_share": MAX_SHARE, "room_v": ROOM_V,
+                     "room_x": ROOM_X, "min_multi_points": MIN_MULTI_POINTS}}
+
+
+def _per_cam(flagged) -> dict:
+    per: dict = {}
+    for n in flagged:
+        per[_cam_of(n)] = per.get(_cam_of(n), 0) + 1
+    return per
 
 
 def deregister(rec, names) -> dict:
@@ -176,9 +249,17 @@ def deregister(rec, names) -> dict:
 
 
 def clean_model(rec, **kw) -> dict:
-    """check_model + deregister of the flagged images (no bundle adjustment: the caller decides)."""
-    out = check_model(rec, **kw)
-    out["removed"] = deregister(rec, out["flagged"]) if out["flagged"] else {"images": 0}
+    """check_model + deregister of the flagged images, repeated until nothing more is flagged (<= MAX_PASSES; no bundle
+    adjustment: the caller decides). The record: every pass's flags, the last check's bands, the summed removal."""
+    flagged, p0, passes, out = {}, rec.num_points3D(), 0, None
+    for passes in range(1, MAX_PASSES + 1):
+        out = check_model(rec, **kw)
+        if not out["flagged"]:
+            break
+        deregister(rec, out["flagged"])
+        flagged.update(out["flagged"])
+    out["flagged"], out["per_cam"], out["passes"] = flagged, _per_cam(flagged), passes
+    out["removed"] = {"images": len(flagged), "points_before": p0, "points_after": rec.num_points3D()}
     return out
 
 
@@ -209,7 +290,9 @@ def main(argv=None) -> int:
     print(_summary(doc))
     if not doc["flagged"]:
         return 0
-    if not orig.exists():
+    info = json.loads(mj.read_text()) if mj.exists() else {}
+    if not orig.exists() or not info.get("doppelgangers"):  # sfm_orig belongs to this map only (stage_map / reuse remove it)
+        shutil.rmtree(orig, ignore_errors=True)
         shutil.copytree(sfm, orig)
     tmp = sfm.with_name("sfm.part")
     shutil.rmtree(tmp, ignore_errors=True)
@@ -218,11 +301,16 @@ def main(argv=None) -> int:
     shutil.rmtree(sfm)
     tmp.rename(sfm)
     if mj.exists():
-        info = json.loads(mj.read_text())
         prev = info.get("doppelgangers") or {}
         doc["at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
         doc["how"] = "plausible clean: deregistered in place, no bundle adjustment (the map frame is kept)"
-        doc["flagged"] = {**(prev.get("flagged") or {}), **doc["flagged"]}
+        if prev.get("flagged"):  # an earlier clean of this map: one record of every image dropped since the map was made
+            hist = list(prev.get("history") or []) + [{k: prev.get(k) for k in ("at", "how", "per_cam", "removed", "passes")}]
+            p_before = (prev.get("removed") or {}).get("points_before", doc["removed"]["points_before"])
+            doc["flagged"] = {**prev["flagged"], **doc["flagged"]}
+            doc["per_cam"] = _per_cam(doc["flagged"])
+            doc["removed"] = {"images": len(doc["flagged"]), "points_before": p_before, "points_after": rec.num_points3D()}
+            doc["history"] = hist
         info["doppelgangers"] = doc
         mj.write_text(json.dumps(info, indent=1, default=str))
     print(f"[plausible] cameras/sfm rewritten ({doc['removed']}); original in {orig.relative_to(work)}. "
