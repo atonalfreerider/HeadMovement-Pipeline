@@ -487,15 +487,24 @@ class GpuSurface:
     Candidates = the faces around the k nearest vertices; the sign = generalized winding number (mesh_contact) for points within
     `wn_within` of the surface or on the inner side of the interpolated vertex normal (a cheap first sign), else outside."""
 
-    def __init__(self, faces: np.ndarray, n_verts: int, device: str, k: int = 4, max_deg: int = 10):
+    def __init__(self, faces: np.ndarray, n_verts: int, device: str, k: int = 4, max_deg: int = 10, vmask: np.ndarray | None = None):
+        """vmask (n_verts,) bool, optional (2026-10-23, zouk_contacts v43): only the faces whose three vertices are in the mask make the
+        surface - closest points, normals and the winding numbers (of that open patch: ~1 inside a body part closed but for a few holes)
+        see only those parts of the partner; None = the whole mesh (unchanged)"""
         import torch
         from . import mesh_contact as mc
         self.torch = torch
         self.dev = device
+        faces = np.asarray(faces)
+        if vmask is not None:
+            vm = np.asarray(vmask, bool)
+            faces = faces[vm[faces].all(1)]
         topo = mc.Topology(faces, n_verts, max_deg)
         self.F = torch.as_tensor(topo.F, device=device)
         self.adj = torch.as_tensor(topo.adj, device=device)
         self.k = k
+        # the vertices the closest-point search looks at (those of the surface's faces) when masked; None: every vertex
+        self.vidx = torch.as_tensor(topo.used, device=device) if vmask is not None else None
 
     def vertex_normals(self, V):
         torch = self.torch
@@ -512,8 +521,13 @@ class GpuSurface:
         torch = self.torch
         from .mesh_contact import _pt_tri_sq_torch
         Bn, n = P.shape[:2]
-        d = torch.cdist(P, V)                                                          # (B,n,nv)
-        _, iv = d.topk(self.k, dim=-1, largest=False)                                   # (B,n,k)
+        if self.vidx is None:
+            d = torch.cdist(P, V)                                                      # (B,n,nv)
+            _, iv = d.topk(self.k, dim=-1, largest=False)                               # (B,n,k)
+        else:                                                                          # a masked surface: its own vertices only
+            d = torch.cdist(P, V[:, self.vidx])
+            _, iv = d.topk(min(self.k, len(self.vidx)), dim=-1, largest=False)
+            iv = self.vidx[iv]
         del d
         cand = self.adj[iv].reshape(Bn, n, -1)                                         # (B,n,k*deg)
         valid = cand >= 0
