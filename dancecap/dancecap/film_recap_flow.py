@@ -18,7 +18,11 @@ v4.1 = v4 (owner 2026-10-22 after the v3 films: "hold longer on POVs and slowly 
     (v4.1 is now built with --version v4.1 into v4/direction/v4.1/)
 v4.2 = v4 (owner 2026-10-22 after v4.1: the physics meter only a few seconds at each switch-on, the slow orbits 20 % closer, the face swap on the
 splats only): the v4.1 plan + flow.meter + closer orbit blocks:
-    python -m dancecap.film_recap_flow build --version v4           # -> v4/direction/ (+ review_v4.2.md, UNITY_CONTRACT_v4.md with its v4.2 section)
+    python -m dancecap.film_recap_flow build --version v4.2         # -> v4/direction/v4.2/ (reproducible: direction.json = the v4.2 the films were recorded from)
+v4.3 = v4 (owner 2026-10-23: "when we show initial counter balances we need to orbit but maintain a two shot in profile"): the v4.2 direction + a
+planned azimuth track for the slow orbit of chapters 1-3 (flow.azimuth_tracks, camera.azimuth_track; both phone ways stay v4.2's frame for frame):
+    python -m dancecap.film_recap_flow build --version v4 --mix     # -> v4/direction/ (+ review_v4.3.md, track_v4.3.png, UNITY_CONTRACT_v4.md 'v4.3')
+    python -m dancecap.film_recap_flow check --version v4           # v4.1's + v4.2's + v4.3's targets (the frame-exact one reads v4/direction/v4.2/)
 
 The owner's words (2026-10-21):
   (3) "every time kadu say's 'back to the axis' he's referring to the counterbalance pivot point, not the T axis. correct this"
@@ -2312,8 +2316,13 @@ def cmd_check(path: Path) -> int:
 def cmd_check_v4(doc: dict, tl: dict, sp: dict, geo: Geo | None) -> int:
     """the v4 checks + the owner's targets (against the v3.2 direction when it is there, else the targets the direction carries)"""
     rev = (doc.get("flow") or {}).get("revision")
-    v41 = rev in ("4.1", "4.2")
-    cfg4 = v42_cfg() if rev == "4.2" else v41_cfg() if v41 else V4Cfg()
+    # the revision gate: every revision has its own targets; one this code does not know is an error, never v4.0's targets by accident
+    cfgs = {None: V4Cfg, "4.0": V4Cfg, "4.1": v41_cfg, "4.2": v42_cfg, "4.3": v43_cfg}
+    if rev not in cfgs:
+        print(f"flow.revision {rev!r}: no targets for it in this code (known: {', '.join(str(k) for k in cfgs if k)}); rebuild or update dancecap.film_recap_flow")
+        return 1
+    v41 = rev in V41_STYLE
+    cfg4 = cfgs[rev]()
     geo4 = Geo4(geo) if geo is not None else None
     base = v4_baseline(geo4, cfg4) if (geo4 is not None and V32_DIRECTION.exists() and not v41) else None
     pov = fr.load_pov(fr.Paths(), "auto")
@@ -2323,8 +2332,13 @@ def cmd_check_v4(doc: dict, tl: dict, sp: dict, geo: Geo | None) -> int:
         met = film_metrics(doc, geo4, cfg4)
         need_p = Path(((doc.get("recap_film") or {}).get("v4") or {}).get("need3d", {}).get("path") or NEED3D)
         v41_extra_metrics(met, doc, geo4, cfg4, NeedSeries(need_p, doc) if need_p.exists() else None, pov)
-        if rev == "4.2":
-            v42_extra_metrics(met, doc, geo4, cfg4, pov, film_metrics(doc, geo4, cfg4, aspect="horizontal"))
+        if rev in ("4.2", "4.3"):
+            met_h = film_metrics(doc, geo4, cfg4, aspect="horizontal")
+            v42_extra_metrics(met, doc, geo4, cfg4, pov, met_h)
+            if rev == "4.3":
+                # the frame-exact comparison needs the v4.2 direction it was built on (build --version v4.2 reproduces it into v4/direction/v4.2/)
+                d42 = json.loads(V42_DIRECTION.read_text(encoding="utf-8")) if V42_DIRECTION.exists() else None
+                v43_extra_metrics(met, doc, geo4, cfg4, met_h, d42)
     r = check_v4(doc, tl, sp, geo, geo4, cfg4, base, met, phq)
     print("OK" if not r["bad"] else "\n".join(r["bad"]))
     for row in r["targets"]:
@@ -2406,6 +2420,9 @@ V41_CRANE = {"window": [0.0, 1.0], "law": "cruise", "ease": 0.25}
 V41_PROFILE = {k: copy.deepcopy(v) for k, v in V4_PROFILE.items()}
 for _t in ("crane_up", "crane_down"):
     V41_PROFILE[_t] = {"elevation": dict(V41_CRANE), "distance": dict(V41_CRANE), "zoom": dict(V41_CRANE)}
+# the revisions built on the v4.1 plan (its profiles, targets and checks); every one of them is listed here and in cmd_check_v4's gate, so a new
+# revision is never checked against v4.0's targets by accident
+V41_STYLE = ("4.1", "4.2", "4.3")
 
 
 def ramp(u: float, a: float, b: float) -> float:
@@ -2578,7 +2595,7 @@ class V4Cfg:
 
     def prof(self) -> dict:
         """the ways' profiles of this version"""
-        return V41_PROFILE if self.version in ("4.1", "4.2") else V4_PROFILE
+        return V41_PROFILE if self.version in V41_STYLE else V4_PROFILE
 
 
 def v4_hold_targets(base: dict, cfg4: V4Cfg) -> dict:
@@ -2693,6 +2710,22 @@ class PoseModel:
             if k > 0 and tr:
                 self.trs.append((k, sh.f0 + tr["start_s"], tr["duration_s"], tr["type"], tr))
         self._f0 = np.array([sh.f0 for sh in self.shots])
+        # v4.3: the planned azimuth tracks (flow.azimuth_tracks, read by a camera block's `azimuth_track`): inside a track's film window the eye's
+        # world azimuth and its lift come from the table (linear between the 30-Hz samples), outside it the block's law (UNITY_CONTRACT_v4 K)
+        self.tracks = {}
+        for tid, tb in ((doc.get("flow") or {}).get("azimuth_tracks") or {}).items():
+            n = int(tb["n"])
+            tt = float(tb["t0"]) + float(tb["dt"]) * np.arange(n)
+            lift = np.asarray(tb.get("lift_m") or [0.0] * n, float)
+            self.tracks[tid] = (float(tb["film"][0]), float(tb["film"][1]), tt, np.asarray(tb["deg"], float), lift)
+
+    def track_at(self, cam: dict, f: float) -> tuple[float, float] | None:
+        """v4.3: (world azimuth deg, eye lift m) of a tracked block at film f strictly inside its track's window, else None (the block's law)"""
+        tid = cam.get("azimuth_track")
+        tr = self.tracks.get(tid) if tid is not None else None
+        if tr is None or not (tr[0] < f < tr[1]):
+            return None
+        return float(np.interp(f, tr[2], tr[3])), float(np.interp(f, tr[2], tr[4]))
 
     # --- film -> master
     def dance(self, f: float, k: int | None = None) -> float:
@@ -2728,12 +2761,19 @@ class PoseModel:
         if sh.kind == "overhead":
             if self.v4 and cam.get("world_azimuth_deg") is not None:
                 az = float(cam["world_azimuth_deg"]) + float(cam.get("drift_deg_s", 0.0)) * (f - sh.f0)
+                tk = self.track_at(cam, f)
+                if tk is not None:
+                    az = tk[0]
             else:
                 az = float(cam.get("up_azimuth_deg", sh.a0 if sh.a0 else 0.0))
             look = c + np.array([0.0, 0.9, 0.0])
             eye = look + np.array([0.0, self.cfg4.overhead_h - 0.9, 0.0]) + 0.05 * np.array([math.cos(math.radians(az)), 0.0, math.sin(math.radians(az))])
             return {"kind": "overhead", "eye": eye, "dir": look - eye, "fov": 40.0, "c": c, "az": az, "look": look, "d": d}
         az = float(cam.get("world_azimuth_deg", 0.0)) + float(cam.get("drift_deg_s", 0.0)) * (f - sh.f0)
+        tk = self.track_at(cam, f)
+        lift = 0.0
+        if tk is not None:
+            az, lift = tk
         if self.v4 and (cam.get("v4") or {}).get("role"):
             rkey = "radius_m" if self.aspect == "horizontal" else "radius_vertical_m"
             r, h = float(cam.get(rkey, self.cfg4.orbit_r_h[0])), float(cam.get("height_m", self.cfg4.orbit_r_h[1]))
@@ -2744,6 +2784,7 @@ class PoseModel:
             key = "pivot" if self.segs[sh.segs[0]].get("pivot") else eye_key(self.segs[sh.segs[0]])
             r, h = self.cfg.eye_rh.get(key, (3.5, 1.6))
             lh = 0.95
+        h += lift                                            # v4.3: the track's planned inline lift (0 without a track)
         eye = uncyl(az, r, h, c)
         look = c + np.array([0.0, lh, 0.0])
         return {"kind": "3d", "eye": eye, "dir": look - eye, "fov": self.cfg4.orbit_fov_deg, "c": c, "az": az, "r": r, "h": h, "look": look, "d": d}
@@ -3004,7 +3045,7 @@ def film_metrics(doc: dict, geo4: Geo4 | None, cfg4: V4Cfg | None = None, sample
         cr = [p["peak_pitch_deg_s"] for p in per if p["type"] in ("crane_up", "crane_down") and p["peak_pitch_deg_s"] is not None]
         out["ways"]["crane_pitch_deg_s"] = {"max": max(cr) if cr else None, "median": q(cr, 50)}
         out["_sample"] = {"t": sm["t"], "az": sm["az"], "eye_h": sm["eye"][:, 1], "az_rate": rt["az_deg_s"], "rot_rate": rt["rot_deg_s"], "speed": rt["speed_m_s"],
-                          "way": sm["way"], "ph_hold": ph_hold, "kind": sm["kind"], "eye": sm["eye"], "c": sm["c"]}
+                          "way": sm["way"], "ph_hold": ph_hold, "kind": sm["kind"], "eye": sm["eye"], "c": sm["c"], "dir": sm["dir"], "fov": sm["fov"]}
     return out
 
 
@@ -4013,8 +4054,8 @@ def check_v4(doc: dict, tl: dict, sp: dict, geo: Geo | None, geo4: Geo4 | None, 
     shots = shots_of(segs)
     flow = doc.get("flow") or {}
     met = met or film_metrics(doc, geo4, cfg4, sample=geo4 is not None)
-    tg = (flow.get("v4") or {}).get("targets") or (v41_targets(cfg4) if cfg4.version in ("4.1", "4.2") else (v4_hold_targets(base, cfg4) if base else None))
-    if tg is not None and cfg4.version in ("4.1", "4.2") and cfg4.share_check_min >= 0 and tg.get("share_min") != cfg4.share_check_min:
+    tg = (flow.get("v4") or {}).get("targets") or (v41_targets(cfg4) if cfg4.version in V41_STYLE else (v4_hold_targets(base, cfg4) if base else None))
+    if tg is not None and cfg4.version in V41_STYLE and cfg4.share_check_min >= 0 and tg.get("share_min") != cfg4.share_check_min:
         # the owner's decision of 2026-10-22 (OWNER_SHARE_DECISION): the check holds the delivered plan to >= 25 % phone video; a direction
         # built before it carries the planner's 45 % in flow.v4.targets
         tg = {**tg, "share_plan_min": tg.get("share_min"), "share_min": cfg4.share_check_min, "share_decision": OWNER_SHARE_DECISION}
@@ -4118,10 +4159,12 @@ def check_v4(doc: dict, tl: dict, sp: dict, geo: Geo | None, geo4: Geo4 | None, 
             ct = json.loads(cur_tl.read_text(encoding="utf-8"))
             same = json.dumps(ct.get("captions"), sort_keys=True) == json.dumps(tl.get("captions"), sort_keys=True)
             (notes if same else bad).append("captions identical to film/narration/timeline.json" if same else "the captions differ from film/narration/timeline.json")
-    if cfg4.version in ("4.1", "4.2"):
+    if cfg4.version in V41_STYLE:
         _targets_v41(target, doc, met, cfg4, tg, phq, shots, notes)
-        if cfg4.version == "4.2":
+        if cfg4.version in ("4.2", "4.3"):
             _targets_v42(target, doc, met, cfg4, notes)
+        if cfg4.version == "4.3":
+            _targets_v43(target, doc, met, cfg4, notes, bad)
         pw = [segs[shots[k].segs[0]]["camera"]["transition_in"] for k in range(1, len(shots))]
         return {"bad": bad, "notes": notes, "targets": rows, "shots": len(shots), "boundaries": len(shots) - 1,
                 "transitions": {t: sum(1 for x in pw if x["type"] == t) for t in V4_PROFILE}}
@@ -4221,7 +4264,9 @@ def _targets_v41(target, doc: dict, met: dict, cfg4: V4Cfg, tg: dict, phq, shots
             by_run.setdefault((cam.get("v4") or {}).get("run"), set()).add(round(float(cam.get("drift_deg_s", 0.0) or 0.0), 3))
     rates = [abs(r) for v in by_run.values() for r in v]
     one = all(len(v) == 1 for v in by_run.values())
-    target(f"4. every slow orbit: one constant rate, {lo:g}-{hi:g} deg/s", f"{lo}-{hi} deg/s, one per orbit", f"{', '.join(f'{min(v):g}' for v in by_run.values())} deg/s"
+    tracked = sorted({(segs[sh.segs[0]]["camera"].get("v4") or {}).get("run") for sh in shots if segs[sh.segs[0]]["camera"].get("azimuth_track")}, key=str)
+    target(f"4. every slow orbit: one constant rate, {lo:g}-{hi:g} deg/s" + (f" (the law; run {', '.join(str(x) for x in tracked)} plays its azimuth track: "
+           "v4.3's rule, target 10)" if tracked else ""), f"{lo}-{hi} deg/s, one per orbit", f"{', '.join(f'{min(v):g}' for v in by_run.values())} deg/s"
            + ("" if one else " (a run with two rates)"), bool(rates) and one and min(rates) >= lo - 1e-6 and max(rates) <= hi + 1e-6)
     mo = met.get("motion") or {}
     if mo:
@@ -4253,10 +4298,10 @@ def _targets_v41(target, doc: dict, met: dict, cfg4: V4Cfg, tg: dict, phq, shots
     target("6. the replay (in / out ways)", "1 / 1", f"{bt.get('replay_in', 0)} / {bt.get('replay_out', 0)}", bt.get("replay_in") == 1 and bt.get("replay_out") == 1)
     # 7. the physics legend (v4.2: the meter windows, _targets_v42)
     lg = (met.get("legend") or {}).get("v41_place") or {}
-    if cfg4.version == "4.2":
+    if cfg4.version in ("4.2", "4.3"):
         lg = {}
     pl = ((doc.get("presets") or {}).get("vertical") or {}).get("legend") or {}
-    if cfg4.version != "4.2":
+    if cfg4.version not in ("4.2", "4.3"):
         target("7. physics legend in the 9:16 top band (presets.vertical.legend), the teachers' box clear of it in the phone holds",
            f"top {cfg4.legend['top_frac'] if cfg4.legend else '-'}; >= {100 * tg['legend_clear_min']:.0f} % of hold frames clear",
            f"top {pl.get('top_frac')}; {100 * (1 - lg.get('under_legend_share', 1.0)):.1f} % clear ({lg.get('frames')} frames; box top median {lg.get('box_top_median')})",
@@ -6825,11 +6870,1232 @@ def write_all_v42(res: dict, out: Path) -> None:
              band=c4.orbit_rate_deg_s, cap=c4.cap_az_deg_s, label="v4.2")
 
 
-VERSIONS = ("v3", "v4", "v4.0", "v4.1", "v4.2")       # v4 = the latest v4 (v4.2)
+# ======================================================================================================== v4.3 (owner 2026-10-23)
+# "when we show initial counter balances we need to orbit but maintain a two shot in profile so we can see the physics of the counter balance.
+# otherwise the transitions to pov look good". v4.3 = v4.2 (every move, way, phone hold, orbit rate law, lens, band, meter window, chapter, caption
+# and the time map) + ONE planner-written azimuth track for the slow orbit that carries chapters 1-3 (run 2, between the way out of phone 00 and
+# the way into phone 06). The track holds the + profile (the eye about 90 deg off the couple's lead -> follow pelvis line on the lead's left: the
+# joined hands toward the camera) through the first counterbalance, crosses the couple's line ONCE in the stretch without a counterbalance
+# interval (the two phones the owner likes stand on opposite sides of the line: one crossing is forced), and holds the - profile (the lead's
+# right: his right hand on her back toward the camera) through the both-hands / one-hand demonstrations. It leaves and rejoins the v4.2 law C2
+# inside the orbit (phi = law + w (E - law), w = the closer ease weight of the block: 34.746-40.746 / 93.499-99.499), so both phone ways are
+# v4.2's frame for frame. Unity plays the table (FilmCamera.WorldAzimuth through FlowMath.TrackAt; UNITY_CONTRACT_v4.md 'v4.3').
+
+OUT_V42 = OUT_V4 / "v4.2"
+V42_DIRECTION = OUT_V42 / "direction.json"
+OUT_V43_FAST = OUT_V4 / "v4.3_fastpass"            # the fast-pass variant (an owner decision; not what the recorder reads)
+V43_OWNER = ("owner 2026-10-23, after the v4.2 films: \"when we show initial counter balances we need to orbit but maintain a two shot in profile so we "
+             "can see the physics of the counter balance. otherwise the transitions to pov look good\"")
+V43_TRACK = {
+    "schema": "hm film azimuth track v1", "revision": "4.3",
+    "runs": [2],                  # the slow orbit(s) whose counterbalances are 'initial' (chapters 1-3 lie in run 2)
+    "chapters": [1, 3],           # doc["chapters"] indices (0 = the opening jokes): the initial counterbalances
+    "hz": 30.0,                   # the table's sample rate (the film's frame rate: the recorder's frames land on the samples)
+    "knot_s": 1.0,                # the solver's cubic B-spline knot spacing
+    "rate_min_deg_s": 1.0,        # never reversing: >= 1 deg/s the orbit's own way (v4.1 E)
+    "rate_max_deg_s": 7.0,        # the crossing's ceiling (owner-approved exception to v4.1's 2.5-6 deg/s orbit band; the ways' caps are 12)
+    "rate_max_outside_deg_s": 6.0,   # ... everywhere else on the track v4.1's band top (the exception is the crossing only)
+    "accel_max_deg_s2": 2.0, "margin": 0.02,
+    "profile_tol_deg": 15.0,      # a window's median view angle to the couple's line within this of 90 ...
+    "share_tol_deg": 25.0, "share_min": 0.9,   # ... and >= 90 % of its frames within 25 of 90
+    "bound_tol_deg": 1.0,         # a window that no legal track can bring within profile_tol (its own best, solved alone) must be within this of that best
+    "w_interval": 2.0, "w_segment": 1.0, "min_part_s": 1.0, "lam_accel": 2e-3, "lam_jerk": 2e-3, "rounds": 3,
+    "lift_top_m": 2.4,            # the ground band's top: no lift may take the eye above it
+    # the crossing's eye lift: "raised" (the brief) = up to lift_top_m during the crossing; "none" = no lift there. Fix round 1 measured both in the
+    # editor (stills every 0.5 s over 68-75 s, Jev "her face can be seen" + the calibrated estimate below): the lift shows part of her face ~0.5 s
+    # longer at the start of the hidden stretch (her head rises beside / above his), but not at its core (~70.5-72 s: her chin would clear his head
+    # only from a ~3.4 m eye; the band's top is 2.4). Face hidden: with the lift ~2.0 s, without ~2.5 s. So the brief's lift stays
+    "crossing_lift": "raised",
+    # an OPTIONAL faster pass through the line (owner decision, not decided: v4.3 plays without it). None = off; else {rate_max_deg_s, half_s,
+    # w_gap}: within +-half_s of the line crossing the turn may reach rate_max_deg_s (the ways' cap is 12), and the gap's cb-layer segments are
+    # scored on their own side of that moment (weight w_gap), so the track lingers in profile and runs through the line fast
+    "fast_pass": None,
+}
+V43_FAST_PASS = {"rate_max_deg_s": 12.0, "half_s": 4.0, "w_gap": 0.5}      # the variant the verifier sketched (fix round 1, M1 option b)
+FLOW_SCHEMA_V43 = ("; v4.3 (flow.revision '4.3', UNITY_CONTRACT_v4.md 'v4.3'): flow.azimuth_tracks {id: {film, t0, dt, n, deg[], lift_m[], law, ...}} and "
+                   "camera.azimuth_track (the id) - inside film[0] < t < film[1] the eye's world azimuth (deg, unwrapped, atan2(z, x)) and its inline lift (m) "
+                   "come from the table (linear between the samples), outside it the block's law world_azimuth_deg + drift_deg_s x (film - F0)")
+
+
+def _dance_vec(doc: dict, f) -> np.ndarray:
+    """film -> master seconds for an array of film times (each segment's own map, as _dance_at_film; outside the film: the edge segment's map)"""
+    segs = doc["segments"]
+    f = np.asarray(f, float)
+    f0 = np.array([float(s["film"][0]) for s in segs])
+    d0 = np.array([float(s["dance"][0]) for s in segs])
+    sp = np.array([float(s["speed"]) for s in segs])
+    i = np.clip(np.searchsorted(f0, f, side="right") - 1, 0, len(segs) - 1)
+    return d0[i] + (f - f0[i]) * sp[i]
+
+
+class PelvisLine:
+    """the couple's lead -> follow line on the floor from the INSTALLED motion: joint 0 (the pelvis) of the capture's smplx_lead.bin /
+    smplx_follow.bin, Unity capture coordinates (what FilmCamera.SideAzimuth / InlineLift / FitSpan read; DanceOrigin's offset cancels in a
+    direction and is the same for the eye's centre), on the capture's clock. Also the joints the head-occlusion estimate and the side test use."""
+
+    PELVIS, SPINE3, NECK, HEAD, L_SH, R_SH = 0, 9, 12, 15, 16, 17
+
+    def __init__(self, cap_dir: Path = CAP_DIR):
+        import hashlib
+        from . import export_unity as eu
+        j0 = 3 + 55 * 4
+        self.sha, P = {}, {}
+        for role in ("lead", "follow"):
+            p = Path(cap_dir) / f"smplx_{role}.bin"
+            raw = p.read_bytes()
+            self.sha[role] = hashlib.sha256(raw).hexdigest()
+            h, m = eu.read_motion(p)
+            self.t = np.linspace(float(h["t0"]), float(h["t1"]), int(h["frames"]))
+            P[role] = m[:, j0:j0 + 55 * 3].reshape(-1, 55, 3).astype(float)
+        self.lead, self.follow = P["lead"], P["follow"]
+        ln = self.follow[:, 0] - self.lead[:, 0]
+        self.theta = np.degrees(np.unwrap(np.arctan2(ln[:, 2], ln[:, 0])))       # world deg, unwrapped (the viewer's atan2(z, x))
+        self.sep = np.hypot(ln[:, 0], ln[:, 2])
+
+    def theta_at(self, d) -> np.ndarray:
+        return np.interp(np.asarray(d, float), self.t, self.theta)
+
+    def joint_at(self, role: str, j: int, d) -> np.ndarray:
+        a = self.lead if role == "lead" else self.follow
+        d = np.atleast_1d(np.asarray(d, float))
+        return np.stack([np.interp(d, self.t, a[:, j, k]) for k in range(3)], axis=1)
+
+    def damped(self, role: str, doc: dict, film, tau: float = 0.6) -> np.ndarray:
+        """FilmCamera.Follow's twin (y = 0): the weighted mean of the pelvis over 10 samples tau / 3 apart back in film time, weights exp(-i / 3)
+        (the caller keeps it away from a dance-time cut)"""
+        film = np.atleast_1d(np.asarray(film, float))
+        dt = tau / 3.0
+        acc, ws = np.zeros((len(film), 3)), 0.0
+        for i in range(10):
+            wgt = math.exp(-i * dt / tau)
+            acc += wgt * self.joint_at(role, self.PELVIS, _dance_vec(doc, np.clip(film - i * dt, 0.0, None)))
+            ws += wgt
+        out = acc / ws
+        out[:, 1] = 0.0
+        return out
+
+
+def _ss3(x: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """smootherstep of x (already scaled to its window) and its 1st / 2nd derivatives by x"""
+    x = np.asarray(x, float)
+    xc = np.clip(x, 0.0, 1.0)
+    inside = (x > 0.0) & (x < 1.0)
+    s = xc ** 3 * (xc * (6.0 * xc - 15.0) + 10.0)
+    s1 = np.where(inside, 30.0 * xc * xc * (1.0 - xc) ** 2, 0.0)
+    s2 = np.where(inside, 60.0 * xc * (1.0 - xc) * (1.0 - 2.0 * xc), 0.0)
+    return s, s1, s2
+
+
+def track_blend(t: np.ndarray, win_in: tuple[float, float], win_out: tuple[float, float]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """the weight w(t) = Ramp(win_in) x (1 - Ramp(win_out)) of the profile track over the law (closer_weight's law, smootherstep ramps) and its 1st /
+    2nd time derivatives: 0 (the law) at and outside the window's ends, with zero 1st and 2nd derivatives there - the C2 joins"""
+    (ia, ib), (oa, ob) = win_in, win_out
+    ri, ri1, ri2 = _ss3((t - ia) / (ib - ia))
+    ri1, ri2 = ri1 / (ib - ia), ri2 / (ib - ia) ** 2
+    ro, ro1, ro2 = _ss3((t - oa) / (ob - oa))
+    ro1, ro2 = ro1 / (ob - oa), ro2 / (ob - oa) ** 2
+    return ri * (1.0 - ro), ri1 * (1.0 - ro) - ri * ro1, ri2 * (1.0 - ro) - 2.0 * ri1 * ro1 - ri * ro2
+
+
+def view_angle_to_line(phi_deg, theta_deg) -> np.ndarray:
+    """the angle (0..180 deg) between the view (the eye at azimuth phi about the couple, looking at it: phi + 180) and the lead -> follow line
+    (theta): 90 = a profile two-shot, 0 / 180 = one dancer in front of the other"""
+    return np.abs((np.asarray(phi_deg, float) + 180.0 - np.asarray(theta_deg, float) + 180.0) % 360.0 - 180.0)
+
+
+def inline_lift_twin(phi_deg: np.ndarray, pl: np.ndarray, pf: np.ndarray) -> np.ndarray:
+    """FilmCamera.InlineLift's twin (m): 1.9 m x k x apart - k = 1 - SmoothStep(|r| / 45 deg) with r the eye's angle off the lead -> follow line
+    (either side; 0 = along it), apart = SmoothStep(InverseLerp(0.2, 0.7, distance)); 0 while the dancers stand within 0.2 m"""
+    ln = pf - pl
+    n2 = ln[:, 0] ** 2 + ln[:, 2] ** 2
+    x = (np.radians(phi_deg) - np.arctan2(ln[:, 2], ln[:, 0]) + math.pi) % (2.0 * math.pi) - math.pi
+    r = (x + 0.5 * math.pi) % math.pi - 0.5 * math.pi
+
+    def hs(v):                                           # Mathf.SmoothStep(0, 1, v): the cubic Hermite
+        v = np.clip(v, 0.0, 1.0)
+        return v * v * (3.0 - 2.0 * v)
+    out = 1.9 * (1.0 - hs(np.abs(r) / (0.25 * math.pi))) * hs((np.sqrt(n2) - 0.2) / 0.5)
+    out[n2 < 0.04] = 0.0
+    return out
+
+
+def hann_mean(x: np.ndarray, half: int = 36) -> np.ndarray:
+    """FilmCamera.Orbit's Hann window over +-half frames (w = cos(k / (half + 1) x pi / 2)^2): x carries half extra samples at both ends; returns
+    len(x) - 2 half values"""
+    k = np.arange(-half, half + 1)
+    w = np.cos(k / (half + 1.0) * math.pi * 0.5) ** 2
+    return np.convolve(x, w, mode="valid") / w.sum()
+
+
+def v43_windows(doc: dict, sh: Shot, a: float, b: float, cb: dict, cfg: dict = V43_TRACK) -> dict:
+    """the windows the profile track is scored on: the counterbalance intervals (counterbalance.json, kind counterbalance, mapped to film time) and
+    the counterbalance-layer segments of the 'initial' chapters inside the run; the crossing = the longest stretch of [a, b] between two intervals.
+    A window is scored on its part inside the track's window (a, b: outside it the phone ways, v4.2's, decide) and outside the crossing, on the
+    side of the line that part lies (before the crossing: the first profile; after it: the second); a remaining part under min_part_s is reported only"""
+    segs = doc["segments"]
+    ch = doc["chapters"]
+    c0, c1 = cfg["chapters"]
+    span = (float(ch[c0]["film_s"]), float(ch[c1 + 1]["film_s"]) if c1 + 1 < len(ch) else float(doc["timeline"]["film_duration_s"]))
+    lo, hi = max(span[0], sh.f0), min(span[1], sh.f1)
+    ivs = []
+    for iv in cb.get("intervals", []):
+        if iv.get("kind") != "counterbalance":
+            continue
+        f0, f1 = film_of(doc, float(iv["t0"])), film_of(doc, float(iv["t1"]))
+        if f1 > lo and f0 < hi:
+            ivs.append((f0, f1, iv))
+    inner = sorted((max(f0, a), min(f1, b)) for f0, f1, _ in ivs if min(f1, b) > max(f0, a))
+    gaps = [(p[1], q[0]) for p, q in zip(inner, inner[1:]) if q[0] > p[1]]
+    if not gaps:
+        raise fr.RecapError(f"v4.3: run {(segs[sh.segs[0]]['camera'].get('v4') or {}).get('run')}: no stretch between two counterbalance intervals to cross the line in")
+    gap = max(gaps, key=lambda g: g[1] - g[0])
+    rows = [{"name": f"counterbalance {f0:.2f}-{f1:.2f}", "kind": "interval", "film": [round(f0, 3), round(f1, 3)], "confidence": iv.get("confidence"),
+             "connection": ((iv.get("connection") or {}).get("pair") if isinstance(iv.get("connection"), dict) else iv.get("connection"))} for f0, f1, iv in ivs]
+    for i in sh.segs:
+        s = segs[i]
+        if (s.get("layers") or {}).get("counterbalance") and s["film"][1] > lo and s["film"][0] < hi:
+            rows.append({"name": s["id"], "kind": "segment", "film": [round(float(s["film"][0]), 3), round(float(s["film"][1]), 3)]})
+    for r in rows:
+        x0, x1 = r["film"]
+        p0, p1 = max(x0, a), min(x1, b)
+        parts, why = [], []
+        if p1 - p0 <= 0:
+            why.append("inside a phone way (v4.2's, unchanged)")
+        else:
+            if x0 < a or x1 > b:
+                why.append(f"{max(0.0, a - x0) + max(0.0, x1 - b):.2f} s inside a phone way (v4.2's, unchanged)")
+            if p0 < gap[0]:
+                parts.append([round(p0, 3), round(min(p1, gap[0]), 3), "first"])
+            if p1 > gap[1]:
+                parts.append([round(max(p0, gap[1]), 3), round(p1, 3), "second"])
+            cut = (min(p1, gap[1]) - max(p0, gap[0]))
+            if cut > 0:
+                why.append(f"{cut:.2f} s inside the crossing")
+            short = [p for p in parts if p[1] - p[0] < cfg["min_part_s"] - 1e-9]
+            if short:
+                why.append("a remaining part under " + f"{cfg['min_part_s']:g} s: " + ", ".join(f"{p[0]}-{p[1]}" for p in short))
+            parts = [p for p in parts if p[1] - p[0] >= cfg["min_part_s"] - 1e-9]
+        r["scored"] = parts
+        r["not_scored"] = "; ".join(why)
+    rows.sort(key=lambda r: (r["film"][0], r["kind"]))
+    return {"chapters_film": [round(span[0], 3), round(span[1], 3)], "crossing": [round(gap[0], 3), round(gap[1], 3)], "windows": rows}
+
+
+def solve_profile_track(t: np.ndarray, law: np.ndarray, W: float, theta: np.ndarray, win_in: tuple, win_out: tuple, items: list[dict],
+                        cfg: dict = V43_TRACK, rate_max: np.ndarray | None = None) -> dict:
+    """the profile track as a quadratic programme: phi = law + w E (w = track_blend, E = a cubic B-spline with knots every knot_s over the track's
+    window), minimising, over the scored windows (weight / frames), the squared offset of the eye's azimuth about the line from its profile
+    (phi - theta - side), + lam_accel int phi''^2 + lam_jerk int phi'''^2, subject to - on every sample inside the window - rate_min + margin <=
+    phi' x sign(W) <= rate_max - margin and |phi''| <= accel_max - margin (linear in E: SLSQP from E = 0, which is feasible: the law). A window
+    whose target (median within profile_tol, share_min within share_tol) is missed is re-weighted (x 2, up to `rounds` times) when it alone could
+    meet it; its own best (the same programme with only that window) is reported for every window that misses"""
+    from scipy.interpolate import BSpline
+    from scipy.optimize import minimize
+    a, b = float(win_in[0]), float(win_out[1])
+    dt = 1.0 / float(cfg["hz"])
+    sg = math.copysign(1.0, W)
+    inw = (t > a + 1e-9) & (t < b - 1e-9)
+    nk = max(4, int(math.ceil((b - a) / float(cfg["knot_s"]) - 1e-9)))
+    knots = np.concatenate([[a] * 3, a + (b - a) * np.arange(nk + 1) / nk, [b] * 3])
+    nc = len(knots) - 4
+    Bm = np.zeros((3, len(t), nc))
+    for j in range(nc):
+        e = np.zeros(nc)
+        e[j] = 1.0
+        sp = BSpline(knots, e, 3, extrapolate=False)
+        Bm[0, :, j] = np.nan_to_num(sp(t))
+        Bm[1, :, j] = np.nan_to_num(sp.derivative(1)(t))
+        Bm[2, :, j] = np.nan_to_num(sp.derivative(2)(t))
+    w, w1, w2 = track_blend(t, win_in, win_out)
+    D0 = w[:, None] * Bm[0]
+    D1 = w1[:, None] * Bm[0] + w[:, None] * Bm[1]
+    D2 = w2[:, None] * Bm[0] + 2.0 * w1[:, None] * Bm[1] + w[:, None] * Bm[2]
+    for M in (D0, D1, D2):
+        M[~inw] = 0.0
+    D3 = np.gradient(D2, dt, axis=0)
+    m_ = float(cfg["margin"])
+    rmin, amax = float(cfg["rate_min_deg_s"]), float(cfg["accel_max_deg_s2"])
+    rmax = np.full(len(t), float(cfg["rate_max_deg_s"])) if rate_max is None else np.asarray(rate_max, float)      # per sample (the crossing may be faster)
+    cA_full = np.vstack([sg * D1[inw], -sg * D1[inw], D2[inw], -D2[inw]])
+    nin = int(inw.sum())
+    cB_full = np.concatenate([np.full(nin, rmin + m_ - abs(W)), abs(W) - rmax[inw] + m_, np.full(nin, -(amax - m_)), np.full(nin, -(amax - m_))])
+    # the solver first sees every second sample (15 Hz: half the work); a 30-Hz row the result breaks joins the programme and it is solved again
+    # (twice at most); whatever is left (never, so far) is pulled back toward the law, which is feasible
+    half_rows = np.concatenate([np.arange(0, nin, 2) + q * nin for q in range(4)])
+    R0 = cfg["lam_accel"] * dt * D2[inw].T @ D2[inw] + cfg["lam_jerk"] * dt * D3[inw].T @ D3[inw]
+
+    def qp(its, x0=None):
+        t_0 = __import__("time").perf_counter()
+        Q, g = R0.copy(), np.zeros(nc)
+        for it in its:
+            m = it["m"]
+            r = law[m] - theta[m] - it["side"]
+            A = D0[m]
+            sc = it["wt"] / max(1, int(m.sum()))
+            Q += sc * A.T @ A
+            g += sc * A.T @ r
+        rows = half_rows
+        nit = 0
+        c = np.zeros(nc) if x0 is None else x0
+        for _ in range(3):
+            A_, B_ = cA_full[rows], cB_full[rows]
+            res = minimize(lambda c_: 0.5 * c_ @ Q @ c_ + g @ c_, c, jac=lambda c_: Q @ c_ + g, method="SLSQP",
+                           constraints=[{"type": "ineq", "fun": lambda c_, A_=A_, B_=B_: A_ @ c_ - B_, "jac": lambda c_, A_=A_: A_}],
+                           options={"maxiter": 800, "ftol": 1e-11})
+            c = res.x
+            nit += int(res.nit)
+            viol = np.nonzero(cA_full @ c < cB_full - 1e-9)[0]
+            if not len(viol):
+                break
+            rows = np.union1d(rows, viol)                # the 30-Hz rows the 15-Hz solution broke join the programme
+        Ac = cA_full @ c
+        bad_ = Ac < cB_full
+        s = 1.0
+        if bad_.any():                                   # the law (c = 0) is strictly feasible: pull back along the segment to the feasible end
+            s = float(min(1.0, np.min(cB_full[bad_] / np.where(np.abs(Ac[bad_]) > 1e-12, Ac[bad_], -1e-12))))
+            c = c * max(0.0, s)
+        return c, {"status": int(res.status), "message": str(res.message), "iterations": nit, "constraint_rows": int(len(rows)), "pulled_back": round(1.0 - s, 6),
+                   "seconds": round(__import__("time").perf_counter() - t_0, 1)}
+
+    def stats(c):
+        phi = law + D0 @ c
+        ang = view_angle_to_line(phi, theta)
+        for it in items:
+            x = ang[it["m"]]
+            it["median"], it["share"] = float(np.median(x)), float(np.mean(np.abs(x - 90.0) <= cfg["share_tol_deg"]))
+        return phi
+
+    def meets(it, internal=0.5):
+        if it.get("kind") == "gap":                      # the fast pass's shaping terms: not a target
+            return True
+        tol = float(cfg["profile_tol_deg"])
+        best = it.get("best_alone")
+        if best is not None and abs(best - 90.0) > tol:
+            tol = abs(best - 90.0) + float(cfg["bound_tol_deg"])
+        return abs(it["median"] - 90.0) <= tol - internal and it["share"] >= cfg["share_min"] + 0.02
+
+    for it in items:
+        it["wt"] = it["w0"]
+    c, info = qp(items)
+    phi = stats(c)
+    rounds = [{"round": 0, **info, "missed": [it["name"] for it in items if not meets(it)]}]
+    for rnd in range(1, int(cfg["rounds"]) + 1):
+        miss = [it for it in items if not meets(it)]
+        if not miss:
+            break
+        for it in miss:
+            if it.get("best_alone") is None:
+                ca, _ = qp([dict(it, wt=1.0)], x0=c)            # from the joint solution (feasible, and near this window's own best)
+                x = view_angle_to_line(law + D0 @ ca, theta)[it["m"]]
+                it["best_alone"] = float(np.median(x))
+                it["best_alone_share"] = float(np.mean(np.abs(x - 90.0) <= cfg["share_tol_deg"]))
+        fix = [it for it in miss if not meets(it)]
+        if not fix:
+            break
+        for it in fix:
+            it["wt"] *= 2.0
+        c2, info2 = qp(items)
+        prev = [(it["median"], it["share"]) for it in items]
+        phi2 = stats(c2)
+        if sum(1 for it in items if meets(it)) < sum(1 for it, (md, shr) in zip(items, prev) if meets(dict(it, median=md, share=shr))):
+            for it, (md, shr) in zip(items, prev):           # the re-weighting made it worse: keep the previous solution
+                it["median"], it["share"] = md, shr
+            rounds.append({"round": rnd, **info2, "kept_previous": True})
+            break
+        c, phi = c2, phi2
+        rounds.append({"round": rnd, **info2, "missed": [it["name"] for it in items if not meets(it)]})
+    rate = W + D1 @ c
+    acc = D2 @ c
+    return {"phi": phi, "rate": rate, "accel": acc, "coef": c, "knots": nk, "rounds": rounds, "inside": inw}
+
+
+def profile_track(doc: dict, k: int, line: PelvisLine, cb: dict, cfg: dict = V43_TRACK, log=print) -> tuple[dict, dict]:
+    """v4.3: the azimuth track of the slow-orbit shot k (the run's camera block): the table the director plays, and the build's report"""
+    segs = doc["segments"]
+    shots = shots_of(segs)
+    sh = shots[k]
+    cam = segs[sh.segs[0]]["camera"]
+    run = (cam.get("v4") or {}).get("run")
+    tr_in = cam.get("transition_in") or {}
+    if k + 1 >= len(shots) or not tr_in:
+        raise fr.RecapError(f"v4.3: run {run} needs a way in and a way out (the track lies between them)")
+    ntr = segs[shots[k + 1].segs[0]]["camera"]["transition_in"]
+    a = round(sh.f0 + float(tr_in["start_s"]) + float(tr_in["duration_s"]), 6)      # the way in has arrived
+    b = round(shots[k + 1].f0 + float(ntr["start_s"]), 6)                            # the way out starts
+    A0, W, F0 = float(cam["world_azimuth_deg"]), float(cam["drift_deg_s"]), float(sh.f0)
+    ease = V42_CLOSER_EASE_S
+    win_in = tuple(cam["closer_in_s"]) if cam.get("closer_in_s") and abs(float(cam["closer_in_s"][0]) - a) < 1e-3 else (a, a + ease)
+    win_out = tuple(cam["closer_out_s"]) if cam.get("closer_out_s") and abs(float(cam["closer_out_s"][1]) - b) < 1e-3 else (b - ease, b)
+    win_in, win_out = (float(win_in[0]), float(win_in[1])), (float(win_out[0]), float(win_out[1]))
+    hz = float(cfg["hz"])
+    i0, i1 = int(math.floor(a * hz + 1e-9)), int(math.ceil(b * hz - 1e-9))
+    t = np.arange(i0, i1 + 1) / hz
+    law = A0 + W * (t - F0)
+    d = _dance_vec(doc, t)
+    theta = line.theta_at(d)
+    wins = v43_windows(doc, sh, a, b, cb, cfg)
+    ja = int(np.argmin(np.abs(t - a)))
+    psi_a = float(law[ja] - theta[ja])
+    first = 90.0 + 180.0 * round((psi_a - 90.0) / 180.0)                  # the profile nearest the eye where the way out of the phone leaves it
+    second = first + 180.0 * math.copysign(1.0, W)                        # ... and the other one, the orbit's own way round
+    items = []
+    for r in wins["windows"]:
+        for p0, p1, side in r["scored"]:
+            m = (t >= p0 - 1e-9) & (t <= p1 + 1e-9)
+            items.append({"name": r["name"], "kind": r["kind"], "part": [p0, p1], "side": first if side == "first" else second, "m": m,
+                          "w0": cfg["w_interval"] if r["kind"] == "interval" else cfg["w_segment"]})
+    t1 = __import__("time").time()
+    cross = wins["crossing"]
+    rcap = np.where((t >= cross[0]) & (t <= cross[1]), float(cfg["rate_max_deg_s"]), float(cfg.get("rate_max_outside_deg_s", cfg["rate_max_deg_s"])))
+    sol = solve_profile_track(t, law, W, theta, win_in, win_out, items, cfg, rate_max=rcap)
+    log(f"v4.3 run {run}: profile track {a:.3f}-{b:.3f} s ({len(t)} samples, {sol['knots']} knot spans) solved in {__import__('time').time() - t1:.1f} s, "
+        f"rounds {[(x['round'], x.get('missed')) for x in sol['rounds']]}")
+    ths = np.interp(d, line.t, np.convolve(np.pad(line.theta, 15, mode="edge"), np.ones(31) / 31.0, mode="valid"))
+    fp = cfg.get("fast_pass")
+    fast_rec = None
+    if fp:
+        # the optional faster pass (owner decision): around the decided track's line crossing the turn may reach fp's rate, and the gap's two
+        # sides are scored on their own profile (weight w_gap), so the solver lingers in profile and runs through the line fast
+        cr0 = [float(t[i + 1]) for i in np.nonzero(np.diff(np.floor((sol["phi"] - ths) / 180.0)))[0] if cross[0] <= t[i + 1] <= cross[1]]
+        if len(cr0) != 1:
+            raise fr.RecapError(f"v4.3 run {run}: fast pass: the decided track crosses the line {len(cr0)} times in the gap (one expected)")
+        tx, hw_ = cr0[0], float(fp["half_s"])
+        fwin = (round(max(cross[0], tx - hw_), 3), round(min(cross[1], tx + hw_), 3))
+        rcap = np.where((t >= fwin[0]) & (t <= fwin[1]), float(fp["rate_max_deg_s"]), rcap)
+        items_fp = list(items)
+        for p0, p1, sd in ((cross[0], fwin[0], first), (fwin[1], cross[1], second)):
+            if p1 - p0 >= float(cfg["min_part_s"]):
+                items_fp.append({"name": f"the gap {'before' if sd == first else 'after'} the fast pass", "kind": "gap", "part": [round(p0, 3), round(p1, 3)],
+                                 "side": sd, "m": (t >= p0 - 1e-9) & (t <= p1 + 1e-9), "w0": float(fp["w_gap"])})
+        t2 = __import__("time").time()
+        sol = solve_profile_track(t, law, W, theta, win_in, win_out, items_fp, cfg, rate_max=rcap)
+        items = [it for it in items_fp if it["kind"] != "gap"]
+        fast_rec = {"line_at_s_decided": round(tx, 3), "film": list(fwin), "rate_max_deg_s": float(fp["rate_max_deg_s"]), "w_gap": float(fp["w_gap"]),
+                    "rule": "within film the turn may reach rate_max_deg_s (an owner decision beyond the decided 7 deg/s); the rest of the crossing <= "
+                            "rules.rate_max_deg_s_gap"}
+        log(f"v4.3 run {run}: fast pass {fwin} at <= {fp['rate_max_deg_s']:g} deg/s solved in {__import__('time').time() - t2:.1f} s, "
+            f"rounds {[(x['round'], x.get('missed')) for x in sol['rounds']]}")
+    phi = sol["phi"]
+    # the eye lift inside the window: the inline lift's twin (the damped pelvises, the Hann window over +-1.2 s), the block's cap x the closer factor
+    # (as Unity's live lift) outside the crossing; inside it cfg['crossing_lift']: "none" = no lift (fix round 1: it cannot show the dancer behind),
+    # "raised" = the cap raised to the ground band's top (lift_top_m - the eye's height at full closeness; the first build, kept for the record)
+    half = 36
+    te = np.arange(i0 - half, i1 + half + 1) / hz
+    law_e = A0 + W * (te - F0)
+    phi_e = law_e.copy()
+    phi_e[half:half + len(t)] = phi
+    inside_e = (te > a + 1e-9) & (te < b - 1e-9)
+    phi_e[~inside_e] = law_e[~inside_e]
+    pl, pf = line.damped("lead", doc, te), line.damped("follow", doc, te)
+    L = inline_lift_twin(phi_e, pl, pf)
+    h_full = float(cam["height_m"])
+    cap_raised = max(0.0, float(cfg["lift_top_m"]) - h_full)
+    cap_reg = np.array([float(cam.get("inline_lift_max_m", 0.0)) * closer_factor(cam, float(x)) for x in te])
+    in_cross_e = (te >= cross[0]) & (te <= cross[1])
+    mode = cfg.get("crossing_lift", "raised")
+    if mode not in ("none", "raised"):
+        raise fr.RecapError(f"v4.3: crossing_lift {mode!r} (none | raised)")
+    cap_cross = cap_raised if mode == "raised" else 0.0
+    lift = hann_mean(np.minimum(L, np.where(in_cross_e, cap_cross, cap_reg)), half)
+    lift_raised = hann_mean(np.minimum(L, np.where(in_cross_e, cap_raised, cap_reg)), half)
+    lift_none = hann_mean(np.minimum(L, np.where(in_cross_e, 0.0, cap_reg)), half)
+    for x_ in (lift, lift_raised, lift_none):
+        x_[(t <= a + 1e-9) | (t >= b - 1e-9)] = 0.0
+    lift_alt, alt_mode = (lift_none, "none") if mode == "raised" else (lift_raised, "raised")     # the other choice, for the review's comparison
+    lift_law = hann_mean(np.minimum(inline_lift_twin(law_e, pl, pf), np.array([float(cam.get("inline_lift_max_m", 0.0)) * closer_factor(cam, float(x)) for x in te])), half)
+    edge_live = float(max(np.max(hann_mean(np.minimum(inline_lift_twin(law_e, pl, pf), 9.0), half)[np.abs(t - a) <= 1.3]),
+                          np.max(hann_mean(np.minimum(inline_lift_twin(law_e, pl, pf), 9.0), half)[np.abs(t - b) <= 1.3])))
+    ang = view_angle_to_line(phi, theta)
+    psi = phi - theta
+    cr_t = [round(float(t[i]), 3) for i in np.nonzero(np.diff(np.floor((phi - ths) / 180.0)))[0]]
+    rate, acc = sol["rate"], sol["accel"]
+    inw = sol["inside"]
+    fast = inw & (rate * math.copysign(1.0, W) > 6.0 + 1e-9)
+    fast_runs = []
+    for i in np.nonzero(fast)[0]:
+        if fast_runs and i == fast_runs[-1][1] + 1:
+            fast_runs[-1][1] = i
+        else:
+            fast_runs.append([i, i])
+    cmask = inw & (t >= cross[0]) & (t <= cross[1])
+    block = {"schema": cfg["schema"], "revision": cfg["revision"], "run": run, "segments": [segs[sh.segs[0]]["id"], segs[sh.segs[-1]]["id"]],
+             "film": [a, b], "t0": i0 / hz, "dt": 1.0 / hz, "hz": hz, "i0": i0, "n": len(t), "interp": "linear",
+             "deg": [round(float(x), 5) for x in phi], "lift_m": [round(float(x), 4) for x in lift],
+             "law": {"world_azimuth_deg": A0, "drift_deg_s": W, "F0": F0, "rule": "phi(film) = world_azimuth_deg + drift_deg_s x (film - F0): the block's own law, "
+                                                                            "played outside film[0] < film < film[1]"},
+             "blend": {"in_s": list(win_in), "out_s": list(win_out), "rule": "deg = law + w (E - law), w = Ramp(in_s) x (1 - Ramp(out_s)) (smootherstep): the law "
+                                                                              "with zero 1st and 2nd derivative difference at both ends (C2)"},
+             "rules": {k2: cfg[k2] for k2 in ("rate_min_deg_s", "rate_max_deg_s", "rate_max_outside_deg_s", "accel_max_deg_s2", "profile_tol_deg", "share_tol_deg",
+                                              "share_min", "lift_top_m", "crossing_lift")}
+             | ({"exception": "the crossing turns at up to rate_max_deg_s (7): the owner-approved exception to v4.1's 2.5-6 deg/s one-rate orbit band"} if not fast_rec else
+                {"rate_max_deg_s": fast_rec["rate_max_deg_s"], "rate_max_deg_s_gap": cfg["rate_max_deg_s"],
+                 "exception": f"the crossing turns at up to {cfg['rate_max_deg_s']:g} deg/s (the owner-approved exception to v4.1's 2.5-6 band) and inside "
+                              f"fast_pass.film at up to {fast_rec['rate_max_deg_s']:g} deg/s (the fast pass: an owner decision beyond the decided "
+                              f"{cfg['rate_max_deg_s']:g})", "fast_pass": fast_rec}),
+             "profiles": {"first_deg": first, "second_deg": second, "rule": "psi = the eye's azimuth about the couple minus the lead -> follow pelvis line's "
+                          "(world deg, unwrapped); first = the profile nearest psi where the way in leaves the eye, second = first + 180 the orbit's way"},
+             "crossing": {"film": cross, "line_at_s": cr_t, "rate_max_deg_s": round(float(np.max(np.abs(rate[cmask]))), 3) if cmask.any() else None,
+                          "over_6_deg_s": [[round(float(t[i]), 3), round(float(t[j]), 3)] for i, j in fast_runs],
+                          "lift": cfg.get("crossing_lift", "raised"), "lift_cap_m": round(cap_cross, 3), "lift_max_m": round(float(lift.max()), 4),
+                          "raised_lift_max_m": round(float(lift_raised.max()), 4)} | ({"fast_pass": fast_rec} if fast_rec else {}),
+             "line": {"source": "the installed motion: smplx_lead.bin / smplx_follow.bin joint 0 (the pelvis)", "lead_sha256": line.sha["lead"],
+                      "follow_sha256": line.sha["follow"]},
+             "windows": [{k2: v for k2, v in r.items()} for r in wins["windows"]],
+             "lift_rule": "inside film[0] < film < film[1] the eye's inline lift = lift_m (m, linear between the samples), replacing the Hann-weighted live "
+                          "InlineLift (its cap and the closer factor already applied); its python twin, inside the crossing "
+                          + ("with the cap raised to lift_top_m - height_m" if cap_cross > 0 else "with no lift (crossing.lift 'none': behind the taller lead "
+                             "a lift up to the band's top cannot show the follow; the eye keeps its height)")}
+    for r in block["windows"]:
+        its = [it for it in items if it["name"] == r["name"]]
+        if its:
+            r["side"] = ["first" if it["side"] == first else "second" for it in its]
+            r["planned"] = [{"part": it["part"], "median_deg": round(it["median"], 2), "share_within_tol": round(it["share"], 3),
+                             "best_alone_median_deg": None if it.get("best_alone") is None else round(it["best_alone"], 2)} for it in its]
+    rep = {"run": run, "film": [a, b], "samples": len(t), "solver": sol["rounds"], "knot_spans": sol["knots"],
+           "rate": {"min": round(float(np.min(rate[inw] * math.copysign(1.0, W))), 3), "max": round(float(np.max(rate[inw] * math.copysign(1.0, W))), 3)},
+           "accel_abs_max": round(float(np.max(np.abs(acc[inw]))), 3), "crossings_at_s": cr_t, "first_profile": first, "second_profile": second,
+           "psi_at_way_ends": [round(psi_a, 2), round(float(psi[-1]), 2)], "lift_max_m": round(float(lift.max()), 4), "lift_v42_law_max_m": round(float(lift_law.max()), 4),
+           "live_lift_at_window_edges_m": round(edge_live, 4), "raised_lift_max_m": round(float(lift_raised.max()), 4), "fast_pass": fast_rec,
+           "angle": ang, "t": t, "lift": lift, "lift_alt": lift_alt, "lift_alt_mode": alt_mode, "rate_s": rate, "accel_s": acc, "theta": theta, "law": law}
+    return block, rep
+
+
+def v43_doc(doc42: dict, line: PelvisLine | None = None, cap_dir: Path = CAP_DIR, cfg: dict = V43_TRACK, log=print) -> tuple[dict, dict]:
+    """the v4.3 direction from the v4.2 one: every run in cfg['runs'] gets its profile track (flow.azimuth_tracks, camera.azimuth_track on each
+    of its segments); nothing else changes. Returns (doc, {track id: build report})"""
+    doc = copy.deepcopy(doc42)
+    line = line or PelvisLine(cap_dir)
+    cb = load_counterbalance(cap_dir)
+    segs = doc["segments"]
+    tracks, reps = {}, {}
+    for run in cfg["runs"]:
+        shots = shots_of(segs)
+        ks = [k for k, sh in enumerate(shots) if sh.kind == "3d" and (segs[sh.segs[0]]["camera"].get("v4") or {}).get("run") == run
+              and (segs[sh.segs[0]]["camera"].get("v4") or {}).get("role") == "slow_orbit"]
+        if len(ks) != 1:
+            raise fr.RecapError(f"v4.3: run {run} is {len(ks)} slow-orbit shots (one expected)")
+        block, rep = profile_track(doc, ks[0], line, cb, cfg, log=log)
+        tid = f"run{run}"
+        tracks[tid] = block
+        reps[tid] = rep
+        for i in shots[ks[0]].segs:
+            segs[i]["camera"]["azimuth_track"] = tid
+    doc["flow"]["azimuth_tracks"] = tracks
+    doc["flow"]["revision"] = "4.3"
+    doc["flow"]["schema"] = doc["flow"]["schema"] + FLOW_SCHEMA_V43
+    doc["created"] = ("generated by dancecap.film_recap_flow build --version v4.3 (the v4.2 plan + the initial counterbalances as profile two-shot orbits: "
+                      "a planned azimuth track for the slow orbit of chapters 1-3) on top of dancecap.film_recap; edit the rules there")
+    doc.setdefault("recap_film", {}).setdefault("v4", {})["v43"] = {"owner": V43_OWNER, "tracks": {tid: {"run": b_["run"], "film": b_["film"], "crossing": b_["crossing"]}
+                                                                                                  for tid, b_ in tracks.items()}}
+    return doc, reps
+
+
+def v43_cfg() -> V4Cfg:
+    return dataclasses_replace(v42_cfg(), version="4.3")
+
+
+def _strip_tracks(doc: dict) -> dict:
+    """a direction without what v4.3 adds (the tracks, the camera keys, the revision / schema / provenance and the re-measured numbers)"""
+    d = copy.deepcopy(doc)
+    fl_ = d.get("flow") or {}
+    for k2 in ("azimuth_tracks", "revision", "schema"):
+        fl_.pop(k2, None)
+    (fl_.get("v4") or {}).pop("measured", None)
+    d.pop("created", None)
+    ((d.get("recap_film") or {}).get("v4") or {}).pop("v43", None)
+    for s in d["segments"]:
+        s["camera"].pop("azimuth_track", None)
+    return d
+
+
+def track_report(doc: dict, met: dict, met_h: dict | None, doc42: dict | None, met42: dict | None, met42_h: dict | None, line: PelvisLine | None = None,
+                 reps: dict | None = None) -> dict:
+    """the v4.3 numbers on the sampled plan (PoseModel, 30 Hz): per tracked run and window the view's angle to the couple's line (v4.2 / v4.3, both
+    aspects), the line crossings, the rate band, the lift and the eye's height; and the frame-exact comparison with v4.2 (every frame outside the
+    tracks' windows, the ways in particular) plus the direction's own diff (v4.3 = v4.2 + the track keys)"""
+    tracks = (doc.get("flow") or {}).get("azimuth_tracks") or {}
+    out: dict = {"tracks": {}}
+    if not tracks or met.get("_sample") is None:
+        return out
+    line = line or PelvisLine()
+    sm = met["_sample"]
+    t = sm["t"]
+    d = _dance_vec(doc, t)
+    theta = line.theta_at(d)
+
+    def angles(s):
+        dr = s["dir"]
+        return view_angle_to_line(np.degrees(np.arctan2(-dr[:, 2], -dr[:, 0])), theta)
+    ang = {"9:16": angles(sm)}
+    if met_h is not None and met_h.get("_sample") is not None:
+        ang["16:9"] = angles(met_h["_sample"])
+    ang42 = {}
+    if met42 is not None and met42.get("_sample") is not None:
+        ang42["9:16"] = angles(met42["_sample"])
+        if met42_h is not None and met42_h.get("_sample") is not None:
+            ang42["16:9"] = angles(met42_h["_sample"])
+    shots = shots_of(doc["segments"])
+    f0s = np.array([s.f0 for s in shots])
+    shot_of = np.clip(np.searchsorted(f0s, t, side="right") - 1, 0, len(shots) - 1)
+    # the lead's right (his right shoulder - his left), for the side the eye is on
+    lr = line.joint_at("lead", line.R_SH, d) - line.joint_at("lead", line.L_SH, d)
+    lr_az = np.arctan2(lr[:, 2], lr[:, 0])
+    eye_rel = sm["eye"] - sm["c"]
+    on_right = np.cos(np.arctan2(eye_rel[:, 2], eye_rel[:, 0]) - lr_az) > 0.0
+    # the two heads within 4 deg of each other in the picture (one hides the other), per version and aspect
+    hs = {("v43", "9:16"): head_sep_deg(line, d, sm["eye"])}
+    for lab, asp, M in (("v43", "16:9", met_h), ("v42", "9:16", met42), ("v42", "16:9", met42_h)):
+        if M is not None and M.get("_sample") is not None and len(M["_sample"]["t"]) == len(t):
+            hs[(lab, asp)] = head_sep_deg(line, d, M["_sample"]["eye"])
+    for tid, tb in tracks.items():
+        a, b = float(tb["film"][0]), float(tb["film"][1])
+        k = next((kk for kk, s in enumerate(shots) if doc["segments"][s.segs[0]]["camera"].get("azimuth_track") == tid), None)
+        inside = (t > a) & (t < b)
+        settled = (shot_of == k) & (sm["way"] < 0) & ~sm["ph_hold"] & inside
+        W = float(tb["law"]["drift_deg_s"])
+        sg = math.copysign(1.0, W)
+        rate = sm["az_rate"]
+        acc = np.gradient(np.nan_to_num(rate)) * float(1.0 / (t[1] - t[0]))
+        ok = settled & np.isfinite(rate)
+        ok_a = ok & np.roll(ok, 1) & np.roll(ok, -1)
+        rows = []
+        for w_ in tb.get("windows", []):
+            x0, x1 = w_["film"]
+            row = {"name": w_["name"], "kind": w_["kind"], "film": w_["film"], "scored": w_.get("scored", []), "not_scored": w_.get("not_scored", ""),
+                   "best_alone": [p.get("best_alone_median_deg") for p in w_.get("planned", [])]}
+            mw = (t >= x0) & (t <= x1)
+            for lab, A in (("v42", ang42), ("v43", ang)):
+                for asp, aa in A.items():
+                    x = aa[mw]
+                    if len(x):
+                        row[f"{lab}_{asp}"] = {"min": round(float(x.min()), 1), "median": round(float(np.median(x)), 1), "max": round(float(x.max()), 1),
+                                               "within_25": round(float(np.mean(np.abs(x - 90) <= 25)), 3)}
+            sc = np.zeros(len(t), bool)
+            for p0, p1, _ in w_.get("scored", []):
+                sc |= (t >= p0 - 1e-9) & (t <= p1 + 1e-9)
+            if sc.any():
+                for asp, aa in ang.items():
+                    x = aa[sc]
+                    row[f"scored_{asp}"] = {"median": round(float(np.median(x)), 2), "within_tol": round(float(np.mean(np.abs(x - 90) <= tb["rules"]["share_tol_deg"])), 3),
+                                            "frames": int(sc.sum())}
+                for asp, aa in ang42.items():
+                    x = aa[sc]
+                    row[f"scored_v42_{asp}"] = {"median": round(float(np.median(x)), 2), "within_tol": round(float(np.mean(np.abs(x - 90) <= tb["rules"]["share_tol_deg"])), 3)}
+            if mw.any():
+                row["eye_on_lead_right"] = round(float(np.mean(on_right[mw])), 3)
+                row["heads_under_4deg"] = {f"{lab}_{asp}": round(float(np.mean(x[mw] < 4.0)), 3) for (lab, asp), x in hs.items()}
+            rows.append(row)
+        # the line crossings of the settled orbit (the eye's azimuth about the couple's centre minus the 1-s mean line, through 0 / 180)
+        ths = np.interp(d, line.t, np.convolve(np.pad(line.theta, 15, mode="edge"), np.ones(31) / 31.0, mode="valid"))
+        run_m = (shot_of == k) & (sm["way"] < 0) & ~sm["ph_hold"]
+        ii = np.nonzero(run_m)[0]
+        psi = sm["az"][ii] - ths[ii]
+        cr = [round(float(t[ii[j + 1]]), 3) for j in np.nonzero(np.diff(np.floor(psi / 180.0)))[0] if ii[j + 1] == ii[j] + 1]
+        psi_raw = sm["az"][ii] - theta[ii]
+        cr_raw = [round(float(t[ii[j + 1]]), 3) for j in np.nonzero(np.diff(np.floor(psi_raw / 180.0)))[0] if ii[j + 1] == ii[j] + 1]
+        ivs = [w_["film"] for w_ in tb.get("windows", []) if w_["kind"] == "interval"]
+        cr_in = [x for x in cr if any(p0 <= x <= p1 for p0, p1 in ivs)]
+        eh = sm["eye_h"]
+        row_t = {"film": [a, b], "windows": rows, "crossings_at_s": cr, "crossings_raw_line_at_s": cr_raw, "crossings_in_intervals": cr_in,
+                 "rate_its_way": {"min": round(float(np.min(sg * rate[ok])), 3), "max": round(float(np.max(sg * rate[ok])), 3)} if ok.any() else None,
+                 "accel_abs_max": round(float(np.max(np.abs(acc[ok_a]))), 3) if ok_a.any() else None,
+                 "eye_h_max_m": round(float(np.max(eh[inside])), 3) if inside.any() else None,
+                 "eye_h_max_16x9_m": round(float(np.max(met_h["_sample"]["eye_h"][inside])), 3) if (met_h is not None and inside.any()) else None,
+                 "lift_max_m": round(float(np.max(tb.get("lift_m") or [0.0])), 4)}
+        # the crossing: its fastest turn, the time above v4.1's 6-deg/s band, the eye's vertical speed
+        cx = (t >= tb["crossing"]["film"][0]) & (t <= tb["crossing"]["film"][1]) & ok
+        if cx.any():
+            row_t["crossing"] = {"film": tb["crossing"]["film"], "rate_max_deg_s": round(float(np.max(sg * rate[cx])), 3),
+                                 "rate_mean_deg_s": round(float(np.mean(sg * rate[cx])), 3),
+                                 "over_6_deg_s_s": round(float(np.sum(sg * rate[cx] > 6.0 + 1e-9)) / 30.0, 2),
+                                 "outside_it_rate_max_deg_s": round(float(np.max(sg * rate[ok & ~cx])), 3) if (ok & ~cx).any() else None,
+                                 "outside_it_over_6_deg_s_s": round(float(np.sum(sg * rate[ok & ~cx] > 6.0 + 1e-9)) / 30.0, 2),
+                                 "eye_vertical_speed_max_m_s": round(float(np.max(np.abs(np.gradient(eh[inside]) * 30.0))), 3) if inside.any() else None}
+            fpw = ((tb.get("rules") or {}).get("fast_pass") or {}).get("film")
+            if fpw:
+                g_ = cx & ~((t >= fpw[0]) & (t <= fpw[1]))
+                row_t["crossing"]["fast_pass"] = {"film": fpw, "rate_max_in_it_deg_s": round(float(np.max(sg * rate[cx & ~g_])), 3) if (cx & ~g_).any() else None,
+                                                  "rate_max_rest_of_gap_deg_s": round(float(np.max(sg * rate[g_])), 3) if g_.any() else None,
+                                                  "over_7_deg_s_s": round(float(np.sum(sg * rate[cx] > 7.0 + 1e-9)) / 30.0, 2)}
+        # the far dancer's head behind the near one (plan estimates: the far head within 0.2 m of the near dancer's head / neck / spine / pelvis
+        # polyline; the two heads under 3 / 4 deg apart), over the crossing: v4.2's law (its own crossing in the same orbit), v4.3, and v4.3 with the
+        # first build's raised lift (when the build's reports are at hand)
+        rp_ = (reps or {}).get(tid) or {}
+        row_t["far_head_hidden_s"] = _hidden_heads(doc, met, met42, line, k, tb, lift_alt=rp_.get("lift_alt"), alt_mode=rp_.get("lift_alt_mode"))
+        out["tracks"][tid] = row_t
+    # frame-exact: every frame outside the tracks' windows = v4.2's (eye, view direction, lens), in both aspects; the ways in particular
+    if met42 is not None and met42.get("_sample") is not None:
+        wins = [(float(tb["film"][0]), float(tb["film"][1])) for tb in tracks.values()]
+        inside_any = np.zeros(len(t), bool)
+        for a, b in wins:
+            inside_any |= (t > a) & (t < b)
+        ex = {}
+        for asp, A, B in (("9:16", sm, met42["_sample"]), ("16:9", (met_h or {}).get("_sample"), (met42_h or {}).get("_sample"))):
+            if A is None or B is None or len(A["t"]) != len(B["t"]):
+                continue
+            dif = np.max(np.abs(A["eye"] - B["eye"]), axis=1) + np.max(np.abs(A["dir"] - B["dir"]), axis=1) + np.abs(A["fov"] - B["fov"])
+            way = B["way"] >= 0
+            ex[asp] = {"frames": int(len(t)), "differ": int(np.sum(dif > 0)), "differ_outside_tracks": int(np.sum((dif > 0) & ~inside_any)),
+                       "way_frames": int(way.sum()), "way_frames_differ": int(np.sum((dif > 0) & way)), "max_diff_outside_tracks": float(np.max(dif[~inside_any])),
+                       "first_last_differing_s": [round(float(t[dif > 0][0]), 4), round(float(t[dif > 0][-1]), 4)] if (dif > 0).any() else None}
+        out["frame_exact"] = ex
+    if doc42 is not None:
+        out["direction_diff"] = {"same_but_the_track": json.dumps(_strip_tracks(doc), sort_keys=True) == json.dumps(_strip_tracks(doc42), sort_keys=True),
+                                 "v42_revision": (doc42.get("flow") or {}).get("revision")}
+    out["motion"] = {"lead_sha256": line.sha["lead"], "follow_sha256": line.sha["follow"]}
+    return out
+
+
+def head_sep_deg(line: PelvisLine, d, eye: np.ndarray) -> np.ndarray:
+    """the angle (deg) between the two dancers' head joints seen from the eye (n x 3, capture coordinates) at dance times d: under ~3-4 deg the
+    heads overlap in the picture (a head is ~0.2 m wide: ~3.5 deg at the orbit's 3-4 m)"""
+    vl = line.joint_at("lead", line.HEAD, d) - eye
+    vf = line.joint_at("follow", line.HEAD, d) - eye
+    c = np.sum(vl * vf, axis=1) / np.maximum(1e-9, np.linalg.norm(vl, axis=1) * np.linalg.norm(vf, axis=1))
+    return np.degrees(np.arccos(np.clip(c, -1.0, 1.0)))
+
+
+FACE_HIDDEN_R_M = 0.10     # her head centre within this of his (at his depth) = her face hidden: calibrated (fix round 1) on editor stills every
+                           # 0.5 s over the crossing, judged by Jev ("the woman's face can be seen") and looked at - within ~0.5 s in both aspects
+
+
+def _hidden_heads(doc: dict, met: dict, met42: dict | None, line: PelvisLine, k: int, tb: dict, r_m: float = 0.2,
+                  lift_alt: np.ndarray | None = None, alt_mode: str | None = None) -> dict:
+    """the dancer behind hidden by the one in front, over the crossing +-3 s (plan estimates on the PoseModel eye): (1) her FACE hidden - the far
+    head's centre within FACE_HIDDEN_R_M of the near head's centre at the near depth (s, and its longest stretch); (2) the far head within r_m of the
+    near dancer's head / neck / spine / pelvis polyline (s); (3) the two heads closer than 3 / 4 deg in the picture (over the crossing itself). For
+    v4.2's law, v4.3 as planned and - lift_alt, the other crossing-lift choice (alt_mode) on the table's samples - v4.3 with that lift instead"""
+    sm = met["_sample"]
+    t = sm["t"]
+    lo, hi = tb["crossing"]["film"]
+    m = (t >= lo - 3.0) & (t <= hi + 3.0)
+    idx = np.nonzero(m)[0]
+    tw = t[idx]
+    d = _dance_vec(doc, tw)
+    cx = (tw >= lo) & (tw <= hi)
+    J = (line.HEAD, line.NECK, line.SPINE3, line.PELVIS)
+    P = {role: np.stack([line.joint_at(role, j, d) for j in J], axis=1) for role in ("lead", "follow")}   # (n, 4, 3)
+    tt = float(tb["t0"]) + float(tb["dt"]) * np.arange(int(tb["n"]))
+    inside = (tw > float(tb["film"][0])) & (tw < float(tb["film"][1]))
+    lift = np.where(inside, np.interp(tw, tt, np.asarray(tb.get("lift_m") or [0.0] * int(tb["n"]), float)), 0.0)
+
+    def longest(mask):
+        run, best = None, None
+        for i, x in enumerate(mask):
+            if x:
+                run = [i, i] if run is None else [run[0], i]
+                if best is None or run[1] - run[0] > best[1] - best[0]:
+                    best = list(run)
+            else:
+                run = None
+        return None if best is None else [round(float(tw[best[0]]), 2), round(float(tw[best[1]]), 2), round((best[1] - best[0] + 1) / 30.0, 2)]
+
+    def hidden(eye, look):
+        poly, face = np.zeros(len(eye), bool), np.zeros(len(eye), bool)
+        for i in range(len(eye)):
+            fwd = _unit(look[i] - eye[i])
+            right = _unit(np.cross(fwd, np.array([0.0, 1.0, 0.0])))
+            up = np.cross(right, fwd)
+            z = {role: (P[role][i] - eye[i]) @ fwd for role in P}
+            near, far = ("lead", "follow") if z["lead"][0] < z["follow"][0] else ("follow", "lead")
+            zf = z[far][0]
+            if zf <= 0.1:
+                continue
+            q = np.array([(P[far][i, 0] - eye[i]) @ right, (P[far][i, 0] - eye[i]) @ up]) / zf
+            pts = np.stack([(P[near][i] - eye[i]) @ right, (P[near][i] - eye[i]) @ up], axis=1) / z[near][:, None]
+            best = 1e9
+            for j in range(len(J) - 1):
+                p, q2 = pts[j], pts[j + 1]
+                v = q2 - p
+                u = float(np.clip(np.dot(q - p, v) / max(1e-12, np.dot(v, v)), 0.0, 1.0))
+                best = min(best, float(np.linalg.norm(q - (p + u * v))))
+            poly[i] = best * float(np.mean(z[near])) < r_m
+            face[i] = float(np.linalg.norm(q - pts[0])) * float(z[near][0]) < FACE_HIDDEN_R_M
+        return {"face_hidden_s": round(float(face.sum()) / 30.0, 2), "face_hidden_longest_s": longest(face), "behind_body_s": round(float(poly.sum()) / 30.0, 2)}
+
+    def heads(eye):
+        sep_w = head_sep_deg(line, d, eye)
+        sep = sep_w[cx]
+        return {"heads_under_3deg_s": round(float(np.sum(sep < 3.0)) / 30.0, 2), "heads_under_4deg_s": round(float(np.sum(sep < 4.0)) / 30.0, 2),
+                "heads_under_4deg_window_s": round(float(np.sum(sep_w < 4.0)) / 30.0, 2),
+                "heads_sep_median_deg": round(float(np.median(sep)), 2) if len(sep) else None, "heads_sep_min_deg": round(float(np.min(sep)), 2) if len(sep) else None}
+
+    def both(eye, look):
+        return hidden(eye, look) | heads(eye)
+    eye = sm["eye"][idx]
+    look = sm["c"][idx] + np.array([0.0, 0.95, 0.0])
+    out = {"window_s": [round(lo - 3.0, 2), round(hi + 3.0, 2)], "crossing_s": [lo, hi], "face_rule": f"her head centre within {FACE_HIDDEN_R_M} m of his "
+           "(at his depth): calibrated on editor stills + Jev", "lift": tb["crossing"].get("lift", "raised"), "lift_max_m": round(float(lift.max()), 4),
+           "v43": both(eye, look)}
+    if lift_alt is not None:
+        e1 = eye.copy()
+        e1[:, 1] += np.where(inside, np.interp(tw, tt, np.asarray(lift_alt, float)), 0.0) - lift
+        out["alt"] = {"lift": alt_mode, "lift_max_m": round(float(np.max(lift_alt)), 4)} | both(e1, look)
+    if met42 is not None and met42.get("_sample") is not None:
+        e42 = met42["_sample"]["eye"][idx]
+        out["v42"] = both(e42, met42["_sample"]["c"][idx] + np.array([0.0, 0.95, 0.0]))
+    return out
+
+
+def v43_extra_metrics(met: dict, doc: dict, geo4: Geo4 | None, cfg4: V4Cfg, met_h: dict | None, doc42: dict | None, met42: dict | None = None,
+                      met42_h: dict | None = None, line: PelvisLine | None = None, reps: dict | None = None) -> None:
+    """v4.3's numbers into met['track'] (the v4.2 samples are computed from doc42 when not given; reps = the build's track reports, for the
+    raised-lift comparison)"""
+    if doc42 is not None and geo4 is not None and met42 is None:
+        met42 = film_metrics(doc42, geo4, v42_cfg())
+        met42_h = film_metrics(doc42, geo4, v42_cfg(), aspect="horizontal")
+    met["track"] = track_report(doc, met, met_h, doc42, met42, met42_h, line, reps)
+
+
+def _targets_v43(target, doc: dict, met: dict, cfg4: V4Cfg, notes: list[str], bad: list[str]) -> None:
+    """the owner's v4.3 targets (2026-10-23): the initial counterbalances in profile, one crossing, the track's rate band, the ways and every frame
+    outside the track = v4.2's"""
+    tracks = (doc.get("flow") or {}).get("azimuth_tracks") or {}
+    tm = (met.get("track") or {}).get("tracks") or {}
+    if not tracks:
+        target("10. the initial counterbalances as profile two-shot orbits (flow.azimuth_tracks)", "a track for run 2", "no track", False)
+        return
+    for tid, tb in tracks.items():
+        r = tm.get(tid)
+        if r is None:
+            target(f"10. {tid}: measured", "the sampled plan", "not measured", False)
+            continue
+        ru = tb["rules"]
+        tol, stol, smin = float(ru["profile_tol_deg"]), float(ru["share_tol_deg"]), float(ru["share_min"])
+        btol = float(V43_TRACK["bound_tol_deg"])
+        for w_ in r["windows"]:
+            if not w_.get("scored"):
+                notes.append(f"v4.3 {tid} {w_['name']} {w_['film'][0]}-{w_['film'][1]} s not scored ({w_['not_scored']}): angle to the line v4.2 median "
+                             f"{(w_.get('v42_9:16') or {}).get('median')} -> v4.3 {(w_.get('v43_9:16') or {}).get('median')} deg")
+                continue
+            best = [x for x in w_.get("best_alone") or [] if x is not None]
+            want_tol = tol
+            why = ""
+            if best and abs(best[0] - 90.0) > tol:
+                want_tol = abs(best[0] - 90.0) + btol
+                why = f" (no legal track can: its own best is {best[0]:.1f}, so within {btol:g} of that)"
+            for asp in ("9:16", "16:9"):
+                sc = w_.get(f"scored_{asp}")
+                if sc is None:
+                    continue
+                v42 = w_.get(f"scored_v42_{asp}") or {}
+                target(f"10. profile two-shot, {w_['name']} (scored {', '.join(f'{p0}-{p1}' for p0, p1, _ in w_['scored'])} s, {asp})",
+                       f"median within {want_tol:.1f} of 90{why}; >= {100 * smin:.0f} % within {stol:g}",
+                       f"median {sc['median']} deg, {100 * sc['within_tol']:.1f} % (v4.2 {v42.get('median')} deg, {100 * (v42.get('within_tol') or 0):.1f} %)",
+                       abs(sc["median"] - 90.0) <= want_tol + 1e-6 and sc["within_tol"] >= smin - 1e-9)
+                if why and asp == "9:16":
+                    notes.append(f"v4.3 {tid} {w_['name']}: the profile target is out of reach for any track under the decided rules (rate >= "
+                                 f"{ru['rate_min_deg_s']:g} deg/s its way from the way out of the phone, <= {ru['accel_max_deg_s2']:g} deg/s2): its own best "
+                                 f"median is {best[0]:.1f} deg, delivered {sc['median']} deg")
+        ncr = len(r["crossings_at_s"])
+        target(f"10. {tid}: the couple's line crossed once, outside the counterbalance intervals", "1 crossing, 0 in an interval",
+               f"{ncr} at {r['crossings_at_s']} s (raw line: {r['crossings_raw_line_at_s']}); in an interval: {r['crossings_in_intervals']}",
+               ncr == 1 and not r["crossings_in_intervals"])
+        rw, am = r.get("rate_its_way") or {}, r.get("accel_abs_max")
+        cx = r.get("crossing") or {}
+        r_out = ru.get("rate_max_outside_deg_s", ru["rate_max_deg_s"])
+        target(f"10. {tid}: the track's turn about the couple (settled orbit frames, 30 Hz) - never reversing; only the crossing above v4.1's 6 deg/s "
+               "(the owner-approved exception to its 2.5-6 band)", f">= {ru['rate_min_deg_s']:g} deg/s its way; <= {ru['rate_max_deg_s']:g} in the crossing, "
+               f"<= {r_out:g} elsewhere; |accel| <= {ru['accel_max_deg_s2']:g} deg/s2",
+               f"{rw.get('min')}..{rw.get('max')} deg/s; the crossing peaks at {cx.get('rate_max_deg_s')} deg/s ({cx.get('over_6_deg_s_s')} s above 6), "
+               f"elsewhere at most {cx.get('outside_it_rate_max_deg_s')} deg/s; |accel| max {am}",
+               bool(rw) and rw["min"] >= ru["rate_min_deg_s"] - 0.01 and rw["max"] <= ru["rate_max_deg_s"] + 0.01 and am is not None
+               and am <= ru["accel_max_deg_s2"] + 0.02 and (cx.get("outside_it_rate_max_deg_s") or 0.0) <= r_out + 0.01)
+        if ru.get("fast_pass"):
+            fx = cx.get("fast_pass") or {}
+            target(f"10. {tid}: the fast pass (an OWNER DECISION beyond the decided {ru.get('rate_max_deg_s_gap', 7.0):g} deg/s): faster only inside "
+                   f"{ru['fast_pass']['film']} s", f"<= {ru['rate_max_deg_s']:g} deg/s in it, <= {ru.get('rate_max_deg_s_gap', 7.0):g} in the rest of the crossing",
+                   f"{fx.get('rate_max_in_it_deg_s')} / {fx.get('rate_max_rest_of_gap_deg_s')} deg/s ({fx.get('over_7_deg_s_s')} s above 7)",
+                   fx.get("rate_max_in_it_deg_s") is not None and fx["rate_max_in_it_deg_s"] <= ru["rate_max_deg_s"] + 0.01
+                   and (fx.get("rate_max_rest_of_gap_deg_s") or 0.0) <= ru.get("rate_max_deg_s_gap", 7.0) + 0.01)
+        target(f"10. {tid}: the eye inside the ground band through the crossing's lift", f"<= {ru['lift_top_m']} m",
+               f"lift max {r['lift_max_m']} m; eye max {r['eye_h_max_m']} m (9:16), {r['eye_h_max_16x9_m']} m (16:9)",
+               r["eye_h_max_m"] is not None and r["eye_h_max_m"] <= ru["lift_top_m"] + 1e-3 and (r["eye_h_max_16x9_m"] or 0) <= ru["lift_top_m"] + 1e-3)
+        deg = np.asarray(tb["deg"], float)
+        tt = float(tb["t0"]) + float(tb["dt"]) * np.arange(int(tb["n"]))
+        law = lambda x: float(tb["law"]["world_azimuth_deg"]) + float(tb["law"]["drift_deg_s"]) * (x - float(tb["law"]["F0"]))   # noqa: E731
+        e0 = abs(float(np.interp(tb["film"][0], tt, deg)) - law(tb["film"][0]))
+        e1 = abs(float(np.interp(tb["film"][1], tt, deg)) - law(tb["film"][1]))
+        lift_edge = max(abs(float(np.interp(tb["film"][0], tt, tb["lift_m"]))), abs(float(np.interp(tb["film"][1], tt, tb["lift_m"]))))
+        target(f"10. {tid}: the table joins the law at its window's ends (no jump into / out of the track)", "<= 0.001 deg, lift 0 m",
+               f"{e0:.6f} / {e1:.6f} deg, lift {lift_edge:.4f} m; {tb['n']} samples from {tb['t0']:.4f} s every {tb['dt']:.6f} s",
+               e0 <= 1e-3 and e1 <= 1e-3 and lift_edge <= 1e-4 and len(tb["deg"]) == int(tb["n"]) == len(tb["lift_m"]))
+        mo = (met.get("track") or {}).get("motion") or {}
+        if mo and (mo.get("lead_sha256") != tb["line"]["lead_sha256"] or mo.get("follow_sha256") != tb["line"]["follow_sha256"]):
+            notes.append(f"STALE: the installed motion changed since the {tid} track was planned (lead {tb['line']['lead_sha256'][:12]} -> {mo.get('lead_sha256', '')[:12]}, "
+                         f"follow {tb['line']['follow_sha256'][:12]} -> {mo.get('follow_sha256', '')[:12]}): the pelvis is the same in every fit so far, but "
+                         "re-run build --version v4 to be sure")
+    ex = (met.get("track") or {}).get("frame_exact")
+    if ex is None:
+        target("10. the ways and every frame outside the tracks = v4.2's (frame-exact, PoseModel 30 Hz, both aspects)", "0 frames differ",
+               f"no v4.2 baseline ({V42_DIRECTION} missing: run build --version v4.2)", False)
+    else:
+        target("10. the ways and every frame outside the tracks = v4.2's (frame-exact, PoseModel 30 Hz, both aspects)",
+               "0 frames differ outside the tracks (0 way frames)",
+               "; ".join(f"{asp}: {x['differ_outside_tracks']} of {x['frames']} outside ({x['way_frames_differ']} of {x['way_frames']} way frames; "
+                         f"{x['differ']} differ inside, {x['first_last_differing_s']} s)" for asp, x in ex.items()),
+               len(ex) == 2 and all(x["differ_outside_tracks"] == 0 and x["way_frames_differ"] == 0 for x in ex.values()))
+    dd = (met.get("track") or {}).get("direction_diff")
+    if dd is not None:
+        target("10. the direction is v4.2's + the track (flow.azimuth_tracks, camera.azimuth_track, revision, provenance, re-measured numbers)", "same",
+               "same" if dd["same_but_the_track"] else "DIFFERENT", dd["same_but_the_track"])
+
+
+def v43_rows(res: dict) -> list[list]:
+    """the per-window table v4.2 / v4.3 (the view's angle to the couple's line, 9:16; 16:9 next to it where it differs)"""
+    out = []
+    for tid, r in (res["metrics"].get("track") or {}).get("tracks", {}).items():
+        for w_ in r["windows"]:
+            a42, a43 = w_.get("v42_9:16") or {}, w_.get("v43_9:16") or {}
+            h43 = w_.get("v43_16:9") or {}
+            sc = w_.get("scored_9:16") or {}
+            rows_t = [t_ for t_ in res["checks"]["targets"] if t_["target"].startswith(f"10. profile two-shot, {w_['name']} ")]
+            st = "-" if not rows_t else ("OK" if all(t_["ok"] for t_ in rows_t) else "MISSED")
+            out.append([w_["name"], f"{w_['film'][0]}-{w_['film'][1]}", f"{a42.get('min')} / {a42.get('median')} / {a42.get('max')}", f"{100 * (a42.get('within_25') or 0):.0f} %",
+                        f"{a43.get('min')} / {a43.get('median')} / {a43.get('max')}", f"{100 * (a43.get('within_25') or 0):.0f} %",
+                        "" if abs((h43.get("median") or 0) - (a43.get("median") or 0)) < 0.15 else f"16:9 median {h43.get('median')}",
+                        (f"{', '.join(f'{p0}-{p1}' for p0, p1, _ in w_['scored'])}: median {sc.get('median')}" if w_.get("scored") else w_.get("not_scored", "")),
+                        ", ".join(f"{x:.1f}" for x in w_.get("best_alone") or [] if x is not None) or "-", f"{100 * w_.get('eye_on_lead_right', 0):.0f} %", st])
+    return out
+
+
+def track_plot(res: dict, out: Path) -> Path | None:
+    """run 2 over film time: the view's angle to the couple's line (v4.2 / v4.3) with the windows, the turn rate, the eye lift"""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    reps = res.get("track_build") or {}
+    if not reps:
+        return None
+    tid, rp_ = next(iter(reps.items()))
+    tb = res["doc"]["flow"]["azimuth_tracks"][tid]
+    t = rp_["t"]
+    fig, ax = plt.subplots(3, 1, figsize=(15, 9), sharex=True, gridspec_kw={"height_ratios": [3, 1.6, 1]})
+    for w_ in tb["windows"]:
+        col = "#e9c46a" if w_["kind"] == "interval" else "#d9e7f5"
+        ax[0].axvspan(w_["film"][0], w_["film"][1], ymin=0 if w_["kind"] == "interval" else 0.5, ymax=0.5 if w_["kind"] == "interval" else 1.0, color=col, alpha=0.6, lw=0)
+        ax[0].text(0.5 * (w_["film"][0] + w_["film"][1]), 182 if w_["kind"] == "segment" else -12, w_["name"].replace("counterbalance ", "CB "), fontsize=6.5, ha="center")
+    ax[0].axvspan(*tb["crossing"]["film"], color="#cccccc", alpha=0.25, lw=0)
+    ax[0].plot(t, view_angle_to_line(rp_["law"], rp_["theta"]), color="#9b9b9b", lw=1.0, label="v4.2 (the law)")
+    ax[0].plot(t, rp_["angle"], color="#2a78d6", lw=1.5, label="v4.3 (the track)")
+    for y, ls in ((90, "-"), (65, ":"), (115, ":"), (75, "--"), (105, "--")):
+        ax[0].axhline(y, color="#555555", lw=0.6, ls=ls)
+    ax[0].set_ylim(-20, 195)
+    ax[0].set_ylabel("view to the line (deg)\n90 = profile two-shot")
+    ax[0].legend(loc="upper left", fontsize=8)
+    ax[0].set_title(f"v4.3 {tid}: the initial counterbalances as profile two-shot orbits (yellow: counterbalance intervals, blue: counterbalance-layer "
+                    f"segments, grey: the crossing {tb['crossing']['film'][0]}-{tb['crossing']['film'][1]} s)", fontsize=9)
+    ax[1].plot(t, rp_["rate_s"], color="#2a78d6", lw=1.2, label="v4.3")
+    ax[1].axhline(float(tb["law"]["drift_deg_s"]), color="#9b9b9b", lw=1.0, label="v4.2")
+    for y in (1.0, 7.0):
+        ax[1].axhline(y, color="#c0392b", lw=0.7, ls="--")
+    ax[1].axhspan(2.5, 6.0, color="#2a9d8f", alpha=0.08)
+    ax[1].set_ylabel("turn about the\ncouple (deg/s)")
+    ax[1].legend(loc="upper left", fontsize=8)
+    ax[2].plot(t, rp_["lift"], color="#6250d6", lw=1.2)
+    ax[2].set_ylabel("eye lift (m)")
+    ax[2].set_xlabel("film s")
+    fig.tight_layout()
+    fig.savefig(out, dpi=110)
+    plt.close(fig)
+    return out
+
+
+def build_v43(log=print, write: bool = True, hand_events: Path | None = None, out: Path | None = None, need_path: Path = NEED3D,
+              cfg: dict = V43_TRACK) -> dict:
+    """v4.3 = the v4.2 direction (build_v42, rebuilt: v4.2 is reproducible into v4/direction/v4.2/) + the profile track of the initial
+    counterbalances' orbit (v43_doc; cfg = the track's rules: V43_TRACK, or with fast_pass the owner-decision variant). Measured on the plan in
+    both aspects against v4.2 itself"""
+    r = build_v42(log=log, write=False, hand_events=hand_events, need_path=need_path)
+    cfg4 = v43_cfg()
+    geo4, pov = r["geo4"], fr.load_pov(fr.Paths(), "auto")
+    doc42, met42, met42_h = r["doc"], r["metrics"], r["metrics_16x9"]
+    line = PelvisLine()
+    doc, reps = v43_doc(doc42, line, cfg=cfg, log=log)
+    met = film_metrics(doc, geo4, cfg4)
+    v41_extra_metrics(met, doc, geo4, cfg4, r.get("need"), pov)
+    met_h = film_metrics(doc, geo4, cfg4, aspect="horizontal")
+    v42_extra_metrics(met, doc, geo4, cfg4, pov, met_h)
+    v43_extra_metrics(met, doc, geo4, cfg4, met_h, doc42, met42, met42_h, line, reps)
+    phq = PhoneQ41(pov, geo4, r["cfg4"]) if pov is not None else None
+    checks = check_v4(doc, r["tl"], r["sp"], r["geo"], geo4, cfg4, None, met, phq)
+    doc["flow"]["v4"]["measured"] = _metrics_public(met)
+    res = dict(r)
+    res.update({"doc": doc, "cfg4": cfg4, "metrics": met, "metrics_16x9": met_h, "checks": checks, "doc42": doc42, "metrics42": met42, "metrics42_16x9": met42_h,
+                "track_build": reps, "line": line})
+    if write:
+        write_all_v43(res, Path(out or OUT_V4))
+    return res
+
+
+def review_v43_md(res: dict) -> str:
+    doc, met, ch = res["doc"], res["metrics"], res["checks"]
+    L = [f"# v4.3 direction review: {doc['title']} ({doc['name']})", "", V43_OWNER, "",
+         "v4.3 = the v4.2 direction (every move, way, phone hold, lens, band, meter window, chapter, caption and the time map: `build_v42`, rebuilt) + ONE "
+         "planned azimuth track for the slow orbit of chapters 1-3 (the initial counterbalances). v4.2 stays reproducible: `python -m dancecap.film_recap_flow "
+         "build --version v4.2` -> `v4/direction/v4.2/` (direction.json byte-equal to the v4.2 that was recorded). Nothing was recorded.", "",
+         ("Checks: PASS." if not ch["bad"] else f"Checks: {len(ch['bad'])} problems (see the end)."), ""]
+    for tid, tb in doc["flow"]["azimuth_tracks"].items():
+        r = (met.get("track") or {}).get("tracks", {}).get(tid) or {}
+        rp_ = (res.get("track_build") or {}).get(tid) or {}
+        cr = r.get("crossing") or {}
+        blk = next(s["camera"] for s in doc["segments"] if s["camera"].get("azimuth_track") == tid)
+        sides = {}
+        for w_ in r.get("windows", []):
+            for sd in (next((x.get("side") for x in tb["windows"] if x["name"] == w_["name"]), None) or [])[:1]:
+                sides.setdefault(sd, []).append(w_.get("eye_on_lead_right", 0.5))
+        side_txt = {k2: ("the lead's right" if np.mean(v) > 0.5 else "the lead's left") for k2, v in sides.items()}
+        L += [f"## {tid}: film {tb['film'][0]}-{tb['film'][1]} s (segments {tb['segments'][0]} .. {tb['segments'][1]})", "",
+              f"- **The law it replaces** (v4.2): world azimuth {tb['law']['world_azimuth_deg']} deg + {tb['law']['drift_deg_s']} deg/s x (film - "
+              f"{tb['law']['F0']}): the couple stands almost still, so the orbit swept the eye about 215 deg round them and filmed the first counterbalance "
+              "nearly along their line (one dancer behind the other).",
+              f"- **The track**: the eye's world azimuth as a table ({tb['n']} samples at {tb['hz']:g} Hz from {tb['t0']:.4f} s; inside {tb['film'][0]} < film < "
+              f"{tb['film'][1]}, linear between the samples). It holds the first profile (psi {tb['profiles']['first_deg']:g}: the eye on "
+              f"{side_txt.get('first', '?')}) to the first counterbalance's end, crosses the couple's line ONCE in {tb['crossing']['film'][0]}-"
+              f"{tb['crossing']['film'][1]} s (no counterbalance interval there; along the line at {r.get('crossings_at_s')} s), and holds the second "
+              f"profile (psi {tb['profiles']['second_deg']:g}: the eye on {side_txt.get('second', '?')}) through the both-hands / one-hand demonstrations, then "
+              f"rejoins the law. It leaves / rejoins the law by the blend w(t) over {tb['blend']['in_s']} / {tb['blend']['out_s']} (the closer ease windows; C2): "
+              "both phone ways are v4.2's frame for frame. (The lead's left = the joined hands toward the camera; his right = his right hand on her back.)",
+              f"- **The line**: the lead -> follow pelvis line of the installed motion (smplx_lead.bin {tb['line']['lead_sha256'][:12]}..., smplx_follow.bin "
+              f"{tb['line']['follow_sha256'][:12]}...; the pelvis is the same in the input / v3 / v4 / v43 fits).",
+              f"- **Turn rate** (settled frames, 30 Hz): {(r.get('rate_its_way') or {}).get('min')}..{(r.get('rate_its_way') or {}).get('max')} deg/s its way, "
+              f"|accel| <= {r.get('accel_abs_max')} deg/s2. The crossing: peak {cr.get('rate_max_deg_s')} deg/s, mean {cr.get('rate_mean_deg_s')} deg/s over "
+              f"{tb['crossing']['film'][0]}-{tb['crossing']['film'][1]} s, {cr.get('over_6_deg_s_s')} s of it above 6 deg/s; outside the crossing the track "
+              f"turns at most {cr.get('outside_it_rate_max_deg_s')} deg/s ({cr.get('outside_it_over_6_deg_s_s')} s above 6: the return onto the law in the "
+              f"blend before the way in; all stretches above 6: {tb['crossing']['over_6_deg_s']}). The crossing is the "
+              "owner-approved exception to v4.1's 2.5-6 deg/s orbit band (the ways' caps are 12 deg/s).",
+              _lift_bullet(tb, r, blk, cr),
+              f"- **Solver**: {rp_.get('knot_spans')} cubic B-spline spans, SLSQP rounds {[(x['round'], x.get('missed')) for x in rp_.get('solver', [])]}.", "",
+              "### The view's angle to the couple's line, per window (min / median / max deg, 90 = profile; PoseModel 30 Hz, 9:16)", ""]
+    L += _md_table(["window", "film s", "v4.2", "v4.2 within 25", "v4.3", "v4.3 within 25", "16:9", "scored", "its own best", "eye on the lead's right", "target"], v43_rows(res))
+    L += ["", "Scored = the window's part inside the track (outside the phone ways) and outside the crossing; the target: median within 15 deg of 90 and "
+          ">= 90 % of the frames within 25 - or, where no legal track can reach 15 (its own best, the same programme with only that window), within 1 deg "
+          "of that best. Not scored: the crossing itself, and the parts inside the way into phone 06 (v4.2's, unchanged by decision).", ""]
+    ex = (met.get("track") or {}).get("frame_exact") or {}
+    L += ["## The ways and everything else: v4.2's", ""]
+    for asp, x in ex.items():
+        L += [f"- {asp}: {x['differ']} of {x['frames']} frames differ, all inside the track's window ({x['first_last_differing_s']} s); outside it "
+              f"{x['differ_outside_tracks']} (max difference {x['max_diff_outside_tracks']}); way frames differing {x['way_frames_differ']} of {x['way_frames']}."]
+    dd = (met.get("track") or {}).get("direction_diff") or {}
+    L += [f"- The direction: {'v4.2 + the track keys, nothing else' if dd.get('same_but_the_track') else 'DIFFERS from v4.2 beyond the track'} "
+          "(flow.azimuth_tracks, camera.azimuth_track on the run's segments, flow.revision 4.3, the schema line, `created`, recap_film.v4.v43, the "
+          "re-measured flow.v4.measured).", ""]
+    gh, gh42 = res.get("ghost") or {}, res.get("ghost42") or {}
+    if gh and gh42:
+        L += ["Faint frustums against the dancers (ghost_overlap, plan estimate, s): " + "; ".join(
+            f"{c}: over the couple {gh42['per_phone'][c]['over_couple_s']} -> {gh['per_phone'][c]['over_couple_s']}, apex within 1 m of the eye "
+            f"{gh42['per_phone'][c]['near_lens_s']} -> {gh['per_phone'][c]['near_lens_s']}" for c in sorted(gh["per_phone"])) + " (the keep-out in "
+            "flow.ghost_frustums covers these).", ""]
+    L += owner_costs_md(res)
+    L += ["## Checks", ""]
+    L += [f"- {'OK' if t_['ok'] else 'MISSED'}: {t_['target']}: want {t_['want']}, measured {t_['measured']}" for t_ in ch["targets"]]
+    L += [f"- PROBLEM: {b_}" for b_ in ch["bad"]] + [f"- {n}" for n in ch["notes"]]
+    return "\n".join(L) + "\n"
+
+
+def _lift_bullet(tb: dict, r: dict, blk: dict, cr: dict) -> str:
+    hh = r.get("far_head_hidden_s") or {}
+    h43, h42, alt = hh.get("v43") or {}, hh.get("v42") or {}, hh.get("alt") or {}
+    eye = f"eye max {r.get('eye_h_max_m')} m (9:16) / {r.get('eye_h_max_16x9_m')} m (16:9)"
+    fl_ = h43.get("face_hidden_longest_s") or [None, None, None]
+    if tb["crossing"].get("lift", "raised") == "none":
+        txt = (f"- **No lift in the crossing**: the eye keeps the orbit's own height ({blk.get('height_m')} m at full closeness; {eye}). ")
+    else:
+        txt = (f"- **The lift**: during the crossing the eye rises up to {tb['rules']['lift_top_m']} m (cap {tb['crossing']['lift_cap_m']} m above the block's "
+               f"{blk.get('height_m')} m eye height at full closeness; v4.2's cap {blk.get('inline_lift_max_m')} m): lift max {r.get('lift_max_m')} m, {eye}, "
+               f"its vertical speed <= {cr.get('eye_vertical_speed_max_m_s')} m/s. It shows part of the follow's face for longer as the camera comes "
+               "behind the lead (her head rises beside / above his), but not at the core of the crossing: there her chin would clear the top of his head "
+               "only from an eye at ~3.4 m (the band's top is 2.4). ")
+    txt += (f"Plan estimates over {hh.get('window_s')} s: her face hidden behind his head {h43.get('face_hidden_s')} s ({fl_[0]}-{fl_[1]} s; {hh.get('face_rule')})"
+            + (f", with the lift '{alt.get('lift')}' instead {alt.get('face_hidden_s')} s" if alt else "") + f", v4.2 {h42.get('face_hidden_s')} s; "
+            f"the two heads under 3 / 4 deg apart over the crossing v4.3 {h43.get('heads_under_3deg_s')} / {h43.get('heads_under_4deg_s')} s"
+            + (f" ('{alt.get('lift')}': {alt.get('heads_under_3deg_s')} / {alt.get('heads_under_4deg_s')} s)" if alt else "")
+            + f", v4.2 {h42.get('heads_under_3deg_s')} / {h42.get('heads_under_4deg_s')} s.")
+    return txt
+
+
+def owner_costs_md(res: dict) -> list[str]:
+    """v4.3 (fix round 1): what the decided rules cost, in plain words for the owner - the verifier's findings M1 / m1 / m2 / m4"""
+    doc, met = res["doc"], res["metrics"]
+    L = ["## For the owner: what the decided rules cost", ""]
+    for tid, tb in doc["flow"]["azimuth_tracks"].items():
+        r = (met.get("track") or {}).get("tracks", {}).get(tid) or {}
+        hh = r.get("far_head_hidden_s") or {}
+        h43, h42 = hh.get("v43") or {}, hh.get("v42") or {}
+        win = {w_["name"]: w_ for w_ in r.get("windows", [])}
+        run = h43.get("face_hidden_longest_s")
+        cross_rows = [w_ for w_ in r.get("windows", []) if w_["kind"] == "segment" and run and w_["film"][0] < run[1] and w_["film"][1] > run[0]]
+        fp = (tb["rules"] or {}).get("fast_pass")
+        rmax = tb["rules"]["rate_max_deg_s"] if not fp else tb["rules"].get("rate_max_deg_s_gap", 7.0)
+        if run:
+            seg_txt = ", ".join(f"{w_['name']} {w_['film'][0]}-{w_['film'][1]} s (angle to the line median {(w_.get('v42_9:16') or {}).get('median')} -> "
+                                f"{(w_.get('v43_9:16') or {}).get('median')} deg; heads under 4 deg {100 * (w_.get('heads_under_4deg') or {}).get('v42_9:16', 0):.0f} -> "
+                                f"{100 * (w_.get('heads_under_4deg') or {}).get('v43_9:16', 0):.0f} % of the frames)" for w_ in cross_rows)
+            L += [f"1. **{run[0]:.1f}-{run[1]:.1f} s: the follow's face hidden behind the lead for about {run[2]:.1f} s** (9:16 plan estimate, calibrated on "
+                  f"editor stills; her head is partly behind his for longer: the heads under 4 deg apart for {h43.get('heads_under_4deg_s')} s of the crossing "
+                  f"{tb['crossing']['film']} s). This is the one line crossing the two phone ways "
+                  f"force (phone 00 and phone 06 film the couple from opposite sides). It lands at {r.get('crossings_at_s')} s in the gap without a detected "
+                  f"counterbalance: {seg_txt}" + (" - the counterbalance layer is on there (Kadu explaining the \"hip forward\" mistake)." if cross_rows else ".")
+                  + (f" At the decided <= {rmax:g} deg/s the camera needs the whole gap for the ~145 deg between the two profiles, so it passes behind the "
+                     f"lead at ~{rmax:g} deg/s; the lift shows her a little longer, but at the core no eye inside the 2.4 m band can." if not fp else
+                     f" The fast pass (an owner decision) runs through the line at up to {fp['rate_max_deg_s']:g} deg/s in {fp['film']} s.")
+                  + f" Over {hh.get('window_s')} s (the crossing +-3 s) her face is hidden {h42.get('face_hidden_s')} s in v4.2 (its own crossing, at the "
+                  f"first counterbalance's end) and {h43.get('face_hidden_s')} s in v4.3." + ("" if fp else " The option, if the owner wants her visible there: a short faster pass through the line (up to 12 deg/s, the "
+                                        "ways' turn cap, for about 3 s; `build --version v4 --fast-pass` builds it into v4/direction/v4.3_fastpass/ "
+                                        "for review, without touching this direction)."), ""]
+        w2 = win.get("ch02_02_weight")
+        if w2 and (w2.get("best_alone") or [None])[0] is not None:
+            L += [f"2. **ch02_02_weight ({w2['film'][0]}-{w2['film'][1]} s, counterbalance layer): median {(w2.get('v43_9:16') or {}).get('median')} deg to the "
+                  f"line, not within 15 of 90 (75 or more) as the target asks.** No track can reach it under the decided rules: leaving phone 00 at "
+                  f"{abs(float(tb['law']['drift_deg_s'])):g} deg/s, the camera may slow at <= {tb['rules']['accel_max_deg_s2']:g} deg/s2 only to "
+                  f"{tb['rules']['rate_min_deg_s']:g} deg/s while the couple turns slightly against it; its own best is {w2['best_alone'][0]:.1f} deg. Reaching "
+                  f"75 would need a slower floor there (~0.7 deg/s at 43-53 s). v4.2 had {(w2.get('v42_9:16') or {}).get('median')} deg.", ""]
+        tt = float(tb["t0"]) + float(tb["dt"]) * np.arange(int(tb["n"]))
+        lawv = float(tb["law"]["world_azimuth_deg"]) + float(tb["law"]["drift_deg_s"]) * (tt - float(tb["law"]["F0"]))
+        o0, o1 = tb["blend"]["out_s"]
+        mo = (tt >= o0) & (tt <= o1)
+        dv = np.abs(np.asarray(tb["deg"], float) - lawv)
+        ex = (met.get("track") or {}).get("frame_exact") or {}
+        nway = ", ".join(f"{asp} {x['way_frames_differ']} of {x['way_frames']}" for asp, x in ex.items())
+        cb96 = next((w_ for w_ in r.get("windows", []) if w_["kind"] == "interval" and o0 <= w_["film"][0] < o1), None)
+        if mo.any():
+            L += [f"3. **The way into phone 06 is v4.2's frame for frame from {o1} s (the way itself; way frames differing: {nway}).** Over {o0}-{o1} s, "
+                  f"v4.2's closer ease just before it, the track blends back onto v4.2's orbit and differs from it by up to {float(dv[mo].max()):.2f} deg "
+                  f"(at {float(tt[mo][np.argmax(dv[mo])]):.1f} s), 0 at {o1} s: the price of holding "
+                  + (f"the {cb96['film'][0]}-{cb96['film'][1]} s counterbalance in profile ({(cb96.get('v42_9:16') or {}).get('median')} -> "
+                     f"{(cb96.get('v43_9:16') or {}).get('median')} deg)." if cb96 else "the last counterbalances in profile."), ""]
+        frozen = [w_ for w_ in r.get("windows", []) if not w_.get("scored") and "phone way" in (w_.get("not_scored") or "")]
+        if frozen:
+            L += ["4. **Not in profile: " + "; ".join(f"{w_['name']}{'' if w_['kind'] == 'interval' else ' ' + str(w_['film'][0]) + '-' + str(w_['film'][1])} s "
+                                                     f"at {(w_.get('v43_9:16') or {}).get('median')} deg"
+                                                     for w_ in frozen)
+                  + "** - v4.2's own view (30-32 deg off profile): they lie inside the way into phone 06, which stays v4.2's by decision. The only "
+                  "counterbalance of chapters 1-3 that is not filmed in profile.", ""]
+    return L
+
+
+def contract_v43_md(res: dict) -> str:
+    """the v4.3 section that heads UNITY_CONTRACT_v4.md (generic words only: lead / follow / the recap capture)"""
+    doc = res["doc"]
+    tid, tb = next(iter(doc["flow"]["azimuth_tracks"].items()))
+    r = ((res["metrics"].get("track") or {}).get("tracks") or {}).get(tid) or {}
+    L = ["# Unity contract: the v4 class-recap direction (`hm film flow v2`, revision 4.3)", "",
+         "Source: `dancecap/work/larissa_kadu_recap/v4/direction/direction.json` (`flow.revision` \"4.3\"; v4.2 in `v4/direction/v4.2/`, v4.1 in "
+         "`v4/direction/v4.1/`, v4.0 in `v4/direction/v4.0/`). Built by `python -m dancecap.film_recap_flow build --version v4 --mix`, checked by `... check "
+         "--version v4` (v4.3's own targets, revision gate: an unknown revision is an error). Write no names into head-movement: say lead / follow / "
+         "\"the recap capture\".", "",
+         "## v4.3: what changes for the Unity director (on top of v4.2 H-J, v4.1 A-G and v4.0 1-9 below)", "",
+         "| # | what | where | v4.2 |", "|---|---|---|---|",
+         "| K | one slow orbit plays a planned azimuth track: the eye's world azimuth (and its inline lift) from a table inside the track's window | "
+         "`flow.azimuth_tracks.<id>`, `camera.azimuth_track` = \"<id>\" | world_azimuth_deg + drift_deg_s x (film - F0) everywhere |",
+         "| L | the orbit check knows tracked shots: their own rate band (1-7 deg/s its way), not 2.5-6 | FilmFlowCheck orbit rule | 2.5-6 +- 0.25 |", "",
+         "**K. The azimuth track.** `flow.azimuth_tracks` is an object: id -> track. This direction has one, "
+         f"`\"{tid}\"` (run {tb['run']}, segments {tb['segments'][0]} .. {tb['segments'][1]}); every segment of that run carries `camera.azimuth_track` = "
+         f"`\"{tid}\"` (the blocks stay identical, so they still form ONE FilmShot, F0 = {tb['law']['F0']}). The track's keys:", "",
+         "| key | type | meaning |", "|---|---|---|",
+         "| `film` | [a, b] film s | the window: the table applies for a < film < b (open); at and outside it the block's law, exactly as today |",
+         f"| `t0`, `dt`, `n` | film s, s, int | sample i (0 .. n-1) is at film t0 + i x dt (here t0 = {tb['t0']!r} = {tb['i0']} / {tb['hz']:g}, dt = 1 / "
+         f"{tb['hz']:g}, n = {tb['n']}; the samples cover [a, b]: t0 <= a, t0 + (n - 1) dt >= b) |",
+         "| `deg` | n floats, deg | the eye's WORLD azimuth about the orbit centre, the viewer's atan2(z, x), unwrapped (continuous with world_azimuth_deg + "
+         f"drift_deg_s x (film - F0): {tb['deg'][0]} at t0, {tb['deg'][-1]} at the last sample) |",
+         "| `lift_m` | n floats, m | the eye's inline lift inside the window (0 at both ends) |",
+         "| `law` | {world_azimuth_deg, drift_deg_s, F0} | the block's law, for checks (the block's own keys are unchanged) |",
+         "| `interp` | \"linear\" | the interpolation |",
+         "| `hz`, `i0` | 30, int | t0 = i0 / hz exactly (documentation; use t0 / dt) |",
+         "| `blend`, `rules`, `profiles`, `crossing`, `line`, `windows`, `lift_rule` | | documentation and the python checks' inputs; Unity needs none of them |", "",
+         "Interpolation (pure, `HmFilm.FlowMath.TrackAt(float t0, float dt, float[] v, float t)`): x = (t - t0) / dt; i = clamp(floor(x), 0, n - 2); u = "
+         "clamp(x - i, 0, 1); return v[i] + (v[i + 1] - v[i]) x u. (The recorder's frames at k / 30 s land on the samples; between them it is linear - the "
+         "underlying curve is C2 and its curvature over 1/30 s is below 0.001 deg.)", "",
+         "One table for both aspects (the azimuth law was always aspect-free; 9:16 and 16:9 differ only in radius_vertical_m / radius_m and the bands, "
+         "unchanged). Floats are fine: t0 as a float is off by < 1e-6 s, the degrees by < 1e-5.", "",
+         "Parse (FlowTimeline.Build): `flow.azimuth_tracks` -> a dictionary id -> {A = film[0], B = film[1], T0, Dt, Deg float[], Lift float[]}; a track "
+         "whose arrays are not n long, or whose window is not inside its samples, is dropped with a Warning (the shot then plays its law).", "",
+         "Callers (FilmCamera.cs): **`WorldAzimuth(s, film, out phi)`** is the one place: if `s.Camera[\"azimuth_track\"]` names a track and A < film < B, "
+         "phi = TrackAt(T0, Dt, Deg, film) x Deg2Rad, else the law as now. Every caller inherits it: Orbit (:491), the Hann lift loop's samples (:513), "
+         "Rhythm (:629), Physics3Q (:658), FeatureZoom (:904), FeetCloseup (:1008), the overhead's up_policy orbit (:1154) - in this direction only Orbit of "
+         "that one shot reads a track. The ways (WayV4) blend the live poses, so they are unchanged wherever the track is not played - and it is not played "
+         "on any way frame (the window is the orbit between its way in and its way out; python: 0 way frames differ).", "",
+         "**The lift** (FilmCamera.Orbit, the `avoid_inline` block): inside the window (A < film < B) of the shot's track, lift = TrackAt(T0, Dt, Lift, film) "
+         "- it REPLACES the Hann-weighted live InlineLift (the cap and the closer factor are already in it); outside the window the live lift as now. Then "
+         "height += lift as before (the ground_level clamp to 0.5-2.4 m still applies). The table is the live lift's python twin (the damped pelvises, "
+         "the +-36-frame Hann window, inline_lift_max_m x closer) "
+         + (f"with the cap raised to {tb['rules']['lift_top_m']} m - height_m = {tb['crossing']['lift_cap_m']} m inside the crossing {tb['crossing']['film']} s. "
+            if tb["crossing"].get("lift", "raised") != "none" else
+            f"with NO lift inside the crossing {tb['crossing']['film']} s (crossing.lift \"none\": behind the taller lead a lift up to the band's top cannot "
+            f"show the follow); in this direction lift_m is {float(np.max(tb['lift_m'])):g} m everywhere, so inside the window the eye has no inline lift. ")
+         + f"Within 1.3 s of both window ends the live lift (uncapped) is {((res.get('track_build') or {}).get(tid) or {}).get('live_lift_at_window_edges_m')} m "
+         "(the eye is 60-90 deg off the line there): the switch is invisible. The live lift of a frame OUTSIDE the window samples the block's LAW "
+         "at its +-1.2 s Hann samples, never the table (FilmCamera.WorldAzimuth(..., useTrack: false)), so every frame outside the window is exactly "
+         "the frame without the track.", "",
+         "Numbers to check in Play mode (`hm_film_flow --action check`, both aspects): the tracked shot's settled orbit frames turn "
+         f"{tb['rules']['rate_min_deg_s']:g}-{tb['rules']['rate_max_deg_s']:g} deg/s about the couple its way, above "
+         f"{tb['rules'].get('rate_max_outside_deg_s', tb['rules']['rate_max_deg_s']):g} only inside the crossing {tb['crossing']['film']} s (python: "
+         f"{(r.get('rate_its_way') or {}).get('min')}..{(r.get('rate_its_way') or {}).get('max')}, outside the crossing <= "
+         f"{(r.get('crossing') or {}).get('outside_it_rate_max_deg_s')}; Unity's live centre is damped, so allow its usual +-0.25); the eye stays <= {tb['rules']['lift_top_m']} m; jumps / stutters / eye out of band / heads out of frame "
+         "= 0; every way's peaks (turn / rotation / speed) equal v4.2's sweep (`v4/direction/stills_v4.2/flowcheck_v42_*.json`), the two ways next to the "
+         "track (phone out 30.246-34.746, phone in 99.499-105.499) frame for frame.", "",
+         "**L. FilmFlowCheck** (Editor/FilmFlowCheck.cs, the orbit rule ~:450-485): for a shot with `camera.azimuth_track`, a settled orbit frame is in "
+         f"band when its turn about the couple is within [{tb['rules']['rate_min_deg_s']:g} - 0.25, {tb['rules']['rate_max_deg_s']:g} + 0.25] deg/s inside "
+         f"the track's `crossing.film` and [{tb['rules']['rate_min_deg_s']:g} - 0.25, {tb['rules'].get('rate_max_outside_deg_s', 6.0):g} + 0.25] elsewhere, "
+         "in the sign of drift_deg_s (the track's own `rules`), not 2.5-6; the turning-back rule is unchanged (sign of drift_deg_s). Report the tracked frames "
+         "separately (orbitTrackedFrames, their min / max rate). The FlowV4Tests test that reads the v4 direction gates on `tl.Revision != \"4.2\"` "
+         "(FlowV4Tests.cs:470): let it run for \"4.3\" too, and add: TrackAt at samples / midpoints / clamped ends; on the direction's own track: the "
+         "value at film = A and B equals the law within 1e-3 deg, every 1/30-s step turns 1-7 deg/s its way, the accel <= 2 deg/s2, lift 0 at both ends "
+         "and <= 2.4 m - height_m.", "",
+         "Everything below (v4.2's contract, which carries v4.1's and v4.0's) still holds.", "", "---", "",
+         "# The v4.2 contract (unchanged; v4.3 adds K and L above)", ""]
+    return "\n".join(L) + "\n"
+
+
+def write_all_v43(res: dict, out: Path) -> None:
+    doc, tl = res["doc"], res["tl"]
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "narration").mkdir(parents=True, exist_ok=True)
+    (out / "audio").mkdir(exist_ok=True)
+    (out / "direction.json").write_text(json.dumps(doc, indent=1, ensure_ascii=False), encoding="utf-8")
+    caps.write_timeline(out / "narration" / "timeline.json", tl)
+    ch = []
+    for i, c in enumerate(doc["chapters"]):
+        ch.append({"title": c["title"], "startS": c["film_s"], "endS": doc["chapters"][i + 1]["film_s"] if i + 1 < len(doc["chapters"]) else doc["timeline"]["film_duration_s"],
+                   "segment": c["segment"]})
+    (out / "chapters.json").write_text(json.dumps({"schema": "dancecap.film_recap/1/chapters", "film_duration_s": doc["timeline"]["film_duration_s"], "chapters": ch},
+                                                  indent=1, ensure_ascii=False), encoding="utf-8")
+    res["ghost"] = ghost_overlap(doc, res["metrics"], res["geo4"], res["cfg4"])
+    res["ghost42"] = ghost_overlap(res["doc42"], res["metrics42"], res["geo4"], v42_cfg())
+    tr_pub = {k: {k2: v for k2, v in r.items() if k2 not in ("angle", "t", "lift", "rate_s", "accel_s", "theta", "law")} for k, r in (res.get("track_build") or {}).items()}
+    cols = [("v4.2", res["metrics42"]), ("v4.3", res["metrics"])]
+    ba = {"schema": "dancecap.film_recap_flow/v4.3/before_after", "columns": ["v4.2", "v4.3"], "v43_rows": v43_rows(res),
+          "rows": before_after_rows_n(cols, res["targets"]), "metrics": {lab: _metrics_public(m) for lab, m in cols},
+          "metrics_16x9": {"v4.2": _metrics_public(res["metrics42_16x9"]), "v4.3": _metrics_public(res["metrics_16x9"])}, "track": res["metrics"].get("track"),
+          "track_build": tr_pub, "check_targets": res["checks"]["targets"], "ghost": {"v4.2": res["ghost42"], "v4.3": res["ghost"]}}
+    (out / "before_after.json").write_text(json.dumps(ba, indent=1, default=str), encoding="utf-8")
+    rep = {"schema": "dancecap.film_recap_flow/2.3/report", "checks": res["checks"], "targets": res["targets"], "metrics": _metrics_public(res["metrics"]),
+           "metrics_16x9": _metrics_public(res["metrics_16x9"]), "metrics_v42": _metrics_public(res["metrics42"]), "track_build": tr_pub,
+           "closer": res["closer"], "meter": doc["flow"]["meter"], "runs": [{k: v for k, v in r.items() if k != "q"} | {"quality": r.get("q")} for r in res["runs"]],
+           "ways": res["sched"]["ways"], "orbits": res["sched"]["plans"], "dp": res["dp"], "clips": res["clips"], "pivots": res["pivots"], "replay": res["replay"],
+           "ghost_overlap": res["ghost"], "physics": [{k: r[k] for k in ("id", "film", "mode", "on", "why")} for r in res["phys_rows"]], "physics_timeline": physics_timeline(doc)}
+    (out / "direction_report.json").write_text(json.dumps(rep, indent=1, ensure_ascii=False, default=str), encoding="utf-8")
+    (out / "clips.json").write_text(json.dumps({"what": "per phone: the master-second ranges of video the v4.3 direction needs (phone holds + frustum ways in / out, "
+                                                        "padded 0.5 s; = v4.2's)", "phones": res["clips"]}, indent=1), encoding="utf-8")
+    (out / "review_v4.3.md").write_text(review_v43_md(res), encoding="utf-8")
+    r42 = dict(res, doc=res["doc42"], metrics=res["metrics42"], metrics_16x9=res["metrics42_16x9"], cfg4=v42_cfg())
+    r4 = dict(r42, cfg4=dataclasses_replace(v42_cfg(), version="4.1"))
+    base = contract_v41_md(r4) + "\n" + contract_md(r4).split("\n", 1)[1]
+    v42_part = contract_v42_md(r42) + "\n" + base.split("\n", 1)[1]
+    (out / "UNITY_CONTRACT_v4.md").write_text(contract_v43_md(res) + v42_part.split("\n", 1)[1].lstrip("\n"), encoding="utf-8")
+    (out / "audio" / "make_film_mix.py").write_text(MIX_SCRIPT.replace("the v3 direction", "the v4.3 direction"), encoding="utf-8")
+    m, c4 = res["metrics"], res["cfg4"]
+    sheet_v4(m, doc, res["geo4"], out / "flow_sheet.png",
+             f"v4.3 camera flow (the v4.2 plan + run 2's profile track): {m['moves']['total']} moves, {m['phone_holds']['n']} phone holds (mean {m['phone_holds']['mean_s']} s), "
+             f"slow orbits {', '.join(str(x) for x in m['three_d']['drift_rates_deg_s'])} deg/s (run 2: its track 1-7 deg/s)", band=c4.orbit_rate_deg_s, cap=c4.cap_az_deg_s, label="v4.3")
+    track_plot(res, out / "track_v4.3.png")
+
+
+VERSIONS = ("v3", "v4", "v4.0", "v4.1", "v4.2", "v4.3")       # v4 = the latest v4 (v4.3)
 
 
 def _v4_out(version: str) -> Path:
-    return OUT_V40 if version == "v4.0" else OUT_V41 if version == "v4.1" else OUT_V4
+    return {"v4.0": OUT_V40, "v4.1": OUT_V41, "v4.2": OUT_V42}.get(version, OUT_V4)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -6839,17 +8105,21 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--version", choices=VERSIONS, default="v3", help="v3 (default: v3/direction/, reproducible as it was); v4.0 (owner 2026-10-22 first: "
                    "fewer, longer shots, slow orbits, C2 glides, faint frustums -> v4/direction/v4.0/); v4.1 (owner 2026-10-22 after the v3 films: "
                    "holds >= 20 s placed by Jev's need_3d, orbits <= 6 deg/s, ways >= 4 s under 12 deg/s, the legend in the 9:16 top band -> v4/direction/v4.1/); "
-                   "v4 = v4.2 (owner 2026-10-22 after v4.1: the v4.1 plan, the physics meter only for a few seconds at each switch-on, the slow orbits 0.8 x "
-                   "closer -> v4/direction/)")
+                   "v4.2 (owner 2026-10-22 after v4.1: the v4.1 plan, the physics meter only for a few seconds at each switch-on, the slow orbits 0.8 x "
+                   "closer -> v4/direction/v4.2/); v4 = v4.3 (owner 2026-10-23: the v4.2 plan + the initial counterbalances as profile two-shot orbits: a "
+                   "planned azimuth track for the orbit of chapters 1-3 -> v4/direction/, what the recorder reads)")
     b.add_argument("--plan", choices=("meaning", "share"), default="meaning", help="v4.1: meaning-first (the most phone time whose holds stay clearly under "
                    "the 3D views' Jev need) or share-first (the least multiplier that fills the 45 %% phone share, or the most phone time when none does)")
     b.add_argument("--out", default=None, help="write here instead of the version's folder")
     b.add_argument("--alt", default=None, help="v4.1: a built alternative to compare with in the review (default: v4/direction/v4.1_share when it exists)")
     b.add_argument("--mix", action="store_true", help="also render the film soundtrack into <out>/audio/ (the class mix of film/audio, the same time map)")
     b.add_argument("--hand-events", default=None, help=f"the hand-contact events the 'connected' rule reads (default {HAND_EVENTS.relative_to(PACKAGE_ROOT)})")
+    b.add_argument("--fast-pass", action="store_true", help="v4 / v4.3 only: the OWNER-DECISION variant (not decided): run 2 runs through the couple's "
+                   f"line at up to {V43_FAST_PASS['rate_max_deg_s']:g} deg/s for a few seconds (the decided track: <= {V43_TRACK['rate_max_deg_s']:g}) -> "
+                   "v4/direction/v4.3_fastpass/ unless --out (never the recorder's v4/direction/ by default)")
     c = sub.add_parser("check")
-    c.add_argument("--direction", default=None, help="default: v3/direction/direction.json (v4/direction/ with --version v4 / v4.1, v4/direction/v4.0/ with "
-                   "v4.0); a flow-v2 direction gets the v4 checks + targets (v4.1's with flow.revision 4.1)")
+    c.add_argument("--direction", default=None, help="default: v3/direction/direction.json (v4/direction/ with --version v4 / v4.3, v4/direction/v4.<n>/ "
+                   "with v4.0 / v4.1 / v4.2); a flow-v2 direction gets the v4 checks + the targets of its flow.revision (4.1, 4.2, 4.3; an unknown one is an error)")
     c.add_argument("--version", choices=VERSIONS, default="v3")
     k = sub.add_parser("clips", help="UNITY STAGE ONLY: export the phones' video the direction needs into the capture (camera_video, under the Unity lock)")
     k.add_argument("--no-install", action="store_true", help="write the master only (work/<take>/camera_video/<capture>); mirror later with camera_video --install-only")
@@ -6862,7 +8132,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_clips(a.no_install, a.priority, OUT if a.version == "v3" else _v4_out(a.version))
     if a.cmd == "sheet":
         if a.version != "v3":
-            r = build_v4(write=False) if a.version == "v4.0" else build_v41(write=False) if a.version == "v4.1" else build_v42(write=False)
+            r = (build_v4(write=False) if a.version == "v4.0" else build_v41(write=False) if a.version == "v4.1" else build_v42(write=False)
+                 if a.version == "v4.2" else build_v43(write=False))
             m, c4 = r["metrics"], r["cfg4"]
             print(sheet_v4(m, r["doc"], r["geo4"], _v4_out(a.version) / "flow_sheet.png", f"{a.version} camera flow: {m['moves']['total']} moves, "
                            f"{m['phone_holds']['n']} phone holds", band=c4.orbit_rate_deg_s, cap=c4.cap_az_deg_s, label=a.version))
@@ -6871,11 +8142,17 @@ def main(argv: list[str] | None = None) -> int:
         print(sheet(r, OUT / "flow_sheet.png"))
         return 0
     if a.cmd == "build" and a.version != "v3":
-        out = Path(a.out) if a.out else _v4_out(a.version)
-        if a.version == "v4.0":
+        if a.fast_pass and a.version not in ("v4", "v4.3"):
+            ap.error("--fast-pass is a v4 / v4.3 option")
+        out = Path(a.out) if a.out else (OUT_V43_FAST if a.fast_pass else _v4_out(a.version))
+        if a.fast_pass:
+            r = build_v43(hand_events=a.hand_events, out=out, cfg=dict(V43_TRACK, fast_pass=dict(V43_FAST_PASS)))
+        elif a.version == "v4.0":
             r = build_v4(hand_events=a.hand_events, out=out)
-        elif a.version in ("v4", "v4.2"):
+        elif a.version == "v4.2":
             r = build_v42(hand_events=a.hand_events, out=out)
+        elif a.version in ("v4", "v4.3"):
+            r = build_v43(hand_events=a.hand_events, out=out)
         else:
             cfg4 = dataclasses_replace(v41_cfg(), plan=a.plan)
             alt = Path(a.alt) if a.alt else (OUT_V4 / "v4.1_share" if a.plan == "meaning" else None)

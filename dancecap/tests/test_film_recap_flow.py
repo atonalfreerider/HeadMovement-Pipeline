@@ -2,11 +2,15 @@
 the side-on azimuth, where a transition sits, carving a pivot window into the segments, the schedule's holds; v4 (owner 2026-10-22): the C2 ramps
 and way profiles, the live blend, the way durations and caps, the targets, the orbit plan, the long-hold planner, the cranes' holds; v4.1 (owner
 2026-10-22 after the v3 films): the cruise crane, the targets, the no-reversal way link, the 20-s-hold planner, Jev's need series, the legend's
-place and the crop that clears it, the overhead window. Pure functions, no capture data."""
+place and the crop that clears it, the overhead window; v4.2: the meter windows, the closer orbits and their eases; v4.3 (owner 2026-10-23):
+the profile track's windows, solver, blend, the inline-lift twin, PoseModel playing the table, the revision gate. Pure functions, no capture data."""
 import copy
+import json
 import math
 import sys
 from pathlib import Path
+
+import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -651,3 +655,214 @@ def test_v42_closer_orbit_eases_back_to_v41_distance_at_every_phone_way():
     dist = [fl.closer_factor(b, t) * math.hypot(3.44, 1.91 - 0.95) for t in ts]
     assert max(abs(y - x) / 0.01 for x, y in zip(dist, dist[1:])) == pytest.approx(1.875 * (4.464 - 3.571) / 6.0, abs=0.01)
     assert fl.closer_factor(orbit, 50.0) == 1.0                              # a v4.1 block
+
+
+# ---------------------------------------------------------------------------------------------- v4.3 (owner 2026-10-23: the initial counterbalances in profile)
+def test_v43_versions_out_dirs_and_the_revision_gate():
+    assert "v4.3" in fl.VERSIONS and "4.3" in fl.V41_STYLE
+    assert fl._v4_out("v4.2") == fl.OUT_V4 / "v4.2" and fl._v4_out("v4") == fl.OUT_V4 and fl._v4_out("v4.3") == fl.OUT_V4
+    assert fl._v4_out("v4.1") == fl.OUT_V41 and fl._v4_out("v4.0") == fl.OUT_V40
+    c = fl.v43_cfg()
+    assert c.version == "4.3" and c.prof() is fl.V41_PROFILE and c.orbit_r_h == fl.v42_cfg().orbit_r_h
+    # a revision this code has no targets for is an error (never v4.0's targets by accident)
+    assert fl.cmd_check_v4({"flow": {"version": 2, "revision": "4.9"}}, {}, {}, None) == 1
+
+
+def test_v43_track_blend_is_the_closer_weight_and_joins_the_law_c2():
+    cam = {"closer_in_s": [34.746, 40.746], "closer_out_s": [93.499, 99.499]}
+    t = np.arange(1030, 2995) / 30.0
+    w, w1, w2 = fl.track_blend(t, tuple(cam["closer_in_s"]), tuple(cam["closer_out_s"]))
+    assert np.allclose(w, [fl.closer_weight(cam, float(x)) for x in t], atol=1e-12)
+    # the derivatives are the weight's own (central differences), and all three vanish at and outside both ends: a C2 join onto the law
+    h = 1e-4
+    for x in (36.0, 38.5, 95.0, 97.9):
+        wp, _, _ = fl.track_blend(np.array([x + h]), (34.746, 40.746), (93.499, 99.499))
+        wm, _, _ = fl.track_blend(np.array([x - h]), (34.746, 40.746), (93.499, 99.499))
+        w0, d1, d2 = fl.track_blend(np.array([x]), (34.746, 40.746), (93.499, 99.499))
+        assert (wp - wm)[0] / (2 * h) == pytest.approx(d1[0], abs=1e-6) and (wp - 2 * w0 + wm)[0] / h ** 2 == pytest.approx(d2[0], abs=1e-3)
+    for x in (34.746, 99.499, 30.0, 105.0):
+        assert [float(v[0]) for v in fl.track_blend(np.array([x]), (34.746, 40.746), (93.499, 99.499))] == [0.0, 0.0, 0.0]
+
+
+def test_v43_view_angle_and_the_inline_lift_twin():
+    # the view looks at the couple from the eye's azimuth: an eye 90 deg off the line sees a profile two-shot, on the line one dancer hides the other
+    assert fl.view_angle_to_line([90.0, -90.0, 0.0, 180.0, 450.0, 45.0], [0.0] * 6).tolist() == [90.0, 90.0, 180.0, 0.0, 90.0, 135.0]
+    pl = np.zeros((5, 3))
+    pf = np.array([[1.0, 0, 0], [1.0, 0, 0], [1.0, 0, 0], [0.1, 0, 0], [0.45, 0, 0]])
+    lift = fl.inline_lift_twin(np.array([0.0, 180.0, 50.0, 0.0, 0.0]), pl, pf)
+    # along the line (either end): 1.9 m when the dancers stand >= 0.7 m apart; 45 deg or more off it: 0; within 0.2 m: no line, 0; half way
+    # between 0.2 and 0.7 m apart: half (the smoothstep of the distance)
+    assert lift[:4].tolist() == pytest.approx([1.9, 1.9, 0.0, 0.0]) and lift[4] == pytest.approx(1.9 * 0.5)
+    # the Hann window of FilmCamera.Orbit: a constant stays, a step becomes a smooth, monotone ramp over +-1.2 s
+    y = fl.hann_mean(np.r_[np.zeros(100), np.ones(100)])
+    assert len(y) == 200 - 72 and fl.hann_mean(np.ones(80)).tolist() == pytest.approx([1.0] * 8) and np.all(np.diff(y) >= -1e-12)
+
+
+def _v43_doc(cb_ivs, layers_cb=()):
+    """a synthetic direction: phone 0-10 s, the orbit (run 2) 10-110 s (way out 10-14 s; the way in 104-110 s belongs to the next phone shot),
+    chapters 1-3 over it"""
+    orbit = {"mode": "orbit", "world_azimuth_deg": 0.0, "drift_deg_s": 3.0, "radius_m": 2.88, "radius_vertical_m": 3.44, "height_m": 1.91,
+             "look_height_m": 0.95, "inline_lift_max_m": 0.2, "ground_level": True, "closer_in_s": [14.0, 20.0], "closer_out_s": [98.0, 104.0],
+             "v4": {"role": "slow_orbit", "run": 2}, "transition_in": {"type": "phone_out", "start_s": 0.0, "duration_s": 4.0}}
+    p0 = {"mode": "camera_tour", "cameras": [{"camera": "00"}], "v4": {"role": "phone_hold", "run": 1}}
+    p1 = {"mode": "camera_tour", "cameras": [{"camera": "06"}], "v4": {"role": "phone_hold", "run": 3},
+          "transition_in": {"type": "phone_in", "start_s": -6.0, "duration_s": 6.0}}
+    segs = [_seg("p0", 0.0, 10.0, False, cam=p0)]
+    edges = [10.0, 30.0, 50.0, 70.0, 90.0, 110.0]
+    for i, (a, b) in enumerate(zip(edges, edges[1:])):
+        s = _seg(f"o{i}", a, b, True, cam=copy.deepcopy(orbit))
+        if i in layers_cb:
+            s["layers"]["counterbalance"] = True
+        segs.append(s)
+    segs.append(_seg("p1", 110.0, 130.0, False, cam=p1))
+    for s in segs:
+        s["speed"] = 1.0
+    doc = _doc(segs)
+    doc["chapters"] = [{"title": "0", "film_s": 0.0, "segment": "p0"}, {"title": "1", "film_s": 5.0, "segment": "p0"}, {"title": "2", "film_s": 50.0, "segment": "o2"},
+                       {"title": "3", "film_s": 90.0, "segment": "o4"}, {"title": "4", "film_s": 112.0, "segment": "p1"}]
+    cb = {"intervals": [{"kind": "counterbalance", "t0": a, "t1": b, "confidence": 0.7} for a, b in cb_ivs] + [{"kind": "pivot", "t0": 60.0, "t1": 62.0}]}
+    return doc, cb
+
+
+def test_v43_windows_score_each_side_outside_the_crossing_and_the_ways():
+    doc, cb = _v43_doc([(20.0, 40.0), (75.0, 85.0), (101.0, 108.0)], layers_cb=(1, 2, 4))
+    sh = fl.shots_of(doc["segments"])[1]
+    w = fl.v43_windows(doc, sh, 14.0, 104.0, cb)
+    # the crossing is the longest stretch of the track between two counterbalance intervals (the pivot does not count)
+    assert w["crossing"] == [40.0, 75.0] and w["chapters_film"] == [5.0, 112.0]
+    by = {r["name"]: r for r in w["windows"]}
+    assert by["counterbalance 20.00-40.00"]["scored"] == [[20.0, 40.0, "first"]]
+    assert by["counterbalance 75.00-85.00"]["scored"] == [[75.0, 85.0, "second"]]
+    # the last interval reaches into the way in (v4.2's, unchanged): only its part before 104 s is scored
+    assert by["counterbalance 101.00-108.00"]["scored"] == [[101.0, 104.0, "second"]] and "phone way" in by["counterbalance 101.00-108.00"]["not_scored"]
+    # counterbalance-layer segments: 30-50 s -> 30-40 on the first side (40-50 is the crossing); 50-70 is all crossing; 90-110: 90-104 on the second
+    assert by["o1"]["scored"] == [[30.0, 40.0, "first"]] and "crossing" in by["o1"]["not_scored"]
+    assert by["o2"]["scored"] == [] and "20.00 s inside the crossing" in by["o2"]["not_scored"]
+    assert by["o4"]["scored"] == [[90.0, 104.0, "second"]]
+
+
+def test_v43_solver_holds_both_profiles_crosses_once_and_keeps_the_rules():
+    """the quadratic programme on an almost still couple (the line along +x): from the law at 3 deg/s it slows into the first profile, crosses
+    once in the stretch without an interval, holds the second profile and rejoins the law with the same rate and acceleration at both ends"""
+    cfg = dict(fl.V43_TRACK, knot_s=2.0, hz=10.0)      # (10 Hz keeps the test quick; the build samples at 30)
+    a, b = 14.0, 104.0
+    t = np.arange(int(a * 10), int(b * 10) + 1) / 10.0
+    W = 2.4
+    law = 80.0 + W * (t - a)                          # the eye 80 deg off the line where the way out leaves it, 296 where the way in starts (as run 2)
+    theta = 2.0 * np.sin(t)                           # a couple that sways a little
+    items = [{"name": f"w{p0}", "kind": "interval", "part": [p0, p1], "side": side, "m": (t >= p0) & (t <= p1), "w0": 2.0}
+             for p0, p1, side in ((22.0, 40.0, 90.0), (75.0, 98.0, 270.0))]
+    cross = (t >= 40.0) & (t <= 75.0)
+    sol = fl.solve_profile_track(t, law, W, theta, (14.0, 20.0), (98.0, 104.0), items, cfg, rate_max=np.where(cross, 7.0, 6.0))
+    phi, rate, acc, inside = sol["phi"], sol["rate"], sol["accel"], sol["inside"]
+    assert rate[inside].min() >= 1.0 and rate[inside].max() <= 7.0 and np.abs(acc[inside]).max() <= 2.0
+    assert rate[inside & ~cross].max() <= 6.0                         # only the crossing may pass v4.1's 6 deg/s
+    num = np.gradient(phi, 1 / 10.0)                  # the sampled curve agrees (what PoseModel and Unity see)
+    assert num[inside].min() >= 1.0 - 1e-3 and num[inside].max() <= 7.0 + 1e-3
+    for it in items:
+        assert abs(it["median"] - 90.0) <= 15.0 and it["share"] >= 0.9, it
+    ang = fl.view_angle_to_line(phi, theta)
+    assert len(np.nonzero(np.diff(np.floor((phi - theta) / 180.0)))[0]) == 1 and ang[(t > 40) & (t < 75)].min() < 5.0
+    # the law at and outside both ends, exactly; next to them the rate has had at most one sample of the accel limit to move (C2: w, w', w'' = 0 there)
+    assert phi[0] == law[0] and phi[-1] == law[-1] and abs(rate[1] - W) <= 2.0 * 0.1 and abs(rate[-2] - W) <= 2.0 * 0.1
+
+
+def test_v43_posemodel_plays_the_table_inside_its_window_only():
+    doc, _ = _v43_doc([(20.0, 40.0)])
+    i0, i1 = 14 * 30, 104 * 30
+    tt = np.arange(i0, i1 + 1) / 30.0
+    deg = (3.0 * (tt - 10.0) + 20.0 * np.sin(np.pi * (tt - 14.0) / 90.0) ** 3).tolist()
+    lift = (0.3 * np.sin(np.pi * (tt - 14.0) / 90.0) ** 2).tolist()
+    doc["flow"]["azimuth_tracks"] = {"run2": {"film": [14.0, 104.0], "t0": i0 / 30.0, "dt": 1 / 30.0, "n": len(tt), "deg": deg, "lift_m": lift,
+                                              "law": {"world_azimuth_deg": 0.0, "drift_deg_s": 3.0, "F0": 10.0}}}
+    for s in doc["segments"][1:-1]:
+        s["camera"]["azimuth_track"] = "run2"
+
+    class G:
+        def centre(self, d):
+            return np.zeros(3)
+
+        def phone(self, cam, d):
+            return {"pos": np.array([4.0, 1.5, 0.0]), "fwd": np.array([-1.0, 0.0, 0.0]), "vfov": 50.0, "aspect": 0.5625}
+    pm = fl.PoseModel(doc, G(), cfg4=fl.v43_cfg())
+    assert len(pm.shots) == 3                                        # the tracked blocks are still one shot
+    for f in (12.0, 14.0, 104.0, 106.0):                             # the ways and the window's own ends: the law, no lift
+        st = pm.state(1, f)
+        assert st["az"] == pytest.approx(3.0 * (f - 10.0), abs=1e-12) and st["eye"][1] == pytest.approx(1.91)
+    for f in (30.0, 59.0 + 1 / 60.0, 80.0):                          # inside: the table, linear between its samples, and its lift
+        st = pm.state(1, f)
+        assert st["az"] == pytest.approx(np.interp(f, tt, deg)) and st["eye"][1] == pytest.approx(1.91 + np.interp(f, tt, lift))
+    # an untracked twin of the same direction: identical (bit for bit) outside the window, different inside
+    doc2 = copy.deepcopy(doc)
+    for s in doc2["segments"]:
+        s["camera"].pop("azimuth_track", None)
+    pm2 = fl.PoseModel(doc2, G(), cfg4=fl.v43_cfg())
+    for f in (11.0, 13.9, 104.0, 105.0, 108.0):
+        assert np.array_equal(pm.pose(f)["eye"], pm2.pose(f)["eye"]) and np.array_equal(pm.pose(f)["dir"], pm2.pose(f)["dir"])
+    assert not np.array_equal(pm.pose(50.0)["eye"], pm2.pose(50.0)["eye"])
+    # the direction is the untracked one + the track keys
+    doc2["flow"].pop("azimuth_tracks")
+    assert json.dumps(fl._strip_tracks(doc), sort_keys=True) == json.dumps(fl._strip_tracks(doc2), sort_keys=True)
+
+
+class _StillCouple:
+    """a PelvisLine stand-in: the couple stands still along +x (lead at the origin, the follow 0.6 m away), heads 1.6 / 1.5 m up"""
+    PELVIS, SPINE3, NECK, HEAD, L_SH, R_SH = 0, 9, 12, 15, 16, 17
+
+    def __init__(self):
+        self.t = np.arange(0, 131 * 30) / 30.0
+        self.theta = np.zeros(len(self.t))
+        self.sha = {"lead": "lead-sha", "follow": "follow-sha"}
+
+    def theta_at(self, d):
+        return np.zeros(len(np.atleast_1d(d)))
+
+    def joint_at(self, role, j, d):
+        d = np.atleast_1d(np.asarray(d, float))
+        x = 0.0 if role == "lead" else 0.6
+        y = {0: 0.95, 9: 1.3, 12: 1.45, 15: 1.6 if role == "lead" else 1.5}.get(j, 1.0)
+        return np.tile([x, y, 0.0], (len(d), 1))
+
+    def damped(self, role, doc, film, tau=0.6):
+        p = self.joint_at(role, 0, film)
+        p[:, 1] = 0.0
+        return p
+
+
+def test_v43_fix1_the_crossing_lift_choice_and_the_fast_pass_option():
+    """fix round 1: the decided track raises the eye in its crossing up to the band's top (crossing_lift "raised", the brief's; measured in the
+    editor: it shows the follow's face a little longer), "none" is the other choice (no lift there; its numbers are reported next to it); the lift
+    never moves the azimuth; the optional fast pass runs through the line faster only inside its own window, inline for less time"""
+    doc, cb = _v43_doc([(22.0, 40.0), (75.0, 98.0)])
+    for s in doc["segments"][1:-1]:
+        s["camera"].update({"world_azimuth_deg": 70.4, "drift_deg_s": 2.4})      # psi 80 where the way out leaves the eye, 296 where the way in starts
+    line = _StillCouple()
+    cfg = dict(fl.V43_TRACK, knot_s=2.0, hz=10.0)
+    quiet = lambda *a, **k: None                                                  # noqa: E731
+    assert cfg["crossing_lift"] == "raised" and cfg["fast_pass"] is None           # the decided v4.3
+    blk, rp = fl.profile_track(doc, 1, line, cb, cfg, log=quiet)
+    assert blk["crossing"]["lift"] == "raised" and max(blk["lift_m"]) == pytest.approx(2.4 - 1.91, abs=0.01) and blk["rules"]["crossing_lift"] == "raised"
+    assert rp["lift_alt_mode"] == "none" and float(np.max(rp["lift_alt"])) < 0.01 and blk["lift_m"][0] == 0.0 and blk["lift_m"][-1] == 0.0
+    assert len(blk["crossing"]["line_at_s"]) == 1 and 40.0 < blk["crossing"]["line_at_s"][0] < 75.0 and "fast_pass" not in blk["rules"]
+    blk_n, rp_n = fl.profile_track(doc, 1, line, cb, dict(cfg, crossing_lift="none"), log=quiet)
+    assert max(blk_n["lift_m"]) < 0.01 and blk_n["deg"] == blk["deg"] and rp_n["lift_alt_mode"] == "raised"      # the lift never moves the azimuth
+    assert float(np.max(rp_n["lift_alt"])) == pytest.approx(max(blk["lift_m"]), abs=1e-4)
+    with pytest.raises(fl.fr.RecapError):
+        fl.profile_track(doc, 1, line, cb, dict(cfg, crossing_lift="up"), log=quiet)
+    # the fast pass: faster than 7 only inside its window round the decided crossing, <= 7 in the rest of the gap, <= 6 outside the gap
+    blk_f, rp_f = fl.profile_track(doc, 1, line, cb, dict(cfg, fast_pass=dict(fl.V43_FAST_PASS)), log=quiet)
+    fp = blk_f["rules"]["fast_pass"]
+    t, rate, ins = rp_f["t"], rp_f["rate_s"], (rp_f["t"] > 14.0) & (rp_f["t"] < 104.0)
+    fw = (t >= fp["film"][0]) & (t <= fp["film"][1])
+    gap = (t >= 40.0) & (t <= 75.0)
+    assert blk_f["rules"]["rate_max_deg_s"] == 12.0 and blk_f["rules"]["rate_max_deg_s_gap"] == 7.0
+    assert fp["film"] == [pytest.approx(blk["crossing"]["line_at_s"][0] - 4.0, abs=0.11), pytest.approx(blk["crossing"]["line_at_s"][0] + 4.0, abs=0.11)]
+    assert 8.0 < rate[fw].max() <= 12.0 and rate[ins & gap & ~fw].max() <= 7.0 and rate[ins & ~gap].max() <= 6.0 and rate[ins].min() >= 1.0
+    assert np.abs(rp_f["accel_s"][ins]).max() <= 2.0
+    cr = blk_f["crossing"]["line_at_s"]
+    assert len(cr) == 1 and fp["film"][0] < cr[0] < fp["film"][1]
+    # it spends less time near the line than the decided track (the angle to the line under 15 deg), the profiles' windows still met
+    assert np.sum(rp_f["angle"] < 15.0) < np.sum(rp["angle"] < 15.0)
+    for w_ in blk_f["windows"]:
+        for p_ in w_.get("planned", []):
+            assert abs(p_["median_deg"] - 90.0) <= 15.0, w_
