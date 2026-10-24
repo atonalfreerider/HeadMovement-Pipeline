@@ -1324,7 +1324,9 @@ def build_report(work: Path, cams, recs, model, tracks, pts, rgb, sim3, map_info
             src = tr["source"]
             e.update({"frames_ok": int(tr["ok"].sum()), "frames_ok_raw": int(tr["ok_raw"].sum()),
                       "ok_rate": round(float(tr["ok"].mean()), 4),
-                      "sources": {s: int((src == s).sum()) for s in ("map", "loc", "track", "attach")},
+                      "sources": {s: int((src == s).sum()) for s in ("map", "loc", "track", "attach", "anchor", "cont", "prior",
+                                                                      "dancers", "unanchored") if s in ("map", "loc", "track", "attach")
+                                  or (src == s).any()},  # cameras.anchored's labels only where present
                       "raw_pose_kept_frames": tr["raw_used"],
                       "reproj_px_median": float(np.nanmedian(tr["reproj_px"][tr["ok"]])) if tr["ok"].any() else None,
                       "reproj_px_p90": float(np.nanpercentile(tr["reproj_px"][tr["ok"]], 90)) if tr["ok"].any() else None,

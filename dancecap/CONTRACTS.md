@@ -1780,6 +1780,13 @@ map.json doppelgangers               {flagged {image: why}, kept_majority, per_c
                                        outside the camera's band AND outside the room (points seen by >= 2 cameras)
 cameras/cache/loc_<cam>.npz source   + "implausible": the best pose was implausible (ok False, no corr). Main-model localisation and
                                        map_extend only: single-camera sub-models (attach, reuse, map_extend) are never gated
+cameras/cache/loc_<cam>_raw.npz      cameras.anchored: the moving camera's raw localisation (written once; every run starts from it)
+cameras/cache/loc_<cam>.npz source   + "anchor" | "cont" | "prior" (ok) and "dancers" | "unanchored" (not ok) after cameras.anchored run:
+                                       the moving camera judged against the fixed one by the dancers (epipolar + ankle transfer)
+cameras/qa/anchored_<cam>.json       anchored run: offset_ms (+ from), raw judged / residual_pct / transfer_pct / anchors, map_images
+                                       {judged, total, bad}, map_images_excluded, params, counts {anchor, cont, prior, refused,
+                                       unanchored, ok, frames, share}, coverage_8s, residual_after_pct, transfer_after_pct;
+                                       anchored_score_<cam>.json = the `score` (CPU) half with every map image's verdict
 cameras/ptz/<cam>.npz                twoview ptz --mode attach: the tripod's fixed-centre PTZ track in the cameras/<cam>.npz schema
                                        (camera_class tripod_zoom); --adopt installs it, cameras/orig/<cam>_loc.npz + cameras/adopted.json
 cameras/qa/ptz_check.json            check / attach sections; cameras/qa/atlas_check.json + review/atlas_check.png (Atlas = drift check only,
