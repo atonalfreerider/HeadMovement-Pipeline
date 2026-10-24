@@ -317,9 +317,13 @@ def loc_mode(d) -> str:
 
 
 def _corr_frames(d: dict, min_pts: int = 6) -> np.ndarray:
+    """Localised frames with >= min_pts static correspondences and a usable focal: one frame of lucas_luiza's Steadicam (1 of
+    5248) came back from P4Pf with f <= 0, and its log turned the joint model's start focal into NaN, so the one-focal model of
+    the handheld camera was rejected (median 1e6 px) and the per-frame focal kept."""
     off = np.asarray(d["corr_off"])
     n = np.diff(off)
-    return np.flatnonzero(np.asarray(d["ok"], bool) & (n >= min_pts))
+    f = np.asarray(d["f"], float)
+    return np.flatnonzero(np.asarray(d["ok"], bool) & (n >= min_pts) & np.isfinite(f) & (f > 0))
 
 
 def _corr(d: dict, i: int, k: int, seed: int = 0) -> tuple[np.ndarray, np.ndarray]:

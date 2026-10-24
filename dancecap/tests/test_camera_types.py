@@ -644,3 +644,10 @@ def test_annotate_camera_type_api(root):
     cv = create_app(v, check_asr=False).test_client()
     assert cv.get("/api/cameras/types").json["enabled"] is False
     assert cv.put("/api/cameras/types/video", json={"mount": "tripod", "zoom": False}).status_code == 404
+
+
+def test_corr_frames_skip_a_frame_with_a_non_positive_focal():
+    import numpy as np
+    from dancecap.cameras import typed as T
+    d = {"corr_off": np.array([0, 10, 20, 30, 40]), "ok": np.array([True, True, True, False]), "f": np.array([1500.0, -3.0, 1510.0, 1505.0])}
+    assert T._corr_frames(d).tolist() == [0, 2]
