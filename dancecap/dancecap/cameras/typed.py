@@ -98,6 +98,12 @@ class TypedSettings:
     # most jitter_ratio x today's + rot_jitter_add_deg. Mostly RELATIVE: today's phones jitter ~1 mm, so the former
     # absolute floor (0.0005 x depth, ~4 mm) let a 2-3 x shakier track through.
     zoom_ratio: float = 1.05
+    # ... judged on the frames whose per-frame focal is well determined: P4Pf's focal is weak on few points (lucas_luiza's
+    # no-zoom Steadicam: p90 deviation 9.1 % over every frame, 2.4 % over frames with >= 100 inliers, the same level
+    # 1731 / 1733 px before / after its tripod's zoom; that tripod's real +15 % zoom shows at 15 % on any subset).
+    # Every frame when such frames are fewer than focal_min_share of them (or 50).
+    focal_min_inliers: int = 100
+    focal_min_share: float = 0.3
     jitter_ratio: float = 1.25
     jitter_add_rel: float = 0.000125
     rot_jitter_add_deg: float = 0.003
@@ -487,9 +493,17 @@ class _Cam:
         ang = np.degrees(2 * np.arccos(np.clip(np.abs((q * qs).sum(1)), -1, 1)))
         return float(np.sqrt(np.mean(ang ** 2)))
 
+    def focal_frames(self) -> np.ndarray:
+        """The frames the zoom test reads (TypedSettings.focal_min_inliers): those with a well-determined per-frame
+        focal, or every frame when they are too few."""
+        fr = self.frames
+        n = np.asarray(self.d["n_inliers"], float)[fr]
+        good = fr[n >= self.s.focal_min_inliers]
+        return good if len(good) >= max(50, self.s.focal_min_share * len(fr)) else fr
+
     def focal_dev(self, f: float) -> float:
-        """p90 over frames of |log(today's per-frame focal / f)|."""
-        return float(np.percentile(np.abs(np.log(self.f[self.frames] / f)), 90))
+        """p90 over focal_frames() of |log(today's per-frame focal / f)|."""
+        return float(np.percentile(np.abs(np.log(self.f[self.focal_frames()] / f)), 90))
 
     def states(self, frames, R=None, C=None, f=None, k1=None):
         n = len(frames)
@@ -653,7 +667,8 @@ def refit(d: dict, w: int, h: int, st, s: TypedSettings | None = None, log=None)
         """A fixed focal is contradicted when today's per-frame focal varies more than a zoom around it."""
         dev = cam.focal_dev(f)
         ok = bool(dev <= np.log(s.zoom_ratio))
-        chk = dict(chk, focal_dev_p90_pct=round(100 * (np.exp(dev) - 1), 2), focal_ok=ok)
+        chk = dict(chk, focal_dev_p90_pct=round(100 * (np.exp(dev) - 1), 2), focal_ok=ok,
+                   focal_dev_frames=int(len(cam.focal_frames())), focal_dev_min_inliers=s.focal_min_inliers)
         if not ok:
             why = (f"today's per-frame focal deviates {100 * (np.exp(dev) - 1):.1f} % (p90) from one fixed focal: "
                    f"the camera zooms")
