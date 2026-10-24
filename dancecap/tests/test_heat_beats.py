@@ -236,3 +236,14 @@ def test_span_input_silences_outside_and_keeps_inside_beats():
     assert out["beats_refined"].tolist() == [3.0, 5.0]
     assert out["downbeats_refined"].tolist() == []
     assert len(out["beat_prob"]) == 500
+
+
+def test_shift_moves_every_time_field_and_span():
+    from dancecap import heat_beats as H
+    seg = {"timeline": [{"from_s": 0.0, "to_s": 2.0, "state": "intro"}, {"from_s": 2.0, "to_s": 9.5, "state": "s1", "songs": ["s1"]}],
+           "no_beat": [[0.0, 2.0]], "governing": {"s1": [2.5, 9.0]}, "music_span": [2.0, 9.5], "danced_span": [1.0, 9.0], "version": 1}
+    out = H._shift_t(seg, 14.0)
+    assert out["timeline"][1] == {"from_s": 16.0, "to_s": 23.5, "state": "s1", "songs": ["s1"]}
+    assert out["no_beat"] == [[14.0, 16.0]] and out["governing"] == {"s1": [16.5, 23.0]} and out["music_span"] == [16.0, 23.5]
+    assert out["version"] == 1
+    assert H._shift_t([{"t": 1.5, "measure_in_take": 3}], 14.0) == [{"t": 15.5, "measure_in_take": 3}]

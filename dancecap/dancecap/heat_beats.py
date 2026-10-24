@@ -28,6 +28,13 @@ locks onto one song and calls the other "no beat". Fit each song inside its own 
     python -m dancecap.heat_beats run --take T --span 118 200 --label song2    # -> song/seg_song2/
     python -m dancecap.heat_beats merge --take T --labels song1,song2           # -> song/ (one governing grid, one timeline per song)
 
+The same heat on another clock (a two-camera take whose reference is the uncut original, lucas_luiza, against the 30 fps cut of
+lucas_luiza_h = original - 14.000 s): `shift` writes the grid, timeline and tempo of one take onto another's clock (t + dt), so the
+verified grid is reused instead of re-fitted on a different file (run on the two-camera take, heat_beats would read its FIRST
+source, the Steadicam, on that video's own clock):
+
+    python -m dancecap.heat_beats shift --from-take lucas_luiza_h --take lucas_luiza --dt 14.0
+
 A span run silences the audio outside the span and keeps beat_this's beats inside it (the tracker runs once on the whole heat, cached).
 merge concatenates the governing grids in time (a later song's measures that start before the earlier song's music ends replace the
 earlier song's from there: the DJ's hand-over), timeline states = the labels (plus "intro" / "gap" / "outro" = no beat), tempo.json the
@@ -689,6 +696,67 @@ def merge(take_name: str, labels: list[str]) -> dict:
             "timeline": timeline, "governing_measures": len(gov_rows) // 8, "bpm_weighted": round(bpm, 3)}
 
 
+def _shift_t(obj, dt: float, keys=("t", "from_s", "to_s", "t0_s")):
+    """A copy of a song/ JSON document with every time field moved by dt: dict keys in `keys`, [t, ...] rows and [a, b] spans of
+    the known span keys."""
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            if k in keys and isinstance(v, (int, float)) and not isinstance(v, bool):
+                out[k] = round(float(v) + dt, 6)
+            elif k in ("governing", "music_span", "no_beat") or k.endswith("_span"):
+                out[k] = _shift_spans(v, dt)
+            else:
+                out[k] = _shift_t(v, dt, keys)
+        return out
+    if isinstance(obj, list):
+        return [_shift_t(v, dt, keys) for v in obj]
+    return obj
+
+
+def _shift_spans(v, dt: float):
+    if isinstance(v, dict):
+        return {k: _shift_spans(x, dt) for k, x in v.items()}
+    if isinstance(v, list) and v and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in v):
+        return [round(float(x) + dt, 6) for x in v]
+    if isinstance(v, list):
+        return [_shift_spans(x, dt) for x in v]
+    return v
+
+
+def shift(from_take: str, take_name: str, dt: float) -> dict:
+    """song/ of `from_take` on the clock of `take_name` (its time = from_take's time + dt): beats_heat.json, beats_merged.json,
+    downbeats.json, segments.json (the intro extended back to 0, danced_span = the take's window), tempo.json, song.json."""
+    take = Take.load(take_name)
+    src, dst = song_dir(from_take), song_dir(take.name)
+    dst.mkdir(parents=True, exist_ok=True)
+    rd = lambda n: json.loads((src / n).read_text(encoding="utf-8"))  # noqa: E731
+    w = lambda n, obj, indent=1: S.write_json(dst / n, obj, indent=indent)  # noqa: E731
+    w("beats_heat.json", [[round(float(r[0]) + dt, 6), *r[1:]] for r in rd("beats_heat.json")], indent=None)
+    m = rd("beats_merged.json")
+    ti = m["columns"].index("t")
+    m["rows"] = [r[:ti] + [round(float(r[ti]) + dt, 6)] + r[ti + 1:] for r in m["rows"]]
+    m["note"] = (m.get("note") or "") + f"; shifted from {from_take} by {dt:+.3f} s (heat_beats shift)"
+    w("beats_merged.json", m, indent=None)
+    w("downbeats.json", _shift_t(rd("downbeats.json"), dt), indent=None)
+    seg = _shift_t(rd("segments.json"), dt)
+    if seg.get("timeline"):
+        seg["timeline"][0]["from_s"] = 0.0
+    if seg.get("no_beat") and seg["no_beat"][0][0] == round(dt, 6):
+        seg["no_beat"][0][0] = 0.0
+    seg["danced_span"] = [float(v) for v in take.window]
+    seg["shifted_from"] = {"take": from_take, "dt_s": dt}
+    w("segments.json", seg)
+    w("tempo.json", _shift_t(rd("tempo.json"), dt))
+    sj = _shift_t(rd("song.json"), dt) if (src / "song.json").exists() else {}
+    sj.update(take=take.name, reference=f"{from_take}'s clock + {dt:+.3f} s (heat_beats shift)")
+    w("song.json", sj)
+    S.write_json(dst / "beats_heat.provenance.json", {"what": f"{from_take}'s heat grid moved onto {take.name}'s clock", "dt_s": dt,
+                                                       "module": "dancecap.heat_beats shift", "source": str(src)})
+    return {"from": from_take, "take": take.name, "dt": dt, "governing_measures": len(rd("beats_heat.json")) // 8,
+            "timeline": seg.get("timeline")}
+
+
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="dancecap.heat_beats", description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -705,6 +773,10 @@ def main(argv: list[str] | None = None) -> None:
     m = sub.add_parser("merge", help="merge span runs (song/seg_<label>/) into one grid / timeline / tempo in song/")
     m.add_argument("--take", required=True)
     m.add_argument("--labels", required=True, help="comma list of span labels")
+    sh = sub.add_parser("shift", help="another take's song/ grid on this take's clock (this take's time = theirs + dt)")
+    sh.add_argument("--from-take", required=True)
+    sh.add_argument("--take", required=True)
+    sh.add_argument("--dt", type=float, required=True)
     f = sub.add_parser("follow", help="step phase lock against the pulse lattice")
     f.add_argument("--take", required=True)
     f.add_argument("--steps", type=Path, required=True)
@@ -713,6 +785,8 @@ def main(argv: list[str] | None = None) -> None:
         print(json.dumps(run(args.take, args.device, args.phase, args.fresh, not args.no_plot,
                              tuple(args.span) if args.span else None, args.label, tuple(args.music) if args.music else None),
                          indent=1, default=S._np))
+    elif args.cmd == "shift":
+        print(json.dumps(shift(args.from_take, args.take, args.dt), indent=1, default=S._np))
     elif args.cmd == "merge":
         print(json.dumps(merge(args.take, [x for x in args.labels.split(",") if x]), indent=1, default=S._np))
     else:
