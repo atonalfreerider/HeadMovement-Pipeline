@@ -1753,3 +1753,36 @@ h<cam> views are for comparison with the real phone and stay out of the fit set;
 input_tokens, capabilities {cap: {stated, ruled_out, evidence_id, evidence_conf, evidence}}}], decision {cap: {status yes | no | unclear,
 p, url, evidence}, _ready}}, changes); `work/mono4d/calibration/` (labelled mannequin frames, labels.json, calibration_<variant>.json).
 
+## Two-view takes (2026-10-23, additive; dancecap.cameras.twoview, dancers_seed, farm/ca_profile.TwoView; lucas_luiza)
+
+A take filmed by TWO cameras (one tripod + one moving camera). Module docstrings hold the full rules; the keys and files:
+
+```toml
+[cameras]
+x_cam = "02"                                 # the camera whose frames the map's cross-camera pairs start from (default: the first)
+map = { win_step_s = 2.0, dense_step_s = 6.0, shared_intrinsics = ["01"] }   # mapping.map_settings: map image steps; one focal for a no-zoom video
+[sync]
+required = true                              # mamma prepare / the farm refuse without this take's own sync/offsets.json
+```
+
+```
+cameras/sfm_work/map.json            + intrinsics_mode {<cam>: single | shared | per_image}, verification.per_campair.<a>-<b>.link_pairs
+                                       (pairs >= link_min_inliers), link_min_pairs
+cameras/qa/map_gate.json             twoview map-gate: registered / total per camera, link per --need pair, refined reprojection
+cameras/ptz/<cam>.npz                twoview ptz --mode attach: the tripod's fixed-centre PTZ track in the cameras/<cam>.npz schema
+                                       (camera_class tripod_zoom); --adopt installs it, cameras/orig/<cam>_loc.npz + cameras/adopted.json
+cameras/qa/ptz_check.json            check / attach sections; cameras/qa/atlas_check.json + review/atlas_check.png (Atlas = drift check only,
+                                       never a scale or focal prior)
+sync/offsets.json                    method "two_view_epipolar", gauge = the tripod (offset 0), dancecap.sync's layout + clocks block;
+                                       sync/curves_2v.json, review/sync_2v.png. Never written with use: false
+cameras/qa/twoview_check[_<tag>].json  sync-corrected two-view DLT of COCO-17 joints: reprojection, coverage, bone CV, statures, ankle heights
+cameras/qa/twoview_gates.json        G1-G8 {gate: {value, threshold, pass, status, checks}}, _meta (adopt_ptz rule)
+people/teachers_<cam>.npz            dancers_seed: the recap teachers contract on this take's own detections (reviewed slots, src_frame, src)
+dancers/seed_report.json             G0 of the seed (scan offsets, matched share, skeleton vetoes, role jumps); review/seed_roles.jpg
+dancers/roles.json                   ONE entry per frames.json frame (positional), dancers_pod.merge's schema
+song/segments.json                   + shifted_from {take, dt_s} (heat_beats shift: a verified grid moved onto another take's clock)
+```
+
+Farm: `farm/ca_profile.PROFILES` (`carlos_aline`, `lucas_luiza`): `TwoView.sync_for(chunk)` = the measured offsets at the chunk's centre
+(delta + rate (t - t_ref) where use_rate), master = `HM_FRONT_MASTER` (lucas_luiza: 02); job ids `ll*`, owner `LL2V`; the two-view share
+gate (recap_fitreport `TWO_VIEW_MIN_SHARE`, lucas_luiza 0.7) fails a chunk fitted mostly from one view.
