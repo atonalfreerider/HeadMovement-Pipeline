@@ -1760,7 +1760,8 @@ A take filmed by TWO cameras (one tripod + one moving camera). Module docstrings
 ```toml
 [cameras]
 x_cam = "02"                                 # the camera whose frames the map's cross-camera pairs start from (default: the first)
-map = { win_step_s = 2.0, dense_step_s = 6.0, shared_intrinsics = ["01"] }   # mapping.map_settings: map image steps; one focal for a no-zoom video
+map = { win_step_s = 2.0, dense_step_s = 6.0, shared_intrinsics = ["01"],      # mapping.map_settings: map image steps; one focal for a no-zoom video
+        seq_only_cams = ["01"], seq_only_s = 8.0 }   # a moving camera pairs with its own images only within 8 s (look-alike walls)
 [sync]
 required = true                              # mamma prepare / the farm refuse without this take's own sync/offsets.json
 ```
