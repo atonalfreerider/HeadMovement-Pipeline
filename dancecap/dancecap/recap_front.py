@@ -321,7 +321,8 @@ def apply_fixed_offsets(doc: dict, fixed: dict | None, master: str = MASTER) -> 
     return done
 
 
-def fixed_sync_doc(work: Path, offsets_ms: dict, why: str, cams: list[str], master: str = MASTER) -> dict:
+def fixed_sync_doc(work: Path, offsets_ms: dict, why: str, cams: list[str], master: str = MASTER,
+                   piecewise_ms: dict | None = None) -> dict:
     """C3 (additive): the document dancecap.sync would write, with the video offsets the JOB fixes (ms, master camera = 0). dancecap.sync triangulates each
     camera's landmarks from at least TWO OTHER cameras (residual(): V.sum(0) >= 2), so a two-camera take (carlos_aline) cannot be measured by it (its first run
     died in `arange: cannot compute length`: no valid residual at all). The numbers come from the YOLO joints of both cameras: two-view reprojection of
@@ -332,6 +333,8 @@ def fixed_sync_doc(work: Path, offsets_ms: dict, why: str, cams: list[str], mast
         ms = 0.0 if c == master else float(offsets_ms.get(c, 0.0))
         offs[c] = {"delta": round(ms / 1000.0, 5), "delta_ms": ms, "stable": True, "use": True, "use_rate": False, "rate": 0.0, "t_ref": 0.0, "attached": False,
                    "fixed": {"why": why}}
+        if c != master and (piecewise_ms or {}).get(c):  # the parent take's delta(t) over this chunk (TwoView.sync_for)
+            offs[c]["piecewise"] = [[float(t), round(float(v) / 1000.0, 5)] for t, v in piecewise_ms[c]]
     return {"version": 1, "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "what": "per-camera residual video offset: corrected reference time = t + delta. FIXED by the job spec (a two-camera take: dancecap.sync cannot measure it)",
             "gauge": f"camera {master} (the master) = 0", "offsets": offs, "fixed_offsets": {"what": why, "cams": {c: offsets_ms.get(c) for c in cams if c != master}},
@@ -344,7 +347,8 @@ def step_sync(chunk: dict, workers: int | None = None) -> dict:
     fx = chunk.get("sync_fixed") or {}
     if fx.get("no_measure"):
         work = take_work(chunk["id"])
-        doc = fixed_sync_doc(work, fx.get("offsets_ms") or {}, fx.get("why") or "fixed by the job spec", list(chunk["cams"]))
+        doc = fixed_sync_doc(work, fx.get("offsets_ms") or {}, fx.get("why") or "fixed by the job spec", list(chunk["cams"]),
+                             piecewise_ms=fx.get("piecewise_ms"))
         p = work / "sync" / "offsets.json"
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(json.dumps(doc, indent=1))

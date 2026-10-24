@@ -102,6 +102,9 @@ PW_WIN_S, PW_STEP_S = 30.0, 10.0  # piecewise sync: a delta per 30 s window ever
 PW_HALF_MS = 15.0  # ... counted where its even / odd frame halves agree within this (= PW_REPRO_MAX_MS)
 PW_REPRO_MEDIAN_MS, PW_REPRO_MAX_MS = 5.0, 15.0  # stable: the even-half and odd-half curves agree (median / max)
 PW_MIN_SHARE = 0.8  # ... and this share of the windows counted
+PW_MIN_WINDOWS = 5  # ... and at least this many
+CONST_P = 0.05  # a constant holds when the sub-window estimates are consistent with it at this level (chi2 with the
+#                 noise of the even / odd halves); a delta(t) is written only when the constant is rejected
 COVER_MIN_JOINTS = 8  # a dancer is two-view covered in a frame with >= 8 joints in both views
 SWAP_MARGIN = 0.8  # a frame counts as swapped when the swapped pairing is cheaper by more than 20 %
 BONE_MAX_PX = 15.0  # check: a joint reprojecting worse than this in either view enters no bone / stature / ankle
@@ -631,9 +634,11 @@ def piecewise_measure(pair: "TwoViewPair", centre_ms: float, range_ms: float, lo
     off = {"piecewise": [[a, b / 1000.0] for a, b in pw["curve"]]}
     cost_pw = pair.sync_cost_offsets(off)[0]
     cost_c = pair.sync_cost(centre_ms / 1000.0)[0]
+    halves = np.array([abs(w["even_ms"] - w["odd_ms"]) for w in good], float)
     pw.update(cost_px=_f(cost_pw, 4), cost_constant_px=_f(cost_c, 4),
-              reproducible=bool(share >= PW_MIN_SHARE and np.median(rep_d) <= PW_REPRO_MEDIAN_MS
-                                and rep_d.max() <= PW_REPRO_MAX_MS and cost_pw <= cost_c))
+              noise_ms=_f(np.median(halves) / 1.349, 3),  # one PW_WIN_S estimate: median |even - odd| = 0.6745 x 2 sigma
+              reproducible=bool(len(good) >= PW_MIN_WINDOWS and share >= PW_MIN_SHARE and np.median(rep_d) <= PW_REPRO_MEDIAN_MS
+                                and rep_d.max() <= PW_REPRO_MAX_MS and cost_pw < cost_c))
     log(f"[twoview] piecewise: {len(good)}/{len(out)} windows counted, delta {curve.min():+.1f}..{curve.max():+.1f} ms, "
         f"even vs odd median {pw['repro_median_ms']} / max {pw['repro_max_ms']} ms, cost {cost_pw:.3f} px vs constant "
         f"{cost_c:.3f} px -> {'reproducible' if pw['reproducible'] else 'not reproducible'}")
@@ -671,9 +676,18 @@ def sync_measure(pair: TwoViewPair, range_ms: float = 300.0, sub_s: float = 30.0
         res_l = ds - (fit["a_ms"] + fit["b_ms_per_s"] * (np.array([s["t_mid"] for s in good], float) - fit["t_ref"]))
         detr = float(res_l.max() - res_l.min())
     pw = piecewise_measure(pair, g["delta_ms"], range_ms, log) if np.isfinite(g["delta_ms"]) else None
+    chi = None
+    if pw and pw.get("noise_ms") and len(ds) >= 3:  # are the sub-windows consistent with one constant, given their noise?
+        from scipy.stats import chi2
+        sig = float(pw["noise_ms"]) * np.sqrt(PW_WIN_S / sub_s)
+        x2 = float((((ds - ds.mean()) / sig) ** 2).sum())
+        chi = {"noise_ms": round(sig, 3), "chi2": round(x2, 3), "dof": int(len(ds) - 1), "p": round(float(chi2.sf(x2, len(ds) - 1)), 5)}
+        log(f"[twoview] constant vs the noise of the halves ({sig:.1f} ms per {sub_s:g} s window): chi2 {x2:.1f} on "
+            f"{len(ds) - 1} dof, p {chi['p']:.4f}")
     return {"global": g, "sub_windows": subs, "n_valid": len(good),
             "spread_ms": float(ds.max() - ds.min()) if len(ds) >= 2 else None, "spread_detrended_ms": detr, "fit": fit,
-            "use_rate": use_rate, "cost_at_zero_px": _f(c0, 4), "depth_ratio": depth, "swap": sw, "piecewise": pw}
+            "use_rate": use_rate, "cost_at_zero_px": _f(c0, 4), "depth_ratio": depth, "swap": sw, "piecewise": pw,
+            "constant_chi2": chi}
 
 
 def sync_doc(work: Path, master: str, other: str, res: dict, range_ms: float, sub_s: float) -> dict:
@@ -684,7 +698,10 @@ def sync_doc(work: Path, master: str, other: str, res: dict, range_ms: float, su
     judged = res["spread_detrended_ms"] if use_rate else spread
     stable = bool(res["n_valid"] >= 3 and judged is not None and judged < S.STABLE_MS)
     pw = res.get("piecewise") or {}
-    piecewise = bool(not stable and pw.get("reproducible"))  # a constant that holds is kept; a delta(t) the halves reproduce else
+    chi = res.get("constant_chi2") or {}
+    noise_ok = bool(not use_rate and res["n_valid"] >= 3 and chi.get("p") is not None and chi["p"] >= CONST_P)
+    stable = stable or noise_ok  # the spread is the noise of the estimates, not a change of the offset
+    piecewise = bool(not stable and pw.get("reproducible") and res["n_valid"] >= 3)  # else a delta(t) the halves reproduce
     stable = stable or piecewise
     use_rate = use_rate and not piecewise
     d_ms = round(float(fit["a_ms"] if use_rate else g["delta_ms"]), 2)
@@ -693,7 +710,10 @@ def sync_doc(work: Path, master: str, other: str, res: dict, range_ms: float, su
          "stable": stable, "use": True, "spread_ms": None if spread is None else round(spread, 2),
          "spread_detrended_ms": _f(res["spread_detrended_ms"], 2),
          "stable_on": ("piecewise: the even- and odd-frame curves reproduce delta(t)" if piecewise else
-                       "spread about the drift line (use_rate)" if use_rate else "spread"),
+                       "spread about the drift line (use_rate)" if use_rate else
+                       f"chi2 against the noise of the even / odd halves (p >= {CONST_P:g})" if noise_ok and not
+                       (judged is not None and judged < S.STABLE_MS) else "spread"),
+         "constant_chi2": chi or None,
          **({"piecewise": [[a, round(b / 1000.0, 5)] for a, b in pw["curve"]],
              "piecewise_detail": {k: pw.get(k) for k in ("share", "repro_median_ms", "repro_max_ms", "range_ms", "cost_px",
                                                          "cost_constant_px")}} if piecewise else {}),

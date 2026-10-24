@@ -811,3 +811,27 @@ def test_only_the_two_view_take_turns_the_share_gate_on(monkeypatch):
             monkeypatch.setenv("HM_FRONT_DANCE", orig)
         vars(FR).clear()          # not a reload: that would re-read an HM_FRONT_DANCE another module set at import (see above)
         vars(FR).update(session_fr)
+
+
+def test_ll_chunks_carry_their_slice_of_a_piecewise_offset(ll_env):
+    """Review of 303da6b: a delta(t) taken at the chunk's centre is up to 12 ms off inside a 52 s chunk; each chunk now
+    carries the curve over its window and recap_front.fixed_sync_doc writes it as piecewise (mamma_dyn reads it)."""
+    from dancecap import mamma_dyn as md
+    from dancecap import recap_front as RF
+    root, _, spec = ll_env
+    curve = [[30.0, -0.066], [80.0, -0.081], [120.0, -0.075], [140.0, -0.061], [200.0, -0.061]]
+    write_offsets(root / "work", use_rate=False, piecewise=curve)
+    plan = cap.make_plan(spec, hash_inputs=False, code={}, P=cap.LL)
+    chunks = [j for j in plan["_jobs"] if j.get("what") == "chunk"]
+    for j in chunks:
+        sf = j["chunk"]["sync_fixed"]
+        t0, t1 = j["chunk"]["k0"] / 30.0, (j["chunk"]["k1"] + 1) / 30.0
+        pw = np.asarray(sf["piecewise_ms"]["01"], float)
+        assert pw[0, 0] == pytest.approx(t0, abs=1e-3) and pw[-1, 0] == pytest.approx(t1, abs=1e-3) and "02" not in sf["piecewise_ms"]
+        cv = np.asarray(curve, float)
+        tt = np.linspace(t0, t1, 50)
+        assert np.allclose(np.interp(tt, pw[:, 0], pw[:, 1]), 1000 * np.interp(tt, cv[:, 0], cv[:, 1]), atol=0.02)
+        doc = RF.fixed_sync_doc(Path("/nonexistent"), sf["offsets_ms"], "test", ["01", "02"], master="02", piecewise_ms=sf["piecewise_ms"])
+        off = {"delta": doc["offsets"]["01"]["delta"], "piecewise": doc["offsets"]["01"]["piecewise"]}
+        assert np.allclose(md.apply_offset(tt, off) - tt, np.interp(tt, cv[:, 0], cv[:, 1]), atol=2e-5)
+        assert "piecewise" not in doc["offsets"]["02"]

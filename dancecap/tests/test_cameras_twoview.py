@@ -340,9 +340,11 @@ def test_sync_measures_a_delta_that_varies_along_the_take(tmp_path, monkeypatch)
     assert callable(g)
 
 
-def test_a_step_is_accepted_as_a_ramp(tmp_path):
+def test_a_step_is_accepted_as_a_ramp(tmp_path, monkeypatch):
     """A 30 ms jump halfway: no constant holds, but both halves of the frames show it - the curve follows it (smeared
     over a window) instead of a constant that is wrong on one side."""
+    monkeypatch.setattr(tv, "PW_WIN_S", 12.0)
+    monkeypatch.setattr(tv, "PW_STEP_S", 4.0)
     work = make_work(tmp_path / "jump", delta=lambda L: np.where(np.asarray(L) < 40.0, 0.0, 0.030))
     doc = tv.cmd_sync(work, "02", "01", range_ms=300.0, sub_s=15.0, log=QUIET)
     pw = np.asarray(doc["offsets"]["01"]["piecewise"], float)
@@ -1020,3 +1022,30 @@ def test_undistort_matches_world_undistort_pts():
     ref = W.undistort_pts(xy, K, -0.05)
     got = tv.undistort(xy[None], K[None], np.array([-0.05]))[0]
     assert np.allclose(got, ref, atol=1e-12)
+
+
+def _res(spread, p, reproducible, n_valid=7, counted=12):
+    """A sync_measure result with the numbers sync_doc decides on."""
+    pw = {"curve": [[30.0 + 10 * k, -64.0 + (k % 3)] for k in range(counted)], "reproducible": reproducible, "share": 1.0,
+          "repro_median_ms": 3.0, "repro_max_ms": 6.0, "range_ms": 2.0, "cost_px": 8.35, "cost_constant_px": 8.38, "noise_ms": 4.3}
+    return {"global": {"delta_ms": -64.0, "min_cost": 8.38, "at_edge": False}, "sub_windows": [], "n_valid": n_valid,
+            "spread_ms": spread, "spread_detrended_ms": spread, "fit": {"a_ms": -64.0, "b_ms_per_s": 0.0, "t_ref": 100.0,
+            "se_b_ms_per_s": 0.01}, "use_rate": False, "cost_at_zero_px": 20.0, "depth_ratio": {"-40": 1.1, "+40": 1.1},
+            "swap": None, "piecewise": pw, "constant_chi2": {"noise_ms": 4.3, "chi2": 3.0, "dof": n_valid - 1, "p": p}}
+
+
+def test_the_decision_between_a_constant_and_delta_t_is_noise_aware(synced):
+    """Review of 303da6b: the spread of noisy sub-window estimates is not a change of the offset. A constant the chi2
+    against the halves' noise accepts is kept (no curve written); a curve is written only when that constant is rejected
+    and the halves reproduce the curve - from >= 3 valid sub-windows."""
+    work, _ = synced
+    d = tv.sync_doc(work, "02", "01", _res(14.0, 0.40, True), 300.0, 30.0)["offsets"]["01"]
+    assert d["stable"] and "piecewise" not in d and d["stable_on"].startswith("chi2")
+    d = tv.sync_doc(work, "02", "01", _res(14.0, 0.01, True), 300.0, 30.0)["offsets"]["01"]
+    assert d["stable"] and d["piecewise"] and d["stable_on"].startswith("piecewise")
+    d = tv.sync_doc(work, "02", "01", _res(14.0, 0.01, False), 300.0, 30.0)["offsets"]["01"]
+    assert not d["stable"] and "piecewise" not in d
+    d = tv.sync_doc(work, "02", "01", _res(14.0, 0.01, True, n_valid=2), 300.0, 30.0)["offsets"]["01"]
+    assert not d["stable"]
+    d = tv.sync_doc(work, "02", "01", _res(4.0, 0.0001, True), 300.0, 30.0)["offsets"]["01"]
+    assert d["stable"] and "piecewise" not in d and d["stable_on"] == "spread"

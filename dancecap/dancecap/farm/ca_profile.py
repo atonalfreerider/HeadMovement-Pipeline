@@ -208,9 +208,20 @@ class TwoView:
         if self.sync_fixed != "file":
             return self.sync_fixed
         doc = doc if doc is not None else self.offsets_doc()
-        t_mid = 0.5 * (float(grid.t(chunk.k0)) + float(grid.t(chunk.k1 + 1)))
-        return {"no_measure": True, "offsets_ms": {c: round(self.offset_ms(doc, c, t_mid), 2) for c in self.cams},
-                "why": f"two-view epipolar scan (cameras.twoview sync), gauge {self.master}", "t_mid_s": round(t_mid, 3)}
+        t0, t1 = float(grid.t(chunk.k0)), float(grid.t(chunk.k1 + 1))
+        t_mid = 0.5 * (t0 + t1)
+        out = {"no_measure": True, "offsets_ms": {c: round(self.offset_ms(doc, c, t_mid), 2) for c in self.cams},
+               "why": f"two-view epipolar scan (cameras.twoview sync), gauge {self.master}", "t_mid_s": round(t_mid, 3)}
+        pw = {}
+        for c in self.cams:  # a delta(t): the chunk carries its slice (recap_front.fixed_sync_doc writes it as piecewise)
+            o = doc["offsets"].get(c) or {}
+            if c != self.master and o.get("piecewise"):
+                k = np.asarray(o["piecewise"], float).reshape(-1, 2)
+                ts = np.r_[t0, k[(k[:, 0] > t0) & (k[:, 0] < t1), 0], t1]
+                pw[c] = [[round(float(x), 3), round(self.offset_ms(doc, c, x), 2)] for x in ts]
+        if pw:
+            out["piecewise_ms"] = pw
+        return out
 
 
 CA = TwoView(profile=PROFILE, dance=DANCE, capture=CAPTURE, id_prefix=ID_PREFIX, shape_id=SHAPE_ID, final_id=FINAL_ID, owner=None, cams=CAMS, alignment=ALIGNMENT,
