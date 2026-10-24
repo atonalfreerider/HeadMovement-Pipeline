@@ -111,3 +111,59 @@ def test_prior_gate_keeps_the_matches_of_the_prior_s_wall():
     behind = X.copy()
     behind[:, 2] = -behind[:, 2] - 12.0
     assert not A.prior_gate(behind, kp, R, t, f, 0.0, w, h).any()
+
+
+def test_an_anchor_needs_a_measured_transfer_when_there_is_a_world_file():
+    """Review of b829830: epi-only anchors (transfer NaN) inside a mirror stretch were grown through 33 frames."""
+    t, fixed, kf, km, (Rm, tm, fm, ppm, Cm) = _scene()
+    J = _Judge(fixed, kf, t, ppm)
+    epi, xf = np.array([5.0, 5.0, 5.0]), np.array([np.nan, 100.0, 500.0])
+    assert J.anchor(epi, xf).tolist() == [False, True, False]
+    assert J.refused(np.full(3, 5.0), np.array([np.nan, 0.29 * J.h, 0.31 * J.h])).tolist() == [False, False, True]
+    J.world = None
+    assert J.anchor(epi, np.full(3, np.nan)).all()
+
+
+def test_grow_never_hops_over_a_refused_frame():
+    room, n = 12.0, 8
+    t = np.arange(n) / 29.0
+    C = np.c_[np.linspace(0, 0.2, n), np.zeros(n), np.zeros(n)]
+    R = np.repeat(np.eye(3)[None], n, 0)
+    refused = np.zeros(n, bool)
+    refused[3] = True
+    acc0 = np.zeros(n, bool)
+    acc0[0] = True
+    acc = A.grow(t, np.ones(n, bool), C, R, refused, acc0, room)
+    assert acc[:3].all() and not acc[3:].any()
+
+
+def test_raw_localisation_provenance(tmp_path):
+    cache = tmp_path / "cameras" / "cache"
+    cache.mkdir(parents=True)
+    raw = {"t": np.arange(3.0), "ok": np.ones(3, bool), "source": np.array(["loc", "map", "loc"])}
+    np.savez(cache / "loc_01.npz", **raw)
+    d, src = A._load_raw(tmp_path, "01", write=True)  # a fresh localisation: it is the raw, and becomes _raw
+    assert src.name == "loc_01.npz" and (cache / "loc_01_raw.npz").exists()
+    np.savez(cache / "loc_01.npz", **{**raw, "source": np.array(["anchor", "dancers", "prior"])})
+    d, src = A._load_raw(tmp_path, "01")  # an anchored output: the raw comes from _raw
+    assert src.name == "loc_01_raw.npz" and list(d["source"]) == ["loc", "map", "loc"]
+    np.savez(cache / "loc_01.npz", **{**raw, "source": np.array(["loc", "loc", "track"])})
+    d, src = A._load_raw(tmp_path, "01", write=True)  # re-localised: the new raw replaces the stale _raw
+    assert list(np.load(cache / "loc_01_raw.npz")["source"]) == ["loc", "loc", "track"]
+    (cache / "loc_01_raw.npz").unlink()
+    np.savez(cache / "loc_01.npz", **{**raw, "source": np.array(["anchor", "dancers", "prior"])})
+    import pytest
+    with pytest.raises(SystemExit):
+        A._load_raw(tmp_path, "01")  # an anchored output without its raw: refused
+
+
+def test_offset_is_the_moving_camera_against_the_fixed_one(tmp_path):
+    import json
+    (tmp_path / "sync").mkdir()
+    (tmp_path / "sync" / "curves_2v.json").write_text(json.dumps({"master": "02", "other": "01", "global": {"delta_ms": -64.3}}))
+    assert A.offset_ms(tmp_path, None, "01", "02")[0] == -64.3
+    (tmp_path / "sync" / "curves_2v.json").write_text(json.dumps({"master": "01", "other": "02", "global": {"delta_ms": 64.3}}))
+    assert A.offset_ms(tmp_path, None, "01", "02")[0] == -64.3  # gauged on the moving camera: the sign flips
+    (tmp_path / "sync" / "offsets.json").write_text(json.dumps({"offsets": {"01": {"delta_ms": 10.0}, "02": {"delta_ms": 70.0, "master": True}}}))
+    assert A.offset_ms(tmp_path, None, "01", "02")[0] == -60.0
+    assert A.offset_ms(tmp_path, 5.0, "01", "02") == (5.0, "--offset-ms")

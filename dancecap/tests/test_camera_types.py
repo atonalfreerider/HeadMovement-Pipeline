@@ -653,21 +653,23 @@ def test_corr_frames_skip_a_frame_with_a_non_positive_focal():
     assert T._corr_frames(d).tolist() == [0, 2]
 
 
-def test_zoom_test_reads_the_frames_with_a_well_determined_focal():
-    """lucas_luiza's no-zoom Steadicam: P4Pf's per-frame focal scatters on weak frames (p90 9.1 % over every frame, 2.4 %
-    over frames with >= 100 inliers) - the fixed focal was refused as 'the camera zooms'. A real zoom shows on any subset."""
+def test_zoom_test_reads_the_rolling_median_of_the_per_frame_focal():
+    """lucas_luiza's no-zoom Steadicam: P4Pf's per-frame focal scatters on weak frames (p90 9.1 % frame by frame) - the
+    fixed focal was refused as 'the camera zooms'. A zoom is a level that holds, even where its frames are weak."""
     from dancecap.cameras.typed import TypedSettings, _Cam
     rng = np.random.default_rng(0)
-    n = 1000
+    n = 1500
     cam = _Cam.__new__(_Cam)
     cam.s, cam.frames = TypedSettings(), np.arange(n)
-    n_inl = np.where(np.arange(n) % 5 == 0, 40, 300)  # a fifth of the frames weak
-    f = np.full(n, 1731.0) * np.exp(np.where(n_inl < 100, rng.normal(0, 0.12, n), rng.normal(0, 0.005, n)))
-    cam.d, cam.f = {"n_inliers": n_inl}, f
-    assert len(cam.focal_frames()) == 800
+    t = np.arange(n) / 29.0
+    weak = np.arange(n) % 5 == 0  # a fifth of the frames weak
+    cam.d = {"t": t, "n_inliers": np.where(weak, 40, 300)}
+    cam.f = 1731.0 * np.exp(np.where(weak, rng.normal(0, 0.12, n), rng.normal(0, 0.005, n)))
     assert np.exp(cam.focal_dev(1731.0)) - 1 < 0.02  # no zoom: passes zoom_ratio 1.05
-    assert np.exp(np.percentile(np.abs(np.log(f / 1731.0)), 90)) - 1 > 0.05  # every frame: it would not
-    cam.f = np.where(np.arange(n) < 500, 2124.0, 2440.0)  # a real +15 % zoom: on the well-determined frames too
+    assert np.exp(np.percentile(np.abs(np.log(cam.f / 1731.0)), 90)) - 1 > 0.05  # frame by frame it would not
+    cam.f = np.where(t < 25, 2124.0, 2440.0) * np.exp(rng.normal(0, 0.005, n))  # a real +15 % zoom
     assert np.exp(cam.focal_dev(2124.0)) - 1 > 0.05
-    cam.d = {"n_inliers": np.full(n, 40)}  # no well-determined frame: every frame decides
-    assert len(cam.focal_frames()) == n
+    zoomed = t >= 25  # ... whose zoomed frames are all weak (fewer map features): still a zoom
+    cam.d = {"t": t, "n_inliers": np.where(zoomed, 40, 300)}
+    cam.f = np.where(zoomed, 2440.0 * np.exp(rng.normal(0, 0.08, n)), 2124.0)
+    assert np.exp(cam.focal_dev(2124.0)) - 1 > 0.05

@@ -62,7 +62,7 @@ from . import twoview as tv
 TAU_PX = 15.0  # an anchor: the dancers' median epipolar distance to the fixed camera's joints
 LOOSE = 3.0  # a grown / prior pose may reach LOOSE x TAU where the dancers are measurable; map images above it leave the refs
 XFER_ANCHOR = 0.25  # an anchor's ankle transfer error <= this x the moving image's height (lucas_luiza: 320 px)
-XFER_LOOSE = 0.5  # a grown / prior pose or a map image is refused above this
+XFER_LOOSE = 0.3  # a grown / prior pose or a map image is refused above this (right poses: p95 205 px = 0.16 x 1280)
 ANKLE_H = 0.084  # the ankle joint above the floor (m) without a measured value (world diagnostics low_ankle_height_m)
 MIN_JOINTS = 8
 V_MAX_ROOM = 0.3  # motion gate: room radius per second (lucas_luiza: 12.4 map units -> 3.7 units/s)
@@ -159,8 +159,10 @@ class Judge:
             return np.nanmedian(np.nanmin(e, 2), 1)
 
     def anchor(self, epi: np.ndarray, xfer: np.ndarray) -> np.ndarray:
-        """An anchor: the dancers measured and both tests well inside."""
-        return np.isfinite(epi) & (epi <= TAU_PX) & ~(np.isfinite(xfer) & (xfer > XFER_ANCHOR * self.h))
+        """An anchor: the dancers measured and both tests well inside - with a world file the transfer MUST be measured
+        (the epipolar test alone passes mirror poses: review of b829830, lucas_luiza 53.98-55.19 s)."""
+        ok_x = (np.isfinite(xfer) & (xfer <= XFER_ANCHOR * self.h)) if self.world is not None else np.ones(len(epi), bool)
+        return np.isfinite(epi) & (epi <= TAU_PX) & ok_x
 
     def refused(self, epi: np.ndarray, xfer: np.ndarray) -> np.ndarray:
         """Clearly off on either test (a grown / prior pose, a map image); unmeasurable is never refused."""
@@ -171,17 +173,32 @@ class Judge:
         return tv.interp_kp(self.kt_m, self.kp_m, np.asarray(t, float))[0]
 
 
-def offset_ms(work: Path, given: float | None) -> tuple[float, str]:
-    """The moving camera's offset against the fixed one (ms): --offset-ms, else sync/offsets.json (two_view_epipolar),
-    else sync/curves_2v.json's whole-window minimum, else 0."""
+def offset_ms(work: Path, given: float | None, moving: str = "01", fixed: str = "02") -> tuple[float, str]:
+    """The moving camera's offset against the fixed one (ms; the fixed camera's corrected time = the moving camera's
+    t + it): --offset-ms, else sync/offsets.json (gauged on either camera; a drift line is taken at its t_ref), else
+    sync/curves_2v.json's whole-window minimum (master / other either way round), else 0."""
     if given is not None:
         return float(given), "--offset-ms"
-    for p, get in ((work / "sync" / "offsets.json", lambda d: next(o["delta_ms"] for c, o in d["offsets"].items()
-                                                                 if not o.get("master"))),
-                   (work / "sync" / "curves_2v.json", lambda d: d["global"]["delta_ms"])):
+
+    def from_offsets(d):
+        o = d["offsets"]
+        dm, df = float(o[moving].get("delta_ms") or 0.0), float(o[fixed].get("delta_ms") or 0.0)
+        return dm - df  # each camera's corrected time is t + its delta: relative to the fixed one
+
+    def from_curves(d):
+        g = float(d["global"]["delta_ms"])
+        if (d.get("master"), d.get("other")) == (fixed, moving):
+            return g
+        if (d.get("master"), d.get("other")) == (moving, fixed):
+            return -g
+        raise ValueError("curves_2v.json is about other cameras")
+
+    for p, get in ((work / "sync" / "offsets.json", from_offsets), (work / "sync" / "curves_2v.json", from_curves)):
         if p.exists():
             try:
-                return float(get(json.loads(p.read_text()))), str(p.relative_to(work))
+                v = float(get(json.loads(p.read_text())))
+                if np.isfinite(v):
+                    return v, str(p.relative_to(work))
             except (KeyError, StopIteration, TypeError, ValueError):
                 continue
     return 0.0, "none (0)"
@@ -205,7 +222,7 @@ def motion_ok(Ca, Ra, ta, Cb, Rb, tb, room: float) -> bool:
 def grow(t, ok, C, R, refused, acc, room: float) -> np.ndarray:
     """Step 4: accepted frames extended through continuous raw poses, forward and backward until stable. A raw pose
     joins when the last accepted frame is <= NEAR frame intervals before it (in the pass direction), the motion gate
-    holds against it and the judge does not refuse it (Judge.refused)."""
+    holds against it and the judge does not refuse it (Judge.refused); a refused raw pose ends the chain."""
     acc = acc.copy()
     n = len(t)
     gap = (NEAR + 0.5) * float(np.median(np.diff(t))) if n > 1 else 1.0
@@ -220,10 +237,8 @@ def grow(t, ok, C, R, refused, acc, room: float) -> np.ndarray:
                     continue
                 if not ok[i] or last is None:
                     continue
-                if abs(t[i] - t[last]) > gap:
+                if abs(t[i] - t[last]) > gap or refused[i]:  # a refused frame ends the chain: never hop over it
                     last = None
-                    continue
-                if refused[i]:
                     continue
                 if motion_ok(C[last], R[last], t[last], C[i], R[i], t[i], room):
                     acc[i] = True
@@ -280,11 +295,28 @@ def map_image_scores(work: Path, J: Judge) -> list[dict]:
 # ------------------------------------------------------------------------------------------------ run
 
 
-def _load_raw(work: Path, cam: str) -> tuple[dict, Path]:
+ANCHORED_SOURCES = ("anchor", "cont", "prior", "dancers", "unanchored")
+
+
+def is_anchored(d: dict) -> bool:
+    return bool(np.isin(np.asarray(d.get("source", [])).astype(str), ANCHORED_SOURCES).any())
+
+
+def _load_raw(work: Path, cam: str, write: bool = False) -> tuple[dict, Path]:
+    """The raw localisation: loc_<cam>.npz when it is one (no anchored source: a fresh loc / loc-join / map_extend -
+    it then replaces loc_<cam>_raw.npz when write), else loc_<cam>_raw.npz (an anchored loc_<cam>.npz without it:
+    SystemExit - its refused poses are gone)."""
     cache = work / "cameras" / "cache"
-    raw_p = cache / f"loc_{cam}_raw.npz"
-    src = raw_p if raw_p.exists() else cache / f"loc_{cam}.npz"
-    return dict(np.load(tv._need(src))), src
+    cur_p, raw_p = cache / f"loc_{cam}.npz", cache / f"loc_{cam}_raw.npz"
+    cur = dict(np.load(tv._need(cur_p)))
+    if not is_anchored(cur):
+        if write:
+            shutil.copy2(cur_p, raw_p)
+        return cur, cur_p
+    if not raw_p.exists():
+        raise SystemExit(f"[anchored] {cur_p} is an anchored output and {raw_p.name} is missing: localise {cam} again "
+                         f"(front_pod loc-part / loc-join) or bring {raw_p.name} back")
+    return dict(np.load(raw_p)), raw_p
 
 
 def score(J: Judge, d: dict) -> dict:
@@ -303,7 +335,7 @@ def coverage(t: np.ndarray, ok: np.ndarray, step: float = 8.0) -> list:
 
 
 def cmd_score(work: Path, moving: str, fixed: str, off_ms: float | None, log=print) -> dict:
-    off, why = offset_ms(work, off_ms)
+    off, why = offset_ms(work, off_ms, moving, fixed)
     J = Judge(work, moving, fixed, off / 1000.0)
     d, src = _load_raw(work, moving)
     s = score(J, d)
@@ -340,11 +372,8 @@ def cmd_run(take_name: str, moving: str, fixed: str, off_ms: float | None, log=p
     doc = cmd_score(work, moving, fixed, off_ms, log)
     off = doc["offset_ms"] / 1000.0
     J = Judge(work, moving, fixed, off)
-    d, src = _load_raw(work, moving)
+    d, src = _load_raw(work, moving, write=True)
     cache = work / "cameras" / "cache"
-    raw_p = cache / f"loc_{moving}_raw.npz"
-    if src != raw_p:
-        shutil.copy2(src, raw_p)  # the raw localisation, once: every later run starts from it
     t, ok = np.asarray(d["t"], float), np.asarray(d["ok"], bool)
     R, tvec = np.array(d["R"], float), np.array(d["tvec"], float)
     f, k1 = np.array(d["f"], float), np.array(d["k1"], float)
