@@ -161,10 +161,23 @@ def read_exr(data: bytes) -> np.ndarray:
 def b64_exr(z: np.ndarray) -> str:
     """HxW float32 linear depth -> an EXR data URL (inline LinearDepthBufferAsset.depthAsset)."""
     import cv2
-    ok, buf = cv2.imencode(".exr", np.ascontiguousarray(z, np.float32))
-    if not ok:
-        raise ValueError("could not encode the EXR (OpenCV built without OpenEXR?)")
-    return "data:image/x-exr;base64," + base64.b64encode(buf.tobytes()).decode()
+    try:
+        ok, buf = cv2.imencode(".exr", np.ascontiguousarray(z, np.float32))
+        data = buf.tobytes() if ok else None
+    except cv2.error:
+        data = None
+    if data is None:   # an OpenCV without the EXR codec (opencv-python 5.0): the OpenEXR bindings write it
+        try:
+            import OpenEXR
+        except ImportError:
+            raise ValueError("could not encode the EXR (OpenCV built without OpenEXR; pip install OpenEXR)") from None
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".exr") as fh:
+            with OpenEXR.File({"compression": OpenEXR.ZIP_COMPRESSION, "type": OpenEXR.scanlineimage},
+                              {"Y": np.ascontiguousarray(z, np.float32)}) as f:
+                f.write(fh.name)
+            data = Path(fh.name).read_bytes()
+    return "data:image/x-exr;base64," + base64.b64encode(data).decode()
 
 
 def read_image(data: bytes) -> np.ndarray:
