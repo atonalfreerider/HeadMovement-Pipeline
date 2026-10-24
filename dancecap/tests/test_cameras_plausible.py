@@ -50,12 +50,27 @@ def test_a_camera_that_moves_inside_the_room_is_not_a_doppelganger():
     names, cams, C, U, P = _room()
     C = C.copy()
     b = np.flatnonzero(cams == "02")[21:]  # 9 of 30
-    C[b] = [-2.0, -2.5, 3.0]  # 3+ units away and 1.3 higher: a balcony step inside the room
+    C[b] = [-2.0, -1.2, 3.0]  # 4+ units across the floor
     B = PL.bands(cams, C, U, P)
     assert B.cams["02"].xz_tol < 3.0  # outside the band ...
     fl, _ = PL.flag(names, cams, C, B)
     assert not any(names[i] in fl for i in b)  # ... but inside the room: kept
     assert B.why("02", C[b[0]]) is None
+
+
+def test_a_pose_at_ceiling_height_inside_the_room_is_implausible():
+    """Review of 096e020: band AND room on the height axis let poses 3.6-5.2 above the Steadicam's band through as
+    'inside the room' (the room's height span reaches the ceiling); the height axis is the band's (with the room's
+    floor), not the room's."""
+    names, cams, C, U, P = _room()
+    B = PL.bands(cams, C, U, P)
+    b = B.cams["01"]
+    tol = max(b.h_tol, B.box.height_floor())
+    assert tol < 3.0
+    ceiling = np.array([3.0, -1.5 - 3.0, 0.0])  # 3 units above the orbit, under the room's top (p99 of the points)
+    assert B.box.h_lo - B.box.height_floor() < float(ceiling @ B.up) < B.box.h_hi + B.box.height_floor()
+    assert "height" in B.why("01", ceiling)
+    assert B.why("01", np.array([3.0, -1.5 - 0.5 * tol, 0.0])) is None
 
 
 def test_model_bands_exempt_the_majority_camera_from_the_localiser(monkeypatch):
@@ -96,7 +111,7 @@ def test_the_tripod_band_has_the_room_floor():
     assert b.h_tol == B.floor and b.xz_tol == B.floor and B.floor > 0.3  # a still camera: MAD ~0 -> the floor decides
     assert B.why("02", np.array([-5.0, -1.2, 0.2])) is None
     assert B.why("02", np.array([-5.0, -1.2, 0.0]) + np.array([0, 0, 3 * B.floor])) is None  # outside its band, in the room
-    assert "under the room's floor" in B.why("02", np.array([-5.0, 9.0, 0.0]))
+    assert "height" in B.why("02", np.array([-5.0, 9.0, 0.0]))
     assert "room's centre" in B.why("02", np.array([40.0, -1.2, 0.0]))
 
 

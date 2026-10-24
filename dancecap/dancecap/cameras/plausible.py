@@ -8,18 +8,20 @@ nearest map images IN TIME of the same camera and chains the previous frame's co
 around such an image localised into the copy (rp 1.2-1.9 px, 120-800 inliers) and the two-view sync of that stretch
 saw 90 px epipolar residuals. The map gate counted the copy as "registered".
 
-Rule: a centre is implausible when it lies outside its camera's BAND and outside the ROOM (both: a camera that really
-moves - a tripod carried to another spot, a walking phone beyond the map images' span - stays inside the room; a copy
-of the room puts it under the floor or past the walls). Up = the median of the images' up vectors (-row 1 of R).
-    band, per camera from its registered map images (room = the p90 horizontal radius of the points about their
-    median; floor = floor_frac x room):
-        height       |h - median h| > max(k_h x 1.4826 MAD(h), floor)
-        horizontal   |c - median c| > max(k_xz x median |c - median c|, floor)   (c = the centre's horizontal part)
-    room, from the points seen by >= 2 cameras (all points when fewer than MIN_MULTI_POINTS: one-camera models):
-        h < p1 - room_v x (p99 - p1)  or  h > p99 + room_v x (p99 - p1)      (under the floor / over the ceiling)
-        |c - median c| > room_x x p99 radius                                 (past the walls)
-lucas_luiza (cameras/sfm_orig): room heights -0.86..4.58, p99 radius 12.5; the copies at h -8.5..-9.8 and r 34-38; the
-real Steadicam h >= -0.89, r <= 17.7; the tripod at r 21 (behind the room: its own band keeps it).
+Rule, per axis. Up = the median of the images' up vectors (-row 1 of R).
+    height      |h - median h| > max(k_h x 1.4826 MAD(h), floor, room_v x the room's height span): cameras are carried
+                or stand at one height; a copy of the room puts one under the floor or at the ceiling
+    horizontal  |c - median c| > max(k_xz x median |c - median c|, floor) AND |c - room centre| > room_x x the room's
+                p99 radius (c = the centre's horizontal part): a camera that really moves across the floor - a tripod
+                carried to another spot, a walking phone past its map images' span, a reused map - stays inside the room;
+                a copy puts it past the walls
+    band from the camera's registered map images; floor = floor_frac x the p90 horizontal radius of all points; the
+    room from the points seen by >= 2 cameras (all points when fewer than MIN_MULTI_POINTS: one-camera models), heights
+    p1..p99, centre = their horizontal median.
+lucas_luiza (cameras/sfm_orig): the room's heights -0.86..4.58 (span 5.44: a 1.37 floor on the height band), p99 radius
+12.5; the copies at h -8.5..-9.8 (the Steadicam's band 0.33 +- 1.59) and at r 34-38; the real Steadicam within h
+-0.89..1.19 and r 17.7; the tripod at r 21 (behind the room: its own band keeps it). Before the per-axis rule (096e020:
+band AND room on both axes) loc_01 poses 3.6-5.2 above the Steadicam's band passed as "inside the room".
 A camera with fewer than min_images images gets no band (nothing is judged); a camera whose flagged images would be
 more than max_share of its images keeps them all and gets no band in the localiser either (a doppelganger is a
 minority) and the case is reported. A clean repeats until nothing more is flagged (the bands of the cleaned model are
@@ -79,15 +81,14 @@ class Room:
     points: str  # "multi-camera" | "all"
     n: int
 
-    def outside(self, h: float, r: float, room_v: float = ROOM_V, room_x: float = ROOM_X) -> str | None:
-        m = room_v * (self.h_hi - self.h_lo)
-        if h < self.h_lo - m:
-            return f"{self.h_lo - h:.2f} under the room's floor (p1 of the points, margin {m:.2f})"
-        if h > self.h_hi + m:
-            return f"{h - self.h_hi:.2f} over the room's ceiling (p99 of the points, margin {m:.2f})"
+    def outside(self, r: float, room_x: float = ROOM_X) -> str | None:
+        """Past the walls: the horizontal distance r from the room's centre over room_x x its p99 radius."""
         if r > room_x * self.radius:
             return f"{r:.2f} from the room's centre (> {room_x:g} x its p99 radius {self.radius:.2f})"
         return None
+
+    def height_floor(self, room_v: float = ROOM_V) -> float:
+        return room_v * (self.h_hi - self.h_lo)
 
     def to_json(self) -> dict:
         return {"centre": [round(float(v), 4) for v in self.centre], "h_lo": round(self.h_lo, 4), "h_hi": round(self.h_hi, 4),
@@ -108,23 +109,21 @@ class Bands:
         return X - np.multiply.outer(X @ self.up, self.up)
 
     def why(self, cam: str, C: np.ndarray) -> str | None:
-        """None when the centre C (map frame) is plausible for camera cam (inside its band, or inside the room, or cam
-        has no band), else the reason: outside the band AND outside the room."""
+        """None when the centre C (map frame) is plausible for camera cam (or cam has no band / the map no points), else
+        the reason (module docstring: height off the band, or horizontally off the band AND past the walls)."""
         b = self.cams.get(cam)
         if b is None or self.box is None or not np.all(np.isfinite(C)):
             return None
         C = np.asarray(C, float)
-        h = float(C @ self.up)
-        dh = h - b.h_med
+        dh = float(C @ self.up) - b.h_med
+        tol = max(b.h_tol, self.box.height_floor())
+        if abs(dh) > tol:
+            return f"height {dh:+.2f} from the camera's median (tol {tol:.2f})"
         dxz = float(np.linalg.norm(self.horiz(C) - b.xz_med))
-        if abs(dh) > b.h_tol:
-            band = f"height {dh:+.2f} from the camera's median (tol {b.h_tol:.2f})"
-        elif dxz > b.xz_tol:
-            band = f"horizontal {dxz:.2f} from the camera's median (tol {b.xz_tol:.2f})"
-        else:
+        if dxz <= b.xz_tol:
             return None
-        room = self.box.outside(h, float(np.linalg.norm(self.horiz(C) - self.box.centre)))
-        return None if room is None else f"{band}; {room}"
+        room = self.box.outside(float(np.linalg.norm(self.horiz(C) - self.box.centre)))
+        return None if room is None else f"horizontal {dxz:.2f} from the camera's median (tol {b.xz_tol:.2f}); {room}"
 
     def to_json(self) -> dict:
         return {"up": [round(float(v), 4) for v in self.up], "room": round(self.room, 4), "floor": round(self.floor, 4),
@@ -282,6 +281,7 @@ def main(argv=None) -> int:
     work = Take.load(a.take).work.resolve()
     sfm, orig, mj = work / "cameras" / "sfm", work / "cameras" / "sfm_orig", work / "cameras" / "sfm_work" / "map.json"
     rec = pycolmap.Reconstruction(str(sfm))
+    reg_before = {im.name for im in rec.images.values() if im.has_pose}
     if a.cmd == "check":
         doc = check_model(rec)
         print(_summary(doc))
@@ -302,15 +302,20 @@ def main(argv=None) -> int:
     tmp.rename(sfm)
     if mj.exists():
         prev = info.get("doppelgangers") or {}
-        doc["at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-        doc["how"] = "plausible clean: deregistered in place, no bundle adjustment (the map frame is kept)"
-        if prev.get("flagged"):  # an earlier clean of this map: one record of every image dropped since the map was made
-            hist = list(prev.get("history") or []) + [{k: prev.get(k) for k in ("at", "how", "per_cam", "removed", "passes")}]
-            p_before = (prev.get("removed") or {}).get("points_before", doc["removed"]["points_before"])
-            doc["flagged"] = {**prev["flagged"], **doc["flagged"]}
-            doc["per_cam"] = _per_cam(doc["flagged"])
-            doc["removed"] = {"images": len(doc["flagged"]), "points_before": p_before, "points_after": rec.num_points3D()}
-            doc["history"] = hist
+        this = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "passes": doc["passes"], "flagged": dict(doc["flagged"]),
+                "per_cam": dict(doc["per_cam"]), "removed": dict(doc["removed"]),
+                "how": "plausible clean: deregistered in place, no bundle adjustment (the map frame is kept)"}
+        # the record of earlier cleans holds only while their images are still out of cameras/sfm (a model copied back
+        # from sfm_orig has them registered again: a fresh record)
+        cleans = list(prev.get("cleans") or ([] if not prev.get("flagged") else
+                                             [{k: prev.get(k) for k in ("at", "how", "passes", "flagged", "per_cam", "removed")}]))
+        if cleans and any(n in reg_before for c in cleans for n in (c.get("flagged") or {})):
+            cleans = []
+        cleans.append(this)
+        flagged = {n: w for c in cleans for n, w in (c.get("flagged") or {}).items()}
+        doc.update(flagged=flagged, per_cam=_per_cam(flagged), cleans=cleans, at=this["at"], how=this["how"],
+                   removed={"images": len(flagged), "points_before": (cleans[0].get("removed") or {}).get("points_before"),
+                            "points_after": rec.num_points3D()})
         info["doppelgangers"] = doc
         mj.write_text(json.dumps(info, indent=1, default=str))
     print(f"[plausible] cameras/sfm rewritten ({doc['removed']}); original in {orig.relative_to(work)}. "
