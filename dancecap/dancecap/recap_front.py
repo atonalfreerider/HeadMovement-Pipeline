@@ -42,7 +42,7 @@ from .take import PACKAGE_ROOT
 DANCE = os.environ.get("HM_FRONT_DANCE", "larissa_kadu_recap")     # C3 (additive): carlos_aline sets it in its job env
 GRID_ANCHOR = 0.0
 FRONT_MARGIN_S = 2.0           # frames are decoded this much beyond the fit window (the same margin as farm.chunks.FRONT_MARGIN_S)
-MASTER = "01"
+MASTER = os.environ.get("HM_FRONT_MASTER", "01")   # LL2V (additive): the camera gauged to offset 0; lucas_luiza's jobs set 02 (the reference clock)
 
 
 def log(msg: str) -> None:
@@ -633,13 +633,15 @@ def step_fit(chunk_id: str, pin: bool = False) -> dict:
 
 def sam_mem_gb(chunk: dict, cam: str) -> float:
     """Host RAM of one dancers worker (front_pod._sam_mem_gb's formula: all frames BGR + 2 bool masks + SAM probabilities + QA frames, + 3 GB) for
-    the frames of `cam` inside the chunk window: about 30 GB for the two 1080x1920 phones, 7-8 GB for the others."""
+    the frames of `cam` inside the chunk window: about 30 GB for the two 1080x1920 phones, 7-8 GB for the others.
+    QA frames as front_pod._qa_frame_px: 1707 x 960 for a landscape 1280x720 video."""
+    from .front_pod import _qa_frame_px
     z = np.load(dance_work() / "cameras" / f"{cam}.npz", allow_pickle=True)
     f = len(frame_range(np.asarray(z["t"], float), chunk["t0"], chunk["t1"]))
     w, h = (int(x) for x in z["native_size"])
     px = w * h
     work_px = min(1.0, 1280 / max(w, h)) ** 2 * px
-    return round((f * (3 * px + 2 * px + 2 * work_px + 960 * 540 * 3)) / 2**30 * 1.1 + 3.0, 1)
+    return round((f * (3 * px + 2 * px + 2 * work_px + 3 * _qa_frame_px(w, h))) / 2**30 * 1.1 + 3.0, 1)
 
 
 def build_tasks(R, chunk: dict) -> None:

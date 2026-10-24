@@ -8,6 +8,15 @@ height against the stature in the take's dancer table. A gate FAILS a chunk (rep
 (work/larissa_kadu_full_a/quality: all-cameras reprojection lead 5.3 / follow 5.8 px, p90 7.6 / 8.4, per camera medians 3-8 px, rest height within 1 %).
 The recap's phones are handheld (the demo's were mostly on tripods) and two of them are attached by rotation only, so the per-camera gate is looser for
 05 / 06 and the gates are a reading aid, not a cut-off for use.
+
+TWO-VIEW SHARE (LL2V, 2026-10-24; the two-view takes in TWO_VIEW_MIN_SHARE: lucas_luiza): per chunk, camera and dancer, the share of the grid frames whose landmarks
+really enter the fit - the fitted set's mamma/ma_2d/<seq>/cam<NN>.npz after mamma prepare zeroed the frames where the camera track is not ok or no mask / landmark
+exists and after qa_mask zeroed the stretches that are not on the teacher - and per dancer the share both cameras enter (the triangulated frames). Each camera AND
+the both-cameras share must carry >= 0.7 of the frames for both dancers, else the chunk is silently monocular there (two cameras at 0.7 each on different frames
+triangulate only 0.4); without the pulled ma_2d the share is unknown and fails. qa_mask may zero at most 10 % of a camera's frames of a dancer (G9: more means
+SAM followed someone else), and a camera qa_mask judged suspect (both dancers off the teacher in more than half of its frames: it masks nothing, usually a clock
+or camera error) fails too. The same report compares the video offsets the fit used (prepare.json sync.offsets_ms) with the ones the job planned
+(farm/jobs/<id>.json chunk.sync_fixed): a job without HM_FRONT_MASTER gauges the wrong camera to 0 and drops the measured offset without an error.
 """
 from __future__ import annotations
 
@@ -16,6 +25,8 @@ import json
 import os
 import sys
 from pathlib import Path
+
+import numpy as np
 
 from .take import PACKAGE_ROOT
 
@@ -30,6 +41,15 @@ GATES = {
     "frac_below_15mm": 0.02,         # lowest sole more than 15 mm below the floor
     "jitter_rms_mm": 2.0,            # 4.5-12 Hz pelvis band, whole (demo: 0.5 / 0.7)
 }
+# two-view takes: the least share of a chunk's grid frames in which each camera's landmarks of each dancer enter the fit (None: not measured, the other takes' report
+# is unchanged)
+TWO_VIEW_MIN_SHARE = {"lucas_luiza": 0.7}.get(DANCE)
+# landmarks (of 512) with a visibility > 0 for a dancer's frame to count as entering the fit from a camera: recap_front.QA_MIN_VIS's count, but the > 0 rule of
+# mamma_dyn.build_inputs' grid_visible_frac (what mamma prepare and qa_mask zero is 0; recap_front's QA judges only V > 0.5)
+TWO_VIEW_MIN_LANDMARKS = 30
+QA_MASK_MAX_SHARE = 0.10         # share of a camera's grid frames qa_mask may zero for one dancer (runbook G9)
+SYNC_TOL_MS = 0.5                # fitted vs planned video offset (both are rounded to 0.01 ms)
+ROLES = ("lead", "follow")       # the ma_2d person slots (mamma_dyn.PIDS order)
 
 
 def _num(x, default=None):
@@ -83,6 +103,86 @@ def gate_failures(summary: dict, gates: dict = GATES) -> list[str]:
     return bad
 
 
+def two_view_share(work: Path, min_landmarks: int = TWO_VIEW_MIN_LANDMARKS) -> dict | None:
+    """The two-view share of one chunk take (see the module doc): {tag, frames, cams: {cam: {share: {role}, grid_cam_ok, qa_masked_share: {role}, qa_suspect, source}},
+    both: {role}, fitted_offsets_ms}. Without the pulled ma_2d a camera's share is None (prepare.json's grid_visible_frac is a landmark share, not a frame share) and
+    both is {}. None when the take has no prepare.json. Reads one npz member (visibilities) per camera."""
+    prep_p = work / "mamma" / "prepare.json"
+    if not prep_p.is_file():
+        return None
+    prep = json.loads(prep_p.read_text(encoding="utf-8"))
+    tag = max(prep["sets"], key=lambda t: len(prep["sets"][t]["cams"]))
+    s = prep["sets"][tag]
+    T = int(prep["grid"]["T"])
+    qa_p = work / "mamma" / "qa_mask.json"
+    qa = json.loads(qa_p.read_text(encoding="utf-8")) if qa_p.is_file() else {}
+    out = {"tag": tag, "frames": T, "min_landmarks": min_landmarks, "cams": {}, "both": {}, "fitted_offsets_ms": (prep.get("sync") or {}).get("offsets_ms") or {}}
+    enter = {}
+    for cam in s["cams"]:
+        inp = (s.get("inputs") or {}).get(cam) or {}
+        q = (qa.get("cams") or {}).get(cam) or {}
+        masked = q.get("masked_frames") or {}
+        row = {"grid_cam_ok": inp.get("grid_cam_ok"), "qa_masked_share": {r: round(int(masked.get(r) or 0) / max(T, 1), 4) for r in ROLES},
+               "qa_suspect": q.get("suspect") or []}
+        f = work / "mamma" / "ma_2d" / s["seq"] / f"cam{cam}.npz"
+        if f.is_file():
+            with np.load(f) as z:
+                n = (np.asarray(z["visibilities"]) > 0).sum(-1)               # (T, persons): visible landmarks per grid frame and dancer
+            ent = n[:, :len(ROLES)] >= min_landmarks
+            enter[cam] = ent
+            row.update(share={r: round(float(ent[:, i].mean()), 4) for i, r in enumerate(ROLES)}, source="ma_2d")
+        else:
+            row.update(share={r: None for r in ROLES}, grid_visible_frac=inp.get("grid_visible_frac"), source="no ma_2d pulled")
+        out["cams"][cam] = row
+    if len(enter) >= 2 and len(enter) == len(s["cams"]):
+        out["both"] = {r: round(float(np.logical_and.reduce([e[:, i] for e in enter.values()]).mean()), 4) for i, r in enumerate(ROLES)}
+    return out
+
+
+def planned_offsets(cid: str) -> dict | None:
+    """The video offsets (ms) the chunk's job fixed (farm/jobs/<id>.json chunk.sync_fixed.offsets_ms), None when the job measures its own or has no spec here."""
+    p = PACKAGE_ROOT / "work" / DANCE / "farm" / "jobs" / f"{cid}.json"
+    if not p.is_file():
+        return None
+    sf = (json.loads(p.read_text(encoding="utf-8")).get("chunk") or {}).get("sync_fixed") or {}
+    return dict(sf.get("offsets_ms") or {}) if sf.get("no_measure") else None
+
+
+def two_view_failures(tw: dict | None, planned: dict | None = None, min_share: float | None = None) -> list[str]:
+    """Human-readable failures of one two_view_share() result (and of the planned vs fitted offsets), [] when the chunk is two-view."""
+    min_share = TWO_VIEW_MIN_SHARE if min_share is None else min_share
+    if tw is None:
+        return ["two-view: no mamma/prepare.json (the front's outputs are not pulled)"]
+    bad = []
+    if len(tw["cams"]) < 2:
+        bad.append(f"two-view: the fitted set {tw['tag']} has only camera(s) {', '.join(sorted(tw['cams']))}")
+    for cam, row in sorted(tw["cams"].items()):
+        for r in ROLES:
+            v = row["share"].get(r)
+            if v is None:
+                bad.append(f"{r}: camera {cam} two-view share unknown ({row.get('source') or 'missing'})")
+            elif v < min_share:
+                bad.append(f"{r}: camera {cam} two-view share {v:.2f} < {min_share:g} (camera ok {row['grid_cam_ok']}, qa_mask zeroed {row['qa_masked_share'][r]:.2f})")
+            if row["qa_masked_share"][r] > QA_MASK_MAX_SHARE + 1e-9:
+                bad.append(f"{r}: camera {cam} qa_mask zeroed {row['qa_masked_share'][r]:.2f} of the frames > {QA_MASK_MAX_SHARE:g}")
+        if row.get("qa_suspect"):
+            bad.append(f"camera {cam}: qa_mask judged both dancers off the teacher (suspect, nothing masked): check the video offset / the camera track")
+    if len(tw["cams"]) >= 2:
+        both = tw.get("both") or {}
+        for r in ROLES:
+            v = both.get(r)
+            if v is None:
+                bad.append(f"{r}: both cameras' share unknown (no ma_2d pulled)")
+            elif v < min_share:
+                bad.append(f"{r}: both cameras enter only {v:.2f} of the frames < {min_share:g} (the triangulated frames)")
+    got = tw.get("fitted_offsets_ms") or {}
+    for c, want in sorted((planned or {}).items()):
+        g = got.get(c)
+        if g is None or abs(float(g) - float(want)) > SYNC_TOL_MS:
+            bad.append(f"sync: camera {c} fitted with {g} ms, the job planned {float(want):+.2f} ms (HM_FRONT_MASTER / sync_fixed not applied)")
+    return bad
+
+
 def chunk_ids() -> list[str]:
     plan = PACKAGE_ROOT / "work" / DANCE / "farm" / "plan.json"
     if plan.exists():
@@ -93,22 +193,45 @@ def chunk_ids() -> list[str]:
 def report(ids: list[str] | None = None) -> dict:
     rows = {}
     for cid in ids or chunk_ids():
-        p = PACKAGE_ROOT / "work" / f"{DANCE}_{cid}" / "quality" / "quality_rf2_noslip.json"
+        work = PACKAGE_ROOT / "work" / f"{DANCE}_{cid}"
+        tw = two_view_share(work) if TWO_VIEW_MIN_SHARE is not None else None
+        extra = {} if TWO_VIEW_MIN_SHARE is None else {"two_view": tw}
+        tw_bad = [] if TWO_VIEW_MIN_SHARE is None else two_view_failures(tw, planned_offsets(cid))
+        p = work / "quality" / "quality_rf2_noslip.json"
         if not p.exists():
             rows[cid] = {"state": "no quality json yet"}
+            if extra:          # the front's share is known before the fit is: G9 / G10 read it from the pulled front outputs
+                rows[cid].update(state="FAIL" if tw_bad and tw is not None else rows[cid]["state"], failures=tw_bad, **extra)
             continue
         s = summarise(json.loads(p.read_text(encoding="utf-8")))
-        bad = gate_failures(s)
-        rows[cid] = {"state": "pass" if not bad else "FAIL", "failures": bad, **s}
-    return {"dance": DANCE, "gates": GATES, "chunks": rows}
+        bad = gate_failures(s) + tw_bad
+        rows[cid] = {"state": "pass" if not bad else "FAIL", "failures": bad, **s, **extra}
+    gates = GATES if TWO_VIEW_MIN_SHARE is None else {**GATES, "two_view_share": TWO_VIEW_MIN_SHARE, "two_view_min_landmarks": TWO_VIEW_MIN_LANDMARKS,
+                                                      "qa_mask_max_share": QA_MASK_MAX_SHARE}
+    return {"dance": DANCE, "gates": gates, "chunks": rows}
+
+
+def _two_view_cell(r: dict) -> str:
+    """'lead / follow' of the least camera share, and both cameras' share in brackets."""
+    tw = r.get("two_view")
+    if not tw or not tw.get("cams"):
+        return "-"
+
+    def least(role):
+        v = [row["share"].get(role) for row in tw["cams"].values() if row["share"].get(role) is not None]
+        return "-" if not v else f"{min(v):.2f}"
+    both = tw.get("both") or {}
+    return f"{least('lead')} / {least('follow')}" + (f" (both {both['lead']:.2f} / {both['follow']:.2f})" if both else "")
 
 
 def table(rep: dict) -> str:
-    lines = ["| chunk | state | frames | lead allcam med / p90 px | follow allcam med / p90 px | worst camera (lead, follow) | rest height lead / follow | jitter mm |",
-             "|---|---|---|---|---|---|---|---|"]
+    tv = "two_view_share" in (rep.get("gates") or {})
+    lines = ["| chunk | state | frames | lead allcam med / p90 px | follow allcam med / p90 px | worst camera (lead, follow) | rest height lead / follow | jitter mm |"
+             + (" two-view share lead / follow |" if tv else ""),
+             "|---|---|---|---|---|---|---|---|" + ("---|" if tv else "")]
     for cid, r in rep["chunks"].items():
         if "dancers" not in r:
-            lines.append(f"| {cid} | {r['state']} | | | | | | |")
+            lines.append(f"| {cid} | {r['state']} | | | | | | |" + (f" {_two_view_cell(r)} |" if tv else ""))
             continue
         L, F = r["dancers"]["lead"], r["dancers"]["follow"]
 
@@ -123,7 +246,8 @@ def table(rep: dict) -> str:
             return "-" if x is None else f"{x:.{n}f}"
         lines.append(f"| {cid} | {r['state']} | {r['frames']} | {f(L['allcam_median_px'])} / {f(L['allcam_p90_px'])} | {f(F['allcam_median_px'])} / {f(F['allcam_p90_px'])} | "
                      f"{worst(L)}, {worst(F)} | {f(None if L['rest_height_rel'] is None else 100 * L['rest_height_rel'])} % / "
-                     f"{f(None if F['rest_height_rel'] is None else 100 * F['rest_height_rel'])} % | {f(L['jitter_rms_mm'], 2)} / {f(F['jitter_rms_mm'], 2)} |")
+                     f"{f(None if F['rest_height_rel'] is None else 100 * F['rest_height_rel'])} % | {f(L['jitter_rms_mm'], 2)} / {f(F['jitter_rms_mm'], 2)} |"
+                     + (f" {_two_view_cell(r)} |" if tv else ""))
     return "\n".join(lines)
 
 
