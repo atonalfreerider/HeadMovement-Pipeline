@@ -30,7 +30,8 @@ run, on the raw localisation cameras/cache/loc_<moving>.npz (front_pod loc-part 
             centre moves <= V_MAX_ROOM x the room radius per second, the rotation <= W_MAX_DEG per second, + slack) and
             whose residual is not > LOOSE x TAU
   5 prior   frames still open next to an accepted one (<= NEAR frames) are localised again with the neighbour's pose as a
-            PRIOR: the references are the map images (either camera, refused ones excluded) whose pose is nearest the
+            PRIOR: the references are the neighbour itself (its inlier 2D-3D correspondences, matched to the frame: the
+            localiser's tracking reference) and the map images (either camera, refused ones excluded) whose pose is nearest the
             prior's (centre distance + view angle: they see the same part of the room; the localiser's nearest-in-time
             choice is what put whole stretches on the wrong wall) plus the nearest in time; only the 2D-3D matches that
             reproject within PRIOR_PX of their keypoint under the prior are kept (the wrong wall's matches land far away),
@@ -435,6 +436,20 @@ def cmd_run(take_name: str, moving: str, fixed: str, off_ms: float | None, log=p
             for i in range(len(t)) if off_c[i + 1] > off_c[i]}
     n_inl, rp = np.array(d["n_inliers"]), np.array(d["reproj_px"], float)
     tried_from = np.full(len(t), -1)  # the neighbour a frame was last tried from: retried only from another one
+    why = {"no_matches": 0, "prior_gate": 0, "solve": 0, "motion": 0, "judge": 0}
+
+    def neighbour_ref(j):
+        """Frame j's inlier correspondences as a localiser Ref (its keypoint indices recovered from their pixels)."""
+        if j not in corr or not len(corr[j][0]):
+            return None
+        kp = np.asarray(F.get(frames[j])["kpts"], float)
+        xy, xyz = corr[j]
+        lut = {(round(float(a), 2), round(float(b), 2)): k for k, (a, b) in enumerate(kp)}
+        idx = np.array([lut.get((round(float(a), 2), round(float(b), 2)), -1) for a, b in xy], np.int64)
+        m = idx >= 0
+        if m.sum() < ls.min_inliers:
+            return None
+        return Ref(frames[j], idx[m], np.asarray(xyz)[m], -np.ones(int(m.sum()), np.int64))
     for k_pass in range(MAX_PASSES):
         added = 0
         order = range(len(t)) if k_pass % 2 == 0 else range(len(t) - 1, -1, -1)
@@ -449,28 +464,35 @@ def cmd_run(take_name: str, moving: str, fixed: str, off_ms: float | None, log=p
             tried_from[i] = j
             q = frames[i]
             qi, xyz, pid = [], [], []
-            for ref in spatial_refs(R[j], C[j], q):
+            nref = neighbour_ref(j)
+            for ref in ([nref] if nref is not None else []) + spatial_refs(R[j], C[j], q):
                 a, b, c = _lift(F, q, ref, L.match_cache)
                 qi.append(a), xyz.append(b), pid.append(c)
             if not qi:
+                why["no_matches"] += 1
                 continue
             qi, xyz, pid = _dedupe(np.concatenate(qi), np.concatenate(xyz), np.concatenate(pid))
             if len(qi) < ls.min_inliers:
+                why["no_matches"] += 1
                 continue
             kp = F.get(q)["kpts"][qi] + 0.5  # COLMAP px
             g = prior_gate(xyz, kp, R[j], tvec[j], f[j], k1[j], w, h)
             if g.sum() < ls.min_inliers:
+                why["prior_gate"] += 1
                 continue
             sol = solve_pose(kp[g], xyz[g], w, h, f_map, k1_map, ls)
             if sol is None or sol["n"] < ls.min_inliers:
+                why["solve"] += 1
                 continue
             Rn, tn = sol["R"], sol["t"]
             Cn = centres(Rn, tn)
             if not motion_ok(C[j], R[j], t[j], Cn, Rn, t[i], room):
+                why["motion"] += 1
                 continue
             r_i, x_i, _ = J.judge(t[i:i + 1], J.joints_at(t[i:i + 1]), Rn[None], tn[None], np.array([sol["f"]]),
                                   np.array([k1_map]))
             if J.refused(r_i, x_i)[0]:
+                why["judge"] += 1
                 continue
             inl = np.asarray(sol["inliers"], bool)
             e = tv_reproj(Rn, tn, sol["f"], k1_map, w, h, xyz[g][inl], kp[g][inl])
@@ -479,7 +501,7 @@ def cmd_run(take_name: str, moving: str, fixed: str, off_ms: float | None, log=p
             n_inl[i], rp[i] = int(sol["n"]), float(np.median(e)) if len(e) else float("nan")
             corr[i] = (kp[g][inl] - 0.5, xyz[g][inl])
             added += 1
-        log(f"[anchored] pass {k_pass + 1}: +{added} frames by prior ({time.time() - t0:.0f} s)")
+        log(f"[anchored] pass {k_pass + 1}: +{added} frames by prior ({time.time() - t0:.0f} s); not added so far: {why}")
         if not added and k_pass >= 1:
             break
 
@@ -510,7 +532,7 @@ def cmd_run(take_name: str, moving: str, fixed: str, off_ms: float | None, log=p
                       "prior": int((how == "prior").sum()), "refused": int(refused.sum()), "unanchored": int(unreached.sum()),
                       "ok": int(out_ok.sum()),
                       "frames": int(len(t)), "share": round(float(out_ok.mean()), 4)},
-           "coverage_8s": coverage(t, out_ok), "residual_after_pct": None, "seconds": round(time.time() - t0, 1),
+           "prior_failures": dict(why), "coverage_8s": coverage(t, out_ok), "residual_after_pct": None, "seconds": round(time.time() - t0, 1),
            "created": time.strftime("%Y-%m-%dT%H:%M:%S")}
     ra, xa = res[out_ok & np.isfinite(res)], xfer[out_ok & np.isfinite(xfer)]
     if len(ra):
