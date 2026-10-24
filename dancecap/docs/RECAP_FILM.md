@@ -1074,3 +1074,54 @@ face-frames swapped (Kadu 908 in 8 spans, Larissa 1324 in 15; shortest 1.23 / 0.
 or behind a frustum picture, 0 px changed outside the faces before encoding, PSNR outside the faces 50.4 dB, flicker ratio 0.992,
 A/V start 0 frames apart. Contact sheet and checks next to the vertical's; nothing blocking was seen (both films open on the title's
 fade from black at 0 s, as designed), so neither aspect was re-rendered.
+
+## v4.3 (owner 2026-10-23): the leader's right hand on her upper-left back, profile two-shots of the first counterbalances, splats only
+
+Owner, after v4.2: "kadu's right hand should usually rest on larissa's upper left back. it is in awkward positions right now. also I think the
+colision detection is causing awkward hand holding. the hand holds should go back to the default detected poses. only the larissa shoulder to
+right hand of kadu connection should be collision checked. especially around 1:30 and 2:30 and 4:50" / "when we show initial counter
+balances we need to orbit but maintain a two shot in profile so we can see the physics of the counter balance. otherwise the transitions to
+pov look good" / later: "I don't ever want to see the basic avatars if gauss splat avatars are available for a dance. fully archive them when
+they are replaced with gauss splats" / "let's get the recap kadu larissa rendered out in vertical. I'll then approve horizontal".
+
+**Hands (fit v43, `dancecap.zouk_contacts`, commit e32911f).** Both dancers are the detected input (`smplx_rf2_noslip`) everywhere: the
+follower, every hand hold and his left arm byte-identical to it (the exported follow bin = the 2026-10-11 default 98657745...). Only his
+right arm (collar within 15 deg of the input, shoulder / elbow / wrist, fingers in the windows) is re-posed in the torso holds: his palm on
+her upper-left back, the back of her left shoulder in the counterbalance leans (a straight level arm, as the phones show), her back in the
+wrap / behind holds. Collision is checked only between his right hand / forearm and her torso, shoulders and upper arms; his forearm under
+her raised left arm is natural contact. Stages h2-h4, last43, fix1, fix2/fix3, p230 (restore points v43a..v43i; notes in the session's
+scratchpad, curation in `v4/contacts/curation_v43.json`, tables in `v4/contacts/validate_v43.md`). Measured on the exported skins
+(input -> v43): film 1:30 (dance 80-101) palm on her upper-left back 0 -> 0.70, on her front 0.76 -> 0, inside > 5 cm 70 -> 0 frames, neck
+0; 2:30 (140-160) front 0.35 -> 0.13, upper-left back 0.29 -> 0.33, neck 0, palm >= 15 cm above her spine 3: 2 -> 0 frames; 4:50
+(272.8-292.8) on her back 0.43 -> 0.92. Installed with `v4/contacts/unity_motion_v43/install_motion.sh` (lead cf132edf..., follow
+98657745...; its backup_installed_motion is v4.2's 8bd1d1ad..., so `--restore` returns v4.2).
+
+**Camera (commits 3b729cf, head-movement 497e93f).** A planner-computed azimuth track for slow-orbit run 2 (film 30.25-105.5,
+chapters 1-3), played by `FilmCamera.WorldAzimuth` through `FlowMath.TrackAt`: the + profile through ch01 and the first counterbalance,
+one crossing of the couple's line between the demonstrations (71.4 s, <= 7 deg/s, eye raised to 2.4 m; her face is hidden about 2 s at
+70.5-72 s - the owner kept this over the 12-deg/s fast pass, which `build --version v4 --fast-pass` still builds into v4/direction/v4.3_fastpass/),
+then the - profile through 83-97.5 s. Angle of the view to the couple's line, median v4.2 -> v4.3: first counterbalance 54.28-62.29 s
+21.6 -> 76.1 deg (98 % within 25 deg of profile), 83.16-86.66 s 65.4 -> 84.2, 88.17-94.22 s 86.7 -> 91.2. Every frame outside the window
+and both phone ways are identical to v4.2 (Unity per-frame dump, both aspects); 17 moves and the 4 phone holds unchanged.
+`build --version v4.2` reproduces v4.2 byte for byte into v4/direction/v4.2/.
+
+**Splats only (commits 39b77ee, head-movement 9f04cf5).** A dancer whose capture has splat data is always drawn as splats (editor, film,
+players, Quest); its mesh avatar stays only as an invisible rig; a device that cannot draw splats shows the skeleton lines and a note.
+The mesh-only files of the recap, Carlos & Aline and John & Lula captures (both albedos, shoes.json) and the old library posters are in
+`work/<take>/archive/mesh_avatars_2026-10-23/` (archive.json; `python -m dancecap.export_unity archive-avatars --capture <c> [--restore]`).
+
+## The v4.3 vertical film, rendered once (2026-10-23/24: recorded 23:51-00:00, face-swapped on Runpod 00:00-00:27 local; work/unity.lock held 23:49-00:01)
+
+**Vertical final** - `head-movement/Recordings/06_LarissaKaduRecap_vertical_2026-10-23_v4.3_faces.mp4` (446.5 MB, 1080x1920, 30 fps,
+11032 frames = 6:07.7; phone copy `..._v4.3_faces_phone_small.mp4`, 29.2 MB, 576x1024, 520 kbps + AAC 96 kbps, sent to the owner).
+Made: `hm_film record --aspect vertical --capture 06_LarissaKaduRecap --readback ordered --audiofix on --faces on --tag v4.3` (the v4.3
+direction, soundtrack already built, clips unchanged from v4.2) -> raw recording `..._v4.3.mp4` (568.8 MB; report PASS, 395.6 s render
+= 27.9 frames/s, splat dancers on Direct3D12, ordered readback at most 1 pending, 0 timeouts; audio fix PASS: video md5 unchanged,
+-16.0 LUFS / -1.3 dBTP, 0.0 ms in 30 windows). Face swap on Runpod (`python -m dancecap.film_faceswap pod --film <rec> --sidecar
+<rec>.faces.json --out <rec>_faces.mp4 --max-cost 1.8`; video-only upload 261 s, swap 999 s, verify 144 s; $0.37): 2274 face-frames
+swapped (lead in 8 spans, follow in 14; shortest 1.23 / 1.0 s), all on the splat layer, none on phone video or behind a frustum picture,
+0 px changed outside the faces before encoding, PSNR outside the faces 49.6 dB, flicker ratio 0.989; the recording's audio remuxed, md5
+equal; A/V start 0 frames apart; meter 0 frames outside its windows. Checks and the contact sheet (looked at once: no black or broken frame,
+dancers in every 3D still; 240 s is the overhead, as in v4.2) in `work/larissa_kadu_recap/v4/final_v4.3/`.
+
+**Horizontal** - waits for the owner's approval of the vertical.
