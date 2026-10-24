@@ -1792,7 +1792,14 @@ cameras/ptz/<cam>.npz                twoview ptz --mode attach: the tripod's fix
 cameras/qa/ptz_check.json            check / attach sections; cameras/qa/atlas_check.json + review/atlas_check.png (Atlas = drift check only,
                                        never a scale or focal prior)
 sync/offsets.json                    method "two_view_epipolar", gauge = the tripod (offset 0), dancecap.sync's layout + clocks block;
-                                       sync/curves_2v.json, review/sync_2v.png. Never written with use: false
+                                       sync/curves_2v.json (+ piecewise {windows [{t, delta_ms, even_ms, odd_ms, n, counted}], curve,
+                                       share, repro_median_ms, repro_max_ms, range_ms, cost_px, cost_constant_px, reproducible}),
+                                       review/sync_2v.png. Never written with use: false. When no constant holds but the even- and
+                                       odd-frame curves reproduce delta(t) (a moving camera's audio clock follows its distance to the
+                                       speakers, ~3 ms per metre): offsets.<cam>.piecewise [[t, delta_s], ...] + piecewise_detail,
+                                       stable_on "piecewise: ...", use_rate false; delta stays the whole-window value.
+                                       mamma_dyn.read_sync_offsets passes piecewise through and apply_offset / offset_label use it
+                                       (every reader); farm TwoView.offset_ms takes it at the chunk's centre
 cameras/qa/twoview_check[_<tag>].json  sync-corrected two-view DLT of COCO-17 joints: reprojection, coverage, bone CV, statures, ankle heights
 cameras/qa/twoview_gates.json        G1-G8 {gate: {value, threshold, pass, status, checks}}, _meta (adopt_ptz rule)
 people/teachers_<cam>.npz            dancers_seed: the recap teachers contract on this take's own detections (reviewed slots, src_frame, src)

@@ -98,6 +98,10 @@ GAP_FRAMES = 1.5  # interpolation never bridges more than this many frame interv
 SUB_MIN_OBS = 300  # a sync sub-window needs this many joint observations at its minimum
 DEPTH_MS = 40.0  # curve depth: the cost at delta +- 40 ms over the minimum (G8 >= 1.15)
 DRIFT_USE_MS = 2.0  # use_rate when the fitted drift moves delta by >= 2 ms over the window and |b| >= 3 SE
+PW_WIN_S, PW_STEP_S = 30.0, 10.0  # piecewise sync: a delta per 30 s window every 10 s ...
+PW_HALF_MS = 15.0  # ... counted where its even / odd frame halves agree within this (= PW_REPRO_MAX_MS)
+PW_REPRO_MEDIAN_MS, PW_REPRO_MAX_MS = 5.0, 15.0  # stable: the even-half and odd-half curves agree (median / max)
+PW_MIN_SHARE = 0.8  # ... and this share of the windows counted
 COVER_MIN_JOINTS = 8  # a dancer is two-view covered in a frame with >= 8 joints in both views
 SWAP_MARGIN = 0.8  # a frame counts as swapped when the swapped pairing is cheaper by more than 20 %
 BONE_MAX_PX = 15.0  # check: a joint reprojecting worse than this in either view enters no bone / stature / ankle
@@ -394,11 +398,9 @@ def trimmed_mean(x: np.ndarray, w: np.ndarray, trim: float = TRIM) -> float:
 
 
 def label_at(tau: np.ndarray, off: dict | None) -> np.ndarray:
-    """The frame label L of a camera whose sync-corrected time (mamma_dyn.apply_offset: L + delta + rate (L - t_ref)) is
-    tau: the inverse of apply_offset."""
-    off = off or {}
-    d, r, tr = float(off.get("delta", 0.0)), float(off.get("rate", 0.0)), float(off.get("t_ref", 0.0))
-    return (np.asarray(tau, float) - d + r * tr) / (1 + r)
+    """The frame label L of a camera whose sync-corrected time (mamma_dyn.apply_offset: L + delta + rate (L - t_ref), or
+    a piecewise delta) is tau: the inverse of apply_offset."""
+    return md.offset_label(tau, off or {})
 
 
 class TwoViewPair:
@@ -444,10 +446,19 @@ class TwoViewPair:
                  & np.isfinite(d) & co["ok"][:, None, None, None])
         return d, v
 
+    def sync_cost_offsets(self, off: dict, idx: np.ndarray | None = None) -> tuple[float, int]:
+        """sync_cost with the other camera's offset as a mamma_dyn offsets dict (piecewise too): label = the inverse
+        of its offset at the master's times."""
+        idx = np.arange(len(self.t)) if idx is None else idx
+        return self._cost_at_labels(label_at(self.t[idx], off), idx)
+
     def sync_cost(self, d: float, idx: np.ndarray | None = None) -> tuple[float, int]:
         """Speed-weighted trimmed mean of the same-role epipolar distance with the other camera at label t - d."""
         idx = np.arange(len(self.t)) if idx is None else idx
-        co = self.other_at(self.t[idx] - d)
+        return self._cost_at_labels(self.t[idx] - d, idx)
+
+    def _cost_at_labels(self, labels: np.ndarray, idx: np.ndarray) -> tuple[float, int]:
+        co = self.other_at(labels)
         dist, v = self.cross(co, idx)
         dist, v = dist[:, [0, 1], [0, 1]], v[:, [0, 1], [0, 1]]
         with np.errstate(invalid="ignore"):
@@ -575,6 +586,60 @@ def drift_fit(tm: np.ndarray, d_ms: np.ndarray) -> dict:
     return {"a_ms": float(a), "b_ms_per_s": float(b), "t_ref": t_ref, "se_b_ms_per_s": se}
 
 
+def _median3(y: np.ndarray) -> np.ndarray:
+    """Running median of 3 (ends kept: a step near an end stays a step): one odd window does not bend the curve."""
+    y = np.asarray(y, float)
+    if len(y) < 3:
+        return y.copy()
+    return np.r_[y[0], np.median(np.stack([y[:-2], y[1:-1], y[2:]]), 0), y[-1]]
+
+
+def piecewise_measure(pair: "TwoViewPair", centre_ms: float, range_ms: float, log=print) -> dict:
+    """delta(t) of the other camera: an estimate per PW_WIN_S window every PW_STEP_S (all master frames, the even ones,
+    the odd ones), counted where the halves agree within PW_HALF_MS; the curve = the running median of 3 over the
+    counted windows (linear between, flat outside). Reproducible = the even-half and odd-half curves (built the same way)
+    agree; better = the whole window's cost with the curve is not above the constant's (module docstring: a moving
+    camera's audio clock follows its distance to the speakers, ~3 ms per metre)."""
+    t = pair.t
+    lo, hi = float(t[0]), float(t[-1])
+    cs = np.arange(lo + PW_WIN_S / 2, hi - PW_WIN_S / 2 + 1e-6, PW_STEP_S)
+    if len(cs) == 0:
+        cs = np.array([(lo + hi) / 2])
+    rows_all = np.arange(len(t))
+    out = []
+    for c in cs:
+        rows = rows_all[(t >= c - PW_WIN_S / 2) & (t < c + PW_WIN_S / 2)]
+        est = {}
+        for k, r in (("all", rows), ("even", rows[0::2]), ("odd", rows[1::2])):
+            sc = scan_curve(lambda d, r=r: pair.sync_cost(d, r), range_ms, centre_ms=centre_ms)
+            est[k] = (sc["delta_ms"], sc["n"], sc["at_edge"])
+        a, e, o = est["all"], est["even"], est["odd"]
+        ok = bool(np.isfinite(a[0]) and a[1] >= SUB_MIN_OBS and not a[2] and np.isfinite(e[0]) and np.isfinite(o[0])
+                  and abs(e[0] - o[0]) <= PW_HALF_MS)
+        out.append({"t": round(float(c), 2), "delta_ms": _f(a[0], 2), "even_ms": _f(e[0], 2), "odd_ms": _f(o[0], 2),
+                    "n": int(a[1]), "counted": ok})
+    good = [w for w in out if w["counted"]]
+    if not good:
+        return {"windows": out, "curve": [], "reproducible": False, "share": 0.0}
+    tg = np.array([w["t"] for w in good])
+    curve, ce, co = (_median3(np.array([w[k] for w in good], float)) for k in ("delta_ms", "even_ms", "odd_ms"))
+    rep_d = np.abs(ce - co)
+    share = len(good) / len(out)
+    pw = {"windows": out, "curve": [[float(a), round(float(b), 2)] for a, b in zip(tg, curve)],
+          "share": round(share, 3), "repro_median_ms": _f(np.median(rep_d), 2), "repro_max_ms": _f(rep_d.max(), 2),
+          "range_ms": _f(curve.max() - curve.min(), 2)}
+    off = {"piecewise": [[a, b / 1000.0] for a, b in pw["curve"]]}
+    cost_pw = pair.sync_cost_offsets(off)[0]
+    cost_c = pair.sync_cost(centre_ms / 1000.0)[0]
+    pw.update(cost_px=_f(cost_pw, 4), cost_constant_px=_f(cost_c, 4),
+              reproducible=bool(share >= PW_MIN_SHARE and np.median(rep_d) <= PW_REPRO_MEDIAN_MS
+                                and rep_d.max() <= PW_REPRO_MAX_MS and cost_pw <= cost_c))
+    log(f"[twoview] piecewise: {len(good)}/{len(out)} windows counted, delta {curve.min():+.1f}..{curve.max():+.1f} ms, "
+        f"even vs odd median {pw['repro_median_ms']} / max {pw['repro_max_ms']} ms, cost {cost_pw:.3f} px vs constant "
+        f"{cost_c:.3f} px -> {'reproducible' if pw['reproducible'] else 'not reproducible'}")
+    return pw
+
+
 def sync_measure(pair: TwoViewPair, range_ms: float = 300.0, sub_s: float = 30.0, log=print) -> dict:
     """The other camera's offset against the master: whole-window curve, sub-window curves, drift fit, curve depth and
     the swap test at the optimum (see the module docstring). No files."""
@@ -605,9 +670,10 @@ def sync_measure(pair: TwoViewPair, range_ms: float = 300.0, sub_s: float = 30.0
     if fit is not None and len(ds) >= 2:  # the sub-window estimates about the fitted line (a step leaves them large)
         res_l = ds - (fit["a_ms"] + fit["b_ms_per_s"] * (np.array([s["t_mid"] for s in good], float) - fit["t_ref"]))
         detr = float(res_l.max() - res_l.min())
+    pw = piecewise_measure(pair, g["delta_ms"], range_ms, log) if np.isfinite(g["delta_ms"]) else None
     return {"global": g, "sub_windows": subs, "n_valid": len(good),
             "spread_ms": float(ds.max() - ds.min()) if len(ds) >= 2 else None, "spread_detrended_ms": detr, "fit": fit,
-            "use_rate": use_rate, "cost_at_zero_px": _f(c0, 4), "depth_ratio": depth, "swap": sw}
+            "use_rate": use_rate, "cost_at_zero_px": _f(c0, 4), "depth_ratio": depth, "swap": sw, "piecewise": pw}
 
 
 def sync_doc(work: Path, master: str, other: str, res: dict, range_ms: float, sub_s: float) -> dict:
@@ -617,12 +683,20 @@ def sync_doc(work: Path, master: str, other: str, res: dict, range_ms: float, su
     spread, use_rate = res["spread_ms"], bool(res["use_rate"])
     judged = res["spread_detrended_ms"] if use_rate else spread
     stable = bool(res["n_valid"] >= 3 and judged is not None and judged < S.STABLE_MS)
+    pw = res.get("piecewise") or {}
+    piecewise = bool(not stable and pw.get("reproducible"))  # a constant that holds is kept; a delta(t) the halves reproduce else
+    stable = stable or piecewise
+    use_rate = use_rate and not piecewise
     d_ms = round(float(fit["a_ms"] if use_rate else g["delta_ms"]), 2)
     rate = float(fit.get("b_ms_per_s") or 0.0) / 1000.0
     o = {"delta": round(d_ms / 1000.0, 5), "delta_ms": d_ms, "delta_global_ms": round(float(g["delta_ms"]), 2),
          "stable": stable, "use": True, "spread_ms": None if spread is None else round(spread, 2),
          "spread_detrended_ms": _f(res["spread_detrended_ms"], 2),
-         "stable_on": "spread about the drift line (use_rate)" if use_rate else "spread",
+         "stable_on": ("piecewise: the even- and odd-frame curves reproduce delta(t)" if piecewise else
+                       "spread about the drift line (use_rate)" if use_rate else "spread"),
+         **({"piecewise": [[a, round(b / 1000.0, 5)] for a, b in pw["curve"]],
+             "piecewise_detail": {k: pw.get(k) for k in ("share", "repro_median_ms", "repro_max_ms", "range_ms", "cost_px",
+                                                         "cost_constant_px")}} if piecewise else {}),
          # dancecap.sync's sub-window keys (delta_ms None where the window is not valid; its measurement kept)
          "sub_windows": [{**{k: v for k, v in s.items() if k != "fine"}, "delta_ms": s["delta_ms"] if s["valid"] else None,
                           "delta_ms_measured": s["delta_ms"]} for s in res["sub_windows"]],
@@ -689,6 +763,15 @@ def plot_sync(res: dict, doc: dict, other: str, out_png: Path) -> Path:
         ax[2].plot(tt, fit["a_ms"] + fit["b_ms_per_s"] * (tt - fit["t_ref"]), color="#d62728",
                    label=f"{fit['a_ms']:+.2f} ms {100 * fit['b_ms_per_s']:+.2f} ms/100 s")
         ax[2].legend(fontsize=7)
+    pw = res.get("piecewise") or {}
+    if pw.get("curve"):
+        cv = np.array(pw["curve"], float)
+        ax[2].plot(cv[:, 0], cv[:, 1], color="#2ca02c", lw=1.4,
+                   label=f"delta(t) {'reproducible' if pw.get('reproducible') else 'not reproducible'}")
+        wv = [w for w in pw["windows"] if w["counted"]]
+        ax[2].plot([w["t"] for w in wv], [w["even_ms"] for w in wv], "v", color="#2ca02c", ms=3, alpha=0.6)
+        ax[2].plot([w["t"] for w in wv], [w["odd_ms"] for w in wv], "^", color="#2ca02c", ms=3, alpha=0.6)
+        ax[2].legend(fontsize=7)
     ax[2].set_xlabel("t (s)")
     ax[2].set_ylabel("delta (ms)")
     ax[2].set_title(f"spread {o['spread_ms']} ms (about the line {o['spread_detrended_ms']} ms)", fontsize=9)
@@ -726,7 +809,7 @@ def cmd_sync(work: Path, master: str, other: str, range_ms: float = 300.0, sub_s
                        f"(needs >= 3 and < {S.STABLE_MS:g} ms)")
     curves = {"master": master, "other": other, "accepted": not why, "why": why, "global": g,
               "sub_windows": res["sub_windows"], "fit": res["fit"], "depth_ratio": res["depth_ratio"],
-              "cost_at_zero_px": res["cost_at_zero_px"], "swap": res["swap"], "doc": doc}
+              "cost_at_zero_px": res["cost_at_zero_px"], "swap": res["swap"], "piecewise": res.get("piecewise"), "doc": doc}
     _write_json(work / "sync" / "curves_2v.json", curves)
     if doc is not None:
         log(f"[twoview] -> {plot_sync(res, doc, other, work / 'review' / 'sync_2v.png')}")
@@ -1929,9 +2012,16 @@ def gates_eval(work: Path, cfg: dict, tripod: str, moving: str) -> dict:
         ch[f"delta_ms_{moving}"] = _chk(dm, "|delta| <= 80 ms, not at the search edge",
                                         None if dm is None else bool(abs(dm) <= 80 and not o.get("at_search_edge")))
         ch["sub_windows_valid"] = _chk(o.get("n_sub_valid"), ">= 5 (30 s)", _ge(o.get("n_sub_valid"), 5))
-        ch["spread_ms"] = _chk(o.get("spread_ms"), "<= 10", _le(o.get("spread_ms"), 10.0))
-        b = (o.get("fit") or {}).get("b_ms_per_100s")
-        ch["drift_ms_per_100s"] = _chk(b, "|b| <= 3", None if b is None else abs(b) <= 3.0)
+        if o.get("piecewise"):  # delta(t): judged by the reproducibility of the curve, not by one constant's spread
+            pd = o.get("piecewise_detail") or {}
+            ch["piecewise_reproducible"] = _chk(pd, f"even / odd curves within {PW_REPRO_MEDIAN_MS:g} ms (median), "
+                                                    f"{PW_REPRO_MAX_MS:g} ms (max); >= {PW_MIN_SHARE:.0%} windows; cost <= constant",
+                                                bool(o.get("stable")))
+            ch["spread_ms"] = _info({"constant_spread_ms": o.get("spread_ms"), "piecewise_range_ms": pd.get("range_ms")})
+        else:
+            ch["spread_ms"] = _chk(o.get("spread_ms"), "<= 10", _le(o.get("spread_ms"), 10.0))
+            b = (o.get("fit") or {}).get("b_ms_per_100s")
+            ch["drift_ms_per_100s"] = _chk(b, "|b| <= 3", None if b is None else abs(b) <= 3.0)
     if cur:
         # a rejected re-run keeps the previous offsets.json (by design) but rewrites curves_2v.json: the file must be
         # the last run's, and that run accepted

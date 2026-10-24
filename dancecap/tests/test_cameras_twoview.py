@@ -298,14 +298,62 @@ def test_sync_recovers_offset_and_drift(synced):
 
 
 def test_sync_never_writes_use_false(tmp_path):
-    """An unstable estimate (a 30 ms jump halfway) exits non-zero and writes no offsets.json."""
-    work = make_work(tmp_path / "jump", delta=lambda L: np.where(np.asarray(L) < 40.0, 0.0, 0.030))
+    """An irreproducible estimate exits non-zero and writes no offsets.json: camera 01 sees the dancers in few frames
+    with 25 px of joint noise, so neither a constant nor a delta(t) the even and odd frames agree on is measurable."""
+    work = make_work(tmp_path / "noisy", delta=lambda L: 0.010 + 0.0006 * (np.asarray(L, float) - 9.0) ** 1.5)
+    p = work / "people" / "01.npz"
+    z = dict(np.load(p))
+    rng = np.random.default_rng(3)
+    z["kpts"][..., :2] += rng.normal(0, 25.0, z["kpts"][..., :2].shape)
+    z["kpts"][rng.random(len(z["t"])) < 0.9, :, :, 2] = 0.3
+    np.savez(p, **z)
     with pytest.raises(SystemExit) as e:
         tv.cmd_sync(work, "02", "01", range_ms=300.0, sub_s=15.0, log=QUIET)
     assert e.value.code == 2
     assert not (work / "sync" / "offsets.json").exists()
     cur = json.loads((work / "sync" / "curves_2v.json").read_text())
     assert not cur["accepted"] and any("unstable" in w for w in cur["why"])
+    assert cur["piecewise"] is not None and not cur["piecewise"]["reproducible"]
+
+
+def test_sync_measures_a_delta_that_varies_along_the_take(tmp_path, monkeypatch):
+    """A moving camera's audio clock follows its distance to the speakers: delta(t) = 40 ms +- 15 ms over the take. No
+    constant holds (spread > 10 ms), the even- and odd-frame curves reproduce the variation: written as piecewise, and
+    mamma_dyn.apply_offset (every reader) and the farm profile follow it."""
+    from dancecap.farm import ca_profile as cap
+    monkeypatch.setattr(tv, "PW_WIN_S", 12.0)
+    monkeypatch.setattr(tv, "PW_STEP_S", 4.0)
+    truth = lambda L: 0.040 + 0.015 * np.sin(2 * np.pi * (np.asarray(L, float) - 9.0) / 60.0)  # noqa: E731
+    work = make_work(tmp_path / "lucas_luiza", delta=truth)
+    doc = tv.cmd_sync(work, "02", "01", range_ms=300.0, sub_s=15.0, log=QUIET)
+    o = doc["offsets"]["01"]
+    assert o["stable"] and o["piecewise"] and o["stable_on"].startswith("piecewise") and not o["use_rate"]
+    assert o["spread_ms"] > S.STABLE_MS
+    off = md.read_sync_offsets(work)["01"]
+    L = np.linspace(20.0, 60.0, 9)
+    err = 1000 * (md.apply_offset(L, off) - L - truth(L))
+    assert np.abs(err).max() < 5.0, err
+    assert np.allclose(md.offset_label(md.apply_offset(L, off), off), L, atol=1e-6)
+    monkeypatch.setattr(cap, "WORK_ROOT", tmp_path)
+    assert cap.LL.offset_ms(cap.LL.offsets_doc(), "01", 40.0) == pytest.approx(1000 * truth(40.0), abs=5.0)
+    g = tv.cmd_gates  # G8 reads the piecewise doc (no constant-spread / drift checks)
+    assert callable(g)
+
+
+def test_a_step_is_accepted_as_a_ramp(tmp_path):
+    """A 30 ms jump halfway: no constant holds, but both halves of the frames show it - the curve follows it (smeared
+    over a window) instead of a constant that is wrong on one side."""
+    work = make_work(tmp_path / "jump", delta=lambda L: np.where(np.asarray(L) < 40.0, 0.0, 0.030))
+    doc = tv.cmd_sync(work, "02", "01", range_ms=300.0, sub_s=15.0, log=QUIET)
+    pw = np.asarray(doc["offsets"]["01"]["piecewise"], float)
+    assert pw[0, 1] == pytest.approx(0.0, abs=0.006) and pw[-1, 1] == pytest.approx(0.030, abs=0.006)
+
+
+def test_piecewise_offsets_apply_and_invert():
+    off = {"delta": 0.05, "piecewise": [[20.0, 0.040], [60.0, 0.060]]}
+    L = np.array([10.0, 20.0, 40.0, 60.0, 80.0])
+    assert np.allclose(md.apply_offset(L, off) - L, [0.040, 0.040, 0.050, 0.060, 0.060])
+    assert np.allclose(tv.label_at(md.apply_offset(L, off), off), L, atol=1e-9)
 
 
 def test_sync_accepts_a_measured_drift_and_applies_it_from_t_ref(tmp_path, monkeypatch):

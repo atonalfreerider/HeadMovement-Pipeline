@@ -197,6 +197,9 @@ class TwoView:
         if cam == self.master:
             return 0.0
         o = doc["offsets"][cam]
+        if o.get("piecewise"):  # cameras.twoview sync: a delta that varies along the take (mamma_dyn.apply_offset reads it)
+            pw = np.asarray(o["piecewise"], float).reshape(-1, 2)
+            return 1000.0 * float(np.interp(float(t), pw[:, 0], pw[:, 1]))
         rate = float(o.get("rate") or 0.0) if _use_rate(o) else 0.0
         return 1000.0 * (float(o["delta"]) + rate * (float(t) - float(o.get("t_ref") or 0.0)))
 
