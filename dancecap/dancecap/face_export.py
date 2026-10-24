@@ -38,6 +38,7 @@ from pathlib import Path
 
 import numpy as np
 
+from . import export_unity as eu
 from .export_unity import (FRAME_FLOATS, N_JOINTS, ROLES, UNITY_STREAMING, _read_blocks, _write_blob, read_blob,
                            read_motion, rotvec_to_quat, to_unity_points, to_unity_quats)
 from .take import PACKAGE_ROOT
@@ -258,6 +259,9 @@ def export(take: str, capture: str | None = None, albedo: str = "face", streamin
             (dst / "capture.json").write_text(json.dumps(man, indent=2), encoding="utf-8")
             rep["warnings"] = warnings
             res[str(dst)] = rep
+        if not dry_run and eu.splat_roles(d):
+            # owner rule 2026-10-23: a capture with splat dancers keeps no mesh-avatar file (the albedo, the face blendshapes): archived
+            res[f"{d} mesh_avatars_archived"] = eu.archive_mesh_avatars(d, take=take)
     return res
 
 

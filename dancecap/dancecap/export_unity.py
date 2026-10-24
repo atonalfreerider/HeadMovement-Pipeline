@@ -26,6 +26,9 @@ Files written (all little-endian):
    "on" = the viewer shows the capture's splat dancers by default - resolve_splat_dancers)
   The install into StreamingAssets/<Capture>/ replaces the folder but KEEPS an existing splats/ (KEEP_ON_INSTALL: the splat dancers
   are written by mono4d.recap_splatav / recap_splat_hair / quest_distill, not by this exporter, so a re-export must not delete them).
+  A capture with splats/<role>.json never gets its mesh-avatar-only files back (owner rule 2026-10-23: the viewer always draws such a
+  dancer as splats): <role>_albedo.png / smplx_<role>_face.bin (/ shoes.json with both roles) go to the take's archive instead
+  (archive_mesh_avatars; `python -m dancecap.export_unity archive-avatars --capture <capture> [--restore]`).
 
   <role>_albedo.png       photoreal albedo (copy of work/<take>/avatar/<role>_albedo.png, SMPL-X UV layout) when the
                           texture stage ran; the skin is split at the UV seams so it can carry it (skin version 2)
@@ -664,12 +667,11 @@ SPLAT_DANCERS_VALUES = ("on", "off")
 
 
 def resolve_splat_dancers(take: str, toml: Path | None = None) -> str | None:
-    """takes/<take>.toml [export] splat_dancers = "on" | "off" (or true / false): the viewer's default for the capture's
-    Gaussian-splat dancers (written to capture.json splat_dancers -> CaptureManifest.splat_dancers -> SplatDancers). "on" = the
-    desktop viewer (Editor; Windows player outside VR) shows the capture's splat dancers by default when it has splats/ and the
-    device can draw them (D3D12 / Vulkan / Metal + compute), unless the toggle was set by hand (hm_splatdancers on | off);
-    "off" = the viewer default (off on the desktop). None = the key is absent (no capture.json key: the viewer default).
-    Owner 2026-10-23: "let's also get gauss splats and make them default for Carlos Aline" (takes/carlos_aline.toml)."""
+    """takes/<take>.toml [export] splat_dancers = "on" | "off" (or true / false), written to capture.json splat_dancers ->
+    CaptureManifest.splat_dancers. Owner 2026-10-23 (morning): "let's also get gauss splats and make them default for Carlos Aline"
+    (takes/carlos_aline.toml). Since the owner rule of the same evening ("splats always", head-movement docs/SPLAT_DANCERS.md) the
+    viewer draws EVERY capture with splats/ as splats and never as mesh avatars, whatever this flag says: it is kept for the record and
+    logged only. None = the key is absent."""
     toml = Path(toml) if toml else PACKAGE_ROOT / "takes" / f"{take}.toml"
     if not toml.exists():
         return None
@@ -730,6 +732,420 @@ def install_capture(src: Path, dst: Path, keep: tuple = KEEP_ON_INSTALL) -> list
                 child.unlink()
     shutil.copytree(src, dst, dirs_exist_ok=True)
     return kept
+
+
+# ---------------------------------------------------------------------------------------------- mesh avatars archived
+# Owner rule (2026-10-23): "I don't ever want to see the basic avatars if gauss splat avatars are available for a dance. fully
+# archive them when they are replaced with gauss splats." The viewer draws a dancer with splats/<role>.json as splats ALWAYS (its mesh
+# avatar is an invisible rig: head-movement SplatDancers / SplatDancersDefault), so the files ONLY the mesh avatar reads leave the
+# capture: StreamingAssets/<capture>/ and work/<take>/export/<capture>/ -> work/<take>/archive/mesh_avatars_2026-10-23/<capture>/
+# (git-ignored, with archive.json: original path, sha256, size, why, the restore command). Decided file by file from the viewer code
+# (reference searches of 2026-10-23, docs/SPLAT_AVATAR_FORMAT.md section 11). The source bakes in work/<take>/avatar/ stay (the splat
+# pipeline reads them).
+MESH_ARCHIVE = "mesh_avatars_2026-10-23"
+OWNER_RULE_2026_10_23 = ("I don't ever want to see the basic avatars if gauss splat avatars are available for a dance. "
+                         "fully archive them when they are replaced with gauss splats.")
+MESH_ONLY_WHY = {
+    "albedo": "the mesh avatar's photoreal texture: read only by SmplxAvatar.Build (capture.json smplx_albedo) and the Quest deploy's texture "
+              "bake (VrTextureBake); a dancer with splats is built as a rig without it (HeadMovement.LoadV3Routine) and draws its own "
+              "colours (splats/<role>.splatav)",
+    "face": "the mesh avatar's face blendshapes: read only by SmplxFace (blendshapes on the SMPL-X mesh); the splat head is LHM++'s",
+    "shoes": "the mesh avatars' procedural sneakers: read only by SneakerPair / SneakerStyle (drawn on the mesh avatar's feet, hidden "
+             "with it); the splat dancers wear their filmed shoes - archived only when BOTH dancers have splats",
+}
+KEPT_WHY = {
+    "smplx_<role>.bin": "the motion: the rig's bones pose the splats (SkinnedSplatAvatar), the hair simulation, physics and contacts",
+    "smplx_<role>_skin.bin": "the rig: its rest joints and parents build the bones the splats are posed from (SmplxAvatar.Build); the "
+                             "hair simulation's scalp and colliders (HairStrands.Create) and the foot measures read it too - kept",
+    "hair_groom.json": "the hair simulation (HairStrands guides) that moves the bound splat hair (also the hidden cards' table)",
+    "figure1.json, figure2.json": "the skeleton lines and every pose layer (Dancer)",
+    "capture.json": "the manifest (its smplx_albedo entries stay: the restore needs nothing else; the viewer does not load or warn "
+                    "about the albedo of a dancer with splats)",
+    "everything else": "timing, physics, counterbalance, floor craft, rhythm, beats, audio, room, cameras/, splats/: not avatar data",
+}
+
+
+def splat_roles(capture_dir: Path) -> tuple[str, ...]:
+    """The roles of a capture folder that have a splat avatar (splats/<role>.json, or a named set's splats/<set>/<role>.json such as the
+    Quest's quest_25k): the viewer always draws them as splats (head-movement CaptureManifest.HasSplatAvatar, the same test)."""
+    sp = Path(capture_dir) / "splats"
+    return tuple(r for r in ROLES if (sp / f"{r}.json").exists() or any(p.is_file() for p in sp.glob(f"*/{r}.json")))
+
+
+def mesh_only_kind(name: str, roles: tuple | list) -> str | None:
+    """'albedo' / 'face' / 'shoes' when the capture file `name` is used ONLY by the mesh avatars of `roles` (the roles with splats),
+    else None (kept). shoes.json holds both dancers' sneakers: mesh-only when both roles have splats."""
+    for r in roles:
+        if name == f"{r}_albedo.png":
+            return "albedo"
+        if name == f"smplx_{r}_face.bin":
+            return "face"
+    if name == "shoes.json" and set(ROLES) <= set(roles):
+        return "shoes"
+    return None
+
+
+def mesh_archive_dir(capture: str, take: str) -> Path:
+    return PACKAGE_ROOT / "work" / take / "archive" / MESH_ARCHIVE / capture
+
+
+def _take_of(capture_dir: Path) -> str:
+    cj = Path(capture_dir) / "capture.json"
+    take = ((json.loads(cj.read_text(encoding="utf-8")).get("provenance") or {}).get("take")) if cj.exists() else None
+    if not take:
+        raise ValueError(f"{cj}: no provenance.take - pass take=")
+    return take
+
+
+def _sha256(path: Path) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _rel(p: Path) -> str:
+    p = Path(p).resolve()
+    try:
+        return p.relative_to(WORKSPACE.resolve()).as_posix()
+    except ValueError:
+        return p.as_posix()
+
+
+def _abs(s: str) -> Path:
+    p = Path(s)
+    return p if p.is_absolute() else WORKSPACE / p
+
+
+def _restore_cmd(capture: str) -> str:
+    return f"python -m dancecap.export_unity archive-avatars --capture {capture} --restore   (from dancecap/)"
+
+
+def _load_archive(adir: Path) -> dict | None:
+    p = Path(adir) / "archive.json"
+    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
+
+
+def _write_archive(adir: Path, rec: dict) -> None:
+    Path(adir).mkdir(parents=True, exist_ok=True)
+    (Path(adir) / "archive.json").write_text(json.dumps(rec, indent=2), encoding="utf-8")
+
+
+def _move(src: Path, dst: Path) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(src), str(dst))
+
+
+def archive_mesh_avatars(capture_dir: Path, export_dir: Path | None = None, take: str | None = None,
+                         archive_dir: Path | None = None, installed: Path | None = None, sweep_capture: bool = True,
+                         dry_run: bool = False) -> dict:
+    """Move every mesh-only file (mesh_only_kind) of a capture with splats out of the capture folder (StreamingAssets/<capture>/, its .meta
+    files too) and out of its export mirror (work/<take>/export/<capture>/; export_dir overrides) into the archive (mesh_archive_dir;
+    archive_dir overrides), recording each in archive.json (from, to, sha256, size, why; the restore command). Idempotent: a second run
+    moves nothing; a file written again later (a re-export) replaces its archived copy, the older one kept as <name>.<sha8> (superseded).
+    installed: the capture folder the files of export_dir WOULD have been installed into (export(): the archive also gets that copy,
+    so a restore gives the StreamingAssets capture its albedo back). sweep_capture=False leaves the capture folder itself alone (an
+    export without install only cleans its own folder). -> report."""
+    from datetime import datetime
+    capture_dir = Path(capture_dir)
+    roles = splat_roles(capture_dir)
+    if not roles:
+        raise ValueError(f"{capture_dir} has no splats/<role>.json: its mesh avatars are its dancers - nothing to archive")
+    take = take or _take_of(capture_dir)
+    export_dir = Path(export_dir) if export_dir is not None else PACKAGE_ROOT / "work" / take / "export" / capture_dir.name
+    adir = Path(archive_dir) if archive_dir is not None else mesh_archive_dir(capture_dir.name, take)
+    rec = _load_archive(adir) or {}
+    files: list[dict] = list(rec.get("files") or [])
+    superseded: list[dict] = list(rec.get("superseded") or [])
+    moved: list[dict] = []
+    origins = ([("StreamingAssets", capture_dir, None)] if sweep_capture else []) + [("export", export_dir, installed)]
+    for label, origin, twin_of in origins:
+        if not origin.is_dir() or (label == "export" and origin.resolve() == capture_dir.resolve()):
+            continue
+        for f in sorted(origin.iterdir()):
+            kind = mesh_only_kind(f.name, roles) if f.is_file() else None
+            if kind is None:
+                continue
+            dst = adir / label / f.name
+            e = {"name": f.name, "kind": kind, "from": _rel(f), "to": _rel(dst), "sha256": _sha256(f), "size": f.stat().st_size,
+                 "why": MESH_ONLY_WHY[kind]}
+            meta = f.with_name(f.name + ".meta")
+            if meta.exists():
+                e["meta_from"], e["meta_to"] = _rel(meta), _rel(dst.with_name(dst.name + ".meta"))
+            twins = []
+            if twin_of is not None:      # the copy export() would have installed into the StreamingAssets capture
+                tdst = adir / "StreamingAssets" / f.name
+                twins.append({**e, "from": _rel(Path(twin_of) / f.name), "to": _rel(tdst), "twin_of": e["to"]})
+                twins[-1].pop("meta_from", None)
+                twins[-1].pop("meta_to", None)
+            for entry in [e] + twins:
+                old = _abs(entry["to"])
+                if old.exists() and _sha256(old) != entry["sha256"]:
+                    keep = old.with_name(f"{old.name}.{_sha256(old)[:8]}")
+                    superseded.append({"name": old.name, "kept_as": _rel(keep), "replaced": datetime.now().isoformat(timespec="seconds")})
+                    if not dry_run:
+                        _move(old, keep)
+            if not dry_run:
+                _move(f, dst)
+                if meta.exists():
+                    _move(meta, dst.with_name(dst.name + ".meta"))
+                for t in twins:
+                    _abs(t["to"]).parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(dst, _abs(t["to"]))
+            moved += [e] + twins
+    moved = list({m["to"]: m for m in moved}.values())    # one entry per archived path: a twin replaces an older copy moved this run
+    tos = {m["to"] for m in moved}
+    files = [x for x in files if x["to"] not in tos] + moved
+    rec.update({
+        "format": "dancecap mesh-avatar archive", "version": 1, "rule": OWNER_RULE_2026_10_23, "owner_rule_date": "2026-10-23",
+        "capture": capture_dir.name, "take": take, "splat_roles": list(roles), "state": "archived",
+        "updated": datetime.now().isoformat(timespec="seconds"), "files": files, "superseded": superseded, "kept": KEPT_WHY,
+        "restore": _restore_cmd(capture_dir.name),
+        "note": "the viewer still draws a dancer with splats/<role>.json as splats after a restore (the mesh avatar is never drawn while "
+                "the splats exist); restore when the splats are taken away",
+    })
+    rec.setdefault("created", rec["updated"])
+    if not dry_run and (moved or not (adir / "archive.json").exists()):
+        _write_archive(adir, rec)
+    return {"capture": capture_dir.name, "archive": str(adir), "splat_roles": list(roles), "moved": moved,
+            "dry_run": dry_run, "restore": rec["restore"]}
+
+
+def restore_mesh_avatars(capture_dir: Path, take: str | None = None, archive_dir: Path | None = None, dry_run: bool = False) -> dict:
+    """Move the archived files back to where archive.json says they came from (their .meta files too), after checking each archived
+    file's sha256; a destination that already holds a different file is refused before anything moves; one that holds the same bytes is
+    left (the archived copy is dropped); an origin folder that no longer exists (a deleted export mirror) keeps its file in the archive.
+    -> report."""
+    from datetime import datetime
+    capture_dir = Path(capture_dir)
+    take = take or _take_of(capture_dir)
+    adir = Path(archive_dir) if archive_dir is not None else mesh_archive_dir(capture_dir.name, take)
+    rec = _load_archive(adir)
+    if rec is None:
+        raise FileNotFoundError(f"{adir / 'archive.json'} missing: nothing archived for {capture_dir.name}")
+    todo, problems = [], []
+    for e in rec.get("files") or []:
+        if e.get("restored"):
+            continue
+        src, dst = _abs(e["to"]), _abs(e["from"])
+        if not src.exists():
+            problems.append(f"{e['to']}: missing from the archive")
+        elif _sha256(src) != e["sha256"]:
+            problems.append(f"{e['to']}: sha256 differs from archive.json")
+        elif dst.exists() and _sha256(dst) != e["sha256"]:
+            problems.append(f"{e['from']}: holds a different file - refusing to overwrite it")
+        else:
+            todo.append(e)
+    # the library posters (archive_posters): back only where the splat poster that replaced them (or the same bytes) is still there
+    todo_posters = []
+    for e in rec.get("posters") or []:
+        if e.get("restored"):
+            continue
+        src, dst = _abs(e["to"]), _abs(e["from"])
+        if not src.exists():
+            problems.append(f"{e['to']}: missing from the archive")
+        elif _sha256(src) != e["sha256"]:
+            problems.append(f"{e['to']}: sha256 differs from archive.json")
+        elif dst.exists() and _sha256(dst) not in (e["sha256"], (e.get("replaced_by") or {}).get("sha256")):
+            problems.append(f"{e['from']}: holds a poster that is neither the archived one nor its splat replacement - refusing")
+        else:
+            todo_posters.append(e)
+    if problems:
+        raise ValueError("restore refused (nothing moved): " + "; ".join(problems))
+    done, left = [], []
+    for e in todo:
+        src, dst = _abs(e["to"]), _abs(e["from"])
+        if not dst.parent.is_dir():
+            left.append({**e, "left": "origin folder missing"})
+            continue
+        if not dry_run:
+            if dst.exists():
+                src.unlink()                      # the same bytes are already back (a twin, or restored by hand)
+            else:
+                _move(src, dst)
+            if e.get("meta_to") and _abs(e["meta_to"]).exists():
+                if not _abs(e["meta_from"]).exists():
+                    _move(_abs(e["meta_to"]), _abs(e["meta_from"]))
+            e["restored"] = datetime.now().isoformat(timespec="seconds")
+        done.append(e)
+    for e in todo_posters:
+        src, dst = _abs(e["to"]), _abs(e["from"])
+        if not dst.parent.is_dir():
+            left.append({**e, "left": "origin folder missing"})
+            continue
+        if not dry_run:
+            if dst.exists() and _sha256(dst) == e["sha256"]:
+                src.unlink()
+            else:
+                if dst.exists():                  # the splat poster: kept in the archive beside the mesh one (archive_posters --new it)
+                    kept = src.with_name(f"{src.stem}.splats{src.suffix}")
+                    _move(dst, kept)
+                    e["splat_poster_kept"] = _rel(kept)
+                _move(src, dst)
+            e["restored"] = datetime.now().isoformat(timespec="seconds")
+        done.append(e)
+    if not dry_run:
+        rec["state"] = "restored" if not left else "partly restored"
+        rec["restored"] = datetime.now().isoformat(timespec="seconds")
+        _write_archive(adir, rec)
+    return {"capture": capture_dir.name, "archive": str(adir), "restored": done, "left_in_archive": left, "dry_run": dry_run}
+
+
+POSTER_WHY = ("the film library's card poster of a dance with splat dancers was a still of its mesh avatars (the textured SMPL-X "
+              "avatars): replaced by a still of the splat dancers at the same framing (the owner never sees the basic avatars of such a "
+              "dance, also not on its library card); the mesh still is kept here")
+
+
+def film_poster_paths(film: str, library_dir: Path | None = None, presets: Path | None = None) -> list[tuple[str, Path]]:
+    """[(label, path)] of a library film's poster files: ('library', StreamingAssets/library/<thumbnail of library.json>) - the card the
+    viewer shows - and ('source', the takes/library/films.toml preset's thumbnail) that `film_library build` copies over it."""
+    from . import film_library as fl
+    library_dir = Path(library_dir) if library_dir is not None else fl.LIBRARY_DIR
+    out: list[tuple[str, Path]] = []
+    lj = library_dir / "library.json"
+    if lj.exists():
+        for f in json.loads(lj.read_text(encoding="utf-8")).get("films", []):
+            if f.get("id") == film and f.get("thumbnail"):
+                out.append(("library", library_dir / f["thumbnail"]))
+    try:
+        spec = fl.preset_spec(film, Path(presets) if presets is not None else fl.PRESETS)
+    except fl.LibraryError:
+        spec = {}
+    if spec.get("thumbnail"):
+        out.append(("source", fl._abs(spec["thumbnail"])))
+    return out
+
+
+def archive_posters(capture_dir: Path, film: str, new_poster: Path, take: str | None = None, archive_dir: Path | None = None,
+                    targets: list[tuple[str, Path]] | None = None, made: str = "", dry_run: bool = False) -> dict:
+    """Replace the poster files of a library film whose capture has splat dancers (film_poster_paths, or `targets`) by `new_poster` (a
+    still of the splat dancers), each old poster moving to the capture's archive posters/<label>/<name> with an archive.json "posters"
+    entry (from, to, sha256, size, why, replaced_by {sha256, size, made}). The library poster keeps its Unity .meta (same asset path).
+    Idempotent: a poster that already holds new_poster's bytes is left. restore_mesh_avatars puts the old posters back. -> report."""
+    from datetime import datetime
+    capture_dir, new_poster = Path(capture_dir), Path(new_poster)
+    roles = splat_roles(capture_dir)
+    if not roles:
+        raise ValueError(f"{capture_dir} has no splats/<role>.json: its mesh avatars are its dancers - its poster stays")
+    if not new_poster.is_file():
+        raise FileNotFoundError(f"no new poster {new_poster}")
+    take = take or _take_of(capture_dir)
+    adir = Path(archive_dir) if archive_dir is not None else mesh_archive_dir(capture_dir.name, take)
+    rec = _load_archive(adir) or {}
+    posters: list[dict] = list(rec.get("posters") or [])
+    superseded: list[dict] = list(rec.get("superseded") or [])
+    new_sha, new_size = _sha256(new_poster), new_poster.stat().st_size
+    targets = list(targets) if targets is not None else film_poster_paths(film)
+    replaced, notes = [], []
+    for label, t in targets:
+        t = Path(t)
+        if not t.is_file():
+            notes.append(f"{label}: {t} missing")
+            continue
+        cur = _sha256(t)
+        if cur == new_sha:
+            notes.append(f"{label}: {t.name} already shows the splat dancers")
+            continue
+        dst = adir / "posters" / label / t.name
+        if dst.exists() and _sha256(dst) != cur:
+            keep = dst.with_name(f"{dst.name}.{_sha256(dst)[:8]}")
+            superseded.append({"name": dst.name, "kept_as": _rel(keep), "replaced": datetime.now().isoformat(timespec="seconds")})
+            if not dry_run:
+                _move(dst, keep)
+        e = {"name": t.name, "kind": "poster", "film": film, "label": label, "from": _rel(t), "to": _rel(dst), "sha256": cur,
+             "size": t.stat().st_size, "why": POSTER_WHY, "replaced_by": {"sha256": new_sha, "size": new_size, "made": made}}
+        if not dry_run:
+            _move(t, dst)
+            shutil.copy2(new_poster, t)
+        posters = [p for p in posters if p["to"] != e["to"]] + [e]
+        replaced.append(e)
+    if replaced and not dry_run:
+        now = datetime.now().isoformat(timespec="seconds")
+        rec.setdefault("format", "dancecap mesh-avatar archive")
+        rec.setdefault("version", 1)
+        rec.setdefault("rule", OWNER_RULE_2026_10_23)
+        rec.setdefault("capture", capture_dir.name)
+        rec.setdefault("take", take)
+        rec.setdefault("restore", _restore_cmd(capture_dir.name))
+        rec.setdefault("created", now)
+        rec.update({"posters": posters, "superseded": superseded, "updated": now})
+        _write_archive(adir, rec)
+    return {"film": film, "capture": capture_dir.name, "archive": str(adir), "replaced": replaced, "notes": notes, "dry_run": dry_run}
+
+
+def archived_from(capture_dir: Path, take: str, archive_dir: Path | None = None) -> dict[str, dict]:
+    """{file name: archive.json entry} of the mesh-only files archived FROM this folder (a StreamingAssets capture, or its export mirror
+    work/<take>/export/<capture>/) that are still in the archive with their recorded sha256 (not restored) - only while the capture has
+    splat dancers (the folder's own splats/, else its StreamingAssets twin's: an export mirror carries no splats/). The capture
+    validators (demo_export.validate) count such a file as present: archived, not missing. {} when nothing applies (no archive, restored,
+    the splats taken away: then a missing albedo IS a failure)."""
+    capture_dir = Path(capture_dir)
+    roles = splat_roles(capture_dir) or splat_roles(UNITY_STREAMING / capture_dir.name)
+    if not roles:
+        return {}
+    rec = _load_archive(Path(archive_dir) if archive_dir is not None else mesh_archive_dir(capture_dir.name, take))
+    if not rec or rec.get("state") == "restored":
+        return {}
+    here = capture_dir.resolve()
+    out: dict[str, dict] = {}
+    for e in rec.get("files") or []:
+        if e.get("restored") or not e.get("sha256") or mesh_only_kind(e.get("name", ""), roles) is None:
+            continue
+        if _abs(e["from"]).resolve().parent != here:
+            continue
+        src = _abs(e["to"])
+        if src.is_file() and src.stat().st_size == e.get("size") and _sha256(src) == e["sha256"]:
+            out[e["name"]] = e
+    return out
+
+
+def _capture_dir_arg(s: str, streaming: Path = UNITY_STREAMING) -> Path:
+    p = Path(s)
+    return p if (p.is_absolute() or p.exists()) and (p / "capture.json").exists() else Path(streaming) / s
+
+
+def main(argv=None) -> int:
+    import argparse
+    ap = argparse.ArgumentParser(prog="python -m dancecap.export_unity",
+                                 description="Unity capture helpers. archive-avatars: move the mesh-avatar-only files of a capture with "
+                                             "splat dancers into the take's archive (owner rule 2026-10-23), or --restore them.")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    a = sub.add_parser("archive-avatars", help="archive (or --restore) the mesh-only files of a capture with splats/")
+    a.add_argument("--capture", required=True, help="StreamingAssets capture folder name, or a capture folder path")
+    a.add_argument("--take", help="default: capture.json provenance.take")
+    a.add_argument("--restore", action="store_true", help="move the archived files back (archive.json)")
+    a.add_argument("--dry-run", action="store_true")
+    pp = sub.add_parser("archive-poster", help="replace a library film's poster of the mesh avatars (library/thumbs and the films.toml "
+                                               "source) by a still of its splat dancers; the old poster goes to the capture's archive")
+    pp.add_argument("--capture", required=True, help="StreamingAssets capture folder name, or a capture folder path")
+    pp.add_argument("--film", required=True, help="the library film id (library.json / takes/library/films.toml)")
+    pp.add_argument("--new", required=True, type=Path, help="the new poster image (a still of the splat dancers, 1080x1920)")
+    pp.add_argument("--made", default="", help="how the new poster was made (recorded in archive.json)")
+    pp.add_argument("--take", help="default: capture.json provenance.take")
+    pp.add_argument("--dry-run", action="store_true")
+    ns = ap.parse_args(argv)
+    cap = _capture_dir_arg(ns.capture)
+    if ns.cmd == "archive-poster":
+        rep = archive_posters(cap, ns.film, ns.new, take=ns.take, made=ns.made, dry_run=ns.dry_run)
+        print(f"[archive-poster] {'would replace' if ns.dry_run else 'replaced'} {len(rep['replaced'])} poster(s) of film {rep['film']} "
+              f"({rep['capture']}); old ones to {rep['archive']}" + (f"; {'; '.join(rep['notes'])}" if rep["notes"] else ""))
+        for e in rep["replaced"]:
+            print(f"  {e['from']}  ->  {e['to']}  ({e['size']} bytes, sha256 {e['sha256'][:12]}; new {e['replaced_by']['sha256'][:12]})")
+        return 0
+    if ns.restore:
+        rep = restore_mesh_avatars(cap, ns.take, dry_run=ns.dry_run)
+        print(f"[archive-avatars] {'would restore' if ns.dry_run else 'restored'} {len(rep['restored'])} file(s) of {rep['capture']} from "
+              f"{rep['archive']}" + (f"; {len(rep['left_in_archive'])} left (origin folder missing)" if rep["left_in_archive"] else ""))
+    else:
+        rep = archive_mesh_avatars(cap, take=ns.take, dry_run=ns.dry_run)
+        print(f"[archive-avatars] {'would move' if ns.dry_run else 'moved'} {len(rep['moved'])} file(s) of {rep['capture']} "
+              f"(splats: {', '.join(rep['splat_roles'])}) to {rep['archive']}; restore: {rep['restore']}")
+    for e in rep.get("moved", rep.get("restored", [])):
+        a, b = (e["to"], e["from"]) if ns.restore else (e["from"], e["to"])    # a restore moves archive -> original
+        print(f"  {a}  ->  {b}  ({e['size']} bytes, sha256 {e['sha256'][:12]})")
+    return 0
 
 
 def resolve_role_hidden(take: str, toml: Path | None = None) -> dict | None:
@@ -1073,6 +1489,17 @@ def export(take: str, capture: str | None = None, model: Path | None = None, aud
         if "room" in manifest:
             report["room"] = manifest["room"]
     (out / "capture.json").write_text(json.dumps(manifest, indent=2))
+    splat_cap = Path(streaming_assets) / capture
+    if splat_roles(splat_cap):
+        # owner rule 2026-10-23: a capture with splat dancers never gets its mesh-only files back (the viewer never draws its mesh
+        # avatars): they go to the take's archive instead of the capture (and the copy the install would have made too)
+        arch = archive_mesh_avatars(splat_cap, export_dir=out, take=take, installed=splat_cap if install else None, sweep_capture=install)
+        report["mesh_avatars_archived"] = {"archive": arch["archive"], "splat_roles": arch["splat_roles"],
+                                           "files": [m["from"] for m in arch["moved"]], "restore": arch["restore"]}
+        if arch["moved"]:
+            print(f"[export] the capture has splat dancers ({', '.join(arch['splat_roles'])}): "
+                  f"{', '.join(sorted({m['name'] for m in arch['moved']}))} archived to {arch['archive']} (mesh-avatar only; restore: "
+                  f"{arch['restore']})")
     report["out"] = str(out)
     report["files"] = sorted(p.name for p in out.iterdir())
     report["bytes"] = int(sum(p.stat().st_size for p in out.iterdir() if p.is_file()))
@@ -1087,3 +1514,7 @@ def export(take: str, capture: str | None = None, model: Path | None = None, aud
             report["kept_on_install"] = kept
             print(f"[export] kept {', '.join(kept)} in {dst} (written by other stages)")
     return report
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

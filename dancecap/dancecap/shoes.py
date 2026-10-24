@@ -829,6 +829,11 @@ def export(take: Take, capture: str | None = None, streaming: Path = UNITY_STREA
             if dst.exists():
                 (dst / "shoes.json").write_text(text, encoding="utf-8")
                 out.append(dst / "shoes.json")
+        from . import export_unity as eu
+        if set(eu.splat_roles(d)) >= set(eu.ROLES):
+            # owner rule 2026-10-23: both dancers are splats (the sneakers are mesh-avatar only): archived, not left in the capture
+            arch = eu.archive_mesh_avatars(d, take=take.name)
+            out = [p for p in out if p.exists()] + [eu._abs(m["to"]) for m in arch["moved"]]
     return out
 
 

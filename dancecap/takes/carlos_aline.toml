@@ -135,7 +135,8 @@ smplx_dir = "smplx_rf2_noslip"
 floor_yaw_deg = -1.0
 # Owner 2026-10-23 ("let's also get gauss splats and make them default for Carlos Aline"): the LHM++ splat dancers
 # (StreamingAssets/07_CarlosAline/splats/, mono4d.recap_splatav --take carlos_aline) are shown by default in the desktop viewer
-# (capture.json splat_dancers -> CaptureManifest.splat_dancers; hm_splatdancers on | off still wins). export_unity.resolve_splat_dancers.
+# (capture.json splat_dancers -> CaptureManifest.splat_dancers). export_unity.resolve_splat_dancers. Since the owner rule of 2026-10-23
+# ("splats always") the flag decides nothing: every capture with splats/ is drawn as splats, never as mesh avatars (kept for the record).
 splat_dancers = "on"
 
 # Rest-shape edits (dancecap.shape_edits, applied by every export; validated by `python -m dancecap.ca_avatars body-shape` / `head-review`, AVATAR_PLAN.md

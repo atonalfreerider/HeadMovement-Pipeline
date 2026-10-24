@@ -286,3 +286,30 @@ sampled from `smplx_<role>.bin`, local rotations only) -> pod job `work/quest_di
   thinning at the same counts: 17.6-24.8 dB, LPIPS 0.24-0.38 (all numbers in head-movement `docs/SPLAT_DANCERS.md` "Quest";
   `pod_out/distill_report.json`). Bound hair Gaussians (recap follow): 1057 / 636 / 379 of 3070 / 1860 / 1110 hair.
 - Pod session `20261021-022537-batch`: A40, 1002 s of fitting for 12 sets, pod lifetime 20 min, $0.20.
+
+## 11. Mesh avatars archived (owner rule 2026-10-23)
+
+"I don't ever want to see the basic avatars if gauss splat avatars are available for a dance. fully archive them when they are
+replaced with gauss splats." The viewer draws a dancer with `splats/<role>.json` as splats ALWAYS (editor, Windows player, Quest;
+skeleton lines where the device cannot draw splats, never the mesh avatar; head-movement `docs/SPLAT_DANCERS.md` "Splats always"), so
+the capture files only the mesh avatar reads leave such a capture: `<role>_albedo.png` and `smplx_<role>_face.bin` of each dancer with
+splats, and `shoes.json` when both have splats (proved by reference searches: `SmplxAvatar.Build` / `VrTextureBake`, `SmplxFace`,
+`SneakerPair` read them; nothing else in the viewer does). `python -m dancecap.export_unity archive-avatars --capture <capture>` moves
+them from `StreamingAssets/<capture>/` (with their `.meta`) and `work/<take>/export/<capture>/` into the git-ignored
+`work/<take>/archive/mesh_avatars_2026-10-23/<capture>/{StreamingAssets,export}/` with `archive.json` (original path, sha256, size,
+why, the restore command; `--restore` moves them back after checking the hashes and refuses to overwrite a different file). Kept:
+`smplx_<role>.bin`, `smplx_<role>_skin.bin` (the rig's rest joints and parents the splats are posed from, the hair simulation's scalp),
+`hair_groom.json` (the simulation that moves the bound splat hair), `figure*.json`, capture.json (its `smplx_albedo` entries stay) and
+every layer. `export_unity.export` routes these kinds of a capture with `splats/` into the archive before the install (with the copy
+the install would have made), `face_export` / `shoes` exports sweep them there after writing; tests `tests/test_export_mesh_archive.py`.
+Archived 2026-10-23: the class recap, the Carlos & Aline and the John & Lula captures (6 files each: both albedos and `shoes.json`, from
+StreamingAssets and the export mirror; no face bins). The source bakes in `work/<take>/avatar/` stay (the splat pipeline reads them).
+Fix round 1 (same day): `demo_export.validate` (behind `recap_export` / `carlos_aline_export` / `jl_export --validate-only`) counts an
+archived file as present - "archived (splat dancers)" when archive.json records it as moved from that folder and the archived copy
+still has its sha256 (`export_unity.archived_from`; only while the capture has splats) - so the validators pass again; `splat_roles`
+also counts a named set alone (`splats/<set>/<role>.json`, as the viewer's `CaptureManifest.HasSplatAvatar`). The film library's posters
+of the three dances were stills of the mesh avatars: `python -m dancecap.export_unity archive-poster --capture <capture> --film <id>
+--new <still>` replaced the library card (`StreamingAssets/library/thumbs/<id>.jpg`, its `.meta` kept) and the `takes/library/films.toml`
+source by a still of the splat dancers and archived both mesh stills under `posters/{library,source}/` (archive.json "posters": sha256,
+size, why, `replaced_by` with the new still's sha256 and how it was made); `--restore` swaps them back (the splat still kept as
+`<name>.splats.jpg`). Head-movement `Tools/deploy_data.ps1` now mirrors each capture folder, so a deploy drops the archived files.

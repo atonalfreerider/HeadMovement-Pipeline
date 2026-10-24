@@ -203,6 +203,10 @@ def validate(cap: Path, take: Take, report: dict | None = None) -> dict:
         n = len(json.loads((cap / fig).read_text())) if ok else 0
         check(f"{fig} frames", ok and n == T, f"{n}")
     edit_cfg = se.config_for(take.name, take.cfg)
+    from .export_unity import archived_from
+    # owner rule 2026-10-23: the mesh-only files of a dancer with splats (albedo, face, the shared shoes) are archived, not missing
+    # (export_unity.archive_mesh_avatars, work/<take>/archive/mesh_avatars_2026-10-23/): checked there by sha256
+    archived = archived_from(cap, take.name)
     for r in ROLES:
         mp, sp = cap / f"smplx_{r}.bin", cap / f"smplx_{r}_skin.bin"
         if not check(f"{r} motion + skin present", mp.exists() and sp.exists()):
@@ -219,14 +223,18 @@ def validate(cap: Path, take: Take, report: dict | None = None) -> dict:
         check(f"{r} shape edits as configured", want == has,
               {"configured": edit_cfg.get(r), "recorded": h.get("shape_edits")})
         alb = (man.get("smplx_albedo") or {}).get(r)
-        if alb:
+        if alb and not (cap / alb).exists() and Path(alb).name in archived:
+            check(f"{r} albedo", True, f"{alb} archived (splat dancers): {archived[Path(alb).name]['to']}")
+        elif alb:
             sz = _png_size(cap / alb) if (cap / alb).exists() else None
             check(f"{r} albedo", sz is not None and min(sz) >= 512 and h.get("version", 1) >= 2,
                   f"{alb} {sz} variant {(man.get('smplx_albedo_variant') or {}).get(r, 'bake')}")
         else:
             check(f"{r} albedo", False, "no smplx_albedo entry (untextured avatar)")
         face = (man.get("smplx_face") or {}).get(r)
-        if face:
+        if face and not (cap / face).exists() and Path(face).name in archived:
+            check(f"{r} face frames", True, f"{face} archived (splat dancers)")
+        elif face:
             _, fh, _ = read_blob(cap / face)
             check(f"{r} face frames", fh.get("frames") == T, f"{fh.get('frames')}")
     for name in ("timing.json", "physics.json"):
@@ -251,6 +259,8 @@ def validate(cap: Path, take: Take, report: dict | None = None) -> dict:
                         for r in ROLES)
         check("shoes", ok, {r: {k: s["dancers"][r].get(k) for k in ("style", "sole_heel_m", "sole_fore_m")}
                             for r in ROLES if r in s.get("dancers", {})})
+    elif "shoes.json" in archived:
+        check("shoes", True, f"shoes.json archived (splat dancers): {archived['shoes.json']['to']}")
     else:
         check("shoes", not (take.work / "avatar" / "shoes.json").exists(), "shoes.json missing")
     if man.get("audio"):
