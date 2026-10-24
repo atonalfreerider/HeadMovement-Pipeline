@@ -10,8 +10,10 @@ at a time; large npz members (the loc cache's correspondences) are never loaded.
   map-gate  cameras/sfm_work/map.json: registered / total map images per camera (cameras/sfm), main_cams,
             strong_link_groups, the verified link of every --need pair (verification.per_campair: pairs, max_inliers and
             link_pairs = pairs with >= link_min_inliers inliers; a map.json without link_pairs -> strong_link_groups as a
-            yes/no), the refined mean reprojection and each camera's map focal -> cameras/qa/map_gate.json. Exit 3 only when
-            a --need camera has no registered image in the main model (loc cannot serve it).
+            yes/no), the refined mean reprojection, each camera's map focal and the doppelganger check of cameras/sfm
+            (cameras.plausible: registered images outside their camera's band of centres; G1 wants 0) ->
+            cameras/qa/map_gate.json. Exit 3 only when a --need camera has no registered image in the main model (loc
+            cannot serve it).
   ptz       --mode check: the tripod's loc track vs the PTZ track of --ptz-take (camera_work/final/track_s*.npz, R_i =
             reference -> camera i, ptz.py). The cut (ffmpeg -ss S -vf fps=30 of the 59.94 fps original) holds in frame n
             the source frame FFmpeg's fps filter picks (round=near): the last whose rounded output pts is <= n, i.e. the
@@ -1526,7 +1528,8 @@ def _plot_atlas(Cs: np.ndarray, Ca: np.ndarray, inl: np.ndarray, world: dict | N
 
 
 def _model_stats(work: Path) -> dict | None:
-    """{cam: {registered, focal_px [min, median, max], colmap_cameras}} of cameras/sfm, or None without the model."""
+    """{cam: {registered, focal_px [min, median, max], colmap_cameras}} of cameras/sfm (+ "_doppelgangers": the
+    cameras.plausible check of the model), or None without the model."""
     try:
         import pycolmap
     except ImportError:
@@ -1542,8 +1545,11 @@ def _model_stats(work: Path) -> dict | None:
             e["registered"] += 1
             e["f"].append(float(rec.cameras[im.camera_id].params[0]))
             e["cams"].add(im.camera_id)
-    return {c: {"registered": e["registered"], "focal_px": [_f(min(e["f"]), 2), _f(np.median(e["f"]), 2), _f(max(e["f"]), 2)],
-                "colmap_cameras": len(e["cams"])} for c, e in out.items()}
+    from .plausible import check_model
+    dg = check_model(rec)
+    return {**{c: {"registered": e["registered"], "focal_px": [_f(min(e["f"]), 2), _f(np.median(e["f"]), 2), _f(max(e["f"]), 2)],
+                   "colmap_cameras": len(e["cams"])} for c, e in out.items()},
+            "_doppelgangers": {"flagged": len(dg["flagged"]), "per_cam": dg["per_cam"], "kept_majority": dg["kept_majority"]}}
 
 
 def cmd_map_gate(work: Path, need: list[str], log=print) -> dict:
@@ -1553,6 +1559,7 @@ def cmd_map_gate(work: Path, need: list[str], log=print) -> dict:
     for k in info.get("map_images", []):
         total[k.split("/")[0]] = total.get(k.split("/")[0], 0) + 1
     model = _model_stats(work)
+    dg = model.pop("_doppelgangers", None) if model is not None else None
     if model is not None:
         reg, reg_src = {c: v["registered"] for c, v in model.items()}, "cameras/sfm"
     else:
@@ -1583,11 +1590,14 @@ def cmd_map_gate(work: Path, need: list[str], log=print) -> dict:
            "strong_link_groups": groups, "links": links,
            "mean_reproj_px": _f((info.get("refine") or {}).get("mean_reproj_after"), 4),
            "intrinsics_mode": info.get("intrinsics_mode"), "missing_from_main_model": missing,
+           "doppelgangers": dg, "doppelgangers_removed": len((info.get("doppelgangers") or {}).get("flagged") or {}),
            "exit": 3 if missing else 0, "created": time.strftime("%Y-%m-%dT%H:%M:%S")}
     p = _write_json(work / "cameras" / "qa" / "map_gate.json", doc)
     log(f"[twoview] -> {p}: " + ", ".join(f"{c} {v['registered']}/{v['map_images']}" for c, v in per.items())
         + f"; links {[(k, v['link_pairs'], v['strong_link']) for k, v in links.items()]}"
-        + (f"; NOT in the main model: {missing}" if missing else ""))
+        + (f"; NOT in the main model: {missing}" if missing else "")
+        + (f"; {dg['flagged']} map image(s) outside their camera's band {dg['per_cam']} (cameras.plausible clean)"
+           if dg and dg["flagged"] else ""))
     return doc
 
 
@@ -1694,6 +1704,11 @@ def gates_eval(work: Path, cfg: dict, tripod: str, moving: str) -> dict:
         fm = (cams.get(moving, {}).get("focal_px") or [None, None, None])[1]
         ch[f"focal_{moving}_px"] = _chk(fm, "700-3000 (report its value)", _in(fm, 700, 3000))
         ch[f"intrinsics_mode_{moving}"] = _info(cams.get(moving, {}).get("intrinsics_mode"))
+        dg = mg.get("doppelgangers")
+        ch["no_doppelgangers"] = _chk(None if dg is None else {"flagged": dg["flagged"], "per_cam": dg["per_cam"],
+                                                               "removed_before": mg.get("doppelgangers_removed", 0)},
+                                      "0 registered images outside their camera's band (cameras.plausible)",
+                                      None if dg is None else dg["flagged"] == 0)
     out["G1_map"] = _gate(ch, m)
     miss_all += m
     # G2 loc

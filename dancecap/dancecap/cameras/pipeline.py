@@ -172,6 +172,13 @@ def stage_map(work: Path, recs: dict, F: Features, ms: MapSettings) -> dict:
                    "reproj_px": r.compute_mean_reprojection_error(), "cams": model_cams(r)}
                   for r in sorted(models.values(), key=lambda r: -r.num_reg_images())]
     refine = refine_model(best, ms.refine_px)
+    dg = None
+    if ms.doppelganger_check:
+        from .plausible import _summary, clean_model
+        dg = clean_model(best)
+        if dg["flagged"]:
+            print(_summary(dg), flush=True)
+            refine = {**refine, "after_doppelgangers": refine_model(best, ms.refine_px)}
     sfm = out / "sfm"
     sfm.mkdir(parents=True, exist_ok=True)
     best.write_binary(str(sfm))
@@ -181,7 +188,7 @@ def stage_map(work: Path, recs: dict, F: Features, ms: MapSettings) -> dict:
             "strong_link_groups": [sorted(g) for g in groups], "main_cams": sorted(main_cams),
             "intrinsics_mode": {**{c: e["mode"] for c, e in st["intrinsics"].items()},  # the model each camera is in
                                 **{c: m for v in subs.values() if v for c, m in v["intrinsics_mode"].items()}},
-            "models": raw_models, "refine": refine, "sub_models": subs,
+            "models": raw_models, "refine": refine, "sub_models": subs, "doppelgangers": dg,
             "map_images": [r.key for r in images]}
     (sw / "map.json").write_text(json.dumps(info, indent=1, default=str))
     for m in raw_models:

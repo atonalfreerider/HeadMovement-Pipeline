@@ -55,6 +55,8 @@ set_at = "2026-10-23T16:00:00Z"
 zoom_events = [[125.5, 126.5, 1.16]]
 """
 
+_T0 = SimpleNamespace(rotation=SimpleNamespace(matrix=lambda: np.eye(3)), translation=np.zeros(3))  # an identity cam_from_world
+
 
 class _Stop(Exception):
     pass
@@ -196,8 +198,8 @@ def test_loc_part_localiser_gets_the_other_cameras_references(tmp_path, monkeypa
     take.camera_types = lambda cams: {}
     recs = list_images(take.work, ["01", "02"])
     imgs, _ = select_map_images(recs, map_settings(cfg))
-    model = SimpleNamespace(images={k: SimpleNamespace(has_pose=True, name=r.name, points2D=[], camera=SimpleNamespace(params=[1000.0, 0, 0, 0.0]))
-                                    for k, r in enumerate(imgs)}, points3D={})
+    model = SimpleNamespace(images={k: SimpleNamespace(has_pose=True, name=r.name, points2D=[], camera=SimpleNamespace(params=[1000.0, 0, 0, 0.0]),
+                                                       cam_from_world=_T0) for k, r in enumerate(imgs)}, points3D={})
     monkeypatch.setattr(P, "load_model", lambda work: model)
     got = {}
 
@@ -364,10 +366,12 @@ def test_focal_prior_px_is_scaled_to_a_second_image_size(tmp_path):
 
 
 class _Rec:
-    """A pycolmap.Reconstruction stand-in for stage_map: registered images of the given cameras."""
+    """A pycolmap.Reconstruction stand-in for stage_map: registered images of the given cameras (at the origin: the
+    doppelganger check of cameras.plausible finds nothing to drop)."""
 
     def __init__(self, cams):
-        self.images = {k: SimpleNamespace(has_pose=True, name=f"keyframes/{c}/{k:07d}.jpg") for k, c in enumerate(cams)}
+        self.images = {k: SimpleNamespace(has_pose=True, name=f"keyframes/{c}/{k:07d}.jpg", cam_from_world=_T0) for k, c in enumerate(cams)}
+        self.points3D = {}
 
     def num_reg_images(self):
         return len(self.images)

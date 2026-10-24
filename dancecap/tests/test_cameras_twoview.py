@@ -661,7 +661,8 @@ def _gate_inputs(work: Path) -> None:
                                                     "focal_px": [1000, 1010, 1020], "intrinsics_mode": "shared"},
                                              "02": {"registered": 180, "map_images": 198, "share": 0.91}},
                                     "links": {"01-02": {"link_pairs": 12, "max_inliers": 600, "link_min_inliers": 150,
-                                                        "strong_link": True}}, "mean_reproj_px": 0.9})
+                                                        "strong_link": True}}, "mean_reproj_px": 0.9,
+                                    "doppelgangers": {"flagged": 0, "per_cam": {}, "kept_majority": {}}})
     wj("cameras/report.json", {"cams": {
         "01": {"camera_type": {"model": "fixed_focal", "check": {"passed": True}}, "height_m": [1.2, 1.4, 1.6],
                "focal": {"zoom_events": []}},
@@ -726,6 +727,12 @@ def test_gates_table(tmp_path):
     g = json.loads((tmp_path / "cameras" / "qa" / "twoview_gates.json").read_text())
     assert g["G8_sync"]["status"] == "fail" and g["G8_sync"]["checks"]["drift_ms_per_100s"]["status"] == "fail"
     assert g["G1_map"]["status"] == "soft" and not g["G1_map"]["pass"]
+    # a map that still holds a doppelganger copy of the room fails G1 (cameras.plausible)
+    d["doppelgangers"] = {"flagged": 27, "per_cam": {"01": 27}, "kept_majority": {}}
+    p.write_text(json.dumps(d))
+    tv.cmd_gates(tmp_path, cfg, log=QUIET)
+    g = json.loads((tmp_path / "cameras" / "qa" / "twoview_gates.json").read_text())
+    assert g["G1_map"]["status"] == "fail" and g["G1_map"]["checks"]["no_doppelgangers"]["status"] == "fail"
     # a missing input: exit 1, the file is still written and names it
     (tmp_path / "cameras" / "qa" / "atlas_check.json").unlink()
     assert tv.cmd_gates(tmp_path, cfg, log=QUIET) == 1

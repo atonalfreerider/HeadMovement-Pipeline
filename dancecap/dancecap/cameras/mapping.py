@@ -50,6 +50,8 @@ class MapSettings:
     shared_intrinsics: tuple = field(default_factory=tuple)  # cameras (no zoom) whose map images share ONE COLMAP
     #   camera: one focal + k1 for the video, refined by every image (a per-image focal is weakly observable)
     focal_prior_px: dict = field(default_factory=dict)  # {cam: prior focal (px)} instead of focal_prior x max dim
+    doppelganger_check: bool = True  # deregister map images outside their camera's band of centres before the
+    #   final refine (cameras.plausible: a repeated-structure copy of the room; lucas_luiza 2026-10-24)
 
 
 def map_settings(take_cfg: dict | None = None) -> MapSettings:
