@@ -70,6 +70,10 @@ OVERLAY: dict[str, dict] = {
     "song_beats": {"implemented": True, "optional_rule": "soundtrack",
                    "commands": [[*M, "dancecap.song", "beats", "--take", "{take}"]]},
     "detect": {"implemented": True, "commands": [[*DC, "detect", "{take}"]], "alt_runs_on": "pod"},
+    # stays local (the 2026-10-24 runbook asked for runs_on pod): it streams the frames since then (a few frames in RAM;
+    # holding a 5.7k-frame 720p camera crashed the 16 GB workstation). A pod stage needs a pod session, and no labels pod
+    # job exists: the planner would make it manual and halt every new take's plan and what-if preview there. The by-hand
+    # alternatives (front_pod label per camera, dancers_seed) are stages_draft's pod_alt (display only)
     "dancers_labels": {"implemented": True, "commands": [[*DC, "dancers-labels", "{take}"]]},
     "labels_review": {"implemented": True, "status_rule": "labels_review", "ui": "#/take/{take}/stage/labels_review"},
     "dancers_sam": {"implemented": True, "pod": "S1_front"},

@@ -795,6 +795,7 @@
     "detect"
    ],
    "runs_on": "local",
+   "pod_alt": "pod: python -m dancecap.front_pod label {take} <cam> per camera (a dancecap.pod_job/1 job), or seeded from checked teacher tracks: python -m dancecap.dancers_seed run {take} --map <cam>=<src take>:<cam>:<rule>",
    "cli": [
     "python -m dancecap dancers-labels {take} [--typesafe]"
    ],
@@ -811,7 +812,8 @@
      "fixed": 1,
      "per_cam": 0.5
     },
-    "confidence": "estimate"
+    "confidence": "estimate",
+    "basis": "reads each frame with both candidate tracks once, streamed since 2026-10-24 (8 frames decoded ahead by 4 threads; before that all frames at once: 15.8 GB for a 5.7k-frame 720p camera)"
    },
    "gates": [
     "per-camera label confidence"
