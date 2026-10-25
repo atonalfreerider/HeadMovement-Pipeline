@@ -188,14 +188,16 @@ def equal_windows(n_frames: int, hz: float = HZ, max_window_s: float = 60.0, ove
 
 
 def seam_windows(support: np.ndarray, hz: float = HZ, max_window_s: float = 60.0, overlap_s: float = 4.0, step_s: float = 0.5,
-                 min_window_s: float = 20.0, seam_min: float = 0.8) -> dict:
+                 min_window_s: float = 20.0, seam_min: float = 0.8, forbid: np.ndarray | None = None) -> dict:
     """equal_windows' tiling with the SEAMS placed by evidence: support (N,) or (N, R) in [0, 1] per frame (a two-camera take: both cameras
     on the dancer, one column per dancer), a seam's score = the mean support over its overlap region (the weakest column's: the stitch
     gates every dancer). Windows hold min_window_s..max_window_s; the fewest windows win
     (equal_windows' n), their cuts chosen to maximise the weakest seam (then the sum); one window more only when that lifts a weakest seam
     below seam_min; the equal tiling itself unless the evidence lifts its weakest seam by more than SEAM_GAIN. Two fits of one stretch agree only where both are constrained by both views (lucas_luiza llfinal: seams in a 24 s
-    hole of the moving camera's track, or where one chunk's tracking had lost a dancer, disagreed by 0.3-0.6 m). Same keys as
-    equal_windows (window_k = the longest window) + seam_t (cut times from the first frame), seam_scores, rule."""
+    hole of the moving camera's track, or where one chunk's tracking had lost a dancer, disagreed by 0.3-0.6 m). forbid (N,) bool: frames
+    no seam's overlap may touch (a camera masked out of the fit there); a tiling that cannot avoid them falls back to the equal one, and
+    the plan's own check refuses it. Same keys as equal_windows (window_k = the longest window) + seam_t (cut times from the first
+    frame), seam_scores, rule."""
     support = np.clip(np.nan_to_num(np.asarray(support, float)), 0.0, 1.0)
     support = support[:, None] if support.ndim == 1 else support
     N = len(support)
@@ -205,10 +207,15 @@ def seam_windows(support: np.ndarray, hz: float = HZ, max_window_s: float = 60.0
     cap, lo = int(np.floor(max_window_s * hz + 1e-9)), int(np.ceil(min_window_s * hz - 1e-9))
     if eq["n"] == 1:
         return {**eq, "seam_t": [], "seam_scores": [], "rule": "one window"}
+    if o < 2:
+        return {**eq, "seam_t": [], "seam_scores": [], "rule": "equal windows (no overlap to score)"}
     cs = np.vstack([np.zeros((1, support.shape[1])), np.cumsum(support, 0)])
     step = max(1, int(round(step_s * hz)))
     cand = np.arange(a, N - b + 1, step)
     S = ((cs[cand + b] - cs[cand - a]) / o).min(1)
+    if forbid is not None:
+        fb = np.r_[0, np.cumsum(np.asarray(forbid, bool))]
+        S = np.where(fb[cand + b] - fb[cand - a] > 0, -1.0, S)       # never chosen while any other cut exists
 
     def best(n):
         """(min seam score, sum, cuts) of the best n-window tiling, None when n windows cannot satisfy the lengths."""
@@ -232,13 +239,17 @@ def seam_windows(support: np.ndarray, hz: float = HZ, max_window_s: float = 60.0
         return max(ends, key=lambda v: v[:2]) if ends else None
 
     eq_cuts = [c0 for c0, _ in eq["cores"][1:]]
-    eq_S = [float(((cs[c + b] - cs[c - a]) / o).min()) for c in eq_cuts]
+    fbe = np.r_[0, np.cumsum(np.asarray(forbid, bool))] if forbid is not None else None
+    eq_S = [-1.0 if fbe is not None and fbe[c + b] - fbe[c - a] > 0 else float(((cs[c + b] - cs[c - a]) / o).min()) for c in eq_cuts]
     keep = {**eq, "seam_t": [round(c / hz, 3) for c in eq_cuts], "seam_scores": [round(v, 3) for v in eq_S]}
     n, got = eq["n"], best(eq["n"])
+    if got is not None and got[0] < 0:
+        got = None
     if got is None:
         return {**keep, "rule": "equal windows (no evidence-placed tiling fits the window limits)"}
     more = best(n + 1) if got[0] < seam_min else None
-    if more is not None and more[0] > got[0]:
+    more = more if more is not None and more[0] >= 0 else None
+    if more is not None and more[0] > got[0] + SEAM_GAIN:     # a whole chunk more only for a real gain
         n, got = n + 1, more
     if got[0] <= min(eq_S) + SEAM_GAIN:
         return {**keep, "rule": f"equal windows (evidence-placed seams would lift the weakest only to {got[0]:.2f})"}

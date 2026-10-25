@@ -248,11 +248,12 @@ CA = TwoView(profile=PROFILE, dance=DANCE, capture=CAPTURE, id_prefix=ID_PREFIX,
 # chunk's SAM tracking had lost a dancer; ll2 places the seams by evidence and re-prompts lost dancers (dancers.DancersConfig.reanchor_lost), llshape is kept
 LL = TwoView(profile="lucas_luiza", dance="lucas_luiza", capture="lucas-luisa-jnj", id_prefix="ll", shape_id="llshape", final_id="llfinal2", owner="LL2V",
              cams=("01", "02"), alignment=WORK_ROOT / "lucas_luiza" / "clock" / "alignment.json", alignment_arc="dancecap/work/lucas_luiza/clock/alignment.json",
-             sync_fixed="file", fit_s_per_frame=1.9, extra_env={"HM_TEACHER_EVIDENCE": "1", "HM_FRONT_MASTER": "02"}, shape_t=None, apart_cam="02", force_cams=True,
+             sync_fixed="file", fit_s_per_frame=1.9, extra_env={"HM_TEACHER_EVIDENCE": "1", "HM_FRONT_MASTER": "02", "HM_REANCHOR_LOST": "1"}, shape_t=None,
+             apart_cam="02", force_cams=True,
              monocular_until_s=None, refine_variants=(("smplx_rf2_slip", "--w-slip 0.5 --slip-max-v 0.15"),), scale_check=True, strict=True,
              budget_usd=17.0, max_plan_usd=6.0, shape_needs_camera_ok=True, seams_by_evidence=True, generation="2",
              cam_masks=(("01", 163.0, 176.0, "llg4375 v1 diverged on the Steadicam's evidence (its MAMMA error grew); refit r1 without it: 7.5 / 10.0 px"),
-                        ("01", 206.0, 212.6, "llg4375 v1, the same")),
+                        ("01", 206.0, 212.7, "llg4375 v1, the same (to the take's end: mask ends are exclusive, the last grid frame is 212.6 s)")),
              # the Steadicam's verified poses cover 52 % of the take (cameras.anchored, 2026-10-25): its best 30 s window has both cameras on
              # both dancers in 37 % of the instants (~330 two-view frames: plenty for the betas, which G9 then checks against the statures);
              # a Zouk couple is in close embrace most of the time (apart 25 %)
@@ -392,8 +393,10 @@ def estimate_chunk(chunk: C.Chunk, cam_frames: int | None = None, shape: bool = 
 
 
 def window_masks(P: TwoView, t0: float, t1: float) -> list[tuple[str, float, float]]:
-    """The profile's camera masks that meet the window [t0, t1), clipped to it."""
-    return [(c, max(a, t0), min(b, t1)) for c, a, b, *_ in P.cam_masks if a < t1 and b > t0]
+    """The profile's camera masks that meet the window [t0, t1), clipped to it; a sliver under one grid frame is left out (its `:g` text could
+    read a:a, which recap_front.parse_masks refuses on the pod)."""
+    out = [(c, max(a, t0), min(b, t1)) for c, a, b, *_ in P.cam_masks if a < t1 and b > t0]
+    return [(c, a, b) for c, a, b in out if b - a >= 1.0 / HZ]
 
 
 def chunk_steps(chunk: C.Chunk, est: dict, refine_args: str, *, shape: bool, refined_dir: str, P: TwoView = CA,
@@ -550,9 +553,11 @@ def make_plan(spec: DanceSpec, *, hash_inputs: bool = True, code: dict | None = 
         p = C.chunk_params(spec)
         gt = g.t(np.arange(g.k0, g.k1 + 1))
         sup = two_view_support(tt, gt)
-        for _c, a, b, *_ in P.cam_masks:               # a masked camera does not carry a seam
-            sup[(gt >= a) & (gt < b)] = 0.0
-        windows = C.seam_windows(sup, g.hz, p["chunk_s"], p["overlap_s"])
+        masked = np.zeros(len(gt), bool)
+        for _c, a, b, *_ in P.cam_masks:               # a masked camera does not carry a seam: no seam's overlap may touch it
+            masked |= (gt >= a) & (gt < b)
+        sup[masked] = 0.0
+        windows = C.seam_windows(sup, g.hz, p["chunk_s"], p["overlap_s"], forbid=masked)
     chunks, rep = C.plan_windows(spec, kind="full", claimed_ids=claimed_ids, cams_fn=lambda k0, k1: window_cams(tt, g.t(k0), g.t(k1 + 1), P)[0],
                                  windows=windows)
     rows = []
@@ -685,6 +690,10 @@ def strict_checks(plan: dict, spec: DanceSpec, P: TwoView) -> dict:
           offsets_ms={j["id"]: ((j.get("chunk") or {}).get("sync_fixed") or {}).get("offsets_ms") for j in fits})
     ends = window_ends(coverage_times(plan.get("_teachers") or load_teachers(P), P), spec.grid, P, doc) if err is None else {"ok": False, "why": err}
     check("both_cams_cover_window_ends", ends["ok"], **{k: v for k, v in ends.items() if k != "ok"})
+    chunks = sorted(plan["_chunks"], key=lambda c: c.k0)        # a seam where a camera is masked is a one-camera seam (llfinal's failure mode)
+    on_mask = [(a.id, b.id, c) for a, b in zip(chunks, chunks[1:]) for c, m0, m1, *_ in P.cam_masks
+               if m0 < float(spec.grid.t(a.k1 + 1)) and m1 > float(spec.grid.t(b.k0))]
+    check("seams_avoid_camera_masks", not on_mask, seams_on_masks=on_mask)
     st = (plan.get("shape") or {}).get("stats") or {}
     check("shape_window_sees_both", float(st.get("both_cameras_both_dancers") or 0.0) >= P.shape_min_both and float(st.get("apart") or 0.0) >= P.shape_min_apart,
           stats=st, need={"both_cameras_both_dancers": P.shape_min_both, "apart": P.shape_min_apart})
@@ -765,9 +774,10 @@ def print_plan(plan: dict, P: TwoView = CA) -> None:
                   "(launch / watch honour it; `launch --budget X` overrides)")
 
 
-def save_budget(dance: str, b: dict) -> dict:
+def save_budget(dance: str, b: dict, prev_plan_usd: float | None = None) -> dict:
     """The plan's budget -> the farm policy in state.json (watch.Policy: budget_usd, hard_minutes, gpus), so `farm launch` and the watcher cap the farm's spent +
-    committed worst cases at it and launch the GPU it is priced on. A lower budget already stored is kept, and so is a GPU list already stored. The pods' hard ceiling
+    committed worst cases at it and launch the GPU it is priced on. A lower budget already stored is kept (a ceiling set by hand) unless it is the one the
+    previous plan wrote (prev_plan_usd: a re-plan whose profile raised its budget, lucas_luiza generation 2), and so is a GPU list already stored. The pods' hard ceiling
     never drops below what a GPU job the watcher still works on needs (its max_minutes + BOOT_SLACK_MIN); the initial kill-switch lead never exceeds it."""
     from . import watch as Wt
     base = Wt.Policy.load(dance)
@@ -779,7 +789,8 @@ def save_budget(dance: str, b: dict) -> dict:
             j = json.loads(p.read_text(encoding="utf-8"))
             if j.get("needs_gpu"):
                 live.append(math.ceil(float(j.get("max_minutes") or 0.0) + BOOT_SLACK_MIN))
-    usd = float(b["usd"]) if base.budget_usd is None else min(float(base.budget_usd), float(b["usd"]))
+    from_plan = prev_plan_usd is not None and base.budget_usd is not None and abs(float(base.budget_usd) - float(prev_plan_usd)) < 1e-6
+    usd = float(b["usd"]) if base.budget_usd is None or from_plan else min(float(base.budget_usd), float(b["usd"]))
     hard = float(max([float(b["hard_minutes"])] + live))
     pol = Wt.Policy.from_dict({"budget_usd": usd, "hard_minutes": hard, "minutes": min(float(base.minutes), hard), "gpus": list(base.gpus or b.get("gpus") or [])},
                               base)
@@ -847,6 +858,24 @@ def shape_kept(cur: dict, P: TwoView) -> bool:
     return (cur["jobs"].get(P.shape_id) or {}).get("status") in ("pulled", "stitched") and (P.work.parent / P.shape_take / "mamma_pin_betas.json").is_file()
 
 
+def kept_shape_inputs_differ(dance: str, plan: dict, P: TwoView) -> list[str]:
+    """`plan --keep-shape` on hashed inputs: what the kept shape job was fitted on and the new plan would not be (the in-tar - cameras, teachers,
+    alignment - and the source hashes). Empty = the same inputs; the chunks then freeze betas fitted in their own world."""
+    old_p = jobs_dir(dance) / f"{P.shape_id}.json"
+    if not old_p.is_file():
+        return [f"{P.shape_id}.json missing"]
+    old = json.loads(old_p.read_text(encoding="utf-8"))
+    new = next((j for j in plan["_jobs"] if j["id"] == P.shape_id), None)
+    if new is None:
+        return ["the plan has no shape job"]
+    why = []
+    if (old.get("inputs") or [{}])[-1].get("sha256") != (new.get("inputs") or [{}])[-1].get("sha256"):
+        why.append(f"{P.in_tar_rel}: sha256 {(old.get('inputs') or [{}])[-1].get('sha256')} -> {(new.get('inputs') or [{}])[-1].get('sha256')}")
+    if (old.get("sources") or {}) != (new.get("sources") or {}):
+        why.append("source hashes differ")
+    return why
+
+
 def cmd_plan(a, spec: DanceSpec, P: TwoView = CA) -> int:
     if getattr(a, "final_only", False):
         return cmd_final_only(a, spec, P)
@@ -874,6 +903,10 @@ def cmd_plan(a, spec: DanceSpec, P: TwoView = CA) -> int:
         return 2
     public = {k: v for k, v in plan.items() if not k.startswith("_")}
     public["validation"] = validate_plan(plan, spec, P)
+    if keep and not a.dry_run:
+        why = kept_shape_inputs_differ(a.dance, plan, P)
+        public["validation"]["checks"]["kept_shape_has_the_plan_inputs"] = {"ok": not why, "differ": why}
+        public["validation"]["ok"] = public["validation"]["ok"] and not why
     if a.json:
         print(json.dumps(public, default=str))
     else:
@@ -901,10 +934,12 @@ def cmd_plan(a, spec: DanceSpec, P: TwoView = CA) -> int:
     for j in jobs:
         st.set_job(j["id"], chunk=j["id"] if j.get("what") != "stitch_analyse" else None, kind=j.get("what") or j["kind"], status="planned", after=j.get("after") or [],
                    written=now_iso(), spec=str(jobs_dir(a.dance) / f"{j['id']}.json"))
+    prev_budget = ((json.loads((farm_dir(a.dance) / "plan.json").read_text(encoding="utf-8")) if (farm_dir(a.dance) / "plan.json").is_file() else {})
+                   .get("budget") or {}).get("usd")      # the ceiling the previous plan wrote (save_budget may raise it; a hand-set one stays)
     atomic_write_json(farm_dir(a.dance) / "plan.json", public)
     atomic_write_json(P.work / "chunks.json", public)
     if public.get("budget"):
-        pol = save_budget(a.dance, public["budget"])
+        pol = save_budget(a.dance, public["budget"], prev_plan_usd=prev_budget)
         print(f"farm policy: budget ${pol['budget_usd']:.2f}, pod hard ceiling {pol['hard_minutes']:g} min, kill-switch lead {pol['minutes']:g} min, "
               f"GPUs {pol['gpus'] or 'pods.GPU_PRIORITY'} (state.json)")
     if P.strict:        # not `farm up`: it loads the policy before its own plan and re-saves that one, dropping the budget written above

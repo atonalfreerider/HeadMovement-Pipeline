@@ -249,8 +249,9 @@ def dancer_one(chunk_id: str, cam: str) -> None:
 
     D.candidate_tracks = lambda *a, **k: tracks
     D.track_evidence = evidence
-    # the teacher tracks are reviewed roles: a role SAM loses in an embrace is re-prompted from its teacher box (dancers.DancersConfig.reanchor_lost)
-    fp.dancer_one(take, cam, D.DancersConfig(reanchor_lost=os.environ.get("HM_TEACHER_EVIDENCE") == "1"))
+    # the teacher tracks are reviewed roles: a role SAM loses in an embrace is re-prompted from its teacher box (dancers.DancersConfig.reanchor_lost);
+    # its own switch, set by the profiles that want it (lucas_luiza): HM_TEACHER_EVIDENCE is also set by texture fronts and other refits
+    fp.dancer_one(take, cam, D.DancersConfig(reanchor_lost=os.environ.get("HM_REANCHOR_LOST") == "1"))
 
 
 def regauge_master(chunk_id: str, master: str = MASTER) -> dict:

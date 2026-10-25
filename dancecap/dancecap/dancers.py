@@ -62,8 +62,10 @@ class DancersConfig:
     anchor_llr: float = 2.5  # per-frame colour log-odds needed to re-anchor from a detection
     drift_iou: float = 0.5
     reanchor_gap: int = 8
-    # teacher route (recap_front.dancer_one, HM_TEACHER_EVIDENCE=1: the candidate tracks are reviewed roles): a role SAM LOST (empty mask, or
-    # IoU < lost_iou with its track box) is re-prompted at a frame whose pair overlaps up to evidence_iou, image edge allowed. lucas_luiza llg2936
+    # teacher route (recap_front.dancer_one with HM_REANCHOR_LOST=1: the candidate tracks are reviewed roles): when a role is LOST (empty mask,
+    # or IoU < lost_iou with its track box) BOTH roles are re-prompted from their track boxes at a frame whose pair overlaps up to evidence_iou,
+    # image edge allowed. Both, because in an embrace an emptied object usually means the other one swallowed the couple (its IoU with its own
+    # box still looks fine: review 2026-10-25); the reviewed boxes make the frame a verified anchor like a clean re-anchor. lucas_luiza llg2936
     # lost the follow on the Steadicam for 5 s of embrace (no frame at IoU < clean_iou) that the neighbouring chunk had tracked.
     reanchor_lost: bool = False
     lost_iou: float = 0.1
@@ -483,7 +485,8 @@ def frame_role_boxes(cam: Cam, tracks: dict, ev: dict, cfg: DancersConfig, label
 def make_check(native_wh, work_wh, role_dets: dict[int, dict], cfg: DancersConfig, lost_dets: dict[int, dict] | None = None):
     """SAM re-anchor test per propagated frame: at a clean frame (role_dets) both objects are re-prompted when either mask drifted
     from its detection (IoU < drift_iou); at a frame only in lost_dets (cfg.reanchor_lost: overlapping pair) only when a role is LOST
-    (IoU < lost_iou, an empty mask included) - SAM's mask of an embraced pair legitimately strays from the box, a vanished one does not."""
+    (IoU < lost_iou, an empty mask included) - SAM's mask of an embraced pair legitimately strays from the box, a vanished one does not; both
+    roles then (the one that looks tracked may hold the whole couple). check.lost_frames: the frames re-prompted that way."""
     s = work_wh[0] / native_wh[0]
     lost_dets = lost_dets or {}
 
@@ -513,19 +516,22 @@ def make_check(native_wh, work_wh, role_dets: dict[int, dict], cfg: DancersConfi
         if min(ious(probs, det)) >= cfg.lost_iou:
             return None
         check.stats["lost"] += 1
+        check.lost_frames.append(int(frame))
         return {PID[r]: det[r] for r in ROLES}
     check.stats = {"candidates": len(role_dets), "checked": 0, "drifted": 0, "min_iou": 1.0, "ious": [],
                    "lost_candidates": len(lost_dets), "lost_checked": 0, "lost": 0}
+    check.lost_frames = []
     return check
 
 
 def save_sam_cache(path: Path, key: np.ndarray, res: dict) -> None:
     """SAM output (working-res probabilities) so identity repair / post-processing can be re-run cheaply."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    anchors = np.array([[k, *v[1], *v[2]] for k, v in sorted(res["anchors"].items())], float)
+    nan = [np.nan] * 4                       # a lost-role re-prompt holds one object's box only
+    anchors = np.array([[k, *v.get(1, nan), *v.get(2, nan)] for k, v in sorted(res["anchors"].items())], float)
     np.savez_compressed(path, key=key, probs=res["probs"], anchors=anchors, seconds=res["seconds"],
                         frame_evals=res["frame_evals"], work_wh=np.array(res["work_wh"]),
-                        check_stats=json.dumps(res.get("check_stats", {})))
+                        check_stats=json.dumps(res.get("check_stats", {})), lost_frames=np.array(res.get("lost_frames", []), np.int64))
 
 
 def sam_cache_valid(path: Path, key: np.ndarray) -> bool:
@@ -546,10 +552,11 @@ def load_sam_cache(path: Path, key: np.ndarray) -> dict | None:
     if not sam_cache_valid(path, key):
         return None
     d = np.load(path)
-    anchors = {int(r[0]): {1: r[1:5], 2: r[5:9]} for r in d["anchors"]}
+    anchors = {int(r[0]): {o: b for o, b in ((1, r[1:5]), (2, r[5:9])) if np.isfinite(b).all()} for r in d["anchors"]}
     return {"probs": d["probs"], "anchors": anchors, "seconds": float(d["seconds"]),
             "frame_evals": int(d["frame_evals"]), "work_wh": tuple(int(v) for v in d["work_wh"]),
-            "check_stats": json.loads(str(d["check_stats"]))}
+            "check_stats": json.loads(str(d["check_stats"])),
+            "lost_frames": [int(x) for x in d["lost_frames"]] if "lost_frames" in d.files else []}
 
 
 def match_kpts(cam: Cam, i: int, box: np.ndarray | None, mask: np.ndarray | None = None,
@@ -868,6 +875,7 @@ def run_camera(cam: Cam, label: dict, predictor, cfg: DancersConfig, log=print, 
         res = propagate(predictor, files, (w, h), a, {1: np.array(label["lead_box"]), 2: np.array(label["follow_box"])},
                         check=check, min_gap=cfg.reanchor_gap, log=log)
         res["check_stats"] = dict(check.stats)
+        res["lost_frames"] = list(check.lost_frames)
         save_sam_cache(cache, key, res)
     else:
         log(f"[dancers]   {cam.id}: reusing SAM propagation from {cache.name}")
@@ -883,7 +891,9 @@ def run_camera(cam: Cam, label: dict, predictor, cfg: DancersConfig, log=print, 
     conf = np.array([[float(res["probs"][i, k][res["probs"][i, k] > 127].mean() / 255)
                       if (res["probs"][i, k] > 127).any() else 0.0 for k in range(2)] for i in range(f)])
     # step 4: identity verification + repair, anchored on the verified frames (label + re-anchors)
+    lost_frames = set(res.get("lost_frames") or ())      # the lost-role re-prompts among them (reported; verified like the others)
     anchors = sorted(int(k) for k in res["anchors"])
+    pinned = set(anchors)
     ide = identity_evidence(cam, masks, imgs, cfg, anchors, label.get("descriptors"))
     state, post = keep_swap_viterbi(ide["llr"], cfg.llr_clip, cfg.switch_frames, pinned=anchors)
     flags = identity_flags(ide["llr"], anchors, cfg.llr_clip, cfg.switch_frames)
@@ -954,9 +964,9 @@ def run_camera(cam: Cam, label: dict, predictor, cfg: DancersConfig, log=print, 
                            # sam_swap_prob: that SAM's raw objects were
                            "swap_prob": round(float(1 - post[i] if state[i] else post[i]), 4),
                            "sam_swap_prob": round(float(post[i]), 4), "embrace": bool(ide["embrace"][i]),
-                           "repaired": bool(state[i]), "anchor": i in res["anchors"]})
+                           "repaired": bool(state[i]), "anchor": i in pinned, "reprompt": i in lost_frames})
         vis = overlay(imgs[i], lead, fol, hair, cfg.qa_height, f"cam {cam.id} #{i} t={cam.t[i]:.2f}"
-                      + ("  EMBRACE" if ide["embrace"][i] else "") + ("  ANCHOR" if i in res["anchors"] else ""))
+                      + ("  EMBRACE" if ide["embrace"][i] else "") + ("  ANCHOR" if i in pinned else "") + ("  REPROMPT" if i in lost_frames else ""))
         qa_frames.append(vis)
         if i in sheet_idx or i in dense_idx:
             tile = crop_tile(imgs[i], lead, fol, hair, f"#{i} t={cam.t[i]:.2f}" + (" E" if ide["embrace"][i] else "")
@@ -974,7 +984,7 @@ def run_camera(cam: Cam, label: dict, predictor, cfg: DancersConfig, log=print, 
                 [cv2.IMWRITE_JPEG_QUALITY, 85])
     tight_ok = np.array([t["ok"] for t in tight])
     total = time.time() - t_start
-    rep = {"frames": f, "work_wh": list(ww), "anchor": a, "anchors": sorted(int(k) for k in res["anchors"]),
+    rep = {"frames": f, "work_wh": list(ww), "anchor": a, "anchors": anchors, "lost_reprompts": sorted(lost_frames),
            "sam_seconds": round(t_sam, 1), "sam_s_per_frame": round(t_sam / f, 3),
            "frame_evals": res["frame_evals"], "total_seconds": round(total, 1),
            "total_s_per_frame": round(total / f, 3), "embrace_frames": int(ide["embrace"].sum()),

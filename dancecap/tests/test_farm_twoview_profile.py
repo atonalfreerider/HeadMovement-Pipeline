@@ -541,6 +541,15 @@ def test_ll_replan_is_refused_while_chunks_are_claimed_and_the_ceiling_never_dro
     assert res["hard_minutes"] == int(np.ceil(longest + 15)) and Wt.Policy.load("lucas_luiza").hard_minutes >= longest
 
 
+def test_save_budget_raises_a_plan_written_ceiling_but_keeps_a_hand_set_one(ll_env):
+    """Review 2026-10-25: generation 2 raised LL's budget to 17, but the 14 the first plan stored was kept (min)."""
+    Wt.Policy.from_dict({"budget_usd": 14.0}, Wt.Policy.load("lucas_luiza")).save("lucas_luiza")
+    assert cap.save_budget("lucas_luiza", {"usd": 17.0, "hard_minutes": 170}, prev_plan_usd=14.0)["budget_usd"] == 17.0
+    Wt.Policy.from_dict({"budget_usd": 5.0}, Wt.Policy.load("lucas_luiza")).save("lucas_luiza")
+    assert cap.save_budget("lucas_luiza", {"usd": 17.0, "hard_minutes": 170}, prev_plan_usd=14.0)["budget_usd"] == 5.0
+    assert cap.save_budget("lucas_luiza", {"usd": 17.0, "hard_minutes": 170})["budget_usd"] == 5.0
+
+
 def test_ll_replan_after_the_shape_pass_only_says_it_resets_the_shape(ll_env, monkeypatch, capsys):
     spec = ll_env[2]
     quiet_inputs(monkeypatch)

@@ -216,6 +216,8 @@ def propagate(predictor, files: list[Path], native_wh: tuple[int, int], anchor: 
                     _progress.tick("sam", n_done, f, "frames")
                     if check is None or fi in anchors or min(abs(fi - a) for a in anchors) < min_gap:
                         continue
+                    if reverse and fi == 0:         # a reverse restart from frame 0 yields nothing: its re-prompt would never be written
+                        continue
                     new = check(fi, p)
                     if new:
                         log(f"[dancers]   re-anchor frame {fi} ({'bwd' if reverse else 'fwd'}) objs {sorted(new)}")

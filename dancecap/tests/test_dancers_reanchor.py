@@ -50,11 +50,12 @@ def test_check_reprompts_a_lost_role_but_not_a_loose_embrace_mask():
     assert check(7, _probs([det["lead"], det["follow"]])) is None             # both tracked
     loose = [10, 10, 90, 150]                                                  # the follow's mask spills over the pair: IoU 0.63, not lost
     assert check(7, _probs([det["lead"], loose])) is None
-    new = check(7, _probs([det["lead"], None]))                               # the follow vanished
-    assert new is not None and sorted(new) == [1, 2] and np.allclose(new[2], det["follow"])
+    new = check(7, _probs([det["lead"], None]))                               # the follow vanished: both are re-prompted (the lead's mask
+    assert new is not None and sorted(new) == [1, 2] and np.allclose(new[2], det["follow"])   # may hold the couple)
     elsewhere = [0, 160, 20, 199]                                              # the follow's mask sits on somebody else
-    assert check(7, _probs([det["lead"], elsewhere])) is not None
-    assert check.stats["lost_checked"] == 4 and check.stats["lost"] == 2 and check.stats["checked"] == 0
+    assert sorted(check(7, _probs([det["lead"], elsewhere]))) == [1, 2]
+    assert sorted(check(7, _probs([None, None]))) == [1, 2]
+    assert check.stats["lost_checked"] == 5 and check.stats["lost"] == 3 and check.stats["checked"] == 0 and check.lost_frames == [7, 7, 7]
 
 
 def test_clean_frames_keep_the_drift_rule():
@@ -71,3 +72,50 @@ def test_the_sam_cache_key_marks_the_lost_route():
     label = {"frame": 12, "lead_box": [1, 2, 3, 4], "follow_box": [5, 6, 7, 8]}
     assert D.sam_cache_key(label).shape == (9,)                              # caches made before the flag stay valid
     assert D.sam_cache_key(label, True).shape == (10,)
+
+
+def test_a_one_role_reprompt_survives_the_sam_cache(tmp_path):
+    res = {"probs": np.zeros((3, 2, 4, 4), np.uint8), "anchors": {0: {1: np.arange(4.0), 2: np.arange(4.0) + 10}, 2: {2: np.arange(4.0) + 20}},
+           "seconds": 1.0, "frame_evals": 3, "work_wh": (4, 4), "check_stats": {"lost": 1}, "lost_frames": [2]}
+    key = D.sam_cache_key({"frame": 0, "lead_box": [0, 1, 2, 3], "follow_box": [10, 11, 12, 13]}, True)
+    D.save_sam_cache(tmp_path / "c.npz", key, res)
+    got = D.load_sam_cache(tmp_path / "c.npz", key)
+    assert sorted(got["anchors"]) == [0, 2] and sorted(got["anchors"][2]) == [2] and np.allclose(got["anchors"][2][2], np.arange(4.0) + 20)
+    assert got["lost_frames"] == [2] and sorted(got["anchors"][0]) == [1, 2]
+
+
+def test_propagate_reprompts_only_the_lost_role_and_never_at_reverse_frame_0():
+    """A fake predictor in sam2's processing order (review 2026-10-25): the follow is lost on every frame that is not conditioned; a reverse
+    restart from frame 0 yields nothing, so frame 0 is never a re-prompt."""
+    torch = __import__("pytest").importorskip("torch")
+    from dancecap import dancers_sam as S
+    W, H, F = 100, 200, 100
+    lead, fol = np.array([10, 10, 60, 150.0]), np.array([40, 10, 90, 150.0])
+
+    class Fake:
+        device, image_size = torch.device("cpu"), 64
+
+        def __init__(self):
+            self.cond, self.prompts = set(), []
+
+        def add_new_points_or_box(self, state, frame_idx, obj_id, box):
+            self.cond.add(frame_idx)
+            self.prompts.append((frame_idx, obj_id))
+
+        def propagate_in_video(self, state, start_frame_idx, reverse):
+            order = (range(start_frame_idx, -1, -1) if start_frame_idx > 0 else []) if reverse else range(start_frame_idx, F)
+            for fi in order:
+                lg = torch.full((2, 1, H, W), -10.0)
+                x0, y0, x1, y1 = lead.astype(int)
+                lg[0, 0, y0:y1, x0:x1] = 10
+                if fi in self.cond:
+                    x0, y0, x1, y1 = fol.astype(int)
+                    lg[1, 0, y0:y1, x0:x1] = 10
+                yield fi, [1, 2], lg
+    cfg = D.DancersConfig(reanchor_lost=True)
+    check = D.make_check((W, H), (W, H), {}, cfg, {i: {"lead": lead, "follow": fol} for i in range(F)})
+    p = Fake()
+    res = S.propagate(p, [f"f{i}" for i in range(F)], (W, H), 48, {1: lead, 2: fol}, check=check, min_gap=cfg.reanchor_gap, log=lambda m: None)
+    assert sorted(f for f, o in p.prompts if o == 1) == sorted(res["anchors"])  # both roles at every re-prompt
+    assert 0 not in res["anchors"] and len(check.lost_frames) == len(res["anchors"]) - 1
+    assert all((res["probs"][a, 1] > 127).any() for a in res["anchors"])      # every re-prompt was written

@@ -68,3 +68,35 @@ def test_two_view_support_needs_every_camera_and_the_moving_camera_s_track():
     s = cap.two_view_support(tt, grid)
     assert s.shape == (n, 2) and s[:30].all() and s[30:60, 0].all() and not s[30:60, 1].any() and not s[90:].any()
     assert not cap.two_view_support({}, grid).any()
+
+
+def test_no_overlap_and_a_marginal_gain_keep_the_equal_windows():
+    """Review 2026-10-25: overlap 0 made every seam score NaN; a third window was added for +0.02 of support."""
+    N = int(110 * HZ)
+    t = np.arange(N) / HZ
+    w = C.seam_windows(np.ones(N), HZ, 60.0, 0.0)
+    assert w["rule"].startswith("equal windows (no overlap") and w["windows"] == C.equal_windows(N, HZ, 60.0, 0.0)["windows"]
+    sup = np.full(N, 0.5)
+    sup[(t >= 30.0) & (t < 35.0)] = 0.53                                 # a third window would lift the weakest seam by 0.03 only
+    sup[(t >= 75.0) & (t < 80.0)] = 0.53
+    w = C.seam_windows(sup, HZ, 60.0, 4.0)
+    assert w["n"] == 2
+
+
+def test_forbidden_frames_never_carry_a_seam():
+    N = int(196 * HZ)
+    t = np.arange(N) / HZ
+    sup = np.ones(N)
+    forbid = (t >= 146.0) & (t < 159.0)
+    w = C.seam_windows(sup, HZ, 60.0, 4.0, forbid=forbid)
+    assert all(not forbid[int((s - 2.0) * HZ):int((s + 2.0) * HZ)].any() for s in w["seam_t"])
+    assert "by evidence" in w["rule"]
+    w = C.seam_windows(sup, HZ, 60.0, 4.0, forbid=np.ones(N, bool))       # nowhere to cut: the equal tiling (the plan check refuses it)
+    assert w["rule"].startswith("equal windows")
+
+
+def test_window_masks_drop_slivers():
+    import dataclasses
+    P = dataclasses.replace(cap.LL, cam_masks=(("01", 163.3666, 176.0, "x"),))
+    assert cap.window_masks(P, 100.0, 163.36667) == []
+    assert cap.window_masks(P, 100.0, 165.0) == [("01", 163.3666, 165.0)]
