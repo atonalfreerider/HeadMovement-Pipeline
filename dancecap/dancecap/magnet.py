@@ -116,6 +116,40 @@ class MagnetCfg:
     scale_smooth_s: float = 0.25  # s: the out-of-reach scale of w, smoothed in time (min filter 2x this, box mean 1x, never above reach)
     elbow_damp_s: float = 0.6     # s (0 = off): inside a snap the elbow's change vs the original (3-D) is smoothed (Gaussian sigma, x w)
                                   # and the elbow turned about the shoulder-wrist line to the circle point nearest it: it swings like the original's
+    # v3 (the owner 2026-10-25 on film 1:32: "the wrist should not bend in like that"): the WRIST RULE (wrist_rule). (1) both his wrists
+    # clamped to these limits everywhere (flexion / extension / radial / ulnar deviation of the swing, the twist about the forearm), the
+    # correction ramped linearly over wrist_ramp_s in and out of each clamped span; (2) a SUPPORTING wrist (by the weight of an attachment
+    # to a back / shoulder site, and inside her counterbalance intervals): flexion / extension within support_flex_deg, deviation within
+    # support_dev_deg, the palm turned onto her by the forearm twist; support_elbow_share of a twist change rolls the forearm at the
+    # elbow (about the bone: no joint moves). The shoulders and the elbow / wrist positions stay as the magnet put them.
+    wrist_rule: bool = True
+    wrist_flex_max_deg: float = 60.0
+    wrist_ext_max_deg: float = 60.0
+    wrist_radial_max_deg: float = 25.0
+    wrist_ulnar_max_deg: float = 35.0
+    wrist_twist_max_deg: float = 90.0     # zouk_contacts.WRIST_LIMITS["twist"]
+    wrist_ramp_s: float = 0.30
+    support_flex_deg: float = 15.0        # flexion (bending IN, the palm toward the forearm) of a supporting wrist at most this ...
+    support_ext_deg: float = 70.0         # ... but EXTENSION (bending back, a palm pushing on a wall) up to this: the palm lies flat on her
+                                          # (v5, the owner 2026-10-25: a supporting hand carries her weight on its palm)
+    support_dev_deg: float = 15.0
+    # v5 SURFACE NUDGE: in supporting frames where his palm skin (palm centre + palm_m along the palm normal) or his wrist joint is more
+    # than surface_in_m inside her (her shaped posed mesh: torso, collars, upper arms; nearest vertex, its normal), his elbow flexion is
+    # changed about its own hinge axis (the shoulder and so the elbow joint stay put: same elbow side and plane) by the smallest angle
+    # that puts the palm skin surface_target_m in (within [0, surface_in_m]) with the wrist outside; bending (shorter reach) wins ties;
+    # one sign per span, linear ramps of surface_ramp_s, then the wrist rule re-aims the palm onto her local surface
+    surface_nudge: bool = False
+    surface_in_m: float = 0.010
+    surface_target_m: float = 0.005
+    surface_gap_m: float = 0.030
+    surface_ramp_s: float = 0.40
+    surface_max_deg: float = 45.0
+    support_cb_ramp_s: float = 0.50       # the counterbalance weight ramps 0 -> 1 over this before t0 (1 -> 0 after t1)
+    support_cb_extra_m: float = 0.10      # inside a counterbalance a free hand supports when the nearest back site is within reach_max_m (+ a
+                                          # linear fade over this)
+    support_elbow_share: float = 0.0     # 0: the whole twist in the wrist joint (SMPL-X carries pronation / supination there; zouk_contacts
+                                          # wrist_angles "the forearm's twist"); > 0 rolls that share at the elbow (unwrapped in time: it can reach
+                                          # 180 deg and push the wrist's own twist past its limit, 2026-10-25 check)
 
 
 # the owner (2026-10-25 check): his right hand mostly rests on her upper-left back; his left hand holds her right hand
@@ -400,6 +434,9 @@ def hand_targets(pc0: np.ndarray, att: list, W: np.ndarray, entries: dict, names
     T = len(pc0)
     acc = np.zeros((T, 3))
     nacc = np.zeros((T, 3))
+    nback = np.zeros((T, 3))
+    wback = np.zeros(T)
+    whand = np.zeros(T)
     wsum = W.sum(1) if W.size else np.zeros(T)
     for i, a in enumerate(att):
         nm = names[a["site"]]
@@ -411,9 +448,23 @@ def hand_targets(pc0: np.ndarray, att: list, W: np.ndarray, entries: dict, names
         a.update(info)
         acc += W[:, i, None] * tgt
         nacc += W[:, i, None] * nrm
+        kind = site_kind(nm)
+        if kind in BACK_KINDS:
+            nback += W[:, i, None] * nrm
+            wback += W[:, i]
+        elif kind == "hand":
+            whand += W[:, i]
     X = acc + (1.0 - wsum)[:, None] * pc0
     n_aim = _unit(nacc)
-    return {"X": X, "n": n_aim, "w": wsum}
+    return {"X": X, "n": n_aim, "w": wsum, "n_back": _unit(nback), "w_back": wback, "w_hand": whand}
+
+
+# the sites a supporting (weight-bearing) hand rests on: her back and shoulders (not her arms, not her hand)
+BACK_KINDS = ("upper_shoulder", "upper_back", "mid_back", "shoulder_top")
+
+
+def site_kind(name: str) -> str:
+    return name.rsplit("_", 1)[0]
 
 
 def clamp_target(tgt: np.ndarray, nrm: np.ndarray, pc0: np.ndarray, k0: int, k1: int, cfg: MagnetCfg, hz: float = HZ):
@@ -526,6 +577,440 @@ def arm_ik(S, E0, W0, G14, G17, G19, G21, pc0, pn0, X, n_aim, w, side: str, cfg:
     tr = lambda M: np.transpose(M, (0, 2, 1))
     return {"R17": tr(G14) @ G17n, "R19": tr(G17n) @ G19n, "R21": tr(G19n) @ G21n, "E": E, "W": Wn, "scale": sc,
             "turn_deg": np.degrees(sc * w * ang), "flex0_deg": np.degrees(phi0), "flex_deg": np.degrees(np.arccos(np.clip((e1 * f1).sum(1), -1, 1)))}
+
+
+# ------------------------------------------------------------------------------------------------ 4b. the wrist rule (v3)
+
+def wrist_compose(flex, dev, tw, side: str) -> np.ndarray:
+    """the inverse of zouk_contacts.wrist_angles_R: degrees (n,) of flexion / deviation (the swing vector, its length = the bend) and the
+    twist -> the wrist's local rotation R = T(a, twist) F (n,3,3), F the minimal rotation taking a_h = F^T a onto the forearm axis a"""
+    from . import zouk_contacts as zc
+    a, nv, tv = zc._rest_axes(side)
+    f, d, w = (np.radians(np.asarray(x, float).reshape(-1)) for x in (flex, dev, tw))
+    b = np.hypot(f, d)
+    sinc = np.where(b > 1e-9, np.sin(b) / np.maximum(b, 1e-12), 1.0)
+    ah = np.cos(b)[:, None] * a - sinc[:, None] * (f[:, None] * nv + d[:, None] * tv)
+    ax = np.cross(ah, a)
+    sn = np.linalg.norm(ax, axis=1)
+    axu = np.where(sn[:, None] > 1e-12, ax / np.maximum(sn, 1e-12)[:, None], tv)
+    F = rot_axis_angle(axu, np.where(sn > 1e-12, b, 0.0))
+    return rot_axis_angle(np.tile(a, (len(w), 1)), w) @ F
+
+
+def _wrap(x):
+    return (np.asarray(x, float) + 180.0) % 360.0 - 180.0
+
+
+def _spans(mask: np.ndarray) -> list:
+    m = np.r_[False, np.asarray(mask, bool), False]
+    d = np.diff(m.astype(int))
+    return list(zip(np.flatnonzero(d == 1).tolist(), (np.flatnonzero(d == -1) - 1).tolist()))
+
+
+def ramp_correction(c: np.ndarray, n: int) -> np.ndarray:
+    """a signed per-frame correction c (T,) (0 where nothing is clamped) -> E (T,): |E| = the max over s of |c(s)| (1 - |t - s| / n) with
+    the sign of that s: linear ramps of n frames into and out of each clamped span, and |E| >= |c| everywhere (the limit still holds)"""
+    c = np.asarray(c, float)
+    T = len(c)
+    best, sgn = np.abs(c).copy(), np.sign(c)
+    for k in range(1, max(1, n)):
+        f = 1.0 - k / n
+        for sh in (k, -k):
+            if abs(sh) >= T:
+                continue
+            src, ss = np.zeros(T), np.zeros(T)
+            if sh > 0:
+                src[sh:], ss[sh:] = np.abs(c[:-sh]) * f, np.sign(c[:-sh])
+            else:
+                src[:sh], ss[:sh] = np.abs(c[-sh:]) * f, np.sign(c[-sh:])
+            m = src > best
+            best[m], sgn[m] = src[m], ss[m]
+    return sgn * best
+
+
+def wrist_limits(cfg: MagnetCfg) -> dict:
+    return {"flex": (-cfg.wrist_ext_max_deg, cfg.wrist_flex_max_deg), "dev": (-cfg.wrist_ulnar_max_deg, cfg.wrist_radial_max_deg),
+            "tw": (-cfg.wrist_twist_max_deg, cfg.wrist_twist_max_deg)}
+
+
+def clamp_wrist_angles(ang: dict, cfg: MagnetCfg, hz: float = HZ, gate: np.ndarray | None = None) -> dict:
+    """zouk_contacts.wrist_angles (flexion, deviation, twist; degrees per frame) -> clamped to wrist_limits with linear ramps of
+    wrist_ramp_s (ramp_correction). The twist: each span beyond the limit is held at the bound it left by (or, when it comes back on the
+    other side through 180 deg, carried linearly from one bound to the other), so the hand never flips. gate (T,) in [0, 1] scales the
+    per-frame correction before the ramps (wrist_rule: 1 where the detected input itself is beyond a limit, else 1 - the hand-hold
+    weight: a palm-to-palm hold keeps the magnet's turn)"""
+    n = max(2, int(round(cfg.wrist_ramp_s * hz)))
+    gt = 1.0 if gate is None else np.asarray(gate, float)
+    L = wrist_limits(cfg)
+    out = {}
+    for key, nm in (("flex", "flexion"), ("dev", "deviation")):
+        lo, hi = L[key]
+        x = np.asarray(ang[nm], float)
+        out[key] = x + ramp_correction(gt * (np.clip(x, lo, hi) - x), n)
+        if gate is None:
+            out[key] = np.clip(out[key], lo, hi)
+    tw = np.asarray(ang["twist"], float)
+    out["tw"] = _wrap(tw + ramp_correction(gt * _wrap(twist_target(tw, L["tw"][1]) - tw), n))
+    return out
+
+
+def twist_target(tw: np.ndarray, lim: float) -> np.ndarray:
+    """the twist (T,) clamped to +-lim with continuity: a span beyond the limit is held at the bound it left by, or (back on the other
+    side through 180 deg) carried linearly from one bound to the other"""
+    tw = np.asarray(tw, float)
+    tgt = np.clip(tw, -lim, lim)
+    T = len(tw)
+    for k0, k1 in _spans(np.abs(tw) > lim):
+        s0 = np.sign(tw[k0 - 1] if k0 > 0 else tw[k0]) or 1.0
+        s1 = np.sign(tw[k1 + 1]) if k1 + 1 < T else s0
+        tgt[k0:k1 + 1] = s0 * lim if s0 == s1 else np.linspace(s0 * lim, s1 * lim, k1 - k0 + 1)
+    return tgt
+
+
+def support_angles(Ge: np.ndarray, aim: np.ndarray, pn_h: np.ndarray, dev_now: np.ndarray, side: str, cfg: MagnetCfg) -> dict:
+    """the weight-bearing wrist with the palm normal toward `aim` (n,3 world): Ge the forearm's (elbow's) global rotation (n,3,3), pn_h his
+    palm normal in the hand's own frame (3,), dev_now the deviation it has now -> degrees: deviation clipped to support_dev_deg, flexion
+    within [-support_ext_deg, support_flex_deg] (bent back up to 70, in at most 15) tilting the palm toward the aim along the forearm, then
+    the twist (about the forearm) turning it onto the aim"""
+    from . import zouk_contacts as zc
+    a = zc._rest_axes(side)[0]
+    n = len(aim)
+    p = _unit(np.einsum("nji,nj->ni", Ge, aim))
+    dev = np.clip(np.asarray(dev_now, float), -cfg.support_dev_deg, cfg.support_dev_deg)
+    zero = np.zeros(n)
+    lo, hi = np.full(n, -cfg.support_ext_deg), np.full(n, cfg.support_flex_deg)      # (negative = extension: allowed further)
+    for _ in range(30):                                  # (F pn_h) . a falls with the flexion (the palm tilts back toward the elbow)
+        mid = 0.5 * (lo + hi)
+        g = np.einsum("nij,j->ni", wrist_compose(mid, dev, zero, side), pn_h) @ a - p @ a
+        lo, hi = np.where(g > 0, mid, lo), np.where(g > 0, hi, mid)
+    flex = 0.5 * (lo + hi)
+    v = np.einsum("nij,j->ni", wrist_compose(flex, dev, zero, side), pn_h)
+    vp, pp = v - (v @ a)[:, None] * a, p - (p @ a)[:, None] * a
+    tw = np.degrees(np.arctan2(np.cross(vp, pp) @ a, (vp * pp).sum(1)))
+    return {"flex": flex, "dev": dev, "tw": tw}                # (raw: wrist_rule clamps it with continuity in time)
+
+
+def depop(Rn: np.ndarray, Rref: np.ndarray, max_step_deg: float = 12.0, half: int = 6, passes: int = 4) -> tuple[np.ndarray, np.ndarray]:
+    """local wrist rotations (T,3,3) -> where a frame-to-frame step exceeds max(max_step_deg, the reference's own step + 5 deg) (the
+    clamp crossing the swing's 180-deg singularity, the twist the palm needs turning past 180 deg), the window +-half frames round it is
+    replaced by a slerp between its ends; repeated (a window grows) -> (R, the frames replaced)"""
+    from scipy.spatial.transform import Rotation as Ro, Slerp
+    Rn = Rn.copy()
+    T = len(Rn)
+
+    def steps(R):
+        return np.degrees(np.linalg.norm(mat_to_rotvec(np.transpose(R[:-1], (0, 2, 1)) @ R[1:]), axis=1))
+    sref = steps(Rref)
+    fixed = np.zeros(T, bool)
+    for _ in range(passes):
+        bad = steps(Rn) > np.maximum(max_step_deg, sref + 5.0)
+        if not bad.any():
+            break
+        for k0, k1 in _spans(bad):
+            a, b = max(0, k0 - half), min(T - 1, k1 + 1 + half)
+            Rn[a:b + 1] = Slerp([0.0, 1.0], Ro.from_matrix(np.stack([Rn[a], Rn[b]])))(np.linspace(0, 1, b - a + 1)).as_matrix()
+            fixed[a:b + 1] = True
+    return Rn, fixed
+
+
+def counterbalance_intervals(path: Path | None = None) -> list:
+    """her counterbalance intervals (dance seconds) from the recap capture's counterbalance.json (read only)"""
+    from .take import PACKAGE_ROOT
+    p = Path(path) if path else PACKAGE_ROOT.parent / "head-movement" / "Assets" / "StreamingAssets" / CAPTURE / "counterbalance.json"
+    if not p.exists():
+        log(f"no {p}: no counterbalance intervals")
+        return []
+    d = json.loads(p.read_text(encoding="utf-8"))
+    return [(float(i["t0"]), float(i["t1"])) for i in d.get("intervals", []) if i.get("kind") == "counterbalance"]
+
+
+def interval_weight(T: int, intervals: list, ramp_s: float, hz: float = HZ) -> np.ndarray:
+    """1 inside each interval, linear ramps of ramp_s outside its ends"""
+    t = np.arange(T) / hz
+    w = np.zeros(T)
+    for t0, t1 in intervals:
+        w = np.maximum(w, np.clip(np.minimum((t - (t0 - ramp_s)) / ramp_s, ((t1 + ramp_s) - t) / ramp_s), 0.0, 1.0))
+    return w
+
+
+def wrist_rule(fit_lead: dict, Pose: np.ndarray, kl: dict, per_hand: dict, ents: dict, names: list, pcs: dict, cfg: MagnetCfg,
+               intervals: list, Pose0: np.ndarray | None = None, aim_override: dict | None = None) -> tuple[np.ndarray, dict]:
+    """v3: both wrists clamped (clamp_wrist_angles) and, by the support weight ws = max(w of a back / shoulder attachment, inside a
+    counterbalance: (1 - w of a hand hold) x reach fade), blended in angle space toward support_angles; a twist change rolls the forearm
+    at the elbow by support_elbow_share (about the elbow -> wrist bone: the wrist joint stays put). Only frames whose wrist changes are
+    written. -> (Pose, info)"""
+    from . import hand_contact as hc
+    from . import zouk_contacts as zc
+    Pose = Pose.copy()
+    T = len(Pose)
+    Jr = zc.rest_body(np.asarray(fit_lead["betas"], float))["J"]
+    cb = interval_weight(T, intervals, cfg.support_cb_ramp_s)
+    back_names = [nm for nm in names if site_kind(nm) in BACK_KINDS]
+    info = {"counterbalance_intervals": [list(iv) for iv in intervals]}
+    for s in SIDES:
+        R = zc.rotvec_to_mat(Pose[:, WRIST[s]])
+        ang = zc.wrist_angles_R(R, s)
+        tg = per_hand[s]["tg"]
+        w_back, n_back, w_hand = tg["w_back"], tg["n_back"], tg["w_hand"]
+        L = wrist_limits(cfg)
+        a0 = zc.wrist_angles_R(zc.rotvec_to_mat((Pose if Pose0 is None else Pose0)[:, WRIST[s]]), s)
+        over0 = ((a0["flexion"] > L["flex"][1]) | (a0["flexion"] < L["flex"][0]) | (a0["deviation"] > L["dev"][1]) |
+                 (a0["deviation"] < L["dev"][0]) | (np.abs(a0["twist"]) > L["tw"][1]))
+        cl = clamp_wrist_angles(ang, cfg, gate=np.where(over0, 1.0, 1.0 - w_hand))
+        # inside a counterbalance: the back / shoulder site entry nearest his original palm over the (ramped) interval
+        n_cb, g = np.zeros((T, 3)), np.zeros(T)
+        cb_sites = []
+        for t0, t1 in intervals:
+            ks = np.arange(max(0, int(np.floor((t0 - cfg.support_cb_ramp_s) * HZ))), min(T, int(np.ceil((t1 + cfg.support_cb_ramp_s) * HZ)) + 1))
+            if not len(ks):
+                continue
+            best = None
+            # the back / shoulder site his hand is attached to in the interval (most weight), else the nearest on average
+            Wk = per_hand[s]["W"][ks] if per_hand[s]["W"].size else np.zeros((len(ks), 0))
+            held = [(Wk[:, i].sum(), a) for i, a in enumerate(per_hand[s]["att"]) if site_kind(names[a["site"]]) in BACK_KINDS]
+            held = [x for x in held if x[0] > 0]
+            if held:
+                a_ = max(held, key=lambda x: x[0])[1]
+                nm_ = names[a_["site"]]
+                P, N = ents[nm_]
+                e_ = a_.get("entry", 0)
+                d_ = np.linalg.norm(pcs[s][ks] - (P[ks, e_] + cfg.palm_m * N[ks, e_]), axis=1)
+                best = (-1.0, nm_, e_, d_)
+            for nm in ([] if held else back_names):
+                P, N = ents[nm]
+                d = np.linalg.norm(pcs[s][ks, None] - (P[ks] + cfg.palm_m * N[ks]), axis=2)
+                for e in range(P.shape[1]):
+                    if best is None or d[:, e].mean() < best[0]:
+                        best = (d[:, e].mean(), nm, e, d[:, e])
+            _, nm, e, d = best
+            n_cb[ks] = ents[nm][1][ks, e]
+            g[ks] = np.clip((cfg.reach_max_m[s] + cfg.support_cb_extra_m - d) / cfg.support_cb_extra_m, 0.0, 1.0)
+            cb_sites.append({"t0": t0, "t1": t1, "site": nm, "entry": e, "mean_dist_m": round(float(d.mean()), 3)})
+        w_cb = cb * (1.0 - w_hand) * g
+        ws = np.maximum(w_back, w_cb)
+        aim_n = _unit(w_back[:, None] * n_back + np.maximum(0.0, w_cb - w_back)[:, None] * n_cb)
+        if aim_override and s in aim_override:            # v5: where the surface nudge moved the palm, her local surface normal there
+            u_o, n_o = aim_override[s]
+            aim_n = _unit((1.0 - u_o)[:, None] * aim_n + u_o[:, None] * n_o)
+        flex, dev, tw = cl["flex"].copy(), cl["dev"].copy(), cl["tw"].copy()
+        ks = np.flatnonzero(ws > 1e-9)
+        if len(ks):
+            Ge = zc.posed(fit_lead, ks, Pose[ks])["R"][:, ELBOW[s]]
+            smp = np.arange(0, T, max(1, T // 400))
+            pn_h = _unit(np.einsum("nji,nj->ni", kl["R"][smp, WRIST[s]], hc.palm_normal(kl["J"][smp], s)).mean(0))
+            sup = support_angles(Ge, -aim_n[ks], pn_h, cl["dev"][ks], s, cfg)
+            # the twist the palm needs can pass 180 deg (the palm turned right round): clamped with continuity (twist_target), never a flip
+            tws = cl["tw"].copy()
+            tws[ks] = sup["tw"]
+            n_r = max(2, int(round(cfg.wrist_ramp_s * HZ)))
+            tws = _wrap(tws + ramp_correction(_wrap(twist_target(tws, cfg.wrist_twist_max_deg) - tws), n_r))
+            sup["tw"] = tws[ks]
+            wk = ws[ks]
+            flex[ks] += wk * (sup["flex"] - flex[ks])
+            dev[ks] += wk * (sup["dev"] - dev[ks])
+            tw[ks] = _wrap(tw[ks] + wk * _wrap(sup["tw"] - tw[ks]))
+        if len(ks):                                       # (the support blend never leaves the limits; a supporting wrist may extend further)
+            lo_f = -(cfg.wrist_ext_max_deg + ws[ks] * max(0.0, cfg.support_ext_deg - cfg.wrist_ext_max_deg))
+            flex[ks], dev[ks] = np.clip(flex[ks], lo_f, L["flex"][1]), np.clip(dev[ks], *L["dev"])
+        ch = (np.abs(flex - ang["flexion"]) > 1e-6) | (np.abs(dev - ang["deviation"]) > 1e-6) | (np.abs(_wrap(tw - ang["twist"])) > 1e-6)
+        Rall = R.copy()
+        Rall[ch] = wrist_compose(flex[ch], dev[ch], tw[ch], s)
+        Rall, fixed = depop(Rall, R)
+        ch = ch | fixed
+        tw = zc.wrist_angles_R(Rall, s)["twist"]
+        kc = np.flatnonzero(ch)
+        if len(kc):
+            Rn = Rall[kc]
+            # the forearm's share of the twist change, continuous in time (the change unwrapped along the film)
+            dtw = np.zeros(T)
+            dtw[kc] = np.radians(_wrap(tw[kc] - ang["twist"][kc]))
+            th = cfg.support_elbow_share * np.unwrap(dtw)[kc]
+            b = _unit(Jr[WRIST[s]] - Jr[ELBOW[s]])
+            Rb = rot_axis_angle(np.tile(b, (len(kc), 1)), th)
+            roll = np.abs(th) > 1e-9
+            Re = zc.rotvec_to_mat(Pose[kc, ELBOW[s]])
+            Pose[kc[roll], ELBOW[s]] = mat_to_rotvec((Re @ Rb)[roll])
+            Pose[kc, WRIST[s]] = mat_to_rotvec(np.transpose(Rb, (0, 2, 1)) @ Rn)
+        info[s] = {"frames_changed": int(len(kc)), "spans": [[int(a), int(b_)] for a, b_ in _spans(ch)],
+                   "frames_support": int((ws > 1e-9).sum()), "frames_support_full": int((ws >= 0.999).sum()),
+                   "frames_over_limits_before": int(((ang["flexion"] > L["flex"][1]) | (ang["flexion"] < L["flex"][0]) |
+                                                    (ang["deviation"] > L["dev"][1]) | (ang["deviation"] < L["dev"][0]) |
+                                                    (np.abs(ang["twist"]) > L["tw"][1])).sum()),
+                   "frames_over_limits_input": int(over0.sum()), "frames_depop": int(fixed.sum()),
+                   "counterbalance_sites": cb_sites, "elbow_roll_deg_max": round(float(np.degrees(np.abs(th)).max()) if len(kc) else 0.0, 1)}
+        per_hand[s]["ws"] = ws
+    return Pose, info
+
+
+# ------------------------------------------------------------------------------------------------ 4c. the surface nudge (v5)
+
+HER_SURFACE_JOINTS = (PELVIS, SPINE1, SPINE2, SPINE3, NECK, 13, 14, 16, 17)     # her torso, collars, upper arms (dominant skinning joint)
+
+
+def her_surface(fit_follow: dict, ks: np.ndarray, batch: int = 256) -> tuple[np.ndarray, np.ndarray]:
+    """her shaped posed mesh on frames ks: the vertices of her torso / collars / upper arms and their normals (n, m, 3) each"""
+    import torch
+    from . import hand_contact as hc
+    from .refine_hands import mesh_normals
+    kin = hc.full_kin(fit_follow["betas"], "cpu")
+    sel = np.flatnonzero(np.isin(kin.weights_np.argmax(1), HER_SURFACE_JOINTS))
+    Pf, tr, F = hc.full_pose(fit_follow), np.asarray(fit_follow["transl"], float), np.asarray(kin.faces)
+    Vo, No = [], []
+    for i in range(0, len(ks), batch):
+        kk = ks[i:i + batch]
+        with torch.no_grad():
+            V = kin.forward(torch.tensor(Pf[kk], dtype=torch.float64), torch.tensor(tr[kk]), want_verts=True)["verts"].numpy()
+        Vo.append(V[:, sel])
+        No.append(np.stack([mesh_normals(v, F)[sel] for v in V]))
+    return np.concatenate(Vo), np.concatenate(No)
+
+
+def surface_depth(Pt: np.ndarray, V: np.ndarray, N: np.ndarray, chunk: int = 256) -> tuple[np.ndarray, np.ndarray]:
+    """points Pt (n,3) vs her surface V, N (n,m,3) -> depth (n,) (> 0: inside, by the nearest vertex's normal) and that normal (n,3)"""
+    dep, nr = np.zeros(len(Pt)), np.zeros((len(Pt), 3))
+    for i in range(0, len(Pt), chunk):
+        sl = slice(i, i + chunk)
+        j = ((V[sl] - Pt[sl, None]) ** 2).sum(2).argmin(1)
+        r = np.arange(len(j))
+        v, nn = V[sl][r, j], N[sl][r, j]
+        dep[sl], nr[sl] = ((v - Pt[sl]) * nn).sum(1), nn
+    return dep, nr
+
+
+def hinge_axis(S, E, W, G17, side: str) -> np.ndarray:
+    """the elbow's flexion axis (world, n x 3): e1 x f, near a straight arm the rest axis carried by the upper arm (as arm_ik)"""
+    e1, f = _unit(E - S), _unit(W - E)
+    nx = np.cross(e1, f)
+    n_fb = _unit(np.einsum("nij,j->ni", G17, HINGE_REST[side]))
+    wn = np.clip(np.linalg.norm(nx, axis=1) / np.sin(np.radians(10.0)), 0, 1)[:, None]
+    n0 = _unit(wn * _unit(nx) + (1 - wn) * n_fb)
+    return _unit(n0 - (n0 * e1).sum(1, keepdims=True) * e1)
+
+
+def nudge_choice(dskin: np.ndarray, dwrist: np.ndarray, grid_deg: np.ndarray, allowed: np.ndarray, cfg: MagnetCfg,
+                 sign: float | None = None) -> np.ndarray:
+    """per frame (n,) the elbow change (deg, from grid_deg (g,); dskin / dwrist / allowed (n, g)): the smallest |change| that puts the palm
+    skin within [-surface_gap_m, surface_in_m] of her surface and the wrist no deeper than surface_in_m (ties: + = bending); none: the
+    least deep (if it is better by more than surface_in_m), else 0. sign: only changes of that sign (and 0)"""
+    al = allowed if sign is None else allowed & ((np.sign(grid_deg) == sign) | (grid_deg == 0))[None]
+    ok = al & (dskin <= cfg.surface_in_m) & (dskin >= -cfg.surface_gap_m) & (dwrist <= cfg.surface_in_m)
+    key = np.abs(grid_deg) - 1e-3 * np.sign(grid_deg)                       # (bending first at equal |change|)
+    big = np.where(ok, key[None], np.inf)
+    j = big.argmin(1)
+    r = np.arange(len(j))
+    out = np.where(np.isfinite(big[r, j]), grid_deg[j], np.nan)
+    bad = np.isnan(out)
+    if bad.any():
+        sc = np.where(al, np.maximum(np.maximum(dskin, dwrist), 0.0) + 1e-4 * np.abs(grid_deg)[None], np.inf)
+        jb = sc.argmin(1)
+        i0 = int(np.argmin(np.abs(grid_deg)))
+        better = sc[r, jb] < np.maximum(np.maximum(dskin[:, i0], dwrist[:, i0]), 0.0) - cfg.surface_in_m
+        out[bad] = np.where(better, grid_deg[jb], 0.0)[bad]
+    return out
+
+
+def surface_nudge(fit_lead: dict, fit_follow: dict, Pose: np.ndarray, per_hand: dict, cfg: MagnetCfg) -> tuple[dict, dict, dict]:
+    """v5: on the supporting frames (ws > 0) of the wrist-ruled Pose: where his palm skin or wrist joint is more than surface_in_m inside
+    her, the elbow change about its hinge (nudge_choice, one sign per span, linear ramps of surface_ramp_s) -> ({side: (T,) deg}, the
+    wrist rule's aim override {side: (u (T,), her surface normal (T,3))}, info)"""
+    from scipy.ndimage import gaussian_filter1d
+    from . import hand_contact as hc
+    from . import zouk_contacts as zc
+    T = len(Pose)
+    out, aim, info = {}, {}, {}
+    sup = np.zeros(T, bool)
+    for s in SIDES:
+        sup |= per_hand[s].get("ws", np.zeros(T)) > 1e-9
+    ks = np.flatnonzero(sup)
+    if not len(ks):
+        return out, aim, info
+    V, N = her_surface(fit_follow, ks)
+    kl = zc.posed(fit_lead, ks, Pose[ks])
+    J, R = kl["J"], kl["R"]
+    grid = np.arange(-cfg.surface_max_deg, cfg.surface_max_deg + 0.5, 1.0)
+    n_r = max(2, int(round(cfg.surface_ramp_s * HZ)))
+    for s in SIDES:
+        ws = per_hand[s].get("ws", np.zeros(T))[ks]
+        S, E, W, G17 = J[:, SHOULDER[s]], J[:, ELBOW[s]], J[:, WRIST[s]], R[:, SHOULDER[s]]
+        pc, pn = hc.palm_centre(J, s), hc.palm_normal(J, s)
+        skin = pc + cfg.palm_m * pn
+        hn = hinge_axis(S, E, W, G17, s)
+        flex0 = np.degrees(np.arccos(np.clip((_unit(E - S) * _unit(W - E)).sum(1), -1, 1)))
+        ds0, _ = surface_depth(skin, V, N)
+        dw0, _ = surface_depth(W, V, N)
+        need = (ws > 1e-9) & ((ds0 > cfg.surface_in_m) | (dw0 > cfg.surface_in_m))
+        dphi = np.zeros(T)
+        u = np.zeros(T)
+        if need.any():
+            kn = np.flatnonzero(need)
+            DS, DW = np.zeros((len(kn), len(grid))), np.zeros((len(kn), len(grid)))
+            for gi, g in enumerate(grid):
+                Rg = rot_axis_angle(hn[kn], np.full(len(kn), np.radians(g)))
+                W2 = E[kn] + np.einsum("nij,nj->ni", Rg, W[kn] - E[kn])
+                DW[:, gi] = surface_depth(W2, V[kn], N[kn])[0]
+                DS[:, gi] = surface_depth(W2 + (skin[kn] - W[kn]), V[kn], N[kn])[0]   # (the hand's orientation kept: the rule re-aims it)
+            fl = flex0[kn, None] + grid[None]
+            allowed = (fl <= cfg.flex_max_deg) & (fl >= np.minimum(cfg.flex_min_deg, flex0[kn])[:, None])
+            ch = nudge_choice(DS, DW, grid, allowed, cfg)
+            # one sign per span (spans closer than two ramps merged): the majority of the frames, bending on a tie
+            merged = []
+            for a, b in _spans(need):
+                if merged and a - merged[-1][1] <= 2 * n_r:
+                    merged[-1][1] = b
+                else:
+                    merged.append([a, b])
+            signs = []
+            for a, b in merged:
+                m = (kn >= a) & (kn <= b)
+                sg = 1.0 if (ch[m] > 0).sum() >= (ch[m] < 0).sum() else -1.0
+                signs.append(sg)
+                wrong = np.flatnonzero(m & (np.sign(ch) == -sg))
+                if len(wrong):
+                    ch[wrong] = nudge_choice(DS[wrong], DW[wrong], grid, allowed[wrong], cfg, sign=sg)
+            cT = np.zeros(T)
+            cT[ks[kn]] = ch
+            dphi = ramp_correction(cT, n_r)
+            ind = np.zeros(T)
+            ind[ks[kn[np.abs(ch) > 1e-9]]] = 1.0
+            u = np.clip(ramp_correction(ind, n_r), 0.0, 1.0)
+        # her surface normal at the nudged palm (smoothed in time): the aim of the re-run wrist rule where u > 0
+        Rg = rot_axis_angle(hn, np.radians(dphi[ks]))
+        W2 = E + np.einsum("nij,nj->ni", Rg, W - E)
+        ds1, n1 = surface_depth(W2 + (skin - W), V, N)
+        dw1, _ = surface_depth(W2, V, N)
+        nT = np.zeros((T, 3))
+        nT[ks] = _unit(gaussian_filter1d(n1, 2.0, axis=0, mode="nearest"))
+        out[s] = dphi
+        aim[s] = (u, nT)
+        # the local elbow change: R19' = R19 Rot(G19^T hn, dphi) (the forearm and hand turn about the hinge through the elbow)
+        per_hand[s]["nudge_axis_local"] = (ks, np.einsum("nji,nj->ni", R[:, ELBOW[s]], hn))
+        sp = ws > 1e-9
+        info[s] = {"frames_need": int(need.sum()), "frames_nudged": int((np.abs(dphi) > 1e-9).sum()),
+                   "spans": [[int(a), int(b)] for a, b in _spans(np.abs(dphi) > 1e-9)],
+                   "span_signs": signs if need.any() else [],
+                   "dphi_deg_max_bend": round(float(dphi.max()), 1), "dphi_deg_max_straighten": round(float(-dphi.min()), 1),
+                   "wrist_move_cm_max": round(float(np.linalg.norm(W2 - W, axis=1).max()) * 100, 1),
+                   "skin_depth_cm_before_p95": round(float(np.percentile(ds0[need], 95)) * 100, 1) if need.any() else None,
+                   "skin_depth_cm_after_est_p95": round(float(np.percentile(ds1[need], 95)) * 100, 1) if need.any() else None,
+                   "wrist_depth_cm_before_max": round(float(dw0[sp].max()) * 100, 1) if sp.any() else None,
+                   "wrist_depth_cm_after_est_max": round(float(dw1[sp].max()) * 100, 1) if sp.any() else None}
+    return out, aim, info
+
+
+def apply_elbow_nudge(Pose: np.ndarray, dphi: dict, per_hand: dict) -> np.ndarray:
+    """Pose with each elbow's local rotation turned by dphi (deg, (T,)) about the hinge axis surface_nudge stored (the wrist's local
+    rotation kept: the hand turns with the forearm until the wrist rule re-aims it)"""
+    from . import zouk_contacts as zc
+    Pose = Pose.copy()
+    for s, d in dphi.items():
+        ks, ax = per_hand[s]["nudge_axis_local"]
+        m = np.abs(d[ks]) > 1e-9
+        if not m.any():
+            continue
+        k = ks[m]
+        Re = zc.rotvec_to_mat(Pose[k, ELBOW[s]])
+        Pose[k, ELBOW[s]] = mat_to_rotvec(Re @ rot_axis_angle(_unit(ax[m]), np.radians(d[k])))
+    return Pose
 
 
 # ------------------------------------------------------------------------------------------------ the whole snap
@@ -648,6 +1133,20 @@ def snap(take: str, cfg: MagnetCfg | None = None, write: bool = True) -> dict:
             for j, key in ((SHOULDER[s], "R17"), (ELBOW[s], "R19"), (WRIST[s], "R21")):
                 Pose[m, j] = mat_to_rotvec(ik[key])
         per_hand[s] = {"att": att[h], "W": W, "tg": tg, "m": m, "ik": ik, "D": D[h]}
+    wr_info = None
+    if cfg.wrist_rule:
+        ivs = counterbalance_intervals()
+        Pose_ik = Pose
+        Pose, wr_info = wrist_rule(fit["lead"], Pose_ik, kl, per_hand, ents, names, pcs, cfg, ivs, Pose0=Pose0)
+        if cfg.surface_nudge:                               # v5: the palm onto her surface (the elbow bent / straightened), then re-aimed
+            dphi, aim, nudge_info = surface_nudge(fit["lead"], fit["follow"], Pose, per_hand, cfg)
+            if any(np.abs(d).max() > 1e-9 for d in dphi.values()):
+                Pose, wr_info = wrist_rule(fit["lead"], apply_elbow_nudge(Pose_ik, dphi, per_hand), kl, per_hand, ents, names, pcs, cfg,
+                                           ivs, Pose0=Pose0, aim_override=aim)
+            wr_info["surface_nudge"] = nudge_info
+            for s in SIDES:
+                if s in dphi:
+                    per_hand[s]["dphi"] = dphi[s]
     changed = np.flatnonzero(np.abs(Pose - Pose0).max((1, 2)) > 0)
     J_new = np.asarray(fit["lead"]["joints"], float).copy()
     kn = None
@@ -671,6 +1170,8 @@ def snap(take: str, cfg: MagnetCfg | None = None, write: bool = True) -> dict:
                     "flex_deg_range_new": [round(float(ik["flex_deg"].min()), 1), round(float(ik["flex_deg"].max()), 1)]}
     tl = timeline_json(take, cfg, att, per_hand, names, T)
     tl["palm_reached"] = resid
+    if wr_info is not None:
+        tl["wrist_rule"] = wr_info
     tl["seconds"] = round(time.time() - t0, 1)
     if write:
         fdir = P["fit"]
@@ -689,7 +1190,9 @@ def snap(take: str, cfg: MagnetCfg | None = None, write: bool = True) -> dict:
                                           "config": asdict(cfg)})
         write_json(P["out"] / "timeline.json", tl)
         np.savez_compressed(P["out"] / "timeline.npz", **{f"w_{s}": per_hand[s]["tg"]["w"] for s in SIDES},
-                            **{f"X_{s}": per_hand[s]["tg"]["X"] for s in SIDES}, **{f"D_{s}": per_hand[s]["D"] for s in SIDES})
+                            **{f"X_{s}": per_hand[s]["tg"]["X"] for s in SIDES}, **{f"D_{s}": per_hand[s]["D"] for s in SIDES},
+                            **{f"ws_{s}": per_hand[s]["ws"] for s in SIDES if "ws" in per_hand[s]},
+                            **{f"dphi_{s}": per_hand[s]["dphi"] for s in SIDES if "dphi" in per_hand[s]})
         meas = measure(take, J_new=J_new, tl=tl)
         tl["measure"] = meas
     else:
@@ -795,6 +1298,8 @@ def prove_export(udir: Path, ref_dir: Path, tl: dict, parents: np.ndarray) -> di
     for s in SIDES:
         for a in tl["hands"][s]["attachments"]:
             allowed[a["k0"]:a["k1"] + 1] = True
+        for k0, k1 in tl.get("wrist_rule", {}).get(s, {}).get("spans", []):     # v3: the wrist rule's frames (both wrists, the whole film)
+            allowed[k0:k1 + 1] = True
     rot1, rot0 = m1[:, 3:3 + 220].reshape(T, 55, 4), m0[:, 3:3 + 220].reshape(T, 55, 4)
     pos1, pos0 = m1[:, 223:].reshape(T, 55, 3), m0[:, 223:].reshape(T, 55, 3)
     rows = np.flatnonzero((m1 != m0).any(1))
@@ -937,9 +1442,11 @@ def sites_image(sites: dict, betas: np.ndarray, path: Path) -> Path:
     return path
 
 
-def sheets(take: str, film_times=SHEET_FILM_S, tile: int = 400, extent_m: float = 1.2) -> list:
+def sheets(take: str, film_times=SHEET_FILM_S, tile: int = 400, extent_m: float = 1.2, ref_fit: Path | None = None,
+           out_dir: Path | None = None, tips: bool = False) -> list:
     """per film time one 3 x 2 sheet of the 6 phones: his arms original (white) and magnet (green: shoulder - elbow - wrist - palm), her
-    sites (small dots; an attached one big with its name) -> magnet/sheets/sheet_<film>.jpg"""
+    sites (small dots; an attached one big with its name) -> magnet/sheets/sheet_<film>.jpg. ref_fit: the white arms from this fit
+    instead of the original (e.g. the previous magnet); tips: the arm line runs on to the middle fingertip (shows the wrist bend)"""
     import cv2
     from . import hand_contact as hc
     from . import zouk_contacts as zc
@@ -948,14 +1455,14 @@ def sheets(take: str, film_times=SHEET_FILM_S, tile: int = 400, extent_m: float 
     tl = json.loads((P["out"] / "timeline.json").read_text(encoding="utf-8"))
     sites = build_sites(take)
     names = site_names(sites)
-    f0, fm = load_fit(P["src_fit"]), load_fit(P["fit"])
+    f0, fm = load_fit(P["src_fit"] if ref_fit is None else ref_fit), load_fit(P["fit"])
     obs, phones = hc.Obs(), hc.Phones()
     outs = []
     for ft in film_times:
         t = dance_of(ft)
         k = int(round(t * HZ))
         ks = np.array([k])
-        kl0, klm, kf = zc.posed(f0["lead"], ks), zc.posed(fm["lead"], ks), zc.posed(f0["follow"], ks)
+        kl0, klm, kf = zc.posed(f0["lead"], ks), zc.posed(fm["lead"], ks), zc.posed(fm["follow"], ks)
         ents = site_entries_world(sites, kf["J"], kf["R"], cfg)
         att_now = {}
         for s in SIDES:
@@ -964,9 +1471,12 @@ def sheets(take: str, film_times=SHEET_FILM_S, tile: int = 400, extent_m: float 
                 a = [r for r in tl["hands"][s]["attachments"] if r["k0"] <= k <= r["k1"] and r["site"] == names[i]]
                 att_now[s] = (names[i], a[0]["entry"] if a else 0, tl["hands"][s]["w_per_frame"][k])
         arms = []
-        for J, col in ((kl0["J"][0], (255, 255, 255)), (klm["J"][0], (60, 255, 60))):
+        for J, tp, col in ((kl0["J"][0], kl0["tips"][0], (255, 255, 255)), (klm["J"][0], klm["tips"][0], (60, 255, 60))):
             for s in SIDES:
-                arms.append((np.stack([J[SHOULDER[s]], J[ELBOW[s]], J[WRIST[s]], hc.palm_centre(J[None], s)[0]]), col))
+                pts = [J[SHOULDER[s]], J[ELBOW[s]], J[WRIST[s]], hc.palm_centre(J[None], s)[0]]
+                if tips:                                   # tips: 5 per hand (left first), the middle finger third
+                    pts.append(tp[(0 if s == "left" else 5) + 2])
+                arms.append((np.stack(pts), col))
         centre = 0.5 * (kl0["J"][0, SPINE3] + kf["J"][0, SPINE3])
         tiles = []
         for c in obs.cams:
@@ -1010,7 +1520,7 @@ def sheets(take: str, film_times=SHEET_FILM_S, tile: int = 400, extent_m: float 
                 lines.append(f"his {s}: " + (f"{v[0]} w {v[2]:.2f}" if v else "free"))
             tiles.append(hc.label_tile(raw, lines, 0.45))
         sheet = np.concatenate([np.concatenate(tiles[:3], 1), np.concatenate(tiles[3:6], 1)], 0)
-        p = P["sheets"] / f"sheet_{int(ft):03d}s.jpg"
+        p = (P["sheets"] if out_dir is None else Path(out_dir)) / (f"sheet_{int(ft):03d}s.jpg" if ft == int(ft) else f"sheet_{ft:05.1f}s.jpg")
         p.parent.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(p), sheet, [cv2.IMWRITE_JPEG_QUALITY, 88])
         outs.append(p)

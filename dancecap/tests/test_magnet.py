@@ -228,3 +228,111 @@ def test_elbow_choice_keeps_its_side_where_the_original_is_on_the_axis():
     E0[:2] = [0.1, 0, 0]
     out = mg._elbow_dirs(q, u, C0, rr, E0, np.r_[False, np.ones(n - 1, bool)], None)
     assert np.allclose(out, [1.0, 0, 0])                           # continuity: no flip
+
+
+# ------------------------------------------------------------------------------------------------ v3: the wrist rule
+
+def test_wrist_compose_inverts_wrist_angles():
+    from dancecap import zouk_contacts as zc
+    rng = np.random.default_rng(3)
+    for side in ("left", "right"):
+        f, d, t = rng.uniform(-80, 80, 50), rng.uniform(-40, 40, 50), rng.uniform(-150, 150, 50)
+        ang = zc.wrist_angles_R(mg.wrist_compose(f, d, t, side), side)
+        assert np.allclose(ang["flexion"], f, atol=1e-6) and np.allclose(ang["deviation"], d, atol=1e-6)
+        assert np.allclose(mg._wrap(ang["twist"] - t), 0, atol=1e-6)
+    assert np.allclose(mg.wrist_compose([0.0], [0.0], [0.0], "right"), np.eye(3))
+
+
+def test_wrist_clamp_holds_the_limits_with_linear_ramps():
+    cfg = mg.MagnetCfg()
+    T = 90
+    flex = np.full(T, 20.0)
+    flex[40:50] = 140.0                                           # the hand folded in for 1/3 s (the 1:32 complaint)
+    dev = np.full(T, -10.0)
+    dev[60:65] = -70.0                                            # ulnar beyond 35
+    tw = np.full(T, 30.0)
+    cl = mg.clamp_wrist_angles({"flexion": flex, "deviation": dev, "twist": tw}, cfg)
+    assert cl["flex"].max() <= 60.0 + 1e-9 and cl["dev"].min() >= -35.0 - 1e-9
+    assert np.allclose(cl["flex"][:30], 20.0) and np.allclose(cl["flex"][58:], 20.0)   # untouched beyond the ramps
+    n = int(round(cfg.wrist_ramp_s * mg.HZ))
+    corr = cl["flex"] - flex                                      # the correction ramps in linearly over n frames, never a jump
+    assert np.allclose(np.diff(corr[40 - n:41]), corr[40] / n)
+    assert np.abs(np.diff(corr)).max() <= 80.0 / n + 1e-9
+    assert np.allclose(cl["tw"], 30.0)
+
+
+def test_wrist_twist_clamp_never_flips_through_180():
+    cfg = mg.MagnetCfg()
+    tw = np.r_[np.linspace(60, 179, 20), np.linspace(-179, -150, 10), np.linspace(-150, 60, 20)]   # past 180 and back the same way
+    cl = mg.clamp_wrist_angles({"flexion": np.zeros(50), "deviation": np.zeros(50), "twist": tw}, cfg)
+    assert np.abs(cl["tw"]).max() <= 90.0 + 1e-9
+    assert np.abs(mg._wrap(np.diff(cl["tw"]))).max() < 25.0      # continuous (no 180-deg flip at the wrap)
+
+
+def test_support_wrist_is_near_straight_and_turns_the_palm_by_twist():
+    from dancecap import zouk_contacts as zc
+    cfg = mg.MagnetCfg()
+    side = "right"
+    a, nv, tv = zc._rest_axes(side)
+    Ge = np.tile(np.eye(3), (3, 1, 1))
+    # aims: the palm turned 70 deg about the forearm; then tilted 10 deg along it; then tilted 40 deg (beyond the 15-deg flexion box)
+    aims = []
+    for tw, tilt in ((70.0, 0.0), (-30.0, 10.0), (20.0, 40.0)):
+        R = mg.wrist_compose([tilt], [0.0], [tw], side)[0]
+        aims.append(R @ nv)
+    sup = mg.support_angles(Ge, np.array(aims), nv, np.array([25.0, -3.0, 0.0]), side, cfg)
+    assert np.all(np.abs(sup["flex"]) <= 15.0 + 1e-6) and np.all(np.abs(sup["dev"]) <= 15.0 + 1e-9)
+    assert abs(sup["tw"][0] - 70.0) < 1.0 and abs(sup["flex"][0]) < 3.0          # a pure turn of the palm: twist, wrist straight
+    assert abs(sup["flex"][1] - 10.0) < 1.5 and abs(sup["tw"][1] + 30.0) < 2.0
+    assert abs(sup["flex"][2] - 15.0) < 1e-3                                      # the tilt beyond the box stops at 15 deg
+    R = mg.wrist_compose(sup["flex"], sup["dev"], sup["tw"], side)
+    pn = np.einsum("nij,j->ni", R, nv)
+    ang = np.degrees(np.arccos(np.clip((pn * np.array(aims)).sum(1), -1, 1)))
+    assert ang[0] < 16.0 and ang[1] < 16.0                       # (the deviation box leaves the palm within ~15 deg of the aim)
+
+
+def test_interval_weight_is_one_inside_with_linear_ramps_outside():
+    w = mg.interval_weight(300, [(3.0, 5.0)], 0.5)
+    t = np.arange(300) / mg.HZ
+    assert np.all(w[(t >= 3.0) & (t <= 5.0)] == 1.0) and np.all(w[(t <= 2.5) | (t >= 5.5)] == 0.0)
+    assert np.allclose(w[(t > 2.5) & (t < 3.0)], (t[(t > 2.5) & (t < 3.0)] - 2.5) / 0.5)
+
+
+def test_support_wrist_extends_back_but_never_bends_in_past_15():
+    from dancecap import zouk_contacts as zc
+    cfg = mg.MagnetCfg()
+    side = "right"
+    a, nv, tv = zc._rest_axes(side)
+    Ge = np.tile(np.eye(3), (3, 1, 1))
+    aims = [mg.wrist_compose([tilt], [0.0], [0.0], side)[0] @ nv for tilt in (-50.0, -85.0, 40.0)]
+    sup = mg.support_angles(Ge, np.array(aims), nv, np.zeros(3), side, cfg)
+    assert abs(sup["flex"][0] + 50.0) < 1.5                       # bent back 50 deg: allowed (a palm pushing on a wall)
+    assert abs(sup["flex"][1] + cfg.support_ext_deg) < 1e-3       # bent back beyond 70: stops at 70
+    assert abs(sup["flex"][2] - cfg.support_flex_deg) < 1e-3      # bent in: stops at 15
+
+
+def test_nudge_choice_smallest_change_bending_first_and_sign():
+    cfg = mg.MagnetCfg()
+    grid = np.arange(-10.0, 10.5, 1.0)
+    # frame 0: inside 5 cm at 0, out at |g| >= 4 either way (tie -> bend +4); frame 1: only straightening reaches; frame 2: never
+    ds = np.stack([np.where(np.abs(grid) >= 4, 0.005, 0.05), np.where(grid <= -6, 0.004, 0.06), np.full(len(grid), 0.08)])
+    dw = np.full_like(ds, -0.02)
+    al = np.ones_like(ds, bool)
+    ch = mg.nudge_choice(ds, dw, grid, al, cfg)
+    assert ch[0] == 4.0 and ch[1] == -6.0 and ch[2] == 0.0
+    ch2 = mg.nudge_choice(ds[:2], dw[:2], grid, al[:2], cfg, sign=1.0)
+    assert ch2[0] == 4.0 and ch2[1] == 0.0                         # one sign per span: no straightening allowed -> no better option
+    dw2 = dw.copy()
+    dw2[0, grid == 4] = 0.03                                       # the wrist still inside at +4 -> the next one
+    assert mg.nudge_choice(ds[:1], dw2[:1], grid, al[:1], cfg)[0] == -4.0
+
+
+def test_surface_depth_sign_and_ramped_nudge_is_continuous():
+    V = np.tile(np.array([[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]]), (2, 1, 1))
+    N = np.tile(np.array([[[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]]]), (2, 1, 1))
+    d, n = mg.surface_depth(np.array([[0.1, 0.0, -0.02], [0.9, 0.0, 0.03]]), V, N)
+    assert np.allclose(d, [0.02, -0.03]) and np.allclose(n, [[0, 0, 1], [0, 0, 1]])
+    c = np.zeros(60)
+    c[20:30] = 12.0
+    e = mg.ramp_correction(c, 12)
+    assert np.all(e >= c - 1e-9) and np.abs(np.diff(e)).max() <= 1.0 + 1e-9 and e[0] == 0.0 and e[-1] == 0.0
