@@ -816,8 +816,14 @@ def prune_bundles(out_dir: Path = BUNDLES, keep: int = 3, min_age_s: float = BUN
     than min_age_s: `remote run --parallel` builds one bundle per session, and the 4th session's prune deleted the first three
     sessions' bundles before their uploads started (lucas_luiza_h fits, 2026-10-23: 3 of 6 sessions failed "upload: no such file")."""
     now = time.time()
-    olds = [p for p in sorted(out_dir.glob("bundle_*.tar.gz"), key=lambda p: p.stat().st_mtime, reverse=True)[keep:]
-            if now - p.stat().st_mtime > min_age_s]
+    found = []
+    for p in out_dir.glob("bundle_*.tar.gz"):
+        try:
+            found.append((p.stat().st_mtime, p))
+        except FileNotFoundError:        # a concurrent session's prune removed it between the glob and the stat (Windows, 2026-10-25)
+            continue
+    found.sort(key=lambda mp: mp[0], reverse=True)
+    olds = [p for m, p in found[keep:] if now - m > min_age_s]
     for p in olds:
         p.unlink(missing_ok=True)
         p.with_suffix("").with_suffix(".json").unlink(missing_ok=True)
