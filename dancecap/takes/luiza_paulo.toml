@@ -78,7 +78,8 @@ map = { win_step_s = 2.0, dense_step_s = 6.0 }
 file = "facebook-807491717892884.mp4"
 mount = "handheld"          # handheld | tripod                 (user)
 zoom = true                 # true | false, independent of mount (user)
-source = "auto"             # user = confirmed | auto = suggestion, not confirmed yet
+source = "user"             # user = confirmed | auto = suggestion, not confirmed yet
+set_at = "2026-10-25T17:21:31Z"
 # written by the probe, kept for the record; never overrides the user:
 suggested = { mount = "handheld", zoom = true, confidence = 0.85, by = "probe_a", at = "2026-10-25T06:00:35Z", evidence = { parallax_px = 2.132, jitter_hf = 1.6458, zoom_scale = 2.5233, pan_px = 400.1, windows = 5, hz = 15.0, kf_keyframes = 600, kf_max_step = 1.0056 } }
 
@@ -86,7 +87,8 @@ suggested = { mount = "handheld", zoom = true, confidence = 0.85, by = "probe_a"
 file = "youtube-oAXB3f0w2ck.mp4"
 mount = "tripod"            # handheld | tripod                 (user)
 zoom = true                 # true | false, independent of mount (user)
-source = "auto"             # user = confirmed | auto = suggestion, not confirmed yet
-pans = true                 # agent 2026-10-25: parallax 0.55 px (a fixed centre) with 38 px pans and a 1.18x zoom range: a panning, zooming tripod
+source = "user"             # user = confirmed | auto = suggestion, not confirmed yet
+set_at = "2026-10-25T17:21:31Z"
 # written by the probe, kept for the record; never overrides the user:
 suggested = { mount = "handheld", zoom = true, confidence = 0.8, by = "probe_a", at = "2026-10-25T06:01:07Z", evidence = { parallax_px = 0.548, jitter_hf = 1.449, zoom_scale = 1.1769, pan_px = 37.8, windows = 5, hz = 15.0, kf_keyframes = 295, kf_max_step = 1.4661 } }
+pans = true                 # tripod only, automatic
