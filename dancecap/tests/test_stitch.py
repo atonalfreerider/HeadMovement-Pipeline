@@ -1043,3 +1043,31 @@ def test_the_pod_job_runs_end_to_end_like_the_worker(layout, tmp_path, monkeypat
     assert doc["take"] == "podance" and doc["gate"]["passed"] and [s["name"] for s in doc["seams"]] == ["a|38"]
     assert (ws / "dancecap/work/podance/smplx/lead.npz").exists()
     assert (ws / "dancecap/work/podance/smplx_rf2_noslip/lead.npz").exists()
+
+
+def test_a_fit_up_to_two_frames_inside_its_spec_window_is_accepted_with_a_warning(tmp_path):
+    """lucas_luiza llg0000: mamma prepare's grid began at k 507 (the take's first instant had no camera frame before it),
+    the spec at 506: the stitch failed on two pods. A fit <= EDGE_TOL_FRAMES inside its window is accepted (the fit wins);
+    further off, or outside the window, it is still refused."""
+    import numpy as np
+    import pytest
+    from dancecap import stitch as ST
+
+    def fit_dir(d, k0, k1):
+        d.mkdir(parents=True, exist_ok=True)
+        n = k1 - k0 + 1
+        t = 0.0 + np.arange(k0, k1 + 1) / 30.0
+        for r in ST.ROLES:
+            arr = {"t": t, "transl": np.zeros((n, 3)), "betas": np.zeros(16), "joints": np.zeros((n, 55, 3))}
+            arr.update({k: np.zeros((n, 63 if k == "body_pose" else 45 if "hand" in k else 3)) for k in ST.POSE_KEYS})
+            np.savez(d / f"{r}.npz", **arr)
+        return d
+
+    spec = ST.Spec(take="t", chunks=[], anchor=0.0)
+    src = fit_dir(tmp_path / "a", 507, 600)
+    L = ST.load_chunk(ST.Chunk(name="a", src=src, k0=506, k1=600), spec, want_refined=False)
+    assert (L.k0, L.k1) == (507, 600) and any("the fit wins" in w for w in L.warnings)
+    with pytest.raises(ValueError):
+        ST.load_chunk(ST.Chunk(name="a", src=src, k0=503, k1=600), spec, want_refined=False)   # 4 frames inside
+    with pytest.raises(ValueError):
+        ST.load_chunk(ST.Chunk(name="a", src=src, k0=508, k1=600), spec, want_refined=False)   # the fit starts before the spec

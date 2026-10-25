@@ -428,6 +428,10 @@ class Loaded:
         return self.ch.name
 
 
+EDGE_TOL_FRAMES = 2  # a fit may start / end this many frames INSIDE its spec window (lucas_luiza llg0000: mamma prepare's grid
+#                      began at k 507, the spec at 506 - the take's first instant, no camera frame before it): a warning, the fit wins
+
+
 def load_chunk(ch: Chunk, spec: Spec, want_refined: bool) -> Loaded:
     raw = read_dir(ch.src)
     for r in ROLES:
@@ -438,9 +442,13 @@ def load_chunk(ch: Chunk, spec: Spec, want_refined: bool) -> Loaded:
     f0, f1 = lattice_range(raw["follow"]["t"], spec.anchor, spec.hz, f"{ch.name} follow")
     if (k0, k1) != (f0, f1):
         raise ValueError(f"{ch.name}: lead covers k {k0}..{k1}, follow {f0}..{f1}")
-    if (ch.k0 is not None and ch.k0 != k0) or (ch.k1 is not None and ch.k1 != k1):
-        raise ValueError(f"{ch.name}: the spec says k {ch.k0}..{ch.k1}, {ch.src} holds k {k0}..{k1}")
     warn = []
+    if (ch.k0 is not None and ch.k0 != k0) or (ch.k1 is not None and ch.k1 != k1):
+        inside = (ch.k0 is None or 0 <= k0 - ch.k0 <= EDGE_TOL_FRAMES) and (ch.k1 is None or 0 <= ch.k1 - k1 <= EDGE_TOL_FRAMES)
+        if not inside:
+            raise ValueError(f"{ch.name}: the spec says k {ch.k0}..{ch.k1}, {ch.src} holds k {k0}..{k1}")
+        warn.append(f"{ch.name}: the spec says k {ch.k0}..{ch.k1}, the fit holds k {k0}..{k1} (<= {EDGE_TOL_FRAMES} frames inside: "
+                    f"the fit wins)")
     if ch.k_hint is not None and tuple(ch.k_hint) != (k0, k1):
         warn.append(f"{ch.name}: the take announced k {ch.k_hint[0]}..{ch.k_hint[1]}, the fit holds k {k0}..{k1} (the fit wins)")
     n = k1 - k0 + 1
@@ -1227,8 +1235,10 @@ def stitch(spec: Spec, *, check: bool = False, only_seam: str | None = None, par
     kmin = min(c.k0 for c in L)
     kmax = max(c.k1 for c in L)
     if partial:    # keep the announced span of the chunks that are still missing, so the gaps show
-        ann = [c for c in spec.chunks if c.k_lo < 10 ** 9]
-        kmin, kmax = min(kmin, min(c.k_lo for c in ann)), max(kmax, max(c.k_hi for c in ann))
+        loaded = {c.name for c in L}
+        ann = [c for c in spec.chunks if c.k_lo < 10 ** 9 and c.name not in loaded]
+        if ann:
+            kmin, kmax = min(kmin, min(c.k_lo for c in ann)), max(kmax, max(c.k_hi for c in ann))
     for c in L:
         for w in c.warnings:
             log("WARNING " + w)
