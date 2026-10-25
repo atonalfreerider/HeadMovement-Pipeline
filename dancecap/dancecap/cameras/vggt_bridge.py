@@ -37,8 +37,19 @@ def _frames(work: Path, cam: str, t0: float, t1: float, step: int) -> list[tuple
 
 def cmd_run(work: Path, cam: str, t0: float, t1: float, step: int, group: int, overlap: int,
             name: str = "facebook/VGGT-1B") -> Path:
+    import importlib
+
     import torch
-    from .geom_priors import ensure
+    from .geom_priors import ensure, pip_install
+    for mod, spec in (("safetensors", "safetensors"), ("einops", "einops")):  # VGGT's weights / layers (no torch dependency)
+        try:
+            importlib.import_module(mod)
+        except ModuleNotFoundError:
+            pip_install(spec)
+    try:  # VGGT.from_pretrained = huggingface_hub's PyTorchModelHubMixin: its own dependencies, not torch's
+        importlib.import_module("huggingface_hub.hub_mixin")
+    except Exception:  # noqa: BLE001
+        pip_install("huggingface_hub", "truststore")
     ensure("from vggt.models.vggt import VGGT", "git+https://github.com/facebookresearch/vggt.git", extra=("einops", "safetensors"))
     from vggt.models.vggt import VGGT
     from vggt.utils.load_fn import load_and_preprocess_images
