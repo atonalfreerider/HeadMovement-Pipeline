@@ -385,9 +385,11 @@ def step_camera(ctx: Ctx) -> str:
 
 
 # people job, measured on a 4090 (2026-10-23, 1280x720 / 720x1280 cuts of ~5900 frames): detect 0.14 s per frame (a close
-# Steadicam: 0.142), SAM up to 0.31 s per frame (the Steadicam's large dancers: 18 s per anchor; a far tripod 0.11)
-PEOPLE_S_PER_FRAME = {"detect": 0.145, "sam": 0.31, "refine": 0.31}
-PEOPLE_MIN = {"detect": 15, "sam": 20, "refine": 30}
+# Steadicam: 0.142), SAM up to 0.31 s per frame (the Steadicam's large dancers: 18 s per anchor; a far tripod 0.11).
+# 2026-10-25, 1920x1080 (luiza_paulo_a, 7953 frames): anchors 0.027, masks 0.072, pose 0.078, finalize 0.057 s per frame - the
+# fixed 10 / 15 min limits of those steps were just met there and missed on luiza_paulo_b (masks > 600 s, an hour of SAM lost)
+PEOPLE_S_PER_FRAME = {"detect": 0.145, "anchors": 0.035, "sam": 0.31, "masks": 0.08, "pose": 0.085, "refine": 0.31, "finalize": 0.065}
+PEOPLE_MIN = {"detect": 15, "anchors": 10, "sam": 20, "masks": 10, "pose": 15, "refine": 30, "finalize": 10}
 
 
 def people_budget(frames: int) -> dict:
@@ -409,12 +411,12 @@ def step_people(ctx: Ctx) -> str:
         "setup": [CONSTRAINTS, ULTRALYTICS, RTMW],
         "commands": [{"name": "fetch_sam2", "timeout_min": 5, "cmd": "python -m dancecap.front_pod fetch-sam2"},
                      {"name": "detect", "timeout_min": tm["detect"], "cmd": f"python -m dancecap.people_mono detect {common}"},
-                     {"name": "anchors", "timeout_min": 10, "cmd": f"python -m dancecap.people_mono anchors {common}"},
+                     {"name": "anchors", "timeout_min": tm["anchors"], "cmd": f"python -m dancecap.people_mono anchors {common}"},
                      {"name": "sam", "timeout_min": tm["sam"], "cmd": f"python -m dancecap.people_mono sam {common}"},
-                     {"name": "masks", "timeout_min": 10, "cmd": f"python -m dancecap.people_mono masks {common}"},
-                     {"name": "pose", "timeout_min": 15, "cmd": f"{NV_LIBS} && python -m dancecap.people_mono pose {common}"},
+                     {"name": "masks", "timeout_min": tm["masks"], "cmd": f"python -m dancecap.people_mono masks {common}"},
+                     {"name": "pose", "timeout_min": tm["pose"], "cmd": f"{NV_LIBS} && python -m dancecap.people_mono pose {common}"},
                      {"name": "refine", "timeout_min": tm["refine"], "cmd": f"{NV_LIBS} && python -m dancecap.people_mono refine {common}"},
-                     {"name": "finalize", "timeout_min": 10, "cmd": f"python -m dancecap.people_mono finalize {common}"}],
+                     {"name": "finalize", "timeout_min": tm["finalize"], "cmd": f"python -m dancecap.people_mono finalize {common}"}],
         "outputs": [ctx.ws(pe) + "/teachers_01.npz", ctx.ws(pe) + "/masks_01.npz", ctx.ws(pe) + "/teachers.json",
                     ctx.ws(pe) + "/identity.json", ctx.ws(pe) + "/coverage.json", ctx.ws(pe) + "/verification.json",
                     ctx.ws(pe) + "/people_mono.json", ctx.ws(pe) + "/anchors0.json", ctx.ws(pe / "in") + "/ocr.json",
