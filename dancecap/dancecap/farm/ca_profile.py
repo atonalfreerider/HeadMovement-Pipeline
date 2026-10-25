@@ -134,6 +134,8 @@ class TwoView:
     #                                      camera with localisation holes (lucas_luiza's Steadicam: 52 % ok) must not give the
     #                                      free-beta pass a window it does not really see
     seams_by_evidence: bool = False  # the chunk seams where both cameras see both dancers (chunks.seam_windows on two_view_support), not equal windows
+    seam_view_angle: bool = False  # ... and see them from directions far enough apart (view_angle_factor): two fits of a stretch the cameras see from
+    #                                nearly one direction disagree in depth while both reproject well (lucas_luiza ll2: 22-28 deg, 0.1-0.25 m)
     generation: str = ""  # a re-planned chunk set: chunk ids id_prefix + generation + g<k> (llg0000 -> ll2g0000), so the volume's chunks/<id>, the takes
     #                       and state.json keep the superseded set apart (final_id names the generation's own stitch job)
     cam_masks: tuple = ()  # ((cam, t0, t1, why), ...): master seconds a camera is left out of every fit window that meets them (a `mask` step after
@@ -271,7 +273,7 @@ LP = TwoView(profile="luiza_paulo", dance="luiza_paulo", capture="group-0069_lui
              alignment_arc="dancecap/work/luiza_paulo/clock/alignment.json", sync_fixed="file", fit_s_per_frame=1.9,
              extra_env={"HM_TEACHER_EVIDENCE": "1", "HM_FRONT_MASTER": "02", "HM_REANCHOR_LOST": "1"}, shape_t=None, apart_cam="02", force_cams=True,
              monocular_until_s=None, refine_variants=(("smplx_rf2_slip", "--w-slip 0.5 --slip-max-v 0.15"),), scale_check=True, strict=True,
-             budget_usd=12.0, max_plan_usd=8.0, shape_needs_camera_ok=True, seams_by_evidence=True,
+             budget_usd=12.0, max_plan_usd=8.0, shape_needs_camera_ok=True, seams_by_evidence=True, seam_view_angle=True,
              budget_why="analysis run 20261024-225940-luiza_paulo's $20 pod limit: the cameras jobs (~$3-5) and the people jobs (~$2) first, the farm's "
                         "worst case below that (farm pods are not counted by the run: analyze.run_pods counts its gateway and tagged sessions only)")
 
@@ -312,6 +314,40 @@ def two_view_support(tt: dict, grid: np.ndarray) -> np.ndarray:
         j, good = _on_grid(o, grid)
         out &= good[:, None] & (o["conf"][j] >= CONF)
     return out.astype(float)
+
+
+VIEW_ANGLE_DEG = (15.0, 45.0)   # seam evidence: the cameras' rays to the couple this far apart count 0 .. fully (the depth of a two-view triangulation)
+
+
+def view_angle_factor(P: TwoView, grid: np.ndarray) -> np.ndarray | None:
+    """(G,) in [0, 1] per grid instant: how far apart the two cameras see the couple (VIEW_ANGLE_DEG ramp). The couple is at the mean floor (x, z) of
+    both roles in the teacher track of P.apart_cam (people/teachers_<cam>.npz floor, gaps interpolated), 1 m above the floor; the camera centres from
+    cameras/<cam>.npz through cameras/world_from_sfm.json. None when a file is missing or the profile has not exactly two cameras."""
+    from ..cameras.world import apply
+    wf = P.work / "cameras" / "world_from_sfm.json"
+    tp = P.people / f"teachers_{P.apart_cam}.npz"
+    if len(P.cams) != 2 or not wf.is_file() or not tp.is_file() or not all((P.work / "cameras" / f"{c}.npz").is_file() for c in P.cams):
+        return None
+    sim3 = json.loads(wf.read_text(encoding="utf-8"))
+    centres = []
+    for c in P.cams:
+        with np.load(P.work / "cameras" / f"{c}.npz") as z:
+            t, Rc, tv = np.asarray(z["t"], float), np.asarray(z["R"], float), np.asarray(z["tvec"], float)
+        Cw = apply(sim3, -np.einsum("nji,nj->ni", Rc, tv))
+        centres.append(np.stack([np.interp(grid, t, Cw[:, k]) for k in range(3)], 1))
+    with np.load(tp) as z:
+        tt, fl = np.asarray(z["t"], float), np.asarray(z["floor"], float)
+    n = np.isfinite(fl).all(-1)
+    xz = np.where(n[..., None], fl, 0.0).sum(1) / np.maximum(n.sum(1), 1)[:, None]
+    good = n.any(1)
+    if good.sum() < 10:
+        return None
+    D = np.stack([np.interp(grid, tt[good], xz[good, 0]), np.ones(len(grid)), np.interp(grid, tt[good], xz[good, 1])], 1)
+    a, b = centres[0] - D, centres[1] - D
+    cos = (a * b).sum(1) / np.maximum(np.linalg.norm(a, axis=1) * np.linalg.norm(b, axis=1), 1e-9)
+    ang = np.degrees(np.arccos(np.clip(cos, -1.0, 1.0)))
+    lo, hi = VIEW_ANGLE_DEG
+    return np.clip((ang - lo) / (hi - lo), 0.0, 1.0)
 
 
 def shape_window(tt: dict, P: TwoView = CA, frames: int = 900, step_s: float = 2.5, t_min: float | None = None, t_max: float | None = None) -> dict:
@@ -566,6 +602,9 @@ def make_plan(spec: DanceSpec, *, hash_inputs: bool = True, code: dict | None = 
         p = C.chunk_params(spec)
         gt = g.t(np.arange(g.k0, g.k1 + 1))
         sup = two_view_support(tt, gt)
+        va = view_angle_factor(P, gt) if P.seam_view_angle else None
+        if va is not None:
+            sup = sup * va[:, None]
         masked = np.zeros(len(gt), bool)
         for _c, a, b, *_ in P.cam_masks:               # a masked camera does not carry a seam: no seam's overlap may touch it
             masked |= (gt >= a) & (gt < b)

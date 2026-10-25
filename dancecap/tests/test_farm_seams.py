@@ -100,3 +100,28 @@ def test_window_masks_drop_slivers():
     P = dataclasses.replace(cap.LL, cam_masks=(("01", 163.3666, 176.0, "x"),))
     assert cap.window_masks(P, 100.0, 163.36667) == []
     assert cap.window_masks(P, 100.0, 165.0) == [("01", 163.3666, 165.0)]
+
+
+def test_view_angle_factor_ramps_with_the_angle_between_the_cameras(tmp_path, monkeypatch):
+    """Two cameras seeing the couple from nearly one direction triangulate depth badly: the seam evidence counts them less."""
+    import dataclasses
+    import json
+    work = tmp_path / "work" / "lucas_luiza"
+    (work / "cameras").mkdir(parents=True)
+    (work / "people").mkdir()
+    (work / "cameras" / "world_from_sfm.json").write_text(json.dumps({"s": 1.0, "R": np.eye(3).tolist(), "t": [0.0, 0.0, 0.0]}))
+    t = np.arange(0.0, 10.0, 1 / 30)
+    n = len(t)
+    for cam, ang in (("02", np.zeros(n)), ("01", np.linspace(0.0, 90.0, n))):
+        a = np.radians(ang)
+        C = np.stack([5 * np.sin(a), np.ones(n), -5 * np.cos(a)], 1)        # 5 m from the couple at (0, 1, 0), at angle `ang` from camera 02
+        R = np.repeat(np.eye(3)[None], n, 0)
+        np.savez(work / "cameras" / f"{cam}.npz", t=t, R=R, tvec=-C, ok=np.ones(n, bool))
+    np.savez(work / "people" / "teachers_02.npz", t=t, floor=np.zeros((n, 2, 2)))
+    monkeypatch.setattr(cap, "WORK_ROOT", tmp_path / "work")
+    P = dataclasses.replace(cap.LL, seam_view_angle=True)
+    f = cap.view_angle_factor(P, t)
+    deg = np.linspace(0.0, 90.0, n)
+    assert np.allclose(f, np.clip((deg - 15.0) / 30.0, 0, 1), atol=0.02)
+    (work / "people" / "teachers_02.npz").unlink()
+    assert cap.view_angle_factor(P, t) is None
