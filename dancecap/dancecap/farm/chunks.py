@@ -58,6 +58,7 @@ OVERLAP_S = 4.0
 MIN_WINDOW_S = 12.0        # a tiny gap still gets a window this long (the overlaps grow into the neighbours)
 FRONT_MARGIN_S = 2.0       # the front-end processes this much beyond the fit window (a boundary refit never needs a new front)
 MIN_CAM_S = 2.0            # a phone joins a chunk if it records at least this long inside the window
+SEAM_GAIN = 0.05           # seam_windows moves the seams off the equal tiling only when its weakest seam's support rises by more than this
 KINDS = ("front", "prepare", "fit", "refine", "stitch", "analyse", "stitch_analyse", "full")   # CPU kinds: analysis.CPU_KINDS
 # rough rates for ETA / LPT priority (measured on one A100: PLAN.md section 4 / front/front_pod.json); never used to gate anything
 FRONT_S_PER_CAMFRAME = 0.39
@@ -184,6 +185,70 @@ def equal_windows(n_frames: int, hz: float = HZ, max_window_s: float = 60.0, ove
     return {"n": n, "window_k": int(round(L)), "overlap_k": o, "windows": wins, "cores": cores,
             "window_s": [round((b - a + 1) / hz, 3) for a, b in wins], "core_s": [round((b - a + 1) / hz, 3) for a, b in cores],
             "step_s": round(step / hz, 3), "tried": tried}
+
+
+def seam_windows(support: np.ndarray, hz: float = HZ, max_window_s: float = 60.0, overlap_s: float = 4.0, step_s: float = 0.5,
+                 min_window_s: float = 20.0, seam_min: float = 0.8) -> dict:
+    """equal_windows' tiling with the SEAMS placed by evidence: support (N,) or (N, R) in [0, 1] per frame (a two-camera take: both cameras
+    on the dancer, one column per dancer), a seam's score = the mean support over its overlap region (the weakest column's: the stitch
+    gates every dancer). Windows hold min_window_s..max_window_s; the fewest windows win
+    (equal_windows' n), their cuts chosen to maximise the weakest seam (then the sum); one window more only when that lifts a weakest seam
+    below seam_min; the equal tiling itself unless the evidence lifts its weakest seam by more than SEAM_GAIN. Two fits of one stretch agree only where both are constrained by both views (lucas_luiza llfinal: seams in a 24 s
+    hole of the moving camera's track, or where one chunk's tracking had lost a dancer, disagreed by 0.3-0.6 m). Same keys as
+    equal_windows (window_k = the longest window) + seam_t (cut times from the first frame), seam_scores, rule."""
+    support = np.clip(np.nan_to_num(np.asarray(support, float)), 0.0, 1.0)
+    support = support[:, None] if support.ndim == 1 else support
+    N = len(support)
+    eq = equal_windows(N, hz, max_window_s, overlap_s)
+    o = eq["overlap_k"]
+    a, b = o // 2, o - o // 2
+    cap, lo = int(np.floor(max_window_s * hz + 1e-9)), int(np.ceil(min_window_s * hz - 1e-9))
+    if eq["n"] == 1:
+        return {**eq, "seam_t": [], "seam_scores": [], "rule": "one window"}
+    cs = np.vstack([np.zeros((1, support.shape[1])), np.cumsum(support, 0)])
+    step = max(1, int(round(step_s * hz)))
+    cand = np.arange(a, N - b + 1, step)
+    S = ((cs[cand + b] - cs[cand - a]) / o).min(1)
+
+    def best(n):
+        """(min seam score, sum, cuts) of the best n-window tiling, None when n windows cannot satisfy the lengths."""
+        K = len(cand)
+        val = [None] * K
+        first = cand + b
+        for i in range(K):
+            if lo <= first[i] <= cap:
+                val[i] = (S[i], S[i], (i,))
+        for _ in range(n - 2):
+            nxt = [None] * K
+            for i in range(K):
+                for j in range(i):
+                    if val[j] is None or not lo <= cand[i] - cand[j] + o <= cap:
+                        continue
+                    v = (min(val[j][0], S[i]), val[j][1] + S[i], val[j][2] + (i,))
+                    if nxt[i] is None or v[:2] > nxt[i][:2]:
+                        nxt[i] = v
+            val = nxt
+        ends = [v for i, v in enumerate(val) if v is not None and lo <= N - cand[i] + a <= cap]
+        return max(ends, key=lambda v: v[:2]) if ends else None
+
+    eq_cuts = [c0 for c0, _ in eq["cores"][1:]]
+    eq_S = [float(((cs[c + b] - cs[c - a]) / o).min()) for c in eq_cuts]
+    keep = {**eq, "seam_t": [round(c / hz, 3) for c in eq_cuts], "seam_scores": [round(v, 3) for v in eq_S]}
+    n, got = eq["n"], best(eq["n"])
+    if got is None:
+        return {**keep, "rule": "equal windows (no evidence-placed tiling fits the window limits)"}
+    more = best(n + 1) if got[0] < seam_min else None
+    if more is not None and more[0] > got[0]:
+        n, got = n + 1, more
+    if got[0] <= min(eq_S) + SEAM_GAIN:
+        return {**keep, "rule": f"equal windows (evidence-placed seams would lift the weakest only to {got[0]:.2f})"}
+    cuts = [int(cand[i]) for i in got[2]]
+    wins = [[0 if j == 0 else cuts[j - 1] - a, N - 1 if j == n - 1 else cuts[j] + b - 1] for j in range(n)]
+    cores = [[0 if j == 0 else cuts[j - 1], N - 1 if j == n - 1 else cuts[j] - 1] for j in range(n)]
+    return {"n": n, "window_k": max(w1 - w0 + 1 for w0, w1 in wins), "overlap_k": o, "windows": wins, "cores": cores,
+            "window_s": [round((w1 - w0 + 1) / hz, 3) for w0, w1 in wins], "core_s": [round((c1 - c0 + 1) / hz, 3) for c0, c1 in cores],
+            "step_s": None, "tried": eq["tried"], "seam_t": [round(c / hz, 3) for c in cuts],
+            "seam_scores": [round(float(S[i]), 3) for i in got[2]], "rule": f"seams by evidence (weakest {got[0]:.2f}, seam_min {seam_min:g})"}
 
 
 # --------------------------------------------------------------------------------------------------- reslice (refits)
@@ -453,15 +518,17 @@ def plan_gaps(cov: Coverage, spec: DanceSpec, *, claimed: list[tuple[int, int, s
 
 
 def plan_windows(spec: DanceSpec, *, max_window_s: float | None = None, overlap_s: float | None = None, world_id: str | None = None,
-                 kind: str = "full", spans: dict | None = None, claimed_ids: set | None = None, cams_fn=None) -> tuple[list[Chunk], dict]:
+                 kind: str = "full", spans: dict | None = None, claimed_ids: set | None = None, cams_fn=None,
+                 windows: dict | None = None) -> tuple[list[Chunk], dict]:
     """The WHOLE timeline of a dance as equal fit windows (equal_windows; parameters from the take's `[chunks]`): chunks of at most
     max_window_s overlapping by overlap_s, cores cut at the middle of each overlap. A chunk whose id is in `claimed_ids` is not planned
     again (ids are g<frames from the timeline start to the core's first frame>, stable for the same parameters). cams_fn(k0, k1) -> the
     phones of a window (default: every phone that records >= MIN_CAM_S inside it; the recap planner passes its coverage-map rule).
+    windows: a precomputed tiling of the same shape (seam_windows) instead of the equal one.
     Returns (chunks, report); the report has the keys cmd_plan prints (gaps, gap_s, claimed_skipped, ...) plus the arithmetic."""
     g = spec.grid
     p = chunk_params(spec)
-    eq = equal_windows(g.T, g.hz, max_window_s or p["chunk_s"], overlap_s if overlap_s is not None else p["overlap_s"])
+    eq = windows or equal_windows(g.T, g.hz, max_window_s or p["chunk_s"], overlap_s if overlap_s is not None else p["overlap_s"])
     spans = spans if spans is not None else camera_spans(spec)
     out: list[Chunk] = []
     skipped = []

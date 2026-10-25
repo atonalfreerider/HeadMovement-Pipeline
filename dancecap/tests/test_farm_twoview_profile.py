@@ -266,8 +266,10 @@ def test_ll_plan_forces_both_cameras_owner_env_and_the_measured_offsets(ll_env):
     plan = cap.make_plan(spec, hash_inputs=False, code={}, P=P)
     jobs = {j["id"]: j for j in plan["_jobs"]}
     chunks = [j for j in plan["_jobs"] if j.get("what") == "chunk"]
-    assert [c.id for c in plan["_chunks"]] == [j["id"] for j in chunks] and len(chunks) == 4 and all(j["id"].startswith("llg") for j in chunks)
-    assert all(1565 <= j["chunk"]["T"] <= 1566 for j in chunks) and plan["shape"]["id"] == "llshape" and "llfinal" in jobs
+    assert [c.id for c in plan["_chunks"]] == [j["id"] for j in chunks] and len(chunks) == 4 and all(j["id"].startswith("ll2g") for j in chunks)
+    assert all(20 * 30 <= j["chunk"]["T"] <= 60 * 30 for j in chunks) and plan["shape"]["id"] == "llshape" and "llfinal2" in jobs
+    seams = [spec.grid.t(spec.grid.k0) + t for t in plan["arithmetic"]["seam_t"]]
+    assert len(seams) == 3 and not any(a - 2.0 < t < b + 2.0 for t in seams for _c, a, b, *_ in P.cam_masks)   # no seam where the Steadicam is masked
     for j in plan["_jobs"]:                                          # shape, chunks AND the final job
         assert j["owner"] == "LL2V" and j["env"]["HM_FRONT_MASTER"] == "02" and j["env"]["HM_TEACHER_EVIDENCE"] == "1", j["id"]
         assert j["env"]["HM_FRONT_DANCE"] == "lucas_luiza" and j["env"]["HM_FRONT_CAPTURE"] == "lucas-luisa-jnj" and j["env"]["HM_SHAPE_JOB"] == "llshape"
@@ -321,7 +323,7 @@ def test_ll_validate_plan_passes_and_carries_every_two_view_gate(ll_env, monkeyp
         assert v["checks"][k]["ok"], k
     assert "HM_OWNER" not in os.environ                               # the owner was set only for the claim-rule check
     b = plan["budget"]
-    assert b["usd"] == 14.0 and b["fleet_worst_usd"] <= 14.0 and b["gpu_jobs"] == 5 and b["gpus"] == ["NVIDIA GeForce RTX 4090"]
+    assert b["usd"] == 17.0 and b["fleet_worst_usd"] <= 17.0 and b["gpu_jobs"] == 5 and b["gpus"] == ["NVIDIA GeForce RTX 4090"]
     assert b["hard_minutes"] >= max(j["max_minutes"] for j in plan["_jobs"] if j["needs_gpu"]) and plan["costs"]["usd"] <= 6.0
     gmax = max(j["max_minutes"] for j in plan["_jobs"] if j["needs_gpu"])
     assert b["hard_minutes"] == int(np.ceil(gmax + 15)) and b["worker_job_limit_min"] == round(1.25 * gmax + 5, 1)     # the pod ceiling is the tighter cap (documented)
@@ -344,7 +346,7 @@ def test_ll_validate_plan_passes_and_carries_every_two_view_gate(ll_env, monkeyp
     (lambda p: p["costs"].update(usd=7.5), "plan_cost_within"),
     (lambda p: p["_jobs"][-1].update(after=[]), "final_stitches_every_chunk"),                      # what a re-plan with claimed chunks would build
     (lambda p: p["_jobs"][-1]["stitch_chunks"].pop(1), "final_stitches_every_chunk"),
-    (lambda p: p["budget"].update(fleet_worst_usd=14.5), "budget_covers_the_fleet"),
+    (lambda p: p["budget"].update(fleet_worst_usd=17.5), "budget_covers_the_fleet"),
 ])
 def test_ll_strict_checks_fail_on_each_breakage(ll_env, breakage, check):
     spec = ll_env[2]
@@ -486,9 +488,9 @@ def test_ll_plan_writes_its_budget_into_the_farm_policy_and_keeps_a_lower_one(ll
     assert cap.cmd_plan(a, spec, cap.LL) == 0
     plan = json.loads((root / "work" / "lucas_luiza" / "farm" / "plan.json").read_text())
     pol = Wt.Policy.load("lucas_luiza")
-    assert plan["validation"]["ok"] and pol.budget_usd == 14.0 and pol.hard_minutes == plan["budget"]["hard_minutes"] and pol.minutes <= pol.hard_minutes
+    assert plan["validation"]["ok"] and pol.budget_usd == 17.0 and pol.hard_minutes == plan["budget"]["hard_minutes"] and pol.minutes <= pol.hard_minutes
     assert pol.gpus == ["NVIDIA GeForce RTX 4090"]                    # what the budget is priced on (min_vram_gb 24 refuses an L4)
-    assert {p.stem for p in (root / "work" / "lucas_luiza" / "farm" / "jobs").glob("*.json")} == {j["id"] for j in plan["costs"]["jobs"]} | {"llfinal"}
+    assert {p.stem for p in (root / "work" / "lucas_luiza" / "farm" / "jobs").glob("*.json")} == {j["id"] for j in plan["costs"]["jobs"]} | {"llfinal2"}
     out = capsys.readouterr().out
     assert "queue --only llshape" in out and "launch --pods 1 --gpus 4090" in out and "up --dry-run" not in out
     Wt.Policy.from_dict({"budget_usd": 5.0, "gpus": ["NVIDIA RTX A5000"]}, pol).save("lucas_luiza")
@@ -517,7 +519,7 @@ def test_ll_replan_is_refused_while_chunks_are_claimed_and_the_ceiling_never_dro
     jobs = root / "work" / "lucas_luiza" / "farm" / "jobs"
     files = {p.name: p.read_bytes() for p in jobs.glob("*.json")}
     st = State("lucas_luiza")
-    ids = sorted(cid for cid in st.load()["chunks"] if cid.startswith("llg"))
+    ids = sorted(cid for cid in st.load()["chunks"] if cid.startswith("ll2g"))
     st.set_job("llshape", status="pulled")
     for cid in ids:                                                   # what `queue --only <the 4 chunks>` does
         st.set_chunk(cid, status="queued")
@@ -526,10 +528,10 @@ def test_ll_replan_is_refused_while_chunks_are_claimed_and_the_ceiling_never_dro
     pol0 = Wt.Policy.load("lucas_luiza")
     assert cap.cmd_plan(plan_args(), spec, cap.LL) == 2
     err = capsys.readouterr().err
-    assert "llg" in err and "queued" in err and "--final-only" in err and "refused" in err
+    assert "ll2g" in err and "queued" in err and "--final-only" in err and "refused" in err
     after = st.load()
     assert {p.name: p.read_bytes() for p in jobs.glob("*.json")} == files and Wt.Policy.load("lucas_luiza") == pol0
-    assert after["jobs"]["llshape"]["status"] == "pulled" and after["jobs"]["llfinal"] == before["jobs"]["llfinal"]
+    assert after["jobs"]["llshape"]["status"] == "pulled" and after["jobs"]["llfinal2"] == before["jobs"]["llfinal2"]
     out = tmp_path / "dry.json"
     assert cap.cmd_plan(plan_args(dry_run=True, out=str(out)), spec, cap.LL) == 0                    # a dry run shows what the re-plan would be
     v = json.loads(out.read_text())["validation"]
@@ -549,6 +551,49 @@ def test_ll_replan_after_the_shape_pass_only_says_it_resets_the_shape(ll_env, mo
     assert "llshape was pulled: this plan sets it back to planned" in capsys.readouterr().out and State("lucas_luiza").load()["jobs"]["llshape"]["status"] == "planned"
 
 
+def test_ll_keep_shape_replans_a_new_generation_without_touching_the_shape(ll_env, monkeypatch, capsys):
+    """Generation 2 (2026-10-25): new chunk ids beside the superseded llg* set; --keep-shape keeps the pulled shape pass and its pinned betas."""
+    root, _, spec = ll_env
+    quiet_inputs(monkeypatch)
+    assert cap.cmd_plan(plan_args(), spec, cap.LL) == 0
+    st = State("lucas_luiza")
+    jobs = root / "work" / "lucas_luiza" / "farm" / "jobs"
+    assert cap.cmd_plan(plan_args(keep_shape=True), spec, cap.LL) == 2                 # the shape was never pulled: refused
+    st.set_job("llshape", status="pulled")
+    shape_spec = (jobs / "llshape.json").read_bytes()
+    st.put_chunks([{"id": "llg0000", "k0": 504, "k1": 2063, "core_k0": 504, "core_k1": 1997, "status": "pulled", "origin": "planned"}])   # generation 1
+    pin = root / "work" / "lucas_luiza_llshape" / "mamma_pin_betas.json"
+    pin.parent.mkdir(parents=True, exist_ok=True)
+    pin.write_text("{}")
+    capsys.readouterr()
+    assert cap.cmd_plan(plan_args(keep_shape=True), spec, cap.LL) == 0
+    out = capsys.readouterr().out
+    cur = st.load()
+    assert "llshape kept (pulled)" in out and cur["jobs"]["llshape"]["status"] == "pulled" and (jobs / "llshape.json").read_bytes() == shape_spec
+    new = sorted(c for c in cur["chunks"] if c.startswith("ll2g"))
+    assert len(new) == 4 and "ll2g0000" in new and cur["chunks"]["llg0000"]["status"] == "pulled"   # the old generation neither claims nor is reset
+    assert all(cur["jobs"][c]["status"] == "planned" for c in new) and cur["jobs"]["llfinal2"]["after"] == new
+    assert f"queue --only {','.join(new)}" in out
+
+
+def test_ll_masks_reach_only_the_chunks_that_meet_them(ll_env):
+    spec = ll_env[2]
+    plan = cap.make_plan(spec, hash_inputs=False, code={}, P=cap.LL)
+    g = spec.grid
+    for j in (j for j in plan["_jobs"] if j.get("what") in ("chunk", "shape")):
+        t0, t1 = g.t(j["chunk"]["k0"]), g.t(j["chunk"]["k1"] + 1)
+        want = [(c, max(a, t0), min(b, t1)) for c, a, b, *_ in cap.LL.cam_masks if a < t1 and b > t0]
+        names = [s["name"] for s in j["steps"]]
+        if not want:
+            assert "mask" not in names, j["id"]
+            continue
+        st = j["steps"][names.index("mask")]
+        assert names.index("front") < names.index("mask") < names.index("qa_mask") and st["stage"] == "front"
+        assert st["cmd"] == f"python -m dancecap.recap_front mask {j['id']} --mask " + ",".join(f"{c}:{a:g}:{b:g}" for c, a, b in want)
+        assert f"dancecap/work/{j['take']}/mamma/ma_2d/" in st["save"]
+    assert cap.window_masks(cap.LL, 100.0, 150.0) == [] and cap.window_masks(cap.LL, 170.0, 210.0) == [("01", 170.0, 176.0), ("01", 206.0, 210.0)]
+
+
 def test_ll_two_variants_may_not_share_a_step_name(ll_env):
     spec = ll_env[2]
     P = dataclasses.replace(cap.LL, refine_variants=(("smplx_rf2_slip", "--w-slip 0.5"), ("smplx_rf3_slip", "--w-slip 1.0")))
@@ -560,7 +605,7 @@ def test_ll_print_plan_counts_the_slip_variant_in_the_refine_column(ll_env, caps
     spec = ll_env[2]
     plan = cap.make_plan(spec, hash_inputs=False, code={}, P=cap.LL)
     cap.print_plan(plan, cap.LL)
-    rows = {ln.split()[0]: ln.split() for ln in capsys.readouterr().out.splitlines() if ln.startswith("llg")}
+    rows = {ln.split()[0]: ln.split() for ln in capsys.readouterr().out.splitlines() if ln.startswith("ll2g")}
     for r in plan["chunks"]:
         e = r["estimate"]
         assert float(rows[r["id"]][6]) == pytest.approx(e["refine_min"] + e["quality_min"] + e["variants_min"], abs=0.051)
@@ -573,25 +618,25 @@ def test_final_only_rebuilds_just_the_final_job_and_is_refused_while_it_is_queue
     a = plan_args()
     assert cap.cmd_plan(a, spec, cap.LL) == 0
     jobs = root / "work" / "lucas_luiza" / "farm" / "jobs"
-    others = {p.name: p.read_bytes() for p in jobs.glob("*.json") if p.stem != "llfinal"}
-    first = json.loads((jobs / "llfinal.json").read_text())
+    others = {p.name: p.read_bytes() for p in jobs.glob("*.json") if p.stem != "llfinal2"}
+    first = json.loads((jobs / "llfinal2.json").read_text())
     st = State("lucas_luiza")
-    ids = sorted(cid for cid in st.load()["chunks"] if cid.startswith("llg"))
-    st.set_job("llfinal", status="queued")
+    ids = sorted(cid for cid in st.load()["chunks"] if cid.startswith("ll2g"))
+    st.set_job("llfinal2", status="queued")
     a.final_only = True
     slip = ll_spec("smplx_rf2_slip")                                  # [export] smplx_dir = the refine variant (G11)
-    assert cap.cmd_plan(a, slip, cap.LL) == 2 and json.loads((jobs / "llfinal.json").read_text()) == first
+    assert cap.cmd_plan(a, slip, cap.LL) == 2 and json.loads((jobs / "llfinal2.json").read_text()) == first
     for cid in ids:
         st.set_chunk(cid, status="pulled")
-    st.set_job("llfinal", status="pulled")
+    st.set_job("llfinal2", status="pulled")
     monkeypatch.setattr(A, "_local_motion", lambda spec, chunk: True)  # the chunks' motion is on this PC now: the job still takes the volume's result.tar files
     assert cap.cmd_plan(a, slip, cap.LL) == 0
-    job = json.loads((jobs / "llfinal.json").read_text())
+    job = json.loads((jobs / "llfinal2.json").read_text())
     assert job["after"] == ids and job["local_chunks"] == [] and [i["path"] for i in job["inputs"]] == [f"chunks/{c}/out/result.tar" for c in ids]
     assert {"path": "dancecap/work/lucas_luiza/smplx_rf2_slip/", "optional": True} in job["outputs"] and first["outputs"] != job["outputs"]
     assert job["owner"] == "LL2V" and job["env"]["HM_FRONT_MASTER"] == "02" and all(v["world_id"] is None for v in job["chunk_worlds"].values())
-    assert st.load()["jobs"]["llfinal"]["status"] == "planned"
-    assert {p.name: p.read_bytes() for p in jobs.glob("*.json") if p.stem != "llfinal"} == others          # nothing else was rewritten
+    assert st.load()["jobs"]["llfinal2"]["status"] == "planned"
+    assert {p.name: p.read_bytes() for p in jobs.glob("*.json") if p.stem != "llfinal2"} == others          # nothing else was rewritten
 
 
 def test_final_only_dry_run_typo_and_tiling_refusals(ll_env, monkeypatch, tmp_path):
@@ -599,16 +644,16 @@ def test_final_only_dry_run_typo_and_tiling_refusals(ll_env, monkeypatch, tmp_pa
     quiet_inputs(monkeypatch)
     assert cap.cmd_plan(plan_args(), spec, cap.LL) == 0
     jobs = root / "work" / "lucas_luiza" / "farm" / "jobs"
-    first = (jobs / "llfinal.json").read_bytes()
+    first = (jobs / "llfinal2.json").read_bytes()
     st = State("lucas_luiza")
-    st.set_job("llfinal", status="pulled")
+    st.set_job("llfinal2", status="pulled")
     out = tmp_path / "final.json"
     assert cap.cmd_plan(plan_args(final_only=True, dry_run=True, out=str(out)), ll_spec("smplx_rf2_slip"), cap.LL) == 0
-    assert json.loads(out.read_text())["id"] == "llfinal" and (jobs / "llfinal.json").read_bytes() == first and st.load()["jobs"]["llfinal"]["status"] == "pulled"
+    assert json.loads(out.read_text())["id"] == "llfinal2" and (jobs / "llfinal2.json").read_bytes() == first and st.load()["jobs"]["llfinal2"]["status"] == "pulled"
     assert cap.cmd_plan(plan_args(final_only=True), ll_spec("smplx_rf2_slipp"), cap.LL) == 2                    # a refined dir no chunk job writes
-    ids = sorted(cid for cid in st.load()["chunks"] if cid.startswith("llg"))
+    ids = sorted(cid for cid in st.load()["chunks"] if cid.startswith("ll2g"))
     st.set_chunk(ids[1], status="cancelled")                          # a hole in the grid
-    assert cap.cmd_plan(plan_args(final_only=True), spec, cap.LL) == 2 and (jobs / "llfinal.json").read_bytes() == first
+    assert cap.cmd_plan(plan_args(final_only=True), spec, cap.LL) == 2 and (jobs / "llfinal2.json").read_bytes() == first
 
 
 def test_farm_cli_dispatches_every_two_view_profile_and_refuses_final_only_elsewhere(monkeypatch):
