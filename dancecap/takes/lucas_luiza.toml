@@ -81,11 +81,12 @@ overlap_s = 4.0
 # Static-room map and world (runbook steps 5-6; cameras.mapping.map_settings): fewer window images per camera in the map (2 s / 6 s
 # dense) and ONE COLMAP camera for the Steadicam (no zoom: its focal is measured by the bundle adjustment from the orbit's parallax; Atlas's
 # 2629-2680 px is NOT given as a prior - it is checked against the map afterwards); the world's X axis from the tripod (02), not from the
-# orbiting Steadicam. The Steadicam's images pair with its own only within 8 s (seq_only_cams): matched across minutes, its views of
-# look-alike walls (identical doors, EXIT signs) registered 24 of 65 dancer-judged images on the wrong wall (2026-10-24).
+# orbiting Steadicam. Tried 2026-10-25 and NOT kept: seq_only_cams = ["01"] (its own pairs within 8 s) - the re-map put MORE of its
+# images on the wrong wall (87 of 126 dancer-judged, raw two-view residual median 72 px; this map: 42 and 15 px). The wrong walls
+# are handled after the map: cameras.plausible clean + cameras.anchored (the tripod judges the Steadicam through the dancers).
 [cameras]
 x_cam = "02"
-map = { win_step_s = 2.0, dense_step_s = 6.0, shared_intrinsics = ["01"], seq_only_cams = ["01"], seq_only_s = 8.0 }
+map = { win_step_s = 2.0, dense_step_s = 6.0, shared_intrinsics = ["01"] }
 
 [cameras."01"]   # camera type (Pipeline Monitor / narration tool); this block is rewritten as a whole, comments typed inside it are not kept
 file = "Video-44260.mp4"
