@@ -199,7 +199,7 @@ def offset_ms(work: Path, given: float | None, moving: str = "01", fixed: str = 
             try:
                 v = float(get(json.loads(p.read_text())))
                 if np.isfinite(v):
-                    return v, str(p.relative_to(work))
+                    return v, p.relative_to(work).as_posix()
             except (KeyError, StopIteration, TypeError, ValueError):
                 continue
     return 0.0, "none (0)"
@@ -344,7 +344,7 @@ def cmd_score(work: Path, moving: str, fixed: str, off_ms: float | None, log=pri
     xf = s["transfer"][np.isfinite(s["transfer"])]
     maps = map_image_scores(work, J)
     bad = [m for m in maps if m["refused"]]
-    doc = {"moving": moving, "fixed": fixed, "offset_ms": off, "offset_from": why, "raw": str(src.relative_to(work)),
+    doc = {"moving": moving, "fixed": fixed, "offset_ms": off, "offset_from": why, "raw": src.relative_to(work).as_posix(),
            "frames": int(len(d["t"])), "raw_ok": int(np.sum(d["ok"])), "judged": int(len(r)),
            "residual_pct": {str(q): round(float(np.percentile(r, q)), 2) for q in (25, 50, 75, 90)} if len(r) else None,
            "share_le": {str(x): round(float(np.mean(r <= x)), 3) for x in (TAU_PX, LOOSE * TAU_PX)} if len(r) else None,

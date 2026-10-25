@@ -366,18 +366,18 @@ def test_rerun_keeps_step11_floor_and_frame_index(tmp_path):
     m = [S.parse_map(f"01=srcv:01:+{SHIFT}")]
     S.run(work, m, S.SeedConfig(scan=1))
     tp = work / "people" / "teachers_01.npz"
-    tt = dict(np.load(tp))
+    with np.load(tp) as _z: tt = dict(_z)
     tt["frame_index"] = np.arange(F, dtype=np.int32) + 100
     tt["floor"] = np.where((tt["row"] >= 0)[..., None], np.stack([np.arange(F)] * 2, 1)[..., None] + [[0.0, 0.5], [1.0, 1.5]], np.nan)
     np.savez_compressed(tp, **tt)
     rep = S.run(work, m, S.SeedConfig(scan=1), drops=[S.parse_drop("01:follow:30-33")])
-    tz = np.load(tp)
+    with np.load(tp) as _z: tz = dict(_z)
     assert (tz["frame_index"] == np.arange(F) + 100).all()
     assert np.isnan(tz["floor"][30:34, 1]).all() and np.array_equal(tz["floor"][29], tt["floor"][29]) and np.array_equal(tz["floor"][31, 0], [31, 31.5])
     assert rep["cams"]["01"]["teachers_carry_over"]["floor_lost"] == 4 and rep["cams"]["01"]["teachers_carry_over"]["frame_index"]
     (work / "dancers" / "labels_override.json").write_text(json.dumps({"01": {"swap": True}}))
     S.run(work, m, S.SeedConfig(scan=1))
-    tz = np.load(tp)
+    with np.load(tp) as _z: tz = dict(_z)
     assert np.array_equal(tz["floor"][3], tt["floor"][3][::-1])                          # the floor follows its detection
     assert np.isnan(tz["floor"][31, 0]).all()                                            # dropped before: lost, not invented
 

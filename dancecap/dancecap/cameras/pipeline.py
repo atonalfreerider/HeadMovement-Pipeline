@@ -1318,7 +1318,7 @@ def build_report(work: Path, cams, recs, model, tracks, pts, rgb, sim3, map_info
             e["attach"] = att
         kept = adopted_track(work, cam)
         if kept is not None:  # only then: every other take's report is unchanged
-            e["adopted"] = str(kept.relative_to(work))
+            e["adopted"] = kept.relative_to(work).as_posix()
         tr = tracks.get(cam)
         if tr is not None:
             src = tr["source"]

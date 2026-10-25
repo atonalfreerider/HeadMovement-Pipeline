@@ -625,7 +625,7 @@ def test_ptz_attach_recovers_Q_centre_focal_and_adopts(tmp_path, monkeypatch):
     assert tv._sha1(orig) == loc_sha
     assert not json.loads((work / "cameras" / "adopted.json").read_text())["02"]["first_adoption"]
     chk = tv.cmd_ptz(work, "02", ptzw, SHIFT, "check", zoom_gap=(SHIFT + 19, SHIFT + 22), log=QUIET)
-    assert chk["check"]["loc_track"] == str(orig) and "attach" in chk and "adopted" in chk
+    assert Path(chk["check"]["loc_track"]) == orig and "attach" in chk and "adopted" in chk
     # check --track 02=cameras/02_ptz.npz (the runbook's earlier name) reads the attached track
     assert tv._track_arg(work, "02", "cameras/02_ptz.npz", QUIET) == ptz_p
     assert tv._track_arg(work, "02", "cameras/other.npz", QUIET) == Path("cameras/other.npz")

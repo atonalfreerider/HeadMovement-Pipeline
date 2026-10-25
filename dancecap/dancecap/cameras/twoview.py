@@ -249,7 +249,7 @@ def load_track(work: Path, cam: str, path: Path | str | None = None, world: bool
     sim3 = _json(sim3_p) if world and sim3_p.exists() else None
     Rw, tw = md.world_cameras(R, tv, sim3)
     C = -np.einsum("fji,fj->fi", Rw, tw)
-    return {"cam": cam, "path": str(p), "t": t, "K": K, "R": Rw, "tvec": tw, "C": C, "f": K[:, 0, 0].copy(),
+    return {"cam": cam, "path": Path(p).as_posix(), "t": t, "K": K, "R": Rw, "tvec": tw, "C": C, "f": K[:, 0, 0].copy(),
             "pp": K[:, :2, 2].copy(), "k1": k1, "ok": ok & good, "reproj_px": rp,
             "dt": float(np.median(np.diff(t))) if len(t) > 1 else 1 / 30, "frame": "world" if sim3 else "sfm",
             "sim3": sim3}
@@ -1102,7 +1102,7 @@ def load_ptz(ptz_work: Path, shift: float, cut_fps: float = 30.0, src_fps: float
     return {"t": ptz_sample_times(frame[good], shift, cut_fps, src_fps, rule), "frame": frame[good],
             "phase": cut_phase(frame[good], shift, cut_fps, src_fps),
             "R": Rot.from_rotvec(rv[good]).as_matrix(), "f": f[good], "rms": rms[good], "n_inl": n_inl[good],
-            "lens": lens.tolist(), "size": size, "path": str(track), "n_total": int(len(frame)), "n_ok": int(good.sum()),
+            "lens": lens.tolist(), "size": size, "path": Path(track).as_posix(), "n_total": int(len(frame)), "n_ok": int(good.sum()),
             "shift": shift, "cut_fps": cut_fps, "src_fps": src_fps, "rule": rule}
 
 
@@ -1373,7 +1373,7 @@ def adopt_track(work: Path, cam: str, src: Path, why: str) -> dict:
         raise SystemExit(f"[twoview] adopt: cameras.pipeline.adopted_track does not see {orig}")
     rec_p = cdir / "adopted.json"
     rec = _json(rec_p) if rec_p.exists() else {}
-    rec[cam] = {"track": f"cameras/{cam}.npz", "from": str(Path(src).relative_to(work)), "sha1": _sha1(cur),
+    rec[cam] = {"track": f"cameras/{cam}.npz", "from": Path(src).relative_to(work).as_posix(), "sha1": _sha1(cur),
                 "loc_track": f"cameras/orig/{cam}_loc.npz", "first_adoption": first,
                 "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "why": why,
                 "undo": f"move cameras/orig/{cam}_loc.npz back to cameras/{cam}.npz",
@@ -1839,7 +1839,7 @@ def gates_eval(work: Path, cfg: dict, tripod: str, moving: str) -> dict:
         g = _longest_gap_s(t, ok)
         ch[f"longest_gap_s_{c}"] = _chk(_f(g, 3), f"<= {gap_max} s", g <= gap_max)
         if orig.exists():
-            ch[f"track_{c}"] = _info(str(p.relative_to(work)), "the loc track (cameras/<cam>.npz is an adopted PTZ track)")
+            ch[f"track_{c}"] = _info(p.relative_to(work).as_posix(), "the loc track (cameras/<cam>.npz is an adopted PTZ track)")
     out["G2_loc"] = _gate(ch, m)
     miss_all += m
     # G3 types / tripod
@@ -1867,7 +1867,7 @@ def gates_eval(work: Path, cfg: dict, tripod: str, moving: str) -> dict:
                 continue
             with np.load(tp) as z:
                 model = str(z["type_model"]) if "type_model" in z.files else None
-            ch[f"camera_type_{c}"] = _chk({"model": model, "source": f"{tp.relative_to(work)} type_model",
+            ch[f"camera_type_{c}"] = _chk({"model": model, "source": f"{tp.relative_to(work).as_posix()} type_model",
                                            "why": "report.json has no camera_type (probe B failed?): check.passed unknown"},
                                           f"{want} applied", model == want)
         ev = ((rc.get(tripod) or {}).get("focal") or {}).get("zoom_events")
