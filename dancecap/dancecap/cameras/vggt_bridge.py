@@ -9,6 +9,14 @@ frames on both sides; its groups are chained by their overlapping frames and the
     python -m dancecap.cameras.vggt_bridge run   <take> --cam 01 --span 57:86.5 [--step 4 --group 32 --overlap 8]   # GPU pod
     python -m dancecap.cameras.vggt_bridge align <take> --cam 01 --fixed 02 --npz <run npz>                           # CPU
 
+EXPERIMENT, not wired into any stage. lucas_luiza 2026-10-25 (its two longest holes, 57-86.5 s and 115-143.5 s, every 4th
+frame, groups of 32 overlapping by 8): within a group VGGT's relative rotations match the verified track to 0.2-1.2 deg
+(median), but consecutive groups disagree on their SHARED frames by up to 90-150 deg (and chain with negative scales):
+some frames of a group are posed wildly wrong - the couple fills most of a close Steadicam's frame (the people masks cover
+58 %: masking them leaves too little static texture). The aligned chains missed the verified poses by 13 and 73 deg; the
+judge refused every bridged pose. A robust chain (per-frame consistency across groups, outlier frames dropped, a pose
+graph anchored at both ends) would be needed before any use.
+
 run writes work/<take>/cameras/vggt/<cam>_<t0>_<t1>.npz: frame (n,) window-frame indices, group (n,), ext (n, 3, 4)
 cam_from_world in its group's frame (VGGT: the group's first camera = identity, a scale per group), K (n, 3, 3) in the
 original frame's pixels. align prints / writes cameras/qa/vggt_bridge_<cam>_<t0>_<t1>.json: the chain's alignment residual
