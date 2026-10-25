@@ -328,7 +328,10 @@ class CameraTrack:
 
 
 def read_sync_offsets(work: Path) -> dict[str, dict]:
-    """sync/offsets.json -> {cam: {"delta": s, "rate": s/s, "t_ref": s}} (rate/t_ref optional, default 0 / 0).
+    """sync/offsets.json -> {cam: {"delta": s, "rate": s/s, "t_ref": s}} (rate/t_ref optional, default 0 / 0), plus
+    "piecewise": [[t, delta_s], ...] where the file measured a delta that varies along the take (cameras.twoview sync:
+    a moving camera's audio clock follows its distance to the speakers); apply_offset then uses it, `delta` stays the
+    whole-window value for readers that need one number.
 
     dancecap.sync always reports a drift rate but marks it "use_rate": true only when it should be applied.
 
@@ -362,19 +365,43 @@ def read_sync_offsets(work: Path) -> dict[str, dict]:
             d, rate, t_ref = v, 0.0, 0.0
         try:
             out[str(cam)] = {"delta": float(d), "rate": float(rate), "t_ref": float(t_ref)}
+            if isinstance(v, dict) and v.get("piecewise"):
+                out[str(cam)]["piecewise"] = [[float(a), float(b)] for a, b in v["piecewise"]]
         except (TypeError, ValueError):
             continue
     return out
 
 
 def apply_offset(t: np.ndarray, off: dict | float | None) -> np.ndarray:
-    """Sync-corrected reference time: t + delta (+ rate * (t - t_ref) when a drift was measured)."""
+    """Sync-corrected reference time: t + delta (+ rate * (t - t_ref) when a drift was measured); with "piecewise"
+    [[t, delta_s], ...] the delta varies along the take (linear between the points, flat outside) and replaces both."""
     if off is None:
         return np.asarray(t, float)
     if not isinstance(off, dict):
         return np.asarray(t, float) + float(off)
     t = np.asarray(t, float)
+    if off.get("piecewise"):
+        pw = np.asarray(off["piecewise"], float).reshape(-1, 2)
+        return t + np.interp(t, pw[:, 0], pw[:, 1])
     return t + float(off.get("delta", 0.0)) + float(off.get("rate", 0.0)) * (t - float(off.get("t_ref", 0.0)))
+
+
+def offset_label(tau: np.ndarray, off: dict | float | None) -> np.ndarray:
+    """The inverse of apply_offset: the frame time t whose corrected time is tau (a piecewise delta changes by far less
+    than a second per second: fixed point)."""
+    tau = np.asarray(tau, float)
+    if off is None:
+        return tau
+    if not isinstance(off, dict):
+        return tau - float(off)
+    if off.get("piecewise"):
+        pw = np.asarray(off["piecewise"], float).reshape(-1, 2)
+        t = tau - np.interp(tau, pw[:, 0], pw[:, 1])
+        for _ in range(4):
+            t = tau - np.interp(t, pw[:, 0], pw[:, 1])
+        return t
+    d, r, tr = float(off.get("delta", 0.0)), float(off.get("rate", 0.0)), float(off.get("t_ref", 0.0))
+    return (tau - d + r * tr) / (1 + r)
 
 
 def _sync_offsets(work: Path) -> dict[str, float]:

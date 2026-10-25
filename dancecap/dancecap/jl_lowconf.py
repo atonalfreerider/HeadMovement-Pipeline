@@ -67,7 +67,9 @@ def intervals(work: Path | None = None, smplx_dir: str = "smplx_rf2_noslip") -> 
     toml = PACKAGE_ROOT / "takes" / f"{work.name}.toml"     # the take of `work` (was john_lula.toml for every take: the
     if toml.exists():                                        # trial capture listed john_lula's three zoom steps)
         import tomllib
-        cams = tomllib.loads(toml.read_text(encoding="utf-8")).get("cameras", {})
+
+        from .camera_types import cam_tables                 # the per-camera tables: not loc / map / x_cam
+        cams = cam_tables(tomllib.loads(toml.read_text(encoding="utf-8")))
         for cam in cams.values():
             for a, b, ratio in cam.get("zoom_events", []):
                 out.append({"from": round(a - ZOOM_MARGIN_S, 3), "to": round(b + ZOOM_MARGIN_S, 3), "role": "both", "level": "zoom_step",

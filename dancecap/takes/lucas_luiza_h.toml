@@ -1,0 +1,92 @@
+# Lucas + Luiza, Zouk Heat 2024-04-07 (Hyatt Regency Dulles, Herndon VA), professional Jack & Jill heat: the HORIZONTAL tripod video alone.
+# Owner 2026-10-23: "Lucas and Luiza have a professional level Jack and Jill heat where we cover it from two angles. The horizontal video is
+# from a stationary tripod, and the vertical video is from a Steadicam ... should be treated as handheld. no zoom detected ... all dancers and
+# videographers have given consent". This take is the monocular first pass of the two-view take lucas_luiza (camera 02 there = camera 01
+# here, the same footage; this take's clock = the 30 fps cut's time = the original's time - 14.000 s, see below). The generic single-video
+# route (pipeline/mono_route.py) runs it
+# end to end; the two-view take reuses its world frame, people and fits to attach the Steadicam.
+name = "lucas_luiza_h"
+# SOURCE = a 30 fps cut of the edit (work/src_cuts/, git-ignored): ffmpeg -ss 14.0 -t 200 -vf fps=30 crf 14 of the original file. The camera,
+# people and SAM 3D Body steps process every frame of the video, and the edit is 59.94 fps with 14 s of title cards: the cut is 6000
+# frames instead of 13929. Its clock: cut time = original time - 14.000 s (audio cross-correlation at 20 / 100 / 180 s: 14.000 s).
+source_dir = "../work/src_cuts/lucas_luiza_h"
+alignment = "../work/lucas_luiza_h/clock/alignment.json"
+exclude = []
+# The video is an edit (A Triangle Dancing Video): title cards on black to ~15.2 s, the picture fades in over 15.5-16.8 s, the outro card
+# from 218.5 s. The couple is visible from 16.8 s (hand in hand at ~17 s) and dances to ~213.5 s (the final pose ~211 s, the embrace at 214 s)
+# = 2.8-199.5 s of the cut (2026-10-23: first set to 0.5 s from a contact sheet whose labels were the seek-relative times).
+window = [2.8, 199.5]
+
+[timeline]
+anchor = 0.0
+hz = 30.0
+
+[ingest]
+max_fps = 30
+
+[stitch]
+mono = [[2.8, 199.5]]   # one camera: the whole window is monocular
+
+[export]
+smplx_dir = "smplx_rf2_noslip"
+floor_yaw_deg = 0.0
+
+[dance]
+level = "professional"
+category = "jack_and_jill"
+venue = "Zouk Heat 2024, Hyatt Regency Dulles"
+# TWO SONGS (Shazam on the heat audio, 2026-10-23): the owner's studio file is the first; the second is identified as "Nao Me Toca" by Anselmo
+# Ralph (matched 120-205 s of the original = 106-191 s of the cut); the edit's own music ("Continue", Jincheng Zhang) plays over the title cards and the outro only.
+song = "I Don't Wanna Know (Mario Winans Cover)"
+artist = "Brenda Mullen"
+song_file = "../../../../Videos/Zouk/lucas-luisa-jnj/Brenda Mullen - I Don't Wanna Know (Mario Winans Cover).mp3"
+song_2 = "Não Me Toca"
+artist_2 = "Anselmo Ralph"
+song_display = "I Don't Wanna Know / Não Me Toca"
+
+# Lucas = lead (grey-blue tee with a purple graphic print on the back, blue jeans, black sneakers, short dark hair, beard); Luiza = follow
+# (long dark hair, cropped white top with a blue / green floral print, white cropped trousers, tan heeled dance sandals). Statures NOT given
+# by the owner: assumed (they set the metric scale; correct them here and re-run the world step).
+[dancers.lead]
+name = "Lucas"
+pid = 1
+stature_m = 1.75   # ASSUMED, not from the owner
+shoe_sole_m = 0.025
+description = "grey-blue t-shirt with a large purple graphic print on the back, blue jeans, black sneakers, short dark hair, short beard"
+
+[dancers.follow]
+name = "Luiza"
+pid = 2
+stature_m = 1.63   # ASSUMED, not from the owner
+shoe_sole_m = 0.06   # heeled dance sandals
+description = "long dark hair, cropped white top with a blue and green floral print, white cropped trousers, tan heeled dance sandals"
+
+# Consent (owner 2026-10-23: "all dancers and videographers have given consent"). Publication / public-repo rights were not stated.
+[consent]
+lead = { capture = true, fit_3d = true, ml_analysis = true, cloud_processing = true, name_shown = "?", level_shown = "?", publication = "?", public_repo = "?", recorded = "2026-10-23" }
+follow = { capture = true, fit_3d = true, ml_analysis = true, cloud_processing = true, name_shown = "?", level_shown = "?", publication = "?", public_repo = "?", recorded = "2026-10-23" }
+source_rights = "videographers consented (owner 2026-10-23)"
+bystanders = "?"
+
+# Camera type: the owner's "stationary tripod ... no zoom detected". The PTZ skeleton (2026-10-23) measures ONE focal step: ~1950 px over
+# 0-110 s, ~2270 px (+16 %) from ~112 s (the second song): a zoom-in or a crop of the edit. cameras.mono_cam solves the focal per frame
+# either way; zoom stays as the owner set it.
+[cameras."01"]   # camera type (Pipeline Monitor / narration tool); this block is rewritten as a whole, comments typed inside it are not kept
+file = "lucas_luiza_h.mp4"
+mount = "tripod"
+zoom = false
+source = "user"
+set_at = "2026-10-23T10:10:00Z"
+pans = true
+
+# Camera 02 = the Steadicam (owner: "moving around freely ... treated as handheld", no zoom), added after the single-video route had
+# finished (2026-10-23), for the film's point-of-view shots only: its video is the trim of takes/lucas_luiza_v.toml (hard-linked
+# into this source folder), its clock offset is in clock/alignment.json, its per-frame pose comes from cameras.attach_moving
+# (attached to this take's fit through the dancers; cameras/02.npz) and its people from lucas_luiza_v (people/teachers_02.npz).
+# The single-video route needs ONE source: re-running a mono_route step on this take needs this block and the alignment entry removed.
+[cameras."02"]   # camera type (Pipeline Monitor / narration tool); this block is rewritten as a whole, comments typed inside it are not kept
+file = "lucas_luiza_v.mp4"
+mount = "handheld"
+zoom = false
+source = "user"
+set_at = "2026-10-23T10:10:00Z"

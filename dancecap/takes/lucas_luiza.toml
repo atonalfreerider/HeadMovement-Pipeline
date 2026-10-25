@@ -1,0 +1,105 @@
+# Lucas + Luiza, Zouk Heat 2024-04-07 (Hyatt Regency Dulles, Herndon VA), professional Jack & Jill heat: the TWO-VIEW take.
+# Owner 2026-10-23: "The horizontal video is from a stationary tripod, and the vertical video is from a Steadicam that is moving around
+# freely, but should be treated as handheld. no zoom detected ... all dancers and videographers have given consent". After the monocular
+# pass (lucas_luiza_h) the owner: "the 3d poses are very very messy and inaccurate with lots of foot slip and misalignments between the
+# couple ... are we sure that we solved the 3d space and camera motion and have triangulated the body poses": this take is the
+# multi-view route - static-room SfM (the Steadicam circles the couple: parallax), both cameras localised in it, video sync from the
+# dancers, a two-view MAMMA fit.
+name = "lucas_luiza"
+source_dir = "../../../../Videos/Zouk/lucas-luisa-jnj"
+# affine audio clocks (reference_time = slope * source_time + offset), written by the audio_sync stage: reference = the ORIGINAL horizontal
+# video (02); the Steadicam (01) = 0.9999163 x its time + 12.1229 s (8 inlier anchors, residuals of a few ms)
+alignment = "../work/lucas_luiza/clock/alignment.json"
+exclude = []
+# The couple dances 16.8-213.5 s of the horizontal original (= 2.8-199.5 s of lucas_luiza_h's cut: the edit's title cards and fade end at
+# 16.8 s; the final pose ~211 s, the embrace 214 s). The Steadicam records 12.1-228.6 s on this clock: both cameras see the whole window.
+window = [16.85, 212.6]   # 2026-10-25: the Steadicam's last verified pose is at 212.63 s (cameras.anchored); both cameras must cover the
+#                            grid's ends after the two-view sync (farm plan check both_cams_cover_window_ends); the bow's last 0.8 s goes
+# Room keyframes for the static SfM map: every 2 s over the window (the Steadicam moves ~0.7 m/s around the couple: parallax every frame;
+# the tripod pans from one centre and links its rotations to the map)
+keyframe_span = [16.8, 213.5]
+keyframe_step = 2.0
+
+[timeline]
+anchor = 0.0
+hz = 30.0
+
+[ingest]
+max_fps = 30        # the horizontal original is 59.94 fps (the grid samples every other frame); the Steadicam is 29 fps
+
+# Video sync (dancecap.sync): mamma prepare refuses to build fit inputs until this take's sync/offsets.json exists and records these clocks.
+[sync]
+required = true
+
+[dance]
+level = "professional"
+category = "jack_and_jill"
+venue = "Zouk Heat 2024, Hyatt Regency Dulles"
+song = "I Don't Wanna Know (Mario Winans Cover)"
+artist = "Brenda Mullen"
+song_file = "../../../../Videos/Zouk/lucas-luisa-jnj/Brenda Mullen - I Don't Wanna Know (Mario Winans Cover).mp3"   # studio track (stays local, never in a repo)
+song_2 = "Não Me Toca"
+artist_2 = "Anselmo Ralph"
+song_display = "I Don't Wanna Know / Não Me Toca"
+
+# Statures: the agent's estimates, kept by the owner ("Keep 1.75 m and 1.63 m for now").
+[dancers.lead]
+name = "Lucas"
+pid = 1
+stature_m = 1.75
+shoe_sole_m = 0.025
+description = "grey-blue t-shirt with a large purple graphic print on the back, blue jeans, black sneakers, short dark hair, short beard"
+
+[dancers.follow]
+name = "Luiza"
+pid = 2
+stature_m = 1.63
+shoe_sole_m = 0.06   # heeled dance sandals
+description = "long dark hair, cropped white top with a blue and green floral print, white cropped trousers, tan heeled dance sandals"
+
+[consent]
+lead = { capture = true, fit_3d = true, ml_analysis = true, cloud_processing = true, name_shown = "?", level_shown = "?", publication = "?", public_repo = "?", recorded = "2026-10-23" }
+follow = { capture = true, fit_3d = true, ml_analysis = true, cloud_processing = true, name_shown = "?", level_shown = "?", publication = "?", public_repo = "?", recorded = "2026-10-23" }
+source_rights = "videographers consented (owner 2026-10-23)"
+bystanders = "?"
+
+[export]
+smplx_dir = "smplx_rf2_noslip"
+floor_yaw_deg = 0.0
+camera_names = { "01" = "Steadicam" }   # jl_export.reliability_meta: "two views triangulated (Steadicam 01 + tripod 02)"
+
+# Farm chunking (runbook step 12): the two-camera profile generalised from carlos_aline (farm/ca_profile.py TwoView "lucas_luiza": ids ll*,
+# HM_FRONT_MASTER = 02 = the reference camera, the Steadicam's measured two-view sync offset per chunk, both cameras forced into every chunk).
+[chunks]
+profile = "lucas_luiza"
+mode = "windows"
+chunk_s = 60.0
+overlap_s = 4.0
+
+# Camera 01 = the Steadicam (owner: handheld, no zoom). Camera 02 = the tripod (owner: stationary, no zoom); its PTZ solve (lucas_luiza_h)
+# measured ONE focal step of +16 % at ~126 s on this clock (~112 s of the cut): zoom = true so the camera stage keeps a per-frame focal
+# about the fixed centre (tripod_zoom) instead of forcing one focal.
+# Static-room map and world (runbook steps 5-6; cameras.mapping.map_settings): fewer window images per camera in the map (2 s / 6 s
+# dense) and ONE COLMAP camera for the Steadicam (no zoom: its focal is measured by the bundle adjustment from the orbit's parallax; Atlas's
+# 2629-2680 px is NOT given as a prior - it is checked against the map afterwards); the world's X axis from the tripod (02), not from the
+# orbiting Steadicam. Tried 2026-10-25 and NOT kept: seq_only_cams = ["01"] (its own pairs within 8 s) - the re-map put MORE of its
+# images on the wrong wall (87 of 126 dancer-judged, raw two-view residual median 72 px; this map: 42 and 15 px). The wrong walls
+# are handled after the map: cameras.plausible clean + cameras.anchored (the tripod judges the Steadicam through the dancers).
+[cameras]
+x_cam = "02"
+map = { win_step_s = 2.0, dense_step_s = 6.0, shared_intrinsics = ["01"] }
+
+[cameras."01"]   # camera type (Pipeline Monitor / narration tool); this block is rewritten as a whole, comments typed inside it are not kept
+file = "Video-44260.mp4"
+mount = "handheld"
+zoom = false
+source = "user"
+set_at = "2026-10-23T10:10:00Z"
+
+[cameras."02"]   # camera type (Pipeline Monitor / narration tool); this block is rewritten as a whole, comments typed inside it are not kept
+file = "Zouk Heat - 4 7 2024 - Lucas & Luiza Pro Jack & Jill.mp4"
+mount = "tripod"
+zoom = true
+source = "user"
+set_at = "2026-10-23T16:00:00Z"
+pans = true

@@ -115,7 +115,7 @@ def _kp_index(kpts: np.ndarray, xy: np.ndarray) -> np.ndarray:
 def extend(take_name: str, cam: str, dry_run: bool = False) -> dict:
     from .cameras.features import Features, FeatureSettings, list_images
     from .cameras.localize import FramePose, Localizer, Ref
-    from .cameras.mapping import MapSettings
+    from .cameras.mapping import map_settings
     from .cameras.pipeline import load_model, loc_settings, map_images
     take = Take.load(take_name)
     work = take.work.resolve()
@@ -125,7 +125,7 @@ def extend(take_name: str, cam: str, dry_run: bool = False) -> dict:
     meta = json.loads((work / "frames" / cam / "frames.json").read_text())
     w, h = int(meta["width"]), int(meta["height"])
     F = Features(work, cache, FeatureSettings())
-    images, _ = map_images(work, recs, MapSettings())
+    images, _ = map_images(work, recs, map_settings(take.cfg))  # the map's own settings: references = its images
     ls = loc_settings(take)
     main_p, sub_p = cache / f"loc_{cam}.npz", cache / f"locsub_{cam}.pkl"
     t_start = time.time()
@@ -151,7 +151,7 @@ def extend(take_name: str, cam: str, dry_run: bool = False) -> dict:
         import pycolmap
 
         from .cameras.mapping import model_cams
-        from .cameras.localize import LocSettings
+        from .cameras.localize import sub_settings
         kind = "sub"
         doc = pickle.loads(sub_p.read_bytes())
         poses = list(doc["value"])
@@ -163,7 +163,7 @@ def extend(take_name: str, cam: str, dry_run: bool = False) -> dict:
                 subs.append((d.parent.name, m, model_cams(m)))
         name, model, _ = max([x for x in subs if x[2].get(cam, 0) >= 3], key=lambda x: x[2][cam])
         single = len({im.camera_id for im in model.images.values()}) == 1
-        ls = LocSettings(**{**ls.__dict__, "fix_focal": single})
+        ls = sub_settings(ls, single)
     else:
         raise SystemExit(f"[c7] {take_name} {cam}: no localisation output")
     if n != len(frames):
@@ -245,6 +245,8 @@ def extend(take_name: str, cam: str, dry_run: bool = False) -> dict:
             if nm < MIN_MAP_INLIERS:
                 continue
             fp.ok, fp.source = True, "ext"
+            if not L.gate(frames[i], fp).ok:  # cameras.plausible: a pose in a doppelganger copy of the room stays failed
+                continue
             poses[i] = fp
             n_map[i] = nm
             ext_refs[i] = fp.corr

@@ -8,6 +8,15 @@ hold longer on POVs and slowly orbit gaussian splats. also the physics meter is 
     python -m dancecap.film_jev overlays <video.mp4> [--every 2] [--threshold 0.35]
         frames every N s -> does the skeleton-load legend (the "physics meter") or any overlay hide part of a dancer?
         -> <video>.jev_overlays.json + <video>.jev_overlays.jpg (the flagged frames); exit 1 when any frame is flagged
+    python -m dancecap.film_jev povview --take T --cam 01 [--video V] [--every 1]
+        a recording camera's video every N s -> is either dancer blocked (spectator, raised phone, frame edge) (Noul) + how well
+        the frame shows the couple dancing (Score 0-3) -> work/<take>/film/jev_pov_<cam>.json on the take's reference clock;
+        film_heat pov-table uses it as one more gate on the point-of-view shots (lucas_luiza 2026-10-23: the tripod films over
+        a front row of heads and raised phones, which no detector box tells apart from a clear view). Validated 2026-10-23 on 9
+        frames (6 tripod, 3 Steadicam) looked at by eye: a spectator's head over the follower 0.79, the leader half out of the
+        vertical frame 0.84, clear views and one dancer overlapping the other 0.17-0.46 (the first wording, without "one dancer
+        hiding the other does not count", put those at 0.5-0.67); view 1.6-2.1 on the far tripod, 1.9-2.6 on the Steadicam.
+        The gate film_heat uses: blocked < 0.6 and view >= 1.5 - re-check on more frames before trusting it elsewhere.
 
 Code owns the plan: film_recap_flow reads need3d.json as one more weight (phone holds over the low-need stretches, slow orbits
 over the high-need ones); the overlay check is a gate on recordings, and every flagged frame is looked at by a person or agent.
@@ -67,6 +76,42 @@ Q_HEAD = Noul(
                  "face (the couple dancing, not the seated audience)?",
     criteria={"true": "Some overlay hides part of a dancer's head, hair or face.",
               "false": "No overlay is drawn over either dancer's head or face."})
+
+
+ABOUT_POV = ("`frame` is one frame of a video recorded at a Brazilian zouk Jack & Jill competition heat: one couple (a man "
+             "leading, a woman following) dances on a ballroom floor; judges and spectators sit or stand around the floor, and "
+             "spectators near the camera may appear in the foreground (heads, raised phones).")
+Q_BLOCKED = Noul(
+    instructions="Is either of the two dancers of the couple in `frame` partly hidden by a SPECTATOR or an object between the "
+                 "camera and the couple (a spectator's head or body, a raised phone, an arm), or cut off by the edge of the "
+                 "picture? One dancer hiding part of the other is normal in this dance and does not count.",
+    criteria={"true": "A spectator, a phone or another object in front of the couple hides part of a dancer (head, torso, arms, "
+                      "legs or feet), or part of a dancer falls outside the picture.",
+              "false": "Nothing but the dancers themselves is in front of the couple and both are inside the picture; one dancer "
+                       "may overlap the other."})
+POV_VIEW_LEVELS = [
+    "The couple cannot be followed: one or both dancers are missing, mostly hidden, badly blurred or tiny.",
+    "The couple is visible but the view is poor: much of a dancer is hidden or cut off, or the picture is very blurred or dark.",
+    "A usable view: both dancers are visible and the dance can be followed, with small parts hidden or slightly cut off.",
+    "A clear view of the whole couple: both dancers fully in the picture, sharp, unobstructed, large enough to see the movement.",
+]
+Q_VIEW = Score(instructions="How well does `frame` show the two dancers of the couple dancing?", criteria=POV_VIEW_LEVELS)
+
+
+def pov_request(frame: Path) -> dict:
+    from .mono4d.judge import _asset, prepare_image
+    k, asset = _asset(prepare_image(frame))
+    return {"state": {"about": ABOUT_POV, "frame": k}, "questions": {"blocked": Q_BLOCKED, "view": Q_VIEW}, "assets": {k: asset}}
+
+
+def judge_pov_frame(frame: Path, client=None) -> dict:
+    from .mono4d.judge import IMAGE_HEADERS
+    req = pov_request(frame)
+    r = (client or _client()).system_one(state=req["state"], questions=req["questions"], model=MODEL,
+                                         extra_headers=IMAGE_HEADERS, extra_body={"assets": req["assets"]})
+    v = r.answers["view"]
+    return {"blocked": round(float(r.answers["blocked"].noul), 3), "view": round(float(v.score), 3),
+            "view_conf": round(float(v.confidence), 3), "tokens": int(getattr(r.usage, "input_tokens", 0) or 0)}
 
 
 def _client():
@@ -225,6 +270,33 @@ def cmd_overlays(a) -> int:
     return 1 if n else 0
 
 
+def cmd_povview(a) -> int:
+    import numpy as np
+    w = PACKAGE_ROOT / "work" / a.take
+    z = np.load(w / "cameras" / f"{a.cam}.npz", allow_pickle=True)
+    t_ref = np.asarray(z["t"], float)
+    pts = np.asarray(z["pts"], float) if "pts" in z.files else t_ref
+    video = Path(a.video) if a.video else None
+    if video is None:
+        from .take import Take
+        video = Take.load(a.take).source(a.cam).path
+    with tempfile.TemporaryDirectory() as td:
+        frames = sample_frames(video, a.every, Path(td))
+        with ThreadPoolExecutor(a.workers) as ex:
+            res = list(ex.map(lambda tp: judge_pov_frame(tp[1]), frames))
+    rows = [{"t_video": round(t, 3), "t": round(float(np.interp(t, pts, t_ref)), 3), **r} for (t, _), r in zip(frames, res)]
+    doc = {"schema": "hm film jev pov v1", "take": a.take, "cam": a.cam, "video": str(video), "every_s": a.every, "model": MODEL,
+           "questions": {"blocked": Q_BLOCKED.instructions, "view": Q_VIEW.instructions, "view_levels": POV_VIEW_LEVELS},
+           "input_tokens": sum(r["tokens"] for r in rows), "rows": rows}
+    out = w / "film" / f"jev_pov_{a.cam}.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(doc, indent=1), encoding="utf-8")
+    good = sum(1 for r in rows if r["blocked"] < 0.6 and r["view"] >= 1.5)
+    print(f"[film_jev] {a.take}/{a.cam}: {good} of {len(rows)} frames clear (blocked < 0.6, view >= 1.5); "
+          f"{doc['input_tokens']} input tokens -> {out}")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="python -m dancecap.film_jev", description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -239,6 +311,13 @@ def main(argv=None) -> int:
     sp.add_argument("--threshold", type=float, default=OVERLAY_THRESHOLD)
     sp.add_argument("--workers", type=int, default=6)
     sp.set_defaults(fn=cmd_overlays)
+    sp = sub.add_parser("povview")
+    sp.add_argument("--take", required=True)
+    sp.add_argument("--cam", required=True)
+    sp.add_argument("--video", help="default: the take's video of that camera")
+    sp.add_argument("--every", type=float, default=1.0)
+    sp.add_argument("--workers", type=int, default=8)
+    sp.set_defaults(fn=cmd_povview)
     a = ap.parse_args(argv)
     return a.fn(a)
 

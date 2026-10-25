@@ -200,7 +200,8 @@ def main(argv=None):
     ap.add_argument("--cams")
     a = ap.parse_args(argv)
     work = Take.load(a.take).work.resolve()
-    cams = a.cams.split(",") if a.cams else sorted(p.stem[4:] for p in (work / "cameras" / "cache").glob("loc_*.npz"))
+    cams = a.cams.split(",") if a.cams else sorted(  # loc_<cam>.npz only: not loc_<cam>_raw.npz (cameras.anchored) or .pre_c7
+        p.stem[4:] for p in (work / "cameras" / "cache").glob("loc_*.npz") if "_" not in p.stem[4:] and "." not in p.stem)
     res = {}
     for cam in cams:
         d = dict(np.load(work / "cameras" / "cache" / f"loc_{cam}.npz"))

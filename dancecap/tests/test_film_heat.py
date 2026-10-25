@@ -145,3 +145,62 @@ def test_the_looks_are_data_driven_and_the_default_film_is_unchanged():
         assert "avatars" not in lay                                   # the one number at the top of the direction rules every segment
         if s["view_state"] == "overhead":
             assert lay["grid"] is True                                # no room: the floor grid stays under the dancers from above too
+
+
+def _pov_cfg(**kw):
+    from dancecap import film_heat as FH
+    c = dict(FH.DEFAULTS)
+    c.update({"pov_cameras": ["01", "02"], **kw})
+    return c
+
+
+def _table(ok01, ok02, n=800, dt=0.25):
+    return {"cams": {"01": {"t0": 0.0, "dt": dt, "ok": [ok01(i * dt) for i in range(n)]},
+                     "02": {"t0": 0.0, "dt": dt, "ok": [ok02(i * dt) for i in range(n)]}}}
+
+
+def test_pov_shots_alternate_cameras_avoid_overheads_and_keep_the_orbits():
+    from dancecap import film_heat as FH
+    cfg = _pov_cfg()
+    end = 199.0
+    shots = FH.place_povs(FH.shot_plan(end, cfg), end, cfg, _table(lambda t: 1, lambda t: 1))
+    povs = [s for s in shots if s["kind"] == "pov"]
+    assert len(povs) >= 5
+    assert [p["camera"] for p in povs][:4] == ["01", "02", "01", "02"]
+    assert shots[0]["start"] == 0.0 and abs(shots[-1]["end"] - end) < 1e-6
+    for a, b in zip(shots, shots[1:]):
+        assert abs(a["end"] - b["start"]) < 1e-6
+    for s in shots:
+        if s["kind"] == "orbit":
+            assert s["end"] - s["start"] >= cfg["min_shot_s"] - 1e-6
+    ov = [s for s in shots if s["kind"] == "overhead"]
+    for p in povs:
+        assert all(p["start"] >= o["end"] + cfg["pov_gap_s"] - 1e-6 or p["end"] <= o["start"] - cfg["pov_gap_s"] + 1e-6 for o in ov)
+
+
+def test_a_camera_that_cannot_show_the_dance_is_not_used_and_no_table_means_no_pov():
+    from dancecap import film_heat as FH
+    cfg = _pov_cfg()
+    shots = FH.place_povs(FH.shot_plan(199.0, cfg), 199.0, cfg, _table(lambda t: 0, lambda t: 1))
+    assert {s["camera"] for s in shots if s["kind"] == "pov"} == {"02"}
+    assert FH.place_povs(FH.shot_plan(199.0, cfg), 199.0, cfg, None) == FH.shot_plan(199.0, cfg)
+
+
+def test_a_pov_camera_block_fills_its_shot():
+    from dancecap import film_heat as FH
+    cfg = _pov_cfg()
+    c = FH.pov_camera_block("01", 9.0, cfg)
+    assert c["mode"] == "fly_to_camera" and c["camera"] == "01" and c["composite"] == "3d_over_video"
+    assert abs(c["fly_s"] + c["fade_in_s"] + c["hold_s"] + c["fade_out_s"] + c["pull_back_s"] - 9.0) < 1e-6
+
+
+def test_a_rarely_showable_camera_still_gets_its_best_window_and_an_overhead_gives_way():
+    from dancecap import film_heat as FH
+    cfg = _pov_cfg(pov_min_s=5.0)
+    # camera 02 can be shown only 22-31 s, under the first overhead (22-28 s)
+    shots = FH.place_povs(FH.shot_plan(199.0, cfg), 199.0, cfg, _table(lambda t: 1, lambda t: 1 if 22.0 <= t < 31.0 else 0))
+    p02 = [s for s in shots if s["kind"] == "pov" and s["camera"] == "02"]
+    assert len(p02) == 1 and 22.0 <= p02[0]["start"] and p02[0]["end"] <= 31.0
+    assert not any(s["kind"] == "overhead" and s["start"] < p02[0]["end"] and s["end"] > p02[0]["start"] for s in shots)
+    for a, b in zip(shots, shots[1:]):
+        assert abs(a["end"] - b["start"]) < 1e-6

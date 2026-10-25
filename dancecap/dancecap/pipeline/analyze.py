@@ -1288,7 +1288,7 @@ def ensure_heartbeat(run: str, spawn=None) -> bool:
                 try:
                     pid = subprocess.Popen(argv, cwd=str(paths.root()), stdin=subprocess.DEVNULL, stdout=fd,
                                            stderr=subprocess.STDOUT, creationflags=NO_WINDOW | DETACHED,
-                                           close_fds=True).pid
+                                           close_fds=True, start_new_session=os.name != "nt").pid
                 finally:
                     os.close(fd)
             write_json_atomic(_hb_path(run), {**({} if hb.get("pid") and not hb.get("ended") else hb),
@@ -1520,7 +1520,7 @@ def spawn_driver(run: str) -> int:
         try:
             p = subprocess.Popen([sys.executable, "-m", "dancecap.pipeline", "analysis", "resume", run],
                                  cwd=str(paths.root()), stdin=subprocess.DEVNULL, stdout=fd, stderr=subprocess.STDOUT,
-                                 creationflags=NO_WINDOW | DETACHED, close_fds=True)
+                                 creationflags=NO_WINDOW | DETACHED, close_fds=True, start_new_session=os.name != "nt")
         finally:
             os.close(fd)
         if doc:

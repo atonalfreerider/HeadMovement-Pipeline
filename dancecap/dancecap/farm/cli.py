@@ -227,11 +227,16 @@ def cmd_plan(a) -> int:
     from . import world as W
     from .timeline import DanceSpec
     spec = DanceSpec.load(a.dance)
-    if C.chunk_params(spec)["profile"]:   # a take that names its own planner profile (takes/larissa_kadu_recap.toml [chunks] profile = "recap")
-        if C.chunk_params(spec)["profile"] == "carlos_aline":   # C3: two moving cameras, 2D poses from the pipeline's own detector (farm/ca_profile.py)
-            from . import ca_profile as CAPf
-            return CAPf.cmd_plan(a, spec)
-        if C.chunk_params(spec)["profile"] == "john_lula":   # J3b: ONE moving camera, single-camera ma_3d (farm/jl_profile.py)
+    prof = C.chunk_params(spec)["profile"]
+    if prof or getattr(a, "final_only", False):   # a take that names its own planner profile (takes/larissa_kadu_recap.toml [chunks] profile = "recap")
+        from . import ca_profile as CAPf
+        if prof in CAPf.PROFILES:   # C3 / LL2V: two cameras, 2D poses from the pipeline's own detector (farm/ca_profile.py: carlos_aline, lucas_luiza)
+            return CAPf.cmd_plan(a, spec, CAPf.PROFILES[prof])
+        if getattr(a, "final_only", False):
+            print(f"plan --final-only: only the two-camera profiles ({', '.join(CAPf.PROFILES)}) rebuild their final job alone; {a.dance}'s profile is {prof!r}",
+                  file=sys.stderr)
+            return 2
+        if prof == "john_lula":   # J3b: ONE moving camera, single-camera ma_3d (farm/jl_profile.py)
             from . import jl_profile as JLPf
             return JLPf.cmd_plan(a, spec)
         from . import recap_profile as RPf
@@ -585,6 +590,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", metavar="PATH", help="also write the plan document here (with --dry-run: no state or specs change)")
     p.add_argument("--no-final", action="store_true", help="do not emit the dance's stitch+analyse pod job")
     p.add_argument("--analyses", default="", help="analyses of the final job (default timing,physics,counterbalance,floorcraft)")
+    p.add_argument("--final-only", action="store_true",
+                   help="two-camera profiles: rebuild and write ONLY the final (stitch) job from the current TOML (refused while it is queued)")
     p.set_defaults(func=cmd_plan)
     p = sub.add_parser("queue", help="hand the planned POD jobs to the volume uploader (the worker runs a job only after its `after` chunks)")
     p.add_argument("--local-only", action="store_true", help="only report what is ready")

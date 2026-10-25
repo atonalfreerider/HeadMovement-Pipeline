@@ -199,9 +199,20 @@ def dancer_one(take_name: str, cam_id: str) -> None:
           + (f", IDENTITY FLAGS {rp['identity_flags']}" if rp["identity_flags"] else ""), flush=True)
 
 
+def loc_ref_cams(take, cam: str) -> list[str]:
+    """Cameras whose map images loc-part localises `cam` against. A take with a [cameras] map table (its map settings
+    are its own, the two-view takes) gets every camera, exactly as stage_loc: Localizer.candidates falls back to the
+    other cameras' nearest images when a frame's own-camera inliers are few (an orbiting Steadicam). Other takes keep
+    loc-part's own camera only, as they were localised."""
+    if "map" in ((take.cfg or {}).get("cameras") or {}):
+        ids = [s.id for s in take.sources]  # stage_loc's order (the references' order breaks ties)
+        return ids if cam in ids else ids + [cam]
+    return [cam]
+
+
 def loc_part(take_name: str, cam: str, a: int, b: int) -> None:
-    """Per-frame localisation of window frames a..b-1 of one camera (exactly stage_loc's Localizer +
-    localize_camera; the part's first frame starts without the previous frame's correspondences) ->
+    """Per-frame localisation of window frames a..b-1 of one camera (stage_loc's Localizer + localize_camera, against
+    the map images of loc_ref_cams; the part's first frame starts without the previous frame's correspondences) ->
     cameras/cache/locpart_<cam>_<a>_<b>.npz (stage_loc's raw format). The long-pole camera (cam02, 2302 frames) is
     localised in two halves side by side.
     A part always localises EVERY frame: the keyframes-only decision of a locked tripod belongs to the whole camera
@@ -209,15 +220,15 @@ def loc_part(take_name: str, cam: str, a: int, b: int) -> None:
     never splits a locked tripod - its keyframe localisation is ~10 % of the work."""
     from .cameras.features import Features, FeatureSettings, list_images
     from .cameras.localize import Localizer, localize_camera
-    from .cameras.mapping import MapSettings
+    from .cameras.mapping import map_settings
     from .cameras.pipeline import _policy_name, _save_raw, load_model, loc_settings, map_images
     from .cameras.typed import loc_marker
     take = Take.load(take_name)
     work = take.work.resolve()
-    recs = list_images(work, [cam])
+    recs = list_images(work, loc_ref_cams(take, cam))  # frames.json / keyframes.json only: light
     F = Features(work, work / "cameras" / "cache", FeatureSettings())
     model = load_model(work)
-    images, _ = map_images(work, recs, MapSettings())
+    images, _ = map_images(work, recs, map_settings(take.cfg))  # the map's own settings: references = its images
     L = Localizer(F, model, images, loc_settings(take))
     if cam not in L.cams_reg:
         raise SystemExit(f"[cameras] {cam}: not in the main model")
@@ -737,12 +748,19 @@ class Runner:
         self.save()
 
 
+def _qa_frame_px(w: int, h: int) -> int:
+    """Pixels of one dancers QA frame (dancers_qa.overlay: resized to qa_height 960): round(w * 960 / h) x 960 for a
+    landscape video (1707 x 960 for 1280x720); 540 x 960 otherwise (the 9:16 phones)."""
+    return round(w * 960 / h) * 960 if w > h else 960 * 540
+
+
 def _sam_mem_gb(work: Path, cam: str) -> float:
     """Host RAM of one dancers worker: all frames (BGR) + 2 bool masks + SAM probs + QA frames, + 3 GB."""
     m = json.loads((work / "frames" / cam / "frames.json").read_text())
-    f, px = len(m["frames"]), int(m["width"]) * int(m["height"])
-    work_px = min(1.0, 1280 / max(int(m["width"]), int(m["height"]))) ** 2 * px
-    return round((f * (3 * px + 2 * px + 2 * work_px + 960 * 540 * 3)) / 2**30 * 1.1 + 3.0, 1)
+    w, h = int(m["width"]), int(m["height"])
+    f, px = len(m["frames"]), w * h
+    work_px = min(1.0, 1280 / max(w, h)) ** 2 * px
+    return round((f * (3 * px + 2 * px + 2 * work_px + 3 * _qa_frame_px(w, h))) / 2**30 * 1.1 + 3.0, 1)
 
 
 def _main_cams(work: Path, cams: list[str]) -> list[str]:

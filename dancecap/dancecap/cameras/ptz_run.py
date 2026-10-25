@@ -84,8 +84,11 @@ def skeleton(video: str, out: Path, step: int | None = None, rects=(), yolo: str
     lens0 = P.Lens(meta["width"], meta["height"])
     init_edges = {k: v for k, v in edges.items() if k[1] - k[0] <= 2}
     best = None
+    root = P.best_root(n, init_edges)
+    if root != 0:
+        log(f"  init chain rooted at skeleton frame {root} (video frame {idx[root]}): frame 0 is badly linked")
     for f0 in f0s:
-        rv, f, order = P.init_chain(n, init_edges, lens0, f0)
+        rv, f, order = P.init_chain(n, init_edges, lens0, f0, root=root)
         if len(order) < n:
             log(f"  f0 {f0}: only {len(order)}/{n} frames reachable")
         sub = np.isin(pairs.i, order) & np.isin(pairs.j, order)
@@ -140,6 +143,8 @@ def track(video: str, skel_dir: Path, frames: list[int], out: Path, rects=(), yo
     lens = P.Lens(int(sk["size"][0]), int(sk["size"][1]), float(sk["lens"][0]), float(sk["lens"][1]),
                   float(sk["lens"][2]), float(sk["lens"][3]))
     sol = P.PtzSolution(sk["rv"], sk["f"], lens)
+    # only skeleton frames the init chain reached are references (an unreached frame keeps a meaningless pose)
+    usable = [s for s in range(len(sk["f"])) if "reached" not in sk or bool(sk["reached"][s])]
     t0 = time.time()
     mt = F.Matcher(device)
     # skeleton features (the frames the skeleton was solved on)
@@ -160,7 +165,7 @@ def track(video: str, skel_dir: Path, frames: list[int], out: Path, rects=(), yo
             ft = mt.extract(im, F.static_ignore(im.shape[:2], m, list(rects)))
             k = fi / step
             r0, f0 = _interp_skeleton(sk, k)
-            near = sorted(range(len(skf)), key=lambda s: abs(s - k))[:n_ref]
+            near = sorted(usable, key=lambda s: abs(s - k))[:n_ref]
             p_new, q_ref, used = [], [], []
             for s in near:
                 r = F.pair_inliers(ft, skf[s], mt.match(ft, skf[s]))

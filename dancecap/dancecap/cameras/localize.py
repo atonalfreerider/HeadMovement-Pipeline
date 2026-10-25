@@ -36,6 +36,22 @@ class LocSettings:
     kf_by_time: bool = False  # True: references = the nearest map images IN TIME of either kind (keyframes too),
     #   and the cross-camera fallback takes each other camera's nearest image of either kind. For a map reused
     #   from another take (cameras/reuse.py) whose window images cover only part of this take's window.
+    plausible: bool = True  # gate every pose with cameras.plausible (outside its camera's band of map-image centres
+    #   AND outside the room: a doppelganger copy of the room) -> ok False, source "implausible" (lucas_luiza's
+    #   Steadicam, 2026-10-24). Off in single-camera sub-models (sub_settings)
+
+
+def sub_settings(ls: "LocSettings", single: bool) -> "LocSettings":
+    """The settings of a sub-model localisation (attach, reuse presolve, map_extend): fix_focal for a single-camera
+    sub-model and never the plausibility gate - a zooming phone's fixed-focal solutions slide along its axis on purpose
+    (attach_zoom.resolve_zoom re-solves them at the reference centre)."""
+    return LocSettings(**{**ls.__dict__, "fix_focal": single, "plausible": False})
+
+
+def settings_key(ls: "LocSettings") -> dict:
+    """LocSettings as a cache key; `plausible` only when on, so the keys of sub-model caches made before the gate existed
+    still match."""
+    return dict(sorted((k, v) for k, v in ls.__dict__.items() if not (k == "plausible" and not v)))
 
 
 @dataclass
@@ -56,7 +72,7 @@ class FramePose:
     k1: float = 0.0
     n_inliers: int = 0
     reproj_px: float = float("nan")
-    source: str = ""  # 'map' | 'loc' | 'track' | 'interp' | ''
+    source: str = ""  # 'map' | 'loc' | 'track' | 'interp' | 'implausible' | ''
     corr: Ref | None = None  # inlier correspondences (for tracking + post-smoothing reprojection)
     q_xy: np.ndarray | None = None  # inlier 2D points (native px, OpenCV pixel-centre convention)
 
@@ -171,6 +187,20 @@ class Localizer:
                 p = im.camera.params
                 self.intr[im.name] = (float(p[0]), float(p[3]) if len(p) > 3 else 0.0)
         self.match_cache: dict = {}
+        self.bands = None
+        if self.s.plausible:
+            from .plausible import model_bands
+            self.bands = model_bands(rec_model)
+
+    def gate(self, q: ImageRec, fp: FramePose) -> FramePose:
+        """fp, or (its centre outside q.cam's band of map-image centres) fp with ok False and source 'implausible':
+        it neither counts nor seeds the tracking of its neighbours (cameras.plausible)."""
+        if self.bands is None or not fp.ok:
+            return fp
+        if self.bands.why(q.cam, -np.asarray(fp.R).T @ np.asarray(fp.t)) is None:
+            return fp
+        fp.ok, fp.source = False, "implausible"
+        return fp
 
     def neighbour_intrinsics(self, q: ImageRec, prev: FramePose | None) -> tuple[float, float] | None:
         same = self.cams_reg.get(q.cam, [])
@@ -234,7 +264,7 @@ def localize_camera(L: Localizer, frames: list[ImageRec], w: int, h: int, log: b
             kp = L.F.get(q)["kpts"][ref.kp_idx] + 0.5
             R, tt = np.asarray(T.rotation.matrix()), np.asarray(T.translation)
             e = reproj(R, tt, f, k1, w, h, ref.xyz, kp)
-            poses[i] = FramePose(True, R, tt, f, k1, len(ref.kp_idx), float(np.median(e)), "map", ref, kp - 0.5)
+            poses[i] = L.gate(q, FramePose(True, R, tt, f, k1, len(ref.kp_idx), float(np.median(e)), "map", ref, kp - 0.5))
             continue
         prev = poses[i - 1] if i > 0 else None
         ni = L.neighbour_intrinsics(q, prev)
@@ -243,11 +273,11 @@ def localize_camera(L: Localizer, frames: list[ImageRec], w: int, h: int, log: b
         refs = L.candidates(q, cross=False)
         if prev is not None and prev.ok and prev.corr is not None:
             refs.append(prev.corr)
-        fp = L.localize(q, refs, w, h, *ni)
-        if fp.n_inliers < s.good_inliers:
-            fp2 = L.localize(q, L.candidates(q, cross=True) + ([prev.corr] if prev is not None and prev.ok
-                                                               and prev.corr is not None else []), w, h, *ni)
-            if fp2.n_inliers > fp.n_inliers:
+        fp = L.gate(q, L.localize(q, refs, w, h, *ni))
+        if fp.n_inliers < s.good_inliers or fp.source == "implausible":
+            fp2 = L.gate(q, L.localize(q, L.candidates(q, cross=True) + ([prev.corr] if prev is not None and prev.ok
+                                                                         and prev.corr is not None else []), w, h, *ni))
+            if (fp2.ok, fp2.n_inliers) > (fp.ok, fp.n_inliers):  # a plausible pose first, then the most inliers
                 fp = fp2
         poses[i] = fp
         _progress.tick("loc", i + 1, len(frames), "frames", lane=_progress.default_lane() or q.cam)
@@ -272,7 +302,7 @@ def localize_camera(L: Localizer, frames: list[ImageRec], w: int, h: int, log: b
             if not nb:
                 continue
             ni = L.neighbour_intrinsics(q, nb[0])
-            fp = L.localize(q, [p.corr for p in nb] + L.candidates(q, cross=False), w, h, *ni)
+            fp = L.gate(q, L.localize(q, [p.corr for p in nb] + L.candidates(q, cross=False), w, h, *ni))
             if fp.ok:
                 fp.source = "track"
                 poses[i] = fp
@@ -280,4 +310,8 @@ def localize_camera(L: Localizer, frames: list[ImageRec], w: int, h: int, log: b
         stale = 0 if changed else stale + 1
         if stale >= 2:  # nothing moved in either direction
             break
+    n_bad = sum(p.source == "implausible" for p in poses)
+    if log and n_bad:
+        print(f"[cameras] {frames[0].cam}: {n_bad} frame(s) whose best pose lies outside the camera's band of map centres "
+              f"(cameras.plausible): not localised", flush=True)
     return poses

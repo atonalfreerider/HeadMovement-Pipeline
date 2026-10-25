@@ -124,6 +124,7 @@ def reuse_map(take: Take, ref: str, force: bool = False) -> dict:
         raise RuntimeError(f"model images without a frame in {take.name}: {info['main']['missing'][:5]}")
     (out / "sfm").mkdir(parents=True, exist_ok=True)
     main.write_binary(str(out / "sfm"))
+    shutil.rmtree(out / "sfm_orig", ignore_errors=True)  # a plausible-clean backup of the previous map
     names = sorted(im.name for im in main.images.values())
     for d in sorted((base_work / "cameras" / "sfm_work").glob("sub_*/best")):
         if not (d / "images.bin").exists():
@@ -177,13 +178,13 @@ def presolve_sub(take: Take, cam: str) -> int:
 
     from .. import gpu
     from .features import Features, FeatureSettings
-    from .localize import Localizer, LocSettings, localize_camera
-    from .mapping import model_cams
+    from .localize import Localizer, localize_camera, settings_key, sub_settings
+    from .mapping import map_settings, model_cams
     from .pipeline import _cached, _file_key, loc_settings, map_images
     work = take.work.resolve()
     ls = loc_settings(take)
     recs = list_images(work, [s.id for s in take.sources])
-    images, _ = map_images(work, recs, None)
+    images, _ = map_images(work, recs, map_settings(take.cfg))
     subs = []
     for d in sorted((work / "cameras" / "sfm_work").glob("sub_*/best")):
         if (d / "images.bin").exists():
@@ -198,8 +199,8 @@ def presolve_sub(take: Take, cam: str) -> int:
     w, h = int(meta["width"]), int(meta["height"])
     sub_bin = work / "cameras" / "sfm_work" / name / "best" / "images.bin"
     single = len({im.camera_id for im in sub.images.values()}) == 1
-    ls_sub = LocSettings(**{**ls.__dict__, "fix_focal": single})
-    loc_key = {"sub": _file_key(sub_bin), "settings": dict(sorted(ls_sub.__dict__.items())),
+    ls_sub = sub_settings(ls, single)
+    loc_key = {"sub": _file_key(sub_bin), "settings": settings_key(ls_sub),
                "frames": [r.name for r in frames]}
     F = Features(work, work / "cameras" / "cache", FeatureSettings())
 

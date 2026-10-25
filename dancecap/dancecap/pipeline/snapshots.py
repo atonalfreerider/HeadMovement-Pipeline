@@ -95,7 +95,7 @@ def request(run: str, event: str, label: str = "", sid: str | None = None, final
         flags = (NO_WINDOW | 0x00000200) if os.name == "nt" else 0
         with open(d / "snapshot.log", "a", encoding="utf-8") as fh:
             subprocess.Popen(argv, cwd=str(paths.root()), stdin=subprocess.DEVNULL, stdout=fh, stderr=subprocess.STDOUT,
-                             creationflags=flags, close_fds=True)
+                             creationflags=flags, close_fds=True, start_new_session=os.name != "nt")
         return True
     except Exception:  # noqa: BLE001
         return False

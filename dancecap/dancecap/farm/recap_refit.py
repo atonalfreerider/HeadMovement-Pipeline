@@ -30,12 +30,21 @@ REFIT_STEPS = ("chunk_take", "mask", "await_pin", "fit", "refine", "quality", "e
 DROP_INPUT_PREFIX = f"src/{CAPTURE}/"        # the source videos: a refit has no front, the volume holds them anyway
 
 
+def names(dance: str) -> tuple[str, str]:
+    """(take, capture folder) of a dance: a two-view profile's (farm/ca_profile.PROFILES: lucas_luiza, carlos_aline), else the recap's."""
+    from . import ca_profile as CAPf
+    P = CAPf.PROFILES.get(dance)
+    return (P.dance, P.capture) if P is not None else (DANCE, CAPTURE)
+
+
 def mask_arg(masks: list[tuple[str, float, float]]) -> str:
     return ",".join(f"{c}:{a:g}:{b:g}" for c, a, b in masks)
 
 
-def refit_spec(base: dict, masks: list[tuple[str, float, float]], ckpt_rel: str, tag: str) -> dict:
-    """The refit job spec made from the first job's spec: no `front` step, a `mask` step after chunk_take, the front checkpoint as an archive input."""
+def refit_spec(base: dict, masks: list[tuple[str, float, float]], ckpt_rel: str, tag: str, capture: str = CAPTURE) -> dict:
+    """The refit job spec made from the first job's spec: no `front` step, a `mask` step after chunk_take (then the base's qa_mask
+    again when it had one), the front checkpoint as an archive input; every step the base runs after `fit` (refine variants,
+    their quality passes, evidence) in its own order."""
     spec = copy.deepcopy(base)
     cid = spec["id"]
     steps = {s["name"]: copy.deepcopy(s) for s in base["steps"]}
@@ -44,8 +53,11 @@ def refit_spec(base: dict, masks: list[tuple[str, float, float]], ckpt_rel: str,
         raise ValueError(f"{cid}: the base job has no step(s) {missing}")
     mask = {"name": "mask", "cmd": f"python -m dancecap.recap_front mask {cid} --mask {mask_arg(masks)}", "timeout_min": 10, "optional": False, "stage": "front"}
     steps["mask"] = mask
-    spec["steps"] = [steps[n] for n in REFIT_STEPS]
-    keep = [i for i in base.get("inputs", []) if not str(i.get("path", "")).startswith(DROP_INPUT_PREFIX) or str(i["path"]).endswith("recap_in.tar")]
+    order = [s["name"] for s in base["steps"]]
+    after_fit = order[order.index("fit") + 1:]
+    spec["steps"] = [steps[n] for n in ("chunk_take", "mask", *(("qa_mask",) if "qa_mask" in steps else ()), "await_pin", "fit", *after_fit)]
+    drop = f"src/{capture}/"
+    keep = [i for i in base.get("inputs", []) if not str(i.get("path", "")).startswith(drop) or str(i["path"]).endswith("_in.tar")]
     spec["inputs"] = keep + [{"path": ckpt_rel, "archive": True}]
     spec["refit"] = {"tag": tag, "masks": [{"cam": c, "t0": a, "t1": b} for c, a, b in masks], "front_checkpoint": ckpt_rel, "created": now_iso(),
                      "of_code": (base.get("code") or {}).get("key")}
@@ -70,6 +82,7 @@ def cmd_refit(a) -> int:
         print("refit: --mask cam:t0:t1[,cam:t0:t1] is required")
         return 2
     tag = a.tag
+    take, capture = names(dance)
     st = State(dance)
     cur = st.load()
     status = (cur["chunks"].get(cid) or {}).get("status")
@@ -81,22 +94,22 @@ def cmd_refit(a) -> int:
     if base.get("refit"):
         print(f"refit: {cid}'s spec is already a refit ({base['refit']['tag']}); refit from the original spec {cid}.<tag>.json")
         return 2
-    ckpt_rel = f"src/{CAPTURE}/refit/{cid}.{tag}.front.tar"
-    new = refit_spec(base, masks, ckpt_rel, tag)
+    ckpt_rel = f"src/{capture}/refit/{cid}.{tag}.front.tar"
+    new = refit_spec(base, masks, ckpt_rel, tag, capture)
     if a.dry_run:
         print(json.dumps({"id": cid, "steps": [s["name"] for s in new["steps"]], "mask": new["steps"][1]["cmd"], "inputs": [i["path"] for i in new["inputs"]],
                           "max_minutes": new["max_minutes"], "status_now": status}, indent=1))
         return 0
     with launch.volume_link(dance, keep=True) as link:
-        out = link.sh(f"cd /workspace/hm && test -f chunks/{cid}/ckpt/front.tar && mkdir -p src/{CAPTURE}/refit && "
+        out = link.sh(f"cd /workspace/hm && test -f chunks/{cid}/ckpt/front.tar && mkdir -p src/{capture}/refit && "
                       f"{{ if [ ! -f {ckpt_rel} ]; then cp chunks/{cid}/ckpt/front.tar {ckpt_rel}.part && mv -f {ckpt_rel}.part {ckpt_rel}; fi; }} ; ls -l {ckpt_rel}", 300)
         if cid not in out:
             print(f"refit: the front checkpoint of {cid} is not on the volume: {out[-200:]}")
             return 3
     # keep the first run: local take dir, farm pull evidence, old spec
     root = Path(__file__).resolve().parents[2] / "work"
-    keep = root / DANCE / "chunks" / "v1" / cid
-    take_dir = root / f"{DANCE}_{cid}"
+    keep = root / take / "chunks" / "v1" / cid
+    take_dir = root / f"{take}_{cid}"
     if take_dir.exists() and not keep.exists():
         keep.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(take_dir, keep / "work")

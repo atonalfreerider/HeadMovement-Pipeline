@@ -36,6 +36,7 @@
 
 # tools: the Pipeline Monitor launcher source + scripts; the exe is built locally (tools/PipelineMonitor/build.ps1)
 /tools/PipelineMonitor/PipelineMonitor.exe
+/tools/PipelineMonitor/monitor.png
 
 # gated body models downloaded by the user (MANO, FLAME) - licence forbids redistribution
 /models/

@@ -84,12 +84,31 @@ def camera_summary(work: Path) -> str:
     return f"one handheld phone ({w}x{h}, {words.get(steps, f'{steps} zoom steps')})"
 
 
-def reliability_meta(work: Path) -> dict:
-    """provenance.reliability: what the single-camera fit does and does not support (PROVISIONAL.md / NOTES_J3b.md), and the low-confidence intervals the layers carry."""
+def reliability_meta(work: Path, take: Take | None = None) -> dict:
+    """provenance.reliability: what the single-camera fit does and does not support (PROVISIONAL.md / NOTES_J3b.md), and the low-confidence intervals the layers carry.
+    A take fitted from two or more views (2026-10-24, the two-view lucas_luiza) says so instead: "monocular": False, `views`, the camera text "two views
+    triangulated (<name> 01 + <name> 02)" with the names of [export] camera_names {cam: name} else the [cameras."NN"] mount, and the low-confidence
+    intervals of the exported fit ([export] smplx_dir). The views are the fitted camera set when the TOML names one ([segment] cams of a chunk take,
+    [derived] cams, a top-level cams), else the sources. Monocular: fewer than two views, or a [stitch] mono over the whole window (the single-video
+    route: lucas_luiza_h carries the Steadicam cut as a second source but is fitted from camera 01 alone)."""
     from . import jl_lowconf as lc
-    return {"camera": f"{camera_summary(work)}: the distance of the couple from the camera is +-10 percent (focal length), the pose relative to the pelvis, "
-                      "the left-right position and the height above the floor are good; hands are the raw fit's",
-            "provisional": True, "low_confidence": lc.intervals(work), "monocular": True}
+    take = take or Take.load(TAKE)
+    cfg = take.cfg
+    fit = next((c["cams"] for c in (cfg.get("segment"), cfg.get("derived"), cfg) if isinstance(c, dict) and c.get("cams")), None)
+    views = [str(c) for c in fit] if fit else [s.id for s in take.sources]
+    w0, w1 = take.window
+    mono = [[float(a), float(b)] for a, b in (cfg.get("stitch") or {}).get("mono", [])]
+    if len(views) < 2 or any(a <= w0 + 0.05 and b >= w1 - 0.05 for a, b in mono):
+        return {"camera": f"{camera_summary(work)}: the distance of the couple from the camera is +-10 percent (focal length), the pose relative to the pelvis, "
+                          "the left-right position and the height above the floor are good; hands are the raw fit's",
+                "provisional": True, "low_confidence": lc.intervals(work), "monocular": True}
+    from . import camera_types as ct
+    names, tables = (cfg.get("export") or {}).get("camera_names") or {}, ct.cam_tables(cfg)
+    what = " + ".join(f"{names.get(c) or tables.get(c, {}).get('mount') or 'camera'} {c}" for c in views)
+    n = {2: "two", 3: "three", 4: "four"}.get(len(views), str(len(views)))
+    return {"camera": f"{n} views triangulated ({what})", "provisional": True,
+            "low_confidence": lc.intervals(work, eu.resolve_smplx_dir(take.name)[0]), "monocular": False, "views": views,
+            **({"single_view_s": mono} if mono else {})}
 
 
 def patch_capture_json(dirs: list[Path], extra_provenance: dict) -> list[str]:

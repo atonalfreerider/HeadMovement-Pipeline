@@ -1524,7 +1524,11 @@ def hair_sheet(ex: dict, hair: np.ndarray, path: Path) -> None:
 
 
 def write_splatav(role: str, ex: dict, hair: np.ndarray, hair_info: dict, pod: dict, a2: dict, refs: dict,
-                  dest: Path) -> dict:
+                  dest: Path, *, name: str | None = None, capture: str | None = None, take: str | None = None,
+                  inputs: list | None = None, pod_report: Path | None = None, hair_note: str | None = None,
+                  likeness: str | None = None) -> dict:
+    """<dest>/<role>.splatav + <role>.json from LHM++'s export npz (SPLAT_AVATAR_FORMAT.md). The keyword arguments make it
+    usable for any take (mono4d.take_splatav); left out, they are the active profile's (P, use())."""
     from ..export_unity import read_skin
     N = len(ex["mean0"])
     rec = np.zeros(N, REC_DTYPE)
@@ -1563,7 +1567,8 @@ def write_splatav(role: str, ex: dict, hair: np.ndarray, hair_info: dict, pod: d
     W = ex["weights"].astype(np.float64)
     w4 = np.take_along_axis(W, ex["top4_idx"].astype(int), 1).sum(1) / np.maximum(W.sum(1), 1e-12)
     skin_cmp = None
-    sk = P.unity_dir.parent / f"smplx_{role}_skin.bin"
+    # the capture's skin file: next to the profile's Unity dir, or (a take written by mono4d.take_splatav) next to dest
+    sk = (Path(dest).parent if take is not None else P.unity_dir.parent) / f"smplx_{role}_skin.bin"
     if sk.exists():
         _, skin = read_skin(sk)
         dj = np.linalg.norm(np.asarray(skin.joints, float) - Ju, axis=1) * 1e3
@@ -1576,8 +1581,8 @@ def write_splatav(role: str, ex: dict, hair: np.ndarray, hair_info: dict, pod: d
                " ... (first pass, by colour + region + clusters)"
     else:
         hsel = "none at export (hair byte 0; profile hair_rule 'none')"
-    js = {"format": "dancecap splat avatar", "version": 1, "role": role, "name": P.names[role], "capture": P.capture,
-          "take": P.take, "data": p.name, "data_bytes": p.stat().st_size, "data_sha256": _sha256(p), "count": int(N),
+    js = {"format": "dancecap splat avatar", "version": 1, "role": role, "name": name or P.names[role], "capture": capture or P.capture,
+          "take": take or P.take, "data": p.name, "data_bytes": p.stat().st_size, "data_sha256": _sha256(p), "count": int(N),
           "hair_count": int(hair.sum()), "record": [[n, t, c] for n, t, c in RECORD], "record_bytes": 120,
           "coords": "unity (x, y, -z) of the Y-up right-handed dancecap world", "units": "m",
           "conversion": {"points": "(x, y, z) -> (x, y, -z)", "quaternions_xyzw": "(qx, qy, qz, qw) -> (-qx, -qy, qz, qw)",
@@ -1602,15 +1607,15 @@ def write_splatav(role: str, ex: dict, hair: np.ndarray, hair_info: dict, pod: d
           "posing": "SPLAT_AVATAR_FORMAT.md section 4: S_j = G_j T(-J_j), G_0 = [R_0 | pelvis], "
                     "G_j = G_parent [R_j | J_j - J_parent]; centre = (sum_k w_k S_k) mean; rotation = "
                     "q(blended 3x3) * rotation; scale / opacity / colour fixed",
-          "hair": {"selection": hsel, **hair_info, "binding": "unbound (strand = -1): filled by the hair stage"},
+          "hair": {"selection": hair_note or hsel, **hair_info, "binding": "unbound (strand = -1): filled by the hair stage"},
           "provenance": {"lhmpp_commit": pod.get("commit"), "lhmpp_model": pod.get("model"),
                          "weights_licence": "CC BY-NC 4.0 (LHM++ LICENSE_WEIGHT); code Apache-2.0 + NVIDIA EG3D parts",
                          "smplx_licence": "SMPL-X model licence (non-commercial)",
-                         "inputs": refs["roles"][role]["picks"], "colour_normalisation": refs.get("colour"),
-                         "pod_report": _ws(P.pod_out / "recap_lhmpp_pod.json"), "gpu": (pod.get("versions") or {}).get("gpu"),
+                         "inputs": inputs if inputs is not None else refs["roles"][role]["picks"], "colour_normalisation": refs.get("colour"),
+                         "pod_report": _ws(pod_report or P.pod_out / "recap_lhmpp_pod.json"), "gpu": (pod.get("versions") or {}).get("gpu"),
                          "infer_s": dn.get("infer_s"), "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                         "likeness": "photographic likeness of a real person (owner consent 2026-10-19, research use); "
-                                     "never commit, never ship in an APK"},
+                         "likeness": likeness or ("photographic likeness of a real person (owner consent 2026-10-19, research use); "
+                                                  "never commit, never ship in an APK")},
           "checks": {"a2": a2.get("summary"), "rest_joints_vs_avatar_skin_mm": skin_cmp,
                      "rest_joints_vs_std_smplx_mm": dn.get("rest_joints_vs_std_smplx_mm"),
                      "weights_nonzero_per_gaussian": dn.get("weights_nonzero_per_gaussian")},

@@ -116,6 +116,54 @@ def read_frames(files: list[Path], idx=None) -> list[np.ndarray]:
         return list(pool.map(lambda i: cv2.imread(str(files[i]), cv2.IMREAD_COLOR), idx))
 
 
+class LazyImages:
+    """The canonical JPEGs as a sequence (len + [i]) decoded on demand, nothing kept: track_evidence reads each frame once,
+    so the labels hold a few frames instead of the whole camera (5.7k x 720p = 15.8 GB, the 2026-10-23 crash). With
+    `order` (the frames that will be read, in reading order) the next `ahead` of them are decoded by a small thread pool
+    while the caller works on the current one (read_frames' parallel decode, bounded to `ahead` frames)."""
+
+    def __init__(self, files: list[Path], order=None, ahead: int = 0, workers: int = 4):
+        self.files = files
+        self.order = [int(i) for i in order] if order is not None and ahead > 0 else []
+        self.pos = {i: k for k, i in enumerate(self.order)}
+        self.ahead = ahead
+        self.pending: dict = {}  # frame -> future, the frames after the last one read (at most `ahead`)
+        self.next = 0  # position in order of the next frame to submit
+        self.pool = ThreadPoolExecutor(workers) if self.order else None
+
+    def __len__(self) -> int:
+        return len(self.files)
+
+    def read(self, i: int) -> np.ndarray:
+        img = cv2.imread(str(self.files[i]), cv2.IMREAD_COLOR)
+        if img is None:
+            raise FileNotFoundError(self.files[i])
+        return img
+
+    def __getitem__(self, i: int) -> np.ndarray:
+        i = int(i)
+        k = self.pos.get(i)
+        if self.pool is None or k is None:
+            return self.read(i)
+        fut = self.pending.pop(i, None)
+        for f in [f for f in self.pending if self.pos[f] < k]:  # frames skipped by the caller: never kept
+            self.pending.pop(f).cancel()
+        self.next = max(self.next, k + 1)
+        while self.next < len(self.order) and self.next <= k + self.ahead:
+            f = self.order[self.next]
+            self.pending[f] = self.pool.submit(self.read, f)
+            self.next += 1
+        return fut.result() if fut is not None else self.read(i)
+
+    def close(self) -> None:
+        if self.pool is not None:
+            for f in self.pending.values():
+                f.cancel()
+            self.pending.clear()
+            self.pool.shutdown(wait=True)
+            self.pool = None
+
+
 def box_iou(a, b) -> float:
     if a is None or b is None or not (np.isfinite(a).all() and np.isfinite(b).all()):
         return 0.0
@@ -291,10 +339,18 @@ def load_labels(work: Path) -> dict:
 
 
 def labels_for_cam(cam: Cam, cfg: DancersConfig, imgs: list[np.ndarray] | None = None) -> tuple[dict, dict, dict]:
+    """Steps 1-2 of one camera. Without `imgs` (decoded frames a caller already holds) the frames stream from disk:
+    only the frames with both candidate tracks (the ones track_evidence reads), 8 decoded ahead."""
     p = cam.people
     tracks = candidate_tracks(p["boxes"], p["scores"], p["valid"], p["kpts"], *cam.wh, cam.fps, cfg.select)
-    imgs = imgs if imgs is not None else read_frames(cam.files)
-    ev = track_evidence(cam, tracks, imgs, cfg)
+    lazy = None
+    if imgs is None:
+        imgs = lazy = LazyImages(cam.files, np.flatnonzero((np.asarray(tracks["idx"]) != MISS).all(1)), ahead=8)
+    try:
+        ev = track_evidence(cam, tracks, imgs, cfg)
+    finally:
+        if lazy is not None:
+            lazy.close()
     return tracks, ev, auto_label(cam, tracks, ev, cfg)
 
 
@@ -307,7 +363,8 @@ def run_labels(take: Take, cams: list[str] | None = None, cfg: DancersConfig | N
     (out / "candidates").mkdir(parents=True, exist_ok=True)
     cams = cams or [s.id for s in take.sources]
     path = out / "labels.json"
-    labels = json.loads(path.read_text()) if path.exists() else {}
+    existed = path.exists()
+    labels = json.loads(path.read_text()) if existed else {}
     tiles = []
     for c in cams:
         cam = Cam.load(work, c)
@@ -323,6 +380,11 @@ def run_labels(take: Take, cams: list[str] | None = None, cfg: DancersConfig | N
         np.savez_compressed(out / "candidates" / f"{c}.npz", idx=tracks["idx"], boxes=tracks["boxes"],
                             llr=ev["llr"], a_is_follow=ev["a_is_follow"], swap_post=ev["swap_post"],
                             pair_iou=ev["pair_iou"])
+        # per camera, so that a later camera's failure keeps this label: label_<cam>.json (front_pod.label_one's file) always,
+        # labels.json only when it existed (it is the stage's done marker: a first run writes it once, complete)
+        (out / f"label_{c}.json").write_text(json.dumps(lab, indent=1))
+        if existed:
+            path.write_text(json.dumps(labels, indent=1))
         print(f"[dancers] {c}: label frame {lab['frame']} conf {lab['confidence']:.2f} (llr {lab['frame_llr']:.1f}, "
               f"agreement {lab['evidence_agreement']:.2f}, track switches {lab['track_switches']}) "
               f"cues {lab['cues']}", flush=True)

@@ -98,6 +98,12 @@ class TypedSettings:
     # most jitter_ratio x today's + rot_jitter_add_deg. Mostly RELATIVE: today's phones jitter ~1 mm, so the former
     # absolute floor (0.0005 x depth, ~4 mm) let a 2-3 x shakier track through.
     zoom_ratio: float = 1.05
+    # ... judged on the per-frame focal's rolling median over focal_window_s: P4Pf's focal scatters on weak frames
+    # (lucas_luiza's no-zoom Steadicam: p90 deviation 9.1 % frame by frame, 1.5 % on the 3 s median; the same level
+    # 1731 / 1733 px before / after its tripod's zoom), while a zoom is a level that holds - the tripod's +15 % shows
+    # at 14.8 % on the median, and so does a zoom whose zoomed frames are weak (a filter on the inlier count would drop
+    # them: review of 85a5449; zoomed frames see fewer map features).
+    focal_window_s: float = 3.0
     jitter_ratio: float = 1.25
     jitter_add_rel: float = 0.000125
     rot_jitter_add_deg: float = 0.003
@@ -317,9 +323,13 @@ def loc_mode(d) -> str:
 
 
 def _corr_frames(d: dict, min_pts: int = 6) -> np.ndarray:
+    """Localised frames with >= min_pts static correspondences and a usable focal: one frame of lucas_luiza's Steadicam (1 of
+    5248) came back from P4Pf with f <= 0, and its log turned the joint model's start focal into NaN, so the one-focal model of
+    the handheld camera was rejected (median 1e6 px) and the per-frame focal kept."""
     off = np.asarray(d["corr_off"])
     n = np.diff(off)
-    return np.flatnonzero(np.asarray(d["ok"], bool) & (n >= min_pts))
+    f = np.asarray(d["f"], float)
+    return np.flatnonzero(np.asarray(d["ok"], bool) & (n >= min_pts) & np.isfinite(f) & (f > 0))
 
 
 def _corr(d: dict, i: int, k: int, seed: int = 0) -> tuple[np.ndarray, np.ndarray]:
@@ -484,8 +494,15 @@ class _Cam:
         return float(np.sqrt(np.mean(ang ** 2)))
 
     def focal_dev(self, f: float) -> float:
-        """p90 over frames of |log(today's per-frame focal / f)|."""
-        return float(np.percentile(np.abs(np.log(self.f[self.frames] / f)), 90))
+        """p90 over frames of |log(the rolling median (TypedSettings.focal_window_s) of today's per-frame focal / f)|."""
+        fr = self.frames
+        t = np.asarray(self.d["t"], float)[fr]
+        o = np.argsort(t, kind="stable")
+        t, lf = t[o], np.log(self.f[fr][o])
+        half = self.s.focal_window_s / 2.0
+        lo, hi = np.searchsorted(t, t - half), np.searchsorted(t, t + half, side="right")
+        rm = np.array([np.median(lf[a:b]) for a, b in zip(lo, hi)])
+        return float(np.percentile(np.abs(rm - np.log(f)), 90))
 
     def states(self, frames, R=None, C=None, f=None, k1=None):
         n = len(frames)
@@ -649,7 +666,7 @@ def refit(d: dict, w: int, h: int, st, s: TypedSettings | None = None, log=None)
         """A fixed focal is contradicted when today's per-frame focal varies more than a zoom around it."""
         dev = cam.focal_dev(f)
         ok = bool(dev <= np.log(s.zoom_ratio))
-        chk = dict(chk, focal_dev_p90_pct=round(100 * (np.exp(dev) - 1), 2), focal_ok=ok)
+        chk = dict(chk, focal_dev_p90_pct=round(100 * (np.exp(dev) - 1), 2), focal_ok=ok, focal_dev_window_s=s.focal_window_s)
         if not ok:
             why = (f"today's per-frame focal deviates {100 * (np.exp(dev) - 1):.1f} % (p90) from one fixed focal: "
                    f"the camera zooms")

@@ -248,6 +248,17 @@ What happens:
 Command-line equivalent (from `dancecap/`): `..\.venv-nopo4d\Scripts\python.exe -m dancecap.pipeline monitor --launch`.
 Logs: `dancecap\work\monitor\logs\launcher.log` and `monitor.log`.
 
+**Linux (Ubuntu PC, 2026-10-23).** `tools/PipelineMonitor/PipelineMonitor.sh` is the launcher (the workspace venv `.venv/`, else
+`.venv-nopo4d/`; extra arguments pass through: `--take`, `--view`, `--no-window`); `bash tools/PipelineMonitor/install_shortcuts.sh`
+adds an application-menu entry and a Desktop launcher. The window is a Chrome / Chromium / Edge `--app` window (any of them on the
+PATH), and the snapshots render with the same browser headless. The server, the analysis drivers and their heartbeats start in a
+session of their own, so closing the terminal that started them stops nothing. `runpodctl` (v3, Runpod's Linux release) lives in
+`~/.local/bin`; the launcher puts that on the PATH. A fresh Linux clone also needs what the Windows PC keeps outside git: the
+MAMMA checkout (`mamma-turing/`), the body models (`mamma/data/body_models/`, `smplx/`), the stripped ma_2d checkpoint
+(`dancecap/work/runpod/weights/ma_2d/`) and the ALIKED / LightGlue weights (`~/.cache/torch/hub/checkpoints/`): all of them are on
+the farm volume (code bundle `code/<CURRENT>.tar.gz`, `models/`, `weights/`) and come down through a CPU gateway pod
+(`farm.volume.Link.pull_file`). The Unity project is expected at `<workspace>/head-movement` (a symlink to the viewer checkout).
+
 ---
 
 ## 2. The screen

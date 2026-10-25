@@ -644,3 +644,32 @@ def test_annotate_camera_type_api(root):
     cv = create_app(v, check_asr=False).test_client()
     assert cv.get("/api/cameras/types").json["enabled"] is False
     assert cv.put("/api/cameras/types/video", json={"mount": "tripod", "zoom": False}).status_code == 404
+
+
+def test_corr_frames_skip_a_frame_with_a_non_positive_focal():
+    import numpy as np
+    from dancecap.cameras import typed as T
+    d = {"corr_off": np.array([0, 10, 20, 30, 40]), "ok": np.array([True, True, True, False]), "f": np.array([1500.0, -3.0, 1510.0, 1505.0])}
+    assert T._corr_frames(d).tolist() == [0, 2]
+
+
+def test_zoom_test_reads_the_rolling_median_of_the_per_frame_focal():
+    """lucas_luiza's no-zoom Steadicam: P4Pf's per-frame focal scatters on weak frames (p90 9.1 % frame by frame) - the
+    fixed focal was refused as 'the camera zooms'. A zoom is a level that holds, even where its frames are weak."""
+    from dancecap.cameras.typed import TypedSettings, _Cam
+    rng = np.random.default_rng(0)
+    n = 1500
+    cam = _Cam.__new__(_Cam)
+    cam.s, cam.frames = TypedSettings(), np.arange(n)
+    t = np.arange(n) / 29.0
+    weak = np.arange(n) % 5 == 0  # a fifth of the frames weak
+    cam.d = {"t": t, "n_inliers": np.where(weak, 40, 300)}
+    cam.f = 1731.0 * np.exp(np.where(weak, rng.normal(0, 0.12, n), rng.normal(0, 0.005, n)))
+    assert np.exp(cam.focal_dev(1731.0)) - 1 < 0.02  # no zoom: passes zoom_ratio 1.05
+    assert np.exp(np.percentile(np.abs(np.log(cam.f / 1731.0)), 90)) - 1 > 0.05  # frame by frame it would not
+    cam.f = np.where(t < 25, 2124.0, 2440.0) * np.exp(rng.normal(0, 0.005, n))  # a real +15 % zoom
+    assert np.exp(cam.focal_dev(2124.0)) - 1 > 0.05
+    zoomed = t >= 25  # ... whose zoomed frames are all weak (fewer map features): still a zoom
+    cam.d = {"t": t, "n_inliers": np.where(zoomed, 40, 300)}
+    cam.f = np.where(zoomed, 2440.0 * np.exp(rng.normal(0, 0.08, n)), 2124.0)
+    assert np.exp(cam.focal_dev(2124.0)) - 1 > 0.05

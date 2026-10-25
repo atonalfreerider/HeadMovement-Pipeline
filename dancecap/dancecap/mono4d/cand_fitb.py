@@ -391,12 +391,19 @@ def smooth_rotvec(aa: np.ndarray, sigma: float, valid: np.ndarray) -> np.ndarray
     if sigma <= 0:
         return aa.copy()
     W = _gauss_weights(T, sigma, valid)
+    # invalid frames may hold NaN (0 x NaN is NaN in the sums) or a far-away valid frame may be the only one: a frame whose Gaussian
+    # weights all underflow (lucas_luiza_h: 2.8 s of title frames before the first valid one) takes its nearest valid frame's rotation
+    ok = np.asarray(valid, bool) & np.isfinite(q).all(axis=(1, 2))
+    q = np.where(np.isfinite(q), q, 0.0)
+    near = np.flatnonzero(ok)
     out = np.empty_like(q)
     for i in range(T):
-        sgn = np.sign((q * q[i][None]).sum(-1, keepdims=True))
+        ref = q[i] if ok[i] or not len(near) else q[near[np.argmin(np.abs(near - i))]]
+        sgn = np.sign((q * ref[None]).sum(-1, keepdims=True))
         sgn[sgn == 0] = 1.0
         s = np.einsum("j,jnk->nk", W[i], q * sgn)
-        out[i] = s / np.maximum(np.linalg.norm(s, axis=-1, keepdims=True), 1e-12)
+        n = np.linalg.norm(s, axis=-1, keepdims=True)
+        out[i] = np.where(n > 1e-9, s / np.maximum(n, 1e-12), ref if np.linalg.norm(ref) > 0 else np.array([0.0, 0.0, 0.0, 1.0]))
     return Rotation.from_quat(out.reshape(-1, 4)).as_rotvec().reshape(T, *shp, 3)
 
 

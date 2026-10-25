@@ -42,7 +42,7 @@ from .take import PACKAGE_ROOT
 DANCE = os.environ.get("HM_FRONT_DANCE", "larissa_kadu_recap")     # C3 (additive): carlos_aline sets it in its job env
 GRID_ANCHOR = 0.0
 FRONT_MARGIN_S = 2.0           # frames are decoded this much beyond the fit window (the same margin as farm.chunks.FRONT_MARGIN_S)
-MASTER = "01"
+MASTER = os.environ.get("HM_FRONT_MASTER", "01")   # LL2V (additive): the camera gauged to offset 0; lucas_luiza's jobs set 02 (the reference clock)
 
 
 def log(msg: str) -> None:
@@ -321,7 +321,8 @@ def apply_fixed_offsets(doc: dict, fixed: dict | None, master: str = MASTER) -> 
     return done
 
 
-def fixed_sync_doc(work: Path, offsets_ms: dict, why: str, cams: list[str], master: str = MASTER) -> dict:
+def fixed_sync_doc(work: Path, offsets_ms: dict, why: str, cams: list[str], master: str = MASTER,
+                   piecewise_ms: dict | None = None) -> dict:
     """C3 (additive): the document dancecap.sync would write, with the video offsets the JOB fixes (ms, master camera = 0). dancecap.sync triangulates each
     camera's landmarks from at least TWO OTHER cameras (residual(): V.sum(0) >= 2), so a two-camera take (carlos_aline) cannot be measured by it (its first run
     died in `arange: cannot compute length`: no valid residual at all). The numbers come from the YOLO joints of both cameras: two-view reprojection of
@@ -332,6 +333,8 @@ def fixed_sync_doc(work: Path, offsets_ms: dict, why: str, cams: list[str], mast
         ms = 0.0 if c == master else float(offsets_ms.get(c, 0.0))
         offs[c] = {"delta": round(ms / 1000.0, 5), "delta_ms": ms, "stable": True, "use": True, "use_rate": False, "rate": 0.0, "t_ref": 0.0, "attached": False,
                    "fixed": {"why": why}}
+        if c != master and (piecewise_ms or {}).get(c):  # the parent take's delta(t) over this chunk (TwoView.sync_for)
+            offs[c]["piecewise"] = [[float(t), round(float(v) / 1000.0, 5)] for t, v in piecewise_ms[c]]
     return {"version": 1, "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "what": "per-camera residual video offset: corrected reference time = t + delta. FIXED by the job spec (a two-camera take: dancecap.sync cannot measure it)",
             "gauge": f"camera {master} (the master) = 0", "offsets": offs, "fixed_offsets": {"what": why, "cams": {c: offsets_ms.get(c) for c in cams if c != master}},
@@ -344,7 +347,8 @@ def step_sync(chunk: dict, workers: int | None = None) -> dict:
     fx = chunk.get("sync_fixed") or {}
     if fx.get("no_measure"):
         work = take_work(chunk["id"])
-        doc = fixed_sync_doc(work, fx.get("offsets_ms") or {}, fx.get("why") or "fixed by the job spec", list(chunk["cams"]))
+        doc = fixed_sync_doc(work, fx.get("offsets_ms") or {}, fx.get("why") or "fixed by the job spec", list(chunk["cams"]),
+                             piecewise_ms=fx.get("piecewise_ms"))
         p = work / "sync" / "offsets.json"
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(json.dumps(doc, indent=1))
@@ -633,13 +637,15 @@ def step_fit(chunk_id: str, pin: bool = False) -> dict:
 
 def sam_mem_gb(chunk: dict, cam: str) -> float:
     """Host RAM of one dancers worker (front_pod._sam_mem_gb's formula: all frames BGR + 2 bool masks + SAM probabilities + QA frames, + 3 GB) for
-    the frames of `cam` inside the chunk window: about 30 GB for the two 1080x1920 phones, 7-8 GB for the others."""
+    the frames of `cam` inside the chunk window: about 30 GB for the two 1080x1920 phones, 7-8 GB for the others.
+    QA frames as front_pod._qa_frame_px: 1707 x 960 for a landscape 1280x720 video."""
+    from .front_pod import _qa_frame_px
     z = np.load(dance_work() / "cameras" / f"{cam}.npz", allow_pickle=True)
     f = len(frame_range(np.asarray(z["t"], float), chunk["t0"], chunk["t1"]))
     w, h = (int(x) for x in z["native_size"])
     px = w * h
     work_px = min(1.0, 1280 / max(w, h)) ** 2 * px
-    return round((f * (3 * px + 2 * px + 2 * work_px + 960 * 540 * 3)) / 2**30 * 1.1 + 3.0, 1)
+    return round((f * (3 * px + 2 * px + 2 * work_px + 3 * _qa_frame_px(w, h))) / 2**30 * 1.1 + 3.0, 1)
 
 
 def build_tasks(R, chunk: dict) -> None:

@@ -8,6 +8,7 @@ a good film of it. Film time = dance time (reference seconds, speed 1.0, no cuts
 stays in step with the sound however the viewer seeks.
 
     python -m dancecap.film_heat build --preset carlos_aline [--out DIR] [--dry-run]     # the preset's [<name>.heat] block of films.toml
+    python -m dancecap.film_heat pov-table --take T --cams 01,02                          # where each camera can be shown (POV shots)
     python -m dancecap.film_library build --carlos-aline                                  # the same, then the library entry
 
 THE FILM
@@ -18,7 +19,13 @@ THE FILM
     new arc every shot, alternating direction), `fit_span` (both dancers always inside the frame however far apart they stand) and a close
     radius (the couple fills more than half of the frame height). Every `cycle_s` the camera goes overhead for `overhead_s` seconds
     (`overhead_floorcraft`, couple framing with `fill`: the owner's "for overhead views get closer with the camera") with the
-    current T and the footprints of the floor craft. No hand close-ups, no phone point-of-view shots.
+    current T and the footprints of the floor craft. No hand close-ups.
+  * Point-of-view shots (optional, `pov_cameras`; lucas_luiza 2026-10-23, the owner's "moving in and out of the POVs of the two videos"):
+    every `pov_every_s` the orbit flies INTO one of the recording cameras (`fly_to_camera`: the 3D eye flies to the camera's own pose,
+    the camera's video fades in under the 3D dancers, holds, fades out and the eye pulls back out into the orbit), the cameras taking
+    turns. A shot is placed only where its camera can show the dance (`pov_table`, written by `pov-table`: the camera's pose solved and
+    both dancers inside its picture for at least `pov_min_ok` of the shot), never next to an overhead, and the orbits between keep
+    `min_shot_s`. The capture needs the cameras' tracks and clips (`python -m dancecap.camera_video ... --direction`).
   * Layers: the dancers as avatars (`avatar_opacity`, one value at the top of the direction) over the room (`room`; off = the dark floor grid
     only), the skeleton lines at `skeleton_lines` strength, the zouk beat counter while a song is audible and has a beat grid (never in the
     no-beat intervals), the live rhythm score HUD + final score card when `rhythm_score` is on (docs/RHYTHM.md); nothing else.
@@ -27,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import shutil
 import sys
@@ -50,6 +58,12 @@ DEFAULTS = {
     # skeleton_lines = the skeleton strokes' width factor (0 = hidden, 1 = normal), rhythm_score = the live rhythm score HUD + the final score card
     # (needs the capture's rhythm layer: python -m dancecap.rhythm run <take>, then the export)
     "avatar_opacity": 0.95, "room": True, "skeleton_lines": 0.0, "rhythm_score": False,
+    # point-of-view shots: the camera ids of the capture (cameras/cameras.json), the eligibility table (pov-table), the shot rhythm
+    "pov_cameras": [], "pov_table": "", "pov_s": 9.0, "pov_every_s": 26.0, "pov_first_s": 9.0, "pov_shift_max_s": 8.0, "pov_min_ok": 0.9,
+    "pov_fly_s": 1.4, "pov_fade_s": 0.5, "pov_pull_s": 1.1, "pov_gap_s": 3.0, "pov_min_s": 5.0,
+    # per camera: "3d_over_video" (the dancers drawn over the camera's video: needs a pose that registers them) or "video_over_3d" (the
+    # video covers the 3D while it holds: for a camera attached through the dancers, whose overlay is only approximately registered)
+    "pov_composite": {},
 }
 
 def layer_set(cfg: dict, overhead: bool) -> dict:
@@ -170,6 +184,110 @@ def shot_plan(film_end: float, cfg: dict) -> list[dict]:
     return shots
 
 
+def pov_ok_fraction(table: dict | None, cam: str, a: float, b: float) -> float:
+    """share of [a, b] in which `cam` can be shown (pov-table rows: t0, dt, ok 0/1 per step); 0 without a table entry"""
+    if not table or cam not in (table.get("cams") or {}):
+        return 0.0
+    c = table["cams"][cam]
+    t0, dt, ok = float(c["t0"]), float(c["dt"]), c["ok"]
+    i0, i1 = max(0, int(math.floor((a - t0) / dt))), min(len(ok), int(math.ceil((b - t0) / dt)))
+    if i1 <= i0:
+        return 0.0
+    return float(sum(ok[i0:i1])) / float(int(math.ceil((b - a) / dt)) or 1)
+
+
+def place_povs(shots: list[dict], film_end: float, cfg: dict, table: dict | None) -> list[dict]:
+    """POV shots inserted into an orbit / overhead plan: about every pov_every_s from pov_first_s, each slot moved by up to
+    pov_shift_max_s either way (1 s steps, nearest first) and shortened down to pov_min_s until a camera of pov_cameras can show it
+    (pov_ok_fraction >= pov_min_ok), the cameras taking turns (another one when the turn's camera cannot), never within pov_gap_s of
+    an overhead or another POV, nor leaving an orbit shorter than min_shot_s. A camera that got no slot that way gets its best window
+    anywhere, an overhead in its way giving up its place (lucas_luiza: the Steadicam can be shown only at 22-31 s and 113-120 s, the
+    first under an overhead). -> the new plan."""
+    cams = [str(c) for c in (cfg.get("pov_cameras") or [])]
+    if not cams:
+        return shots
+    L, Lmin, gap, min_orbit = float(cfg["pov_s"]), float(cfg.get("pov_min_s") or cfg["pov_s"]), float(cfg["pov_gap_s"]), float(cfg["min_shot_s"])
+    fixed = [s for s in shots if s["kind"] == "overhead"]
+    povs: list[dict] = []
+    lengths = [L] + [x for x in (L - 1.0, L - 2.0, L - 3.0) if x >= Lmin]
+    shifts = sorted(range(-int(cfg["pov_shift_max_s"]), int(cfg["pov_shift_max_s"]) + 1), key=lambda d: (abs(d), d < 0))
+
+    def fits(a: float, b: float, busy: list[dict]) -> bool:
+        if a < min_orbit or b > film_end - min_orbit:
+            return False
+        if any(a < o["end"] + gap and b > o["start"] - gap for o in busy):
+            return False
+        prev_end = max([0.0] + [o["end"] for o in busy if o["end"] <= a])
+        next_start = min([film_end] + [o["start"] for o in busy if o["start"] >= b])
+        return a - prev_end >= min_orbit and next_start - b >= min_orbit
+
+    def showable(cam: str, a: float, b: float) -> bool:
+        return pov_ok_fraction(table, cam, a, b) >= float(cfg["pov_min_ok"])
+
+    turn = 0
+    t = float(cfg["pov_first_s"])
+    while t + Lmin <= film_end - min_orbit:
+        order = cams[turn % len(cams):] + cams[:turn % len(cams)]
+        placed = None
+        for cam in order:
+            for ln in lengths:
+                for d in shifts:
+                    a, b = t + d, t + d + ln
+                    if fits(a, b, fixed + povs) and showable(cam, a, b):
+                        placed = {"kind": "pov", "start": float(a), "end": float(b), "camera": cam}
+                        break
+                if placed:
+                    break
+            if placed:
+                break
+        if placed:
+            povs.append(placed)
+            turn = cams.index(placed["camera"]) + 1
+        t += float(cfg["pov_every_s"])
+    # every camera at least once: its best window anywhere (longest, then the highest share), an overhead in the way gives way
+    for cam in cams:
+        if any(p["camera"] == cam for p in povs):
+            continue
+        best = None
+        for ln in lengths:
+            for a in [x * 0.5 for x in range(int(2 * min_orbit), int(2 * (film_end - min_orbit - ln)) + 1)]:
+                b = a + ln
+                if not showable(cam, a, b) or not fits(a, b, povs):
+                    continue
+                sc = pov_ok_fraction(table, cam, a, b)
+                if best is None or sc > best[0]:
+                    best = (sc, a, b)
+            if best:
+                break
+        if best:
+            _, a, b = best
+            fixed = [o for o in fixed if not (a < o["end"] + gap and b > o["start"] - gap)]
+            povs.append({"kind": "pov", "start": float(a), "end": float(b), "camera": cam})
+    if not povs:
+        return shots
+    fixed = sorted(fixed + povs, key=lambda s: s["start"])
+    out: list[dict] = []
+    cur = 0.0
+    for f in fixed:
+        if f["start"] - cur > 1e-6:
+            out.append({"kind": "orbit", "start": cur, "end": f["start"]})
+        out.append(f)
+        cur = f["end"]
+    if film_end - cur > 1e-6:
+        out.append({"kind": "orbit", "start": cur, "end": film_end})
+    return out
+
+
+def pov_camera_block(cam: str, length_s: float, cfg: dict) -> dict:  # noqa: D103
+    """fly in (pov_fly_s), the camera's video fades in (pov_fade_s), holds, fades out, the eye pulls back out (pov_pull_s): the parts add up
+    to the shot's length"""
+    fly, fade, pull = float(cfg["pov_fly_s"]), float(cfg["pov_fade_s"]), float(cfg["pov_pull_s"])
+    hold = max(1.0, length_s - fly - 2 * fade - pull)
+    return {"mode": "fly_to_camera", "camera": cam, "fly_s": fly, "fade_in_s": fade, "hold_s": round(hold, 3), "fade_out_s": fade,
+            "pull_back_s": pull, "composite": str((cfg.get("pov_composite") or {}).get(cam, "3d_over_video")),
+            "skeletons_on_top": True, "scene_geometry": "all"}
+
+
 def orbit_camera(index: int, length_s: float, cfg: dict) -> dict:
     """the camera block of the `index`-th orbit shot: an arc of `arc_deg` across the audience side, glided in `length_s`; direction alternates"""
     centres = list(cfg["arc_centres_deg"]) or [0.0]
@@ -192,13 +310,13 @@ def overhead_camera(cfg: dict) -> dict:
 
 def build_direction(*, name: str, title: str, capture: str, take: str, songs: dict, dance_range: list[float], film_end: float,
                     titles: dict[str, str] | None = None, cfg: dict | None = None, beat_start_s: float | None = None,
-                    beat_end_s: float | None = None) -> dict:
+                    beat_end_s: float | None = None, pov_table: dict | None = None) -> dict:
     """the direction dict (JSON-serialisable). Segments are cut at every chapter start and every camera change; consecutive segments with
     the same camera block are one shot for the viewer."""
     conf = dict(DEFAULTS)
     conf.update(cfg or {})
     chapters = chapters_from_songs(songs, titles or {}, film_end, None)
-    shots = shot_plan(film_end, conf)
+    shots = place_povs(shot_plan(film_end, conf), film_end, conf, pov_table)
     no_beat = [(float(a), float(b)) for a, b in (songs.get("no_beat") or [])]
 
     def beat_on(t0: float, t1: float) -> bool:
@@ -217,6 +335,8 @@ def build_direction(*, name: str, title: str, capture: str, take: str, songs: di
         if sh["kind"] == "orbit":
             camera_of[i] = orbit_camera(orbit_i, sh["end"] - sh["start"], conf)
             orbit_i += 1
+        elif sh["kind"] == "pov":
+            camera_of[i] = pov_camera_block(sh["camera"], sh["end"] - sh["start"], conf)
         else:
             camera_of[i] = overhead_camera(conf)
 
@@ -232,7 +352,7 @@ def build_direction(*, name: str, title: str, capture: str, take: str, songs: di
         layers = layer_set(conf, kind == "overhead")
         layers["beat_counter"] = beat_on(a, b)
         seg = {"id": f"c{ci + 1:02d}_{kind}_{k:02d}", "dance": [a, b], "film": [a, b], "speed": 1.0, "camera": dict(camera_of[si]),
-               "view_state": "overhead" if kind == "overhead" else "orbit", "layers": layers, "annotations": [], "audio": "locked",
+               "view_state": {"overhead": "overhead", "pov": "pov"}.get(kind, "orbit"), "layers": layers, "annotations": [], "audio": "locked",
                "status": "ok"}
         if abs(a - chapters[ci]["start"]) < 1e-6:
             seg["chapter"] = chapters[ci]["title"]
@@ -253,7 +373,8 @@ def build_direction(*, name: str, title: str, capture: str, take: str, songs: di
         "chapters": [{"title": c["title"], "segment": chapter_first[i], "film_s": c["start"]} for i, c in enumerate(chapters)],
         "timeline": {"film_duration_s": round(film_end, 3), "dance_span_s": round(film_end, 3), "inserts": [], "narration_lines": 0},
         "heat_film": {"camera": {k: conf[k] for k in ("radius_m", "height_m", "arc_deg", "cycle_s", "overhead_s", "overhead_fill")},
-                      "shots": [{"kind": s["kind"], "film": [round(s["start"], 3), round(s["end"], 3)]} for s in shots]},
+                      "shots": [{"kind": s["kind"], "film": [round(s["start"], 3), round(s["end"], 3)],
+                                 **({"camera": s["camera"]} if s.get("camera") else {})} for s in shots]},
     }
 
 
@@ -299,9 +420,10 @@ def build_from_preset(preset: dict, *, out_dir: Path | None = None, dry_run: boo
         direction_path = out_dir / "direction.json"
     name = str(heat.get("name") or preset.get("id") or "heat")
     cfg = {k: v for k, v in heat.items() if k in DEFAULTS}
+    table = read_json(_abs(cfg["pov_table"])) if cfg.get("pov_cameras") and cfg.get("pov_table") else None
     direction = build_direction(name=name, title=str(preset.get("title") or name), capture=capture, take=str(heat.get("take") or ""), songs=songs,
                                 dance_range=[first, last], film_end=film_end, titles=dict(heat.get("titles") or {}), cfg=cfg,
-                                beat_start_s=beat_lo, beat_end_s=beat_hi)
+                                beat_start_s=beat_lo, beat_end_s=beat_hi, pov_table=table)
     notes.append(f"{name}: {len(direction['segments'])} segments, {len(direction['chapters'])} chapters, film {film_end:.2f} s (danced span {first:.2f}-{last:.2f} s)")
     if dry_run:
         return direction_path, direction, notes
@@ -328,6 +450,58 @@ def _wav_seconds(path: Path) -> float:
 # ----------------------------------------------------------------------------------------------- command line
 
 
+def pov_table(take: str, cams: list[str], dt: float = 0.25, margin: float = 0.02, min_conf: float = 0.3, jev_blocked: float = 0.6,
+              jev_view: float = 1.5, max_dancer_pct: float = 8.0) -> dict:
+    """{take, cams: {cam: {t0, dt, ok: [0/1 ...], share}}}: per dt step of the take's reference clock, whether the camera can be shown in a
+    POV shot: its pose solved (cameras/<cam>.npz ok) AND both dancers inside its picture (people/teachers_<cam>.npz boxes inside the frame
+    by `margin` of its size, row confidence >= min_conf) for most (>= 80 %) of the step's frames."""
+    import numpy as np
+    from .take import PACKAGE_ROOT
+    w = PACKAGE_ROOT / "work" / take
+    out: dict = {"take": take, "dt": dt, "rule": f"pose ok and both dancers' boxes inside the frame (margin {margin}), conf >= {min_conf}; "
+                                               f"with film/jev_pov_<cam>.json also Jev's blocked < {jev_blocked} and view >= {jev_view}",
+                 "cams": {}}
+    for cam in cams:
+        z = np.load(w / "cameras" / f"{cam}.npz", allow_pickle=True)
+        tp = np.load(w / "people" / f"teachers_{cam}.npz", allow_pickle=True)
+        t = np.asarray(z["t"], float)
+        fi = np.asarray(z["frame_index"], int) if "frame_index" in z.files else np.arange(len(t))
+        ok = np.asarray(z["ok"], bool) if "ok" in z.files else np.ones(len(t), bool)
+        if "dancer_pct" in z.files:   # a camera attached through the dancers (cameras.attach_moving): its registration per frame
+            ok = ok & (np.nan_to_num(np.asarray(z["dancer_pct"], float), nan=1e9) <= max_dancer_pct)
+        W, H = (int(v) for v in np.asarray(tp["size"]).ravel()[:2])
+        box = np.asarray(tp["box"], float)[np.clip(fi, 0, len(tp["box"]) - 1)]
+        conf = np.asarray(tp["conf"], float)[np.clip(fi, 0, len(tp["conf"]) - 1)]
+        mx, my = margin * W, margin * H
+        inside = (np.isfinite(box).all(-1) & (box[..., 0] >= mx) & (box[..., 1] >= my) & (box[..., 2] <= W - mx) & (box[..., 3] <= H - my)
+                  & (np.nan_to_num(conf) >= min_conf)).all(-1)
+        good = ok & inside
+        jev = w / "film" / f"jev_pov_{cam}.json"
+        jev_share = None
+        if jev.exists():
+            # Jev's view judgments (film_jev povview, one frame per second): a frame counts only when the nearest judged frame
+            # is not blocked and shows the couple at least "usable"
+            jr = read_json(jev)["rows"]
+            jt = np.array([r["t"] for r in jr], float)
+            clear = np.array([r["blocked"] < jev_blocked and r["view"] >= jev_view for r in jr], bool)
+            j = np.clip(np.searchsorted(jt, t), 1, len(jt) - 1)
+            j = np.where(np.abs(jt[j - 1] - t) < np.abs(jt[j] - t), j - 1, j)
+            near = np.abs(jt[j] - t) <= 0.75 * float(read_json(jev).get("every_s", 1.0)) + 1e-6
+            jclear = near & clear[j]
+            jev_share = float(jclear.mean())
+            good = good & jclear
+        t0 = math.floor(float(t.min()) / dt) * dt
+        n = int(math.ceil((float(t.max()) - t0) / dt))
+        k = np.clip(((t - t0) / dt).astype(int), 0, n - 1)
+        tot = np.bincount(k, minlength=n)
+        hit = np.bincount(k, weights=good.astype(float), minlength=n)
+        row = [1 if tot[i] and hit[i] / tot[i] >= 0.8 else 0 for i in range(n)]
+        out["cams"][cam] = {"t0": round(t0, 4), "dt": dt, "ok": row, "share": round(sum(row) / max(1, n), 3),
+                            "pose_ok_share": round(float(ok.mean()), 3), "both_inside_share": round(float(inside.mean()), 3),
+                            "jev_clear_share": None if jev_share is None else round(jev_share, 3)}
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     from .film_library import read_presets, PRESETS  # local: film_library imports this module
 
@@ -338,7 +512,23 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--presets", help="a preset file other than takes/library/films.toml")
     b.add_argument("--out", help="write direction.json (and audio/) here instead of the preset's direction path")
     b.add_argument("--dry-run", action="store_true")
+    pt = sub.add_parser("pov-table", help="where each camera can be shown: work/<take>/film/pov_table.json")
+    pt.add_argument("--take", required=True)
+    pt.add_argument("--cams", required=True, help="comma list of camera ids")
+    pt.add_argument("--out", help="default work/<take>/film/pov_table.json")
+    pt.add_argument("--margin", type=float, default=0.02, help="a dancer's box must stay this share of the picture inside its edges (0 for a "
+                    "tightly framing camera: Jev's view judgment then decides what is cut off)")
     a = ap.parse_args(argv)
+    if a.cmd == "pov-table":
+        from .take import PACKAGE_ROOT
+        tab = pov_table(a.take, [c for c in a.cams.split(",") if c], margin=a.margin)
+        out = Path(a.out) if a.out else PACKAGE_ROOT / "work" / a.take / "film" / "pov_table.json"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(tab), encoding="utf-8")
+        for c, v in tab["cams"].items():
+            print(f"{c}: showable {100 * v['share']:.0f} % (pose ok {100 * v['pose_ok_share']:.0f} %, both dancers inside {100 * v['both_inside_share']:.0f} %)")
+        print(f"wrote {out}")
+        return 0
     try:
         presets = read_presets(Path(a.presets) if a.presets else PRESETS)
         if a.preset not in presets:

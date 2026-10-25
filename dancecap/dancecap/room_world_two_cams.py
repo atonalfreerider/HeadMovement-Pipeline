@@ -19,6 +19,7 @@ import time
 import tomllib
 from pathlib import Path
 
+from .camera_types import cam_tables
 from .farm import world as W
 from .farm.state import atomic_write_json, now_iso
 from .farm import worlds_data, worlds_tracked
@@ -33,7 +34,7 @@ MISSING = ["room_sfm (no COLMAP model: the room is room_model.json)", "betas (MA
 
 def member_list() -> list[W.Member]:
     cfg = tomllib.loads((PACKAGE_ROOT / "takes" / f"{DANCE}.toml").read_text(encoding="utf-8"))
-    cams = {k: {x: y for x, y in v.items() if x not in ("source", "set_at")} for k, v in (cfg.get("cameras") or {}).items()}
+    cams = {k: {x: y for x, y in v.items() if x not in ("source", "set_at")} for k, v in cam_tables(cfg).items()}  # not loc / map / x_cam
     cam, room = WORK / "cameras", WORK / "room"
     out: list[W.Member] = []
 

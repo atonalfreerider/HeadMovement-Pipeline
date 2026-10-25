@@ -1753,3 +1753,62 @@ h<cam> views are for comparison with the real phone and stay out of the fit set;
 input_tokens, capabilities {cap: {stated, ruled_out, evidence_id, evidence_conf, evidence}}}], decision {cap: {status yes | no | unclear,
 p, url, evidence}, _ready}}, changes); `work/mono4d/calibration/` (labelled mannequin frames, labels.json, calibration_<variant>.json).
 
+## Two-view takes (2026-10-23, additive; dancecap.cameras.twoview, dancers_seed, farm/ca_profile.TwoView; lucas_luiza)
+
+A take filmed by TWO cameras (one tripod + one moving camera). Module docstrings hold the full rules; the keys and files:
+
+```toml
+[cameras]
+x_cam = "02"                                 # the camera whose frames the map's cross-camera pairs start from (default: the first)
+map = { win_step_s = 2.0, dense_step_s = 6.0, shared_intrinsics = ["01"],      # mapping.map_settings: map image steps; one focal for a no-zoom video
+        seq_only_cams = ["01"], seq_only_s = 8.0 }   # a moving camera pairs with its own images only within 8 s (look-alike walls)
+[sync]
+required = true                              # mamma prepare / the farm refuse without this take's own sync/offsets.json
+```
+
+```
+cameras/sfm_work/map.json            + intrinsics_mode {<cam>: single | shared | per_image}, verification.per_campair.<a>-<b>.link_pairs
+                                       (pairs >= link_min_inliers), link_min_pairs
+cameras/qa/map_gate.json             twoview map-gate: registered / total per camera, link per --need pair, refined reprojection,
+                                       doppelgangers {flagged, per_cam, kept_majority} of cameras/sfm (G1 no_doppelgangers wants 0);
+                                       mean_reproj_px = the written model's (after any clean)
+cameras/sfm_orig/                    cameras.plausible clean: the model before its doppelganger images were deregistered (belongs to
+                                       the current map: stage_map / cameras.reuse remove it when they write a new cameras/sfm)
+map.json doppelgangers               {flagged {image: why}, kept_majority, per_cam, passes, bands {up, room, floor, box {centre, h_lo,
+                                       h_hi, radius, points, n}, exempt, cams {<cam>: h_med, h_tol, xz_med, xz_tol, n}}, rule,
+                                       removed {images, points_before, points_after}, at?, how?, history? [earlier cleans]}: stage_map
+                                       (before the final refine) or `cameras.plausible clean` (in place, no BA: frame kept). Implausible =
+                                       outside the camera's band AND outside the room (points seen by >= 2 cameras)
+cameras/cache/loc_<cam>.npz source   + "implausible": the best pose was implausible (ok False, no corr). Main-model localisation and
+                                       map_extend only: single-camera sub-models (attach, reuse, map_extend) are never gated
+cameras/cache/loc_<cam>_raw.npz      cameras.anchored: the moving camera's raw localisation (written once; every run starts from it)
+cameras/cache/loc_<cam>.npz source   + "anchor" | "cont" | "prior" (ok) and "dancers" | "unanchored" (not ok) after cameras.anchored run:
+                                       the moving camera judged against the fixed one by the dancers (epipolar + ankle transfer)
+cameras/qa/anchored_<cam>.json       anchored run: offset_ms (+ from), raw judged / residual_pct / transfer_pct / anchors, map_images
+                                       {judged, total, bad}, map_images_excluded, params, counts {anchor, cont, prior, refused,
+                                       unanchored, ok, frames, share}, coverage_8s, residual_after_pct, transfer_after_pct;
+                                       anchored_score_<cam>.json = the `score` (CPU) half with every map image's verdict
+cameras/ptz/<cam>.npz                twoview ptz --mode attach: the tripod's fixed-centre PTZ track in the cameras/<cam>.npz schema
+                                       (camera_class tripod_zoom); --adopt installs it, cameras/orig/<cam>_loc.npz + cameras/adopted.json
+cameras/qa/ptz_check.json            check / attach sections; cameras/qa/atlas_check.json + review/atlas_check.png (Atlas = drift check only,
+                                       never a scale or focal prior)
+sync/offsets.json                    method "two_view_epipolar", gauge = the tripod (offset 0), dancecap.sync's layout + clocks block;
+                                       sync/curves_2v.json (+ piecewise {windows [{t, delta_ms, even_ms, odd_ms, n, counted}], curve,
+                                       share, repro_median_ms, repro_max_ms, range_ms, cost_px, cost_constant_px, reproducible}),
+                                       review/sync_2v.png. Never written with use: false. When no constant holds but the even- and
+                                       odd-frame curves reproduce delta(t) (a moving camera's audio clock follows its distance to the
+                                       speakers, ~3 ms per metre): offsets.<cam>.piecewise [[t, delta_s], ...] + piecewise_detail,
+                                       stable_on "piecewise: ...", use_rate false; delta stays the whole-window value.
+                                       mamma_dyn.read_sync_offsets passes piecewise through and apply_offset / offset_label use it
+                                       (every reader); farm TwoView.offset_ms takes it at the chunk's centre
+cameras/qa/twoview_check[_<tag>].json  sync-corrected two-view DLT of COCO-17 joints: reprojection, coverage, bone CV, statures, ankle heights
+cameras/qa/twoview_gates.json        G1-G8 {gate: {value, threshold, pass, status, checks}}, _meta (adopt_ptz rule)
+people/teachers_<cam>.npz            dancers_seed: the recap teachers contract on this take's own detections (reviewed slots, src_frame, src)
+dancers/seed_report.json             G0 of the seed (scan offsets, matched share, skeleton vetoes, role jumps); review/seed_roles.jpg
+dancers/roles.json                   ONE entry per frames.json frame (positional), dancers_pod.merge's schema
+song/segments.json                   + shifted_from {take, dt_s} (heat_beats shift: a verified grid moved onto another take's clock)
+```
+
+Farm: `farm/ca_profile.PROFILES` (`carlos_aline`, `lucas_luiza`): `TwoView.sync_for(chunk)` = the measured offsets at the chunk's centre
+(delta + rate (t - t_ref) where use_rate), master = `HM_FRONT_MASTER` (lucas_luiza: 02); job ids `ll*`, owner `LL2V`; the two-view share
+gate (recap_fitreport `TWO_VIEW_MIN_SHARE`, lucas_luiza 0.7) fails a chunk fitted mostly from one view.

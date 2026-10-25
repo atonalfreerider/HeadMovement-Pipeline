@@ -137,19 +137,47 @@ def decode_data_url(s: str) -> bytes:
 def read_exr(data: bytes) -> np.ndarray:
     """EXR bytes -> float32 HxW (first channel), rows top-down as Atlas declares them."""
     import cv2
-    arr = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_UNCHANGED)
+    try:
+        arr = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_UNCHANGED)
+    except cv2.error:
+        arr = None
     if arr is None:
-        raise ValueError("could not decode the EXR (OpenCV built without OpenEXR?)")
+        # OpenCV wheels without the EXR codec (opencv-python 5.0 on the Ubuntu PC): the OpenEXR bindings read it
+        try:
+            import OpenEXR
+        except ImportError:
+            raise ValueError("could not decode the EXR (OpenCV built without OpenEXR; pip install OpenEXR)") from None
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".exr") as fh:
+            fh.write(data)
+            fh.flush()
+            with OpenEXR.File(fh.name) as f:
+                ch = f.channels()
+                name = next((k for k in ("Z", "Y", "R", "depth") if k in ch), sorted(ch)[0])
+                arr = np.asarray(ch[name].pixels, np.float32)
     return arr if arr.ndim == 2 else arr[..., 0]
 
 
 def b64_exr(z: np.ndarray) -> str:
     """HxW float32 linear depth -> an EXR data URL (inline LinearDepthBufferAsset.depthAsset)."""
     import cv2
-    ok, buf = cv2.imencode(".exr", np.ascontiguousarray(z, np.float32))
-    if not ok:
-        raise ValueError("could not encode the EXR (OpenCV built without OpenEXR?)")
-    return "data:image/x-exr;base64," + base64.b64encode(buf.tobytes()).decode()
+    try:
+        ok, buf = cv2.imencode(".exr", np.ascontiguousarray(z, np.float32))
+        data = buf.tobytes() if ok else None
+    except cv2.error:
+        data = None
+    if data is None:   # an OpenCV without the EXR codec (opencv-python 5.0): the OpenEXR bindings write it
+        try:
+            import OpenEXR
+        except ImportError:
+            raise ValueError("could not encode the EXR (OpenCV built without OpenEXR; pip install OpenEXR)") from None
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".exr") as fh:
+            with OpenEXR.File({"compression": OpenEXR.ZIP_COMPRESSION, "type": OpenEXR.scanlineimage},
+                              {"Y": np.ascontiguousarray(z, np.float32)}) as f:
+                f.write(fh.name)
+            data = Path(fh.name).read_bytes()
+    return "data:image/x-exr;base64," + base64.b64encode(data).decode()
 
 
 def read_image(data: bytes) -> np.ndarray:
@@ -247,6 +275,18 @@ class AtlasClient:
             raise AtlasError(f"operation {op.get('id')} failed: {op['error']}")
         return op.get("response") or {}
 
+    def upload(self, data: bytes, name: str, content_type: str = "image/jpeg") -> str:
+        """An asset from bytes through an upload URL (create -> createUploadUrl -> PUT -> completeUpload) -> its id. Inline
+        base64 inputs share one request-size limit (HTTP 413 at 99 phone keyframes): uploaded assets are referenced by id."""
+        a = self._req("POST", "/assets", json={"asset": {"displayName": name}})
+        aid = a["id"]
+        g = self._req("POST", f"/assets/{aid}:createUploadUrl", json={"contentType": content_type, "contentLength": len(data)})
+        r = self.raw().request(g.get("method", "PUT"), g["uploadUrl"], content=data, headers=g.get("headers") or {"Content-Type": content_type})
+        if r.status_code >= 400:
+            raise AtlasError(f"upload of {name}: HTTP {r.status_code}: {r.text[:300]}")
+        self._req("POST", f"/assets/{aid}:completeUpload", json={})
+        return aid
+
     def fetch(self, asset: dict) -> bytes:
         """Bytes of a TaskAsset: inline base64, its signed url, or a fresh read URL for its assetId."""
         if asset.get("base64"):
@@ -307,10 +347,18 @@ def _decode(client: AtlasClient, frame: dict, want_depth: bool = True) -> PosedV
 
 
 def pose_images(client: AtlasClient, images: list, target_resolution: tuple[int, int] | None = None,
-                refine: bool = False, canonicalize: bool = False) -> tuple[list[PosedView], dict]:
-    """images2PosedRGBD on one or more images (paths / arrays). Pass the phone's own aspect as target_resolution
-    (e.g. (720, 1280) for a portrait phone): the default 1280x720 would crop a portrait frame to its middle band."""
-    body = {"frames": [{"imageAsset": {"base64": b64_image(im)}} for im in images],
+                refine: bool = False, canonicalize: bool = False, upload: bool | None = None) -> tuple[list[PosedView], dict]:
+    """images2PosedRGBD on one or more images (paths / arrays), posed together in ONE frame. Pass the phone's own aspect as
+    target_resolution (e.g. (720, 1280) for a portrait phone): the default 1280x720 crops a portrait frame to its middle band,
+    and one request has one target size (a portrait and a landscape camera cannot share a request). upload (default: more than
+    12 images) sends asset ids instead of inline base64 (the inline request has a size limit)."""
+    upload = len(images) > 12 if upload is None else upload
+    if upload:
+        frames = [{"imageAsset": {"assetId": client.upload(decode_data_url(b64_image(im)), f"pose-{k:03d}.jpg")}}
+                  for k, im in enumerate(images)]
+    else:
+        frames = [{"imageAsset": {"base64": b64_image(im)}} for im in images]
+    body = {"frames": frames,
             "canonicalizeToFirstFrame": canonicalize, "refinePoses": refine}
     if target_resolution:
         body["targetResolution"] = [int(target_resolution[0]), int(target_resolution[1])]

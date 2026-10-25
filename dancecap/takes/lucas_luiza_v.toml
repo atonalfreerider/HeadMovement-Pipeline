@@ -1,0 +1,64 @@
+# Lucas + Luiza, Zouk Heat 2024-04-07: the VERTICAL Steadicam video alone (camera 01 of the two-view take lucas_luiza). Owner 2026-10-23: "the
+# vertical video is from a Steadicam that is moving around freely, but should be treated as handheld. no zoom detected".
+# Only the people step of the single-video route runs on this take (pipeline/mono_route.py people: the couple, lead / follow, SAM 2.1 masks,
+# RTMW whole body). Its camera is NOT solved here: cameras.mono_cam assumes a fixed centre and this camera walks; the two-view take attaches it
+# to the world of lucas_luiza_h through the dancers.
+name = "lucas_luiza_v"
+# SOURCE = a trim of Video-44260.mp4 (work/src_cuts/, git-ignored): ffmpeg -ss 1.877 -t 200, native 29 fps (no frame duplication), crf 14.
+# Its clock: the audio clocks of lucas_luiza (clock/alignment.json: original horizontal time = 0.9999163 x vertical + 12.1229 s) put
+# vertical 1.877 s at horizontal 14.000 s = time 0 of lucas_luiza_h's cut; measured on the two cuts (GCC-PHAT at 60 / 100 / 140 s): this cut's
+# time + 4..12 ms = lucas_luiza_h's time. The video-to-audio offset of each phone is measured later (sync).
+source_dir = "../work/src_cuts/lucas_luiza_v"
+alignment = "../work/lucas_luiza_v/clock/alignment.json"
+exclude = []
+window = [2.8, 199.5]
+
+[timeline]
+anchor = 0.0
+hz = 30.0
+
+[ingest]
+max_fps = 30
+
+[stitch]
+mono = [[2.8, 199.5]]
+
+[export]
+smplx_dir = "smplx_rf2_noslip"
+floor_yaw_deg = 0.0
+
+[dance]
+level = "professional"
+category = "jack_and_jill"
+venue = "Zouk Heat 2024, Hyatt Regency Dulles"
+song = "I Don't Wanna Know (Mario Winans Cover)"
+artist = "Brenda Mullen"
+song_2 = "Não Me Toca"
+artist_2 = "Anselmo Ralph"
+
+[dancers.lead]
+name = "Lucas"
+pid = 1
+stature_m = 1.75   # ASSUMED, not from the owner
+shoe_sole_m = 0.025
+description = "grey-blue t-shirt with a large purple graphic print on the back, blue jeans, black sneakers, short dark hair, short beard"
+
+[dancers.follow]
+name = "Luiza"
+pid = 2
+stature_m = 1.63   # ASSUMED, not from the owner
+shoe_sole_m = 0.06
+description = "long dark hair, cropped white top with a blue and green floral print, white cropped trousers, tan heeled dance sandals"
+
+[consent]
+lead = { capture = true, fit_3d = true, ml_analysis = true, cloud_processing = true, name_shown = "?", level_shown = "?", publication = "?", public_repo = "?", recorded = "2026-10-23" }
+follow = { capture = true, fit_3d = true, ml_analysis = true, cloud_processing = true, name_shown = "?", level_shown = "?", publication = "?", public_repo = "?", recorded = "2026-10-23" }
+source_rights = "videographers consented (owner 2026-10-23)"
+bystanders = "?"
+
+[cameras."01"]   # camera type (Pipeline Monitor / narration tool); this block is rewritten as a whole, comments typed inside it are not kept
+file = "lucas_luiza_v.mp4"
+mount = "handheld"
+zoom = false
+source = "user"
+set_at = "2026-10-23T10:10:00Z"

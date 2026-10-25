@@ -104,11 +104,7 @@ OPTIONS = {"allow_unsynced": False, "offsets_file": None}
 
 
 def apply_offset(t: np.ndarray, off: dict | float | None) -> np.ndarray:
-    """md.apply_offset plus {"piecewise": [[t, delta], ...]}: a delta that varies along the take (linear between the points, flat outside)."""
-    if isinstance(off, dict) and off.get("piecewise"):
-        pw = np.asarray(off["piecewise"], float)
-        t = np.asarray(t, float)
-        return t + np.interp(t, pw[:, 0], pw[:, 1])
+    """md.apply_offset (which reads {"piecewise": [[t, delta], ...]} too: a delta that varies along the take)."""
     return md.apply_offset(t, off)
 
 

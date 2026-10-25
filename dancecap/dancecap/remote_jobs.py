@@ -808,9 +808,16 @@ def build_bundle(files: list[BundleFile], out_dir: Path = BUNDLES, compresslevel
     return out, man
 
 
-def prune_bundles(out_dir: Path = BUNDLES, keep: int = 3) -> list[str]:
-    """Drop all but the `keep` newest bundles (each is 100-400 MB; they are rebuilt from the tree in seconds)."""
-    olds = sorted(out_dir.glob("bundle_*.tar.gz"), key=lambda p: p.stat().st_mtime, reverse=True)[keep:]
+BUNDLE_MIN_AGE_S = 6 * 3600   # a bundle younger than this may still be uploading in a concurrent session
+
+
+def prune_bundles(out_dir: Path = BUNDLES, keep: int = 3, min_age_s: float = BUNDLE_MIN_AGE_S) -> list[str]:
+    """Drop all but the `keep` newest bundles (each is 100-400 MB; they are rebuilt from the tree in seconds), never one younger
+    than min_age_s: `remote run --parallel` builds one bundle per session, and the 4th session's prune deleted the first three
+    sessions' bundles before their uploads started (lucas_luiza_h fits, 2026-10-23: 3 of 6 sessions failed "upload: no such file")."""
+    now = time.time()
+    olds = [p for p in sorted(out_dir.glob("bundle_*.tar.gz"), key=lambda p: p.stat().st_mtime, reverse=True)[keep:]
+            if now - p.stat().st_mtime > min_age_s]
     for p in olds:
         p.unlink(missing_ok=True)
         p.with_suffix("").with_suffix(".json").unlink(missing_ok=True)
