@@ -149,11 +149,16 @@ def mmss(f: float) -> str:
     return f"{int(f // 60)}:{f % 60:04.1f}"
 
 
+# the base fit the magnets start from (work/<take>/<BASE_FIT>): the detected input, or a copy of it with whole-body
+# fixes the owner kept (e.g. the recap's 3:19 spin splice); set by the CLI's --base
+BASE_FIT = "smplx_rf2_noslip"
+
+
 def paths(take: str) -> dict:
     from .take import PACKAGE_ROOT
     work = PACKAGE_ROOT / "work" / take
     out = work / "magnet"
-    return {"root": PACKAGE_ROOT, "work": work, "out": out, "src_fit": work / "smplx_rf2_noslip", "fit": out / "smplx_magnet",
+    return {"root": PACKAGE_ROOT, "work": work, "out": out, "src_fit": work / BASE_FIT, "fit": out / "smplx_magnet",
             "unity": out / "unity_motion", "input_export": work / "v3" / "unity_motion" / "backup_installed_motion",
             "v44b_fit": work / "smplx_sides", "sheets": out / "sheets", "lock": PACKAGE_ROOT / "work" / "unity.lock"}
 
@@ -1021,7 +1026,11 @@ def main(argv=None) -> int:
     ap.add_argument("--take", default="larissa_kadu_recap")
     ap.add_argument("--cfg", default=None, help="JSON overrides of MagnetCfg (snap), e.g. '{\"r_in\": 0.10}'")
     ap.add_argument("--film", default=None, help="sheets: comma-separated film seconds (default 32,57,90,150,163,290)")
+    ap.add_argument("--base", default=None, help="the base fit under work/<take>/ (default smplx_rf2_noslip, the detected input)")
     a = ap.parse_args(argv)
+    if a.base:
+        global BASE_FIT
+        BASE_FIT = a.base
     if a.cmd == "sites":
         s = build_sites(a.take, force=True)
         log(f"{len(s)} sites -> {paths(a.take)['out'] / 'sites.json'}, sites_rest.png")
