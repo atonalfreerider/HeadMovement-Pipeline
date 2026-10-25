@@ -13,7 +13,8 @@ alignment = "../work/lucas_luiza/clock/alignment.json"
 exclude = []
 # The couple dances 16.8-213.5 s of the horizontal original (= 2.8-199.5 s of lucas_luiza_h's cut: the edit's title cards and fade end at
 # 16.8 s; the final pose ~211 s, the embrace 214 s). The Steadicam records 12.1-228.6 s on this clock: both cameras see the whole window.
-window = [16.85, 213.45]   # 2026-10-24: 50 ms inside [16.8, 213.5] so both cameras cover the ends after the two-view sync (farm plan check)
+window = [16.85, 212.6]   # 2026-10-25: the Steadicam's last verified pose is at 212.63 s (cameras.anchored); both cameras must cover the
+#                            grid's ends after the two-view sync (farm plan check both_cams_cover_window_ends); the bow's last 0.8 s goes
 # Room keyframes for the static SfM map: every 2 s over the window (the Steadicam moves ~0.7 m/s around the couple: parallax every frame;
 # the tripod pans from one centre and links its rotations to the map)
 keyframe_span = [16.8, 213.5]

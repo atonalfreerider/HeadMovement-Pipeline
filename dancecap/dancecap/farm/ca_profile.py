@@ -128,6 +128,11 @@ class TwoView:
     budget_usd: float | None = None
     max_plan_usd: float | None = None
     budget_why: str = ""
+    shape_min_both: float = 0.6  # validate_plan's shape window: both cameras see both dancers in this share (SHAPE_MIN_BOTH) ...
+    shape_min_apart: float = 0.5  # ... and the couple is apart in this share (SHAPE_MIN_APART)
+    shape_needs_camera_ok: bool = False  # the shape window counts a camera only where its track is ok (cameras/<cam>.npz): a moving
+    #                                      camera with localisation holes (lucas_luiza's Steadicam: 52 % ok) must not give the
+    #                                      free-beta pass a window it does not really see
 
     @property
     def shape_take(self) -> str:
@@ -234,7 +239,11 @@ LL = TwoView(profile="lucas_luiza", dance="lucas_luiza", capture="lucas-luisa-jn
              cams=("01", "02"), alignment=WORK_ROOT / "lucas_luiza" / "clock" / "alignment.json", alignment_arc="dancecap/work/lucas_luiza/clock/alignment.json",
              sync_fixed="file", fit_s_per_frame=1.9, extra_env={"HM_TEACHER_EVIDENCE": "1", "HM_FRONT_MASTER": "02"}, shape_t=None, apart_cam="02", force_cams=True,
              monocular_until_s=None, refine_variants=(("smplx_rf2_slip", "--w-slip 0.5 --slip-max-v 0.15"),), scale_check=True, strict=True,
-             budget_usd=14.0, max_plan_usd=6.0,
+             budget_usd=14.0, max_plan_usd=6.0, shape_needs_camera_ok=True,
+             # the Steadicam's verified poses cover 52 % of the take (cameras.anchored, 2026-10-25): its best 30 s window has both cameras on
+             # both dancers in 37 % of the instants (~330 two-view frames: plenty for the betas, which G9 then checks against the statures);
+             # a Zouk couple is in close embrace most of the time (apart 25 %)
+             shape_min_both=0.33, shape_min_apart=0.2,
              budget_why="the farm's share of analysis run 20261023-100155-lucas_luiza's $25 limit: ~$23.30 left - Job A's --max-cost 7.5 - analyses 1.0 - ~$0.8 reserve "
                         "(farm pods are not counted by the run: analyze.run_pods counts its gateway and tagged sessions only)")
 
@@ -250,6 +259,13 @@ def load_teachers(P: TwoView = CA) -> dict:
             z = np.load(p)
             out[c] = {"t": np.asarray(z["t"], float), "ok": np.asarray(z["ok"], bool), "conf": np.asarray(z["conf"], float), "merged": np.asarray(z["merged"], bool),
                       "floor": np.asarray(z["floor"], float)}
+            cp = P.work / "cameras" / f"{c}.npz"
+            if P.shape_needs_camera_ok and cp.exists():  # the camera's own ok at the teacher's frames (nearest frame within 50 ms)
+                with np.load(cp) as k:
+                    kt, kok = np.asarray(k["t"], float), np.asarray(k["ok"], bool)
+                j = np.clip(np.searchsorted(kt, out[c]["t"]), 1, len(kt) - 1)
+                j = np.where(np.abs(kt[j - 1] - out[c]["t"]) < np.abs(kt[j] - out[c]["t"]), j - 1, j)
+                out[c]["cam_ok"] = kok[j] & (np.abs(kt[j] - out[c]["t"]) <= 0.05)
     return out
 
 
@@ -268,7 +284,7 @@ def shape_window(tt: dict, P: TwoView = CA, frames: int = 900, step_s: float = 2
     for n, (c, o) in enumerate(tt.items()):
         j = np.clip(np.searchsorted(o["t"], grid), 1, len(o["t"]) - 1)
         j = np.where(np.abs(o["t"][j - 1] - grid) < np.abs(o["t"][j] - grid), j - 1, j)
-        good = (np.abs(o["t"][j] - grid) <= 0.05) & o["ok"][j]
+        good = (np.abs(o["t"][j] - grid) <= 0.05) & o["ok"][j] & (o["cam_ok"][j] if "cam_ok" in o else True)
         both[:, n] = good & (o["conf"][j] >= CONF).all(1)
         clear &= ~(good & o["merged"][j].any(1)) | ~good
         if c == P.apart_cam:
@@ -620,8 +636,8 @@ def strict_checks(plan: dict, spec: DanceSpec, P: TwoView) -> dict:
     ends = window_ends(coverage_times(plan.get("_teachers") or load_teachers(P), P), spec.grid, P, doc) if err is None else {"ok": False, "why": err}
     check("both_cams_cover_window_ends", ends["ok"], **{k: v for k, v in ends.items() if k != "ok"})
     st = (plan.get("shape") or {}).get("stats") or {}
-    check("shape_window_sees_both", float(st.get("both_cameras_both_dancers") or 0.0) >= SHAPE_MIN_BOTH and float(st.get("apart") or 0.0) >= SHAPE_MIN_APART,
-          stats=st, need={"both_cameras_both_dancers": SHAPE_MIN_BOTH, "apart": SHAPE_MIN_APART})
+    check("shape_window_sees_both", float(st.get("both_cameras_both_dancers") or 0.0) >= P.shape_min_both and float(st.get("apart") or 0.0) >= P.shape_min_apart,
+          stats=st, need={"both_cameras_both_dancers": P.shape_min_both, "apart": P.shape_min_apart})
     # judged on the MEASURED two-camera rate, not on P.fit_s_per_frame (the timeout is 1.6x the profile's own estimate + 15 by construction)
     tmo = {j["id"]: {"timeout": next(s["timeout_min"] for s in j["steps"] if s["name"] == "fit"), "estimate": j["estimate"]["fit_min"],
                      "at_measured_rate": round((RP.FIT_A + FIT_S_PER_FRAME_MEASURED * int(j["chunk"]["T"])) / 60.0, 1)} for j in fits}

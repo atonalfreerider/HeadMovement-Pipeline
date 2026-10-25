@@ -339,7 +339,8 @@ def test_ll_validate_plan_passes_and_carries_every_two_view_gate(ll_env, monkeyp
     (lambda p: p["_jobs"][1]["chunk"]["sync_fixed"]["offsets_ms"].pop("01"), "sync_fixed_is_the_measured_offset"),
     (lambda p: p["_jobs"][0]["chunk"]["sync_fixed"].update(no_measure=False), "sync_fixed_is_the_measured_offset"),
     (lambda p: p["_jobs"][3].update(cams=["02"]), "every_fit_job_has_both_cameras"),
-    (lambda p: p["shape"]["stats"].update(apart=0.3), "shape_window_sees_both"),
+    (lambda p: p["shape"]["stats"].update(apart=0.1), "shape_window_sees_both"),                     # LL: apart >= 0.2 (close embrace)
+    (lambda p: p["shape"]["stats"].update(both_cameras_both_dancers=0.3), "shape_window_sees_both"),  # LL: >= 0.33 (the Steadicam's ok frames)
     (lambda p: p["costs"].update(usd=7.5), "plan_cost_within"),
     (lambda p: p["_jobs"][-1].update(after=[]), "final_stitches_every_chunk"),                      # what a re-plan with claimed chunks would build
     (lambda p: p["_jobs"][-1]["stitch_chunks"].pop(1), "final_stitches_every_chunk"),
@@ -835,3 +836,22 @@ def test_ll_chunks_carry_their_slice_of_a_piecewise_offset(ll_env):
         off = {"delta": doc["offsets"]["01"]["delta"], "piecewise": doc["offsets"]["01"]["piecewise"]}
         assert np.allclose(md.apply_offset(tt, off) - tt, np.interp(tt, cv[:, 0], cv[:, 1]), atol=2e-5)
         assert "piecewise" not in doc["offsets"]["02"]
+
+
+def test_ll_shape_window_counts_a_camera_only_where_its_track_is_ok(tmp_path, monkeypatch):
+    """lucas_luiza's Steadicam has localisation holes (52 % ok): the shape window must not be chosen where it does not see."""
+    monkeypatch.setattr(cap, "WORK_ROOT", tmp_path)
+    w = tmp_path / "lucas_luiza"
+    (w / "people").mkdir(parents=True)
+    (w / "cameras").mkdir(parents=True)
+    t = 10.0 + np.arange(3000) / 30.0
+    for c in ("01", "02"):
+        F = len(t)
+        np.savez(w / "people" / f"teachers_{c}.npz", t=t, ok=np.ones(F, bool), conf=np.full((F, 2), 0.9), merged=np.zeros((F, 2), bool),
+                 floor=np.stack([np.zeros((F, 2)), np.ones((F, 2))], 1))
+        np.savez(w / "cameras" / f"{c}.npz", t=t, ok=(t < 40.0) | (c == "02"))      # 01 sees only the first 30 s
+    tt = cap.load_teachers(cap.LL)
+    assert tt["01"]["cam_ok"][:900].all() and not tt["01"]["cam_ok"][900:].any() and tt["02"]["cam_ok"].all()
+    sw = cap.shape_window(tt, cap.LL, t_min=10.0, t_max=100.0)
+    assert sw["t0"] < 15.0 and sw["stats"]["both_cameras_both_dancers"] > 0.9
+    assert "cam_ok" not in cap.load_teachers(dataclasses.replace(cap.LL, shape_needs_camera_ok=False))["01"]
