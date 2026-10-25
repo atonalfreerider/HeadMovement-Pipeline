@@ -249,7 +249,8 @@ def dancer_one(chunk_id: str, cam: str) -> None:
 
     D.candidate_tracks = lambda *a, **k: tracks
     D.track_evidence = evidence
-    fp.dancer_one(take, cam)
+    # the teacher tracks are reviewed roles: a role SAM loses in an embrace is re-prompted from its teacher box (dancers.DancersConfig.reanchor_lost)
+    fp.dancer_one(take, cam, D.DancersConfig(reanchor_lost=os.environ.get("HM_TEACHER_EVIDENCE") == "1"))
 
 
 def regauge_master(chunk_id: str, master: str = MASTER) -> dict:

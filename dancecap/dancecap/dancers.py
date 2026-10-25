@@ -62,6 +62,11 @@ class DancersConfig:
     anchor_llr: float = 2.5  # per-frame colour log-odds needed to re-anchor from a detection
     drift_iou: float = 0.5
     reanchor_gap: int = 8
+    # teacher route (recap_front.dancer_one, HM_TEACHER_EVIDENCE=1: the candidate tracks are reviewed roles): a role SAM LOST (empty mask, or
+    # IoU < lost_iou with its track box) is re-prompted at a frame whose pair overlaps up to evidence_iou, image edge allowed. lucas_luiza llg2936
+    # lost the follow on the Steadicam for 5 s of embrace (no frame at IoU < clean_iou) that the neighbouring chunk had tracked.
+    reanchor_lost: bool = False
+    lost_iou: float = 0.1
     embrace_iou: float = 0.3
     area_collapse: float = 0.4  # area below this x the running median = collapsed (occluded / merged)
     gallery_windows: tuple[float, ...] = (1.0, 2.0, 4.0)  # s around the verified anchors (grown until filled)
@@ -450,17 +455,20 @@ def review_tile(cam: Cam, lab: dict, height: int = 720) -> np.ndarray:
 # step 3-4: SAM propagation, identity verification
 # ---------------------------------------------------------------------------
 
-def frame_role_boxes(cam: Cam, tracks: dict, ev: dict, cfg: DancersConfig, label_swapped: bool) -> dict[int, dict]:
-    """Detections usable as re-anchor prompts: clean frames where the per-frame colour log-odds is
-    confident AND agrees with the smoothed track labelling. {frame: {'lead': box, 'follow': box}}"""
+def frame_role_boxes(cam: Cam, tracks: dict, ev: dict, cfg: DancersConfig, label_swapped: bool,
+                     max_iou: float | None = None, edge_ok: bool = False) -> dict[int, dict]:
+    """Detections usable as re-anchor prompts: clean frames (pair IoU < max_iou, default clean_iou; no box at the
+    image bottom unless edge_ok) where the per-frame colour log-odds is confident AND agrees with the smoothed track
+    labelling. {frame: {'lead': box, 'follow': box}}"""
     w, h = cam.wh
+    max_iou = cfg.clean_iou if max_iou is None else max_iou
     out = {}
     for i in range(len(ev["llr"])):
         ia, ib = tracks["idx"][i]
-        if ia == MISS or ib == MISS or ev["pair_iou"][i] >= cfg.clean_iou:
+        if ia == MISS or ib == MISS or ev["pair_iou"][i] >= max_iou:
             continue
         bx = tracks["boxes"][i]
-        if (bx[:, 3] > 0.985 * h).any():
+        if not edge_ok and (bx[:, 3] > 0.985 * h).any():
             continue
         signed = -ev["llr"][i] if ev["a_is_follow"][i] else ev["llr"][i]
         if signed < cfg.anchor_llr:
@@ -472,27 +480,42 @@ def frame_role_boxes(cam: Cam, tracks: dict, ev: dict, cfg: DancersConfig, label
     return out
 
 
-def make_check(native_wh, work_wh, role_dets: dict[int, dict], cfg: DancersConfig):
+def make_check(native_wh, work_wh, role_dets: dict[int, dict], cfg: DancersConfig, lost_dets: dict[int, dict] | None = None):
+    """SAM re-anchor test per propagated frame: at a clean frame (role_dets) both objects are re-prompted when either mask drifted
+    from its detection (IoU < drift_iou); at a frame only in lost_dets (cfg.reanchor_lost: overlapping pair) only when a role is LOST
+    (IoU < lost_iou, an empty mask included) - SAM's mask of an embraced pair legitimately strays from the box, a vanished one does not."""
     s = work_wh[0] / native_wh[0]
+    lost_dets = lost_dets or {}
+
+    def ious(probs, det):
+        out = []
+        for k, role in enumerate(ROLES):
+            mb = mask_box(probs[k] > 127)
+            out.append(0.0 if mb is None else box_iou(mb / s, det[role]))
+        return out
 
     def check(frame: int, probs: np.ndarray):
         det = role_dets.get(frame)
+        if det is not None:
+            check.stats["checked"] += 1
+            iu = ious(probs, det)
+            for iou in iu:
+                check.stats["min_iou"] = min(check.stats["min_iou"], round(iou, 3))
+                check.stats["ious"].append(round(iou, 3))
+            if min(iu) >= cfg.drift_iou:
+                return None
+            check.stats["drifted"] += 1
+            return {PID[r]: det[r] for r in ROLES}
+        det = lost_dets.get(frame)
         if det is None:
             return None
-        drift = False
-        check.stats["checked"] += 1
-        for k, role in enumerate(ROLES):
-            mb = mask_box(probs[k] > 127)
-            iou = 0.0 if mb is None else box_iou(mb / s, det[role])
-            check.stats["min_iou"] = min(check.stats["min_iou"], round(iou, 3))
-            check.stats["ious"].append(round(iou, 3))
-            if iou < cfg.drift_iou:
-                drift = True
-        if not drift:
+        check.stats["lost_checked"] += 1
+        if min(ious(probs, det)) >= cfg.lost_iou:
             return None
-        check.stats["drifted"] += 1
+        check.stats["lost"] += 1
         return {PID[r]: det[r] for r in ROLES}
-    check.stats = {"candidates": len(role_dets), "checked": 0, "drifted": 0, "min_iou": 1.0, "ious": []}
+    check.stats = {"candidates": len(role_dets), "checked": 0, "drifted": 0, "min_iou": 1.0, "ious": [],
+                   "lost_candidates": len(lost_dets), "lost_checked": 0, "lost": 0}
     return check
 
 
@@ -514,8 +537,9 @@ def sam_cache_valid(path: Path, key: np.ndarray) -> bool:
         return k.shape == key.shape and bool(np.allclose(k, key))
 
 
-def sam_cache_key(label: dict) -> np.ndarray:
-    return np.array([int(label["frame"]), *label["lead_box"], *label["follow_box"]], float)
+def sam_cache_key(label: dict, reanchor_lost: bool = False) -> np.ndarray:
+    """The label frame and boxes (+ a marker when lost roles are re-prompted: a cache made without them is not reused)."""
+    return np.array([int(label["frame"]), *label["lead_box"], *label["follow_box"], *((1.0,) if reanchor_lost else ())], float)
 
 
 def load_sam_cache(path: Path, key: np.ndarray) -> dict | None:
@@ -829,10 +853,12 @@ def run_camera(cam: Cam, label: dict, predictor, cfg: DancersConfig, log=print, 
     role_dets = frame_role_boxes(cam, tracks, ev, cfg, swapped)
     a = int(label["frame"])
     role_dets[a] = {"lead": np.array(label["lead_box"]), "follow": np.array(label["follow_box"])}
+    lost_dets = ({i: d for i, d in frame_role_boxes(cam, tracks, ev, cfg, swapped, max_iou=cfg.evidence_iou, edge_ok=True).items()
+                  if i not in role_dets} if cfg.reanchor_lost else None)
     ww = work_size(w, h)
-    check = make_check((w, h), ww, role_dets, cfg)
+    check = make_check((w, h), ww, role_dets, cfg, lost_dets)
     cache = cam.work / "dancers" / "cache" / f"{cam.id}_sam.npz"
-    key = sam_cache_key(label)
+    key = sam_cache_key(label, cfg.reanchor_lost)
     res = load_sam_cache(cache, key) if reuse_sam else None
     if res is None:
         if predictor is None:

@@ -151,10 +151,11 @@ def label_one(take_name: str, cam_id: str) -> None:
           flush=True)
 
 
-def dancer_one(take_name: str, cam_id: str) -> None:
+def dancer_one(take_name: str, cam_id: str, cfg=None) -> None:
     """label + SAM 2.1 + identity repair + body/hair + QA for one camera in ONE process: the frames are decoded once and
     the label's tracks/evidence are reused by dancers.run_camera (which otherwise re-reads every frame and recomputes
-    them). Writes dancers/label_<cam>.json, candidates/<cam>.npz and pod_cam_<cam>.json (dancers_pod.merge input)."""
+    them). Writes dancers/label_<cam>.json, candidates/<cam>.npz and pod_cam_<cam>.json (dancers_pod.merge input).
+    cfg: a dancers.DancersConfig (default: the defaults)."""
     import numpy as np
 
     from . import dancers as D
@@ -163,7 +164,7 @@ def dancer_one(take_name: str, cam_id: str) -> None:
     work = take.work
     out = work / "dancers"
     (out / "candidates").mkdir(parents=True, exist_ok=True)
-    cfg = D.DancersConfig()
+    cfg = cfg or D.DancersConfig()
     cam = D.Cam.load(work, cam_id)
     t0 = time.time()
     imgs = D.read_frames(cam.files)
