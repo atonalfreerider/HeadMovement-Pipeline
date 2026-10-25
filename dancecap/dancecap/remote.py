@@ -822,6 +822,14 @@ def _create_option(name: str, gpu: str, cloud: str, image: str, disk_gb: int, mi
                         containerDiskInGb=min(int(disk_gb), CPU_DISK_GB))
             if dcs and not vol:   # the data centers the catalog lists with stock of this flavor and size
                 body["dataCenterIds"] = list(dcs)
+                try:
+                    return _rest_create(body)
+                except RestError as e:
+                    # the catalog can list a data center the REST schema does not know (2026-10-24: HTTP 400
+                    # "dataCenterIds/items/enum"): without the hint Runpod picks one with stock itself
+                    if "HTTP 400" not in str(e) or "dataCenterIds" not in str(e):
+                        raise
+                    body.pop("dataCenterIds")
         else:
             body.update(computeType="GPU", gpuTypeIds=[gpu], gpuCount=1)
             if min_ram_gb:
