@@ -304,8 +304,12 @@ def cmd_physics(a):
                                                       for r in v]}), indent=1))
         return
     work = PACKAGE_ROOT / "work" / a.take
-    if not (work / "smplx" / "lead.npz").exists():
-        raise SystemExit(f"physics: {work / 'smplx'} has no lead/follow npz (run the mamma stage first)")
+    # --smplx-dir: another fit folder of the take (e.g. smplx_sides) for a comparison run; --out-dir keeps it out of work/<take>/physics
+    sdir = work / (a.smplx_dir or "smplx")
+    if not (sdir / "lead.npz").exists():
+        raise SystemExit(f"physics: {sdir} has no lead/follow npz (run the mamma stage first)")
+    npzs = {role: physics.load_npz(sdir / f"{role}.npz") for role in physics.ROLES} if a.smplx_dir else None
+    out_dir = (work / a.out_dir if not Path(a.out_dir).is_absolute() else Path(a.out_dir)) if a.out_dir else None
     pick = lambda x, y: {k: v for k, v in (("lead", x), ("follow", y)) if v is not None}
     try:  # stature check = mesh vs stature + the take's shoe sole (cameras/world_scale convention)
         from .cameras.world import sole_from_take
@@ -314,7 +318,7 @@ def cmd_physics(a):
     except (FileNotFoundError, OSError, KeyError):
         soles = None
     res = physics.run(work, cfg, Path(a.beats) if a.beats else None, masses=pick(a.mass_lead, a.mass_follow),
-                      statures=pick(a.height_lead, a.height_follow), soles=soles)
+                      statures=pick(a.height_lead, a.height_follow), soles=soles, npzs=npzs, out_dir=out_dir)
     for role in physics.ROLES:
         i = res[role]["info"]
         print(f"[physics] {role}: {i['mass_kg']:.1f} kg ({i['mass_source']}), stature {i['stature_m']:.2f} m, "
@@ -637,6 +641,8 @@ def main(argv=None):
     sp.add_argument("--validate", action="store_true", help="synthetic checks + gate G6 (clean and noisy)")
     sp.add_argument("--noise-mm", type=float, default=10.0, help="root translation noise for the noisy validation")
     sp.add_argument("--noise-deg", type=float, default=1.0, help="per-joint rotation noise for the noisy validation")
+    sp.add_argument("--smplx-dir", default=None, help="work/<take>-relative fit folder to analyse instead of smplx/ (e.g. smplx_sides)")
+    sp.add_argument("--out-dir", default=None, help="output folder (work/<take>-relative or absolute; default work/<take>/physics)")
     sp.set_defaults(fn=cmd_physics)
     sp = sub.add_parser("export", help="smplx + timing + physics -> head-movement StreamingAssets capture (v3)")
     sp.add_argument("take", help="work/<take> with smplx/{lead,follow}.npz")
