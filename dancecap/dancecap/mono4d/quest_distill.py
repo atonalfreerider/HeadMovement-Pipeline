@@ -60,7 +60,8 @@ WORK = PACKAGE_ROOT / "work" / "quest_distill"
 BUNDLE = WORK / "bundle"
 POD_OUT = WORK / "pod_out"
 SA = WORKSPACE / "head-movement" / "Assets" / "StreamingAssets"
-LESSONS = {"recap": "06_LarissaKaduRecap", "john_lula": "08_JohnLula", "carlos_aline": "07_CarlosAline"}
+LESSONS = {"recap": "06_LarissaKaduRecap", "john_lula": "08_JohnLula", "carlos_aline": "07_CarlosAline",
+           "gui_julissa": "09_GuiJulissa"}
 ROLES = ("lead", "follow")
 SIZES = (40000, 25000, 15000)
 SH_C0 = 0.28209479177387814

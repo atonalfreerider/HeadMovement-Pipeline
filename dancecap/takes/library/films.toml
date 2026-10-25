@@ -250,3 +250,42 @@ intro = "Entrance"
 song1 = "First song: I Don't Wanna Know (Brenda Mullen)"
 song2 = "Second song: Não Me Toca (Anselmo Ralph)"
 outro = "Final pose and bow"
+
+# The demo of Gui and Julissa (capture 09_GuiJulissa, Zouk Conexao Atlanta 2022): ONE handheld phone, ONE song (unknown, 75 BPM, measured on
+# the demo's own audio), a film without narration like the John + Lula heat (film_heat.py). The chapters are the song structure of
+# song/segments.json (the music, then the final pose) with the music cut into six equal parts of about 25 s (`split`: about 8 bars of 3.2 s
+# each, not bar-aligned). The looks are the other heats' (no room, avatars at 75 % transparency, skeleton lines, the live rhythm score:
+# work/gui_julissa_h/rhythm/rhythm.json, score 52.3, confidence high); the orbit 20 % closer than the heat default (the v4.2 splat-mode rule,
+# as for lucas_luiza). Poster: a frame of the source video (frame 4115, 137.2 s), 9:16 crop around the couple, made without Unity.
+[gui_julissa]
+id = "gui_julissa"
+title = "Gui + Julissa"
+subtitle = "Zouk Conexao Atlanta 2022 - demo"
+capture = "09_GuiJulissa"
+direction = "dancecap/work/gui_julissa_h/film/direction.json"
+thumbnail = "dancecap/work/gui_julissa_h/film/review/card_thumb.jpg"   # a phone frame of the source video (1080x1920 crop), no text
+slowmo_audio = "pitch"   # the music slows with the picture (set "mute" to silence it in slow motion)
+
+[gui_julissa.heat]
+name = "gui_julissa"
+take = "gui_julissa_h"
+songs = "dancecap/work/gui_julissa_h/song/segments.json"
+avatar_opacity = 0.25       # "75 % transparent" read literally (opacity 0.25), as for the other heats
+room = false                # one phone, no room model: the dark floor grid
+skeleton_lines = 1.0
+rhythm_score = true         # the live rhythm score HUD and the final score card (score 52.3)
+radius_m = 2.16             # 0.8 x the heat default 2.7 (v4.2: "in gauss splat mode let's get 20% closer to the dancers when we orbit")
+radius_vertical_m = 1.72
+no_overhead_after_s = 148.0 # no overhead view in the final pose / the score card (148.9-152.9 s)
+
+[gui_julissa.heat.split]
+music = { every_s = 25.6 }  # 151 s of music -> six parts of about 25 s
+
+[gui_julissa.heat.titles]
+music_1 = "Dance, part 1"
+music_2 = "Dance, part 2"
+music_3 = "Dance, part 3"
+music_4 = "Dance, part 4"
+music_5 = "Dance, part 5"
+music_6 = "Dance, part 6"
+outro = "Final pose"

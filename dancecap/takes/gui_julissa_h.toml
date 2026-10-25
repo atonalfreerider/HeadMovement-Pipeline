@@ -1,0 +1,47 @@
+# Gui + Julissa x ? - registered by the Pipeline Monitor new-capture wizard on 2026-10-25.
+# The videos and the soundtrack are referenced in place (never copied); outputs go to work/<take>/ (git-ignored).
+# Capture type: single-view (1 camera(s) used).
+name = "gui_julissa_h"
+source_dir = "../work/src_cuts/gui_julissa_h"
+# affine audio clocks (reference_time = slope * source_time + offset), written by the audio_sync stage
+alignment = "../work/gui_julissa_h/clock/alignment.json"
+exclude = []
+window = [0.0, 152.96]   # analyze: the whole video (one camera = the reference clock)
+[timeline]
+anchor = 0.0
+hz = 30.0
+[ingest]
+max_fps = 30
+[stitch]
+mono = [[0.0, 152.96]]   # one camera: the whole window is monocular
+[export]
+smplx_dir = "smplx_rf2_noslip"   # the refined, foot-locked fit (as john_lula)
+floor_yaw_deg = 0.0
+
+# Dance metadata: data is siloed by level; the title is "Leader + Follower x Song".
+[dance]
+level = "professional"            # professional | intermediate | novice
+category = "demo"      # demo | lesson | jack_and_jill
+
+[dancers.lead]
+name = "Gui"
+pid = 1
+stature_m = 1.75
+shoe_sole_m = 0.025
+
+[dancers.follow]
+name = "Julissa"
+pid = 2
+stature_m = 1.63
+shoe_sole_m = 0.025
+
+# Consent per dancer as reported by the user (TMR_SOMA_PLAN G0): "?" = unknown. cloud_processing is
+# required before any Runpod stage; public_repo before anything leaves the PC.
+[consent]
+lead = { capture = "?", fit_3d = "?", ml_analysis = "?", cloud_processing = true, name_shown = "?", level_shown = "?", publication = "?", public_repo = "?", recorded = "2026-10-25" }
+follow = { capture = "?", fit_3d = "?", ml_analysis = "?", cloud_processing = true, name_shown = "?", level_shown = "?", publication = "?", public_repo = "?", recorded = "2026-10-25" }
+source_rights = "?"
+bystanders = "?"
+
+[cameras."01"]   # camera type (Pipeline Monitor / narration tool); this block is rewritten as a whole, comments typed inside it are not kept
+file = "gui_julissa_h.mp4"
