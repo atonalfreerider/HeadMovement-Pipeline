@@ -42,11 +42,15 @@ song_2 = "Não Me Toca"
 artist_2 = "Anselmo Ralph"
 song_display = "I Don't Wanna Know / Não Me Toca"
 
-# Statures: the agent's estimates, kept by the owner ("Keep 1.75 m and 1.63 m for now").
+# Statures: the agent's estimates, kept by the owner ("Keep 1.75 m and 1.63 m for now"); Lucas 1.75 -> 1.83 on 2026-10-25 (owner: "if the height
+# change fixes pose accuracy, then go ahead and change lucas"). The two-view fit measured him taller: the free-beta shape pass (llshape) rest
+# height 1.882 m in this world vs 1.775 target (G9 "inconsistent": 6.0 % vs Luiza's 0.3 %), and the lead / follow ratio of the keypoint chains
+# (1.088) and of the fitted bodies (1.110) both exceed 1.75 / 1.63's. At 1.83 both dancers agree with the world within 1.5 % (k 1.015 / 1.003)
+# without rescaling it. The stature is no input of the two-view fit (only of the world's chain scale, which stays): the poses do not change.
 [dancers.lead]
 name = "Lucas"
 pid = 1
-stature_m = 1.75
+stature_m = 1.83
 shoe_sole_m = 0.025
 description = "grey-blue t-shirt with a large purple graphic print on the back, blue jeans, black sneakers, short dark hair, short beard"
 
