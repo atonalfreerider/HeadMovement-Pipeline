@@ -1,0 +1,92 @@
+# Paulo + Luiza, Zouk Heat 2024-04-06 (the same ballroom as lucas_luiza, Hyatt Regency Dulles; bright house light that day): the
+# group-0069 candidate (catalog performance 69, "Luiza & Paulo · 2024 · 2 angles"), the second two-view take (owner 2026-10-25: "the next
+# candidate video should then be completed in the same process ... two sources of 3d pose data from at least two cameras, accurate camera
+# motion from the room map, and all the other steps in the pipeline"). 01 = Makana Media's reel (1080p30, a gimbal that moves around the
+# floor: its operator is visible in 02), 02 = Triangle Dancing's YouTube video (1080p59.94, pans and zooms) = the reference clock.
+# Song (the reel's description): Calema - Te Amo.
+# Registered by the Pipeline Monitor new-capture wizard on 2026-10-24.
+# The videos and the soundtrack are referenced in place (never copied); outputs go to work/<take>/ (git-ignored).
+# Capture type: two-view (2 camera(s) used).
+name = "luiza_paulo"
+source_dir = "../../../../Videos/Zouk/performances/group-0069_luiza-paulo-2024-2-angles"
+# affine audio clocks (reference_time = slope * source_time + offset), written by the audio_sync stage
+alignment = "../work/luiza_paulo/clock/alignment.json"
+exclude = []
+# The Makana reel (01) covers 21.68-286.79 s of 02's clock (audio_sync, 9 inlier anchors): the two-view window; refined after the cameras stage
+window = [21.8, 286.7]
+keyframe_span = [21.8, 286.7]
+keyframe_step = 2.0
+
+[timeline]
+anchor = 0.0
+hz = 30.0
+
+[ingest]
+max_fps = 30        # 02 is 59.94 fps (every other frame); 01 is 30 fps
+
+[sync]
+required = true
+
+# Dance metadata: data is siloed by level; the title is "Leader + Follower x Song".
+[dance]
+level = "professional"            # professional | intermediate | novice
+category = "jack_and_jill"      # demo | lesson | jack_and_jill
+
+# Statures: provisional (Paulo unknown; Luiza = lucas_luiza's follow, 1.63 m, which that take's two-view fit confirmed within 0.3 %).
+# Paulo's is re-measured from the free-beta shape pass against Luiza's (as Lucas's was, 2026-10-25).
+[dancers.lead]
+name = "Paulo"
+pid = 1
+stature_m = 1.78
+shoe_sole_m = 0.025
+description = "mustard yellow t-shirt, light blue ripped jeans, white sneakers, short dark hair"
+
+[dancers.follow]
+name = "Luiza"
+pid = 2
+stature_m = 1.63
+shoe_sole_m = 0.025   # white sneakers this day
+description = "long dark hair, light pink cropped sweatshirt, light pink sweatpants, white sneakers"
+
+# Consent per dancer as reported by the user (TMR_SOMA_PLAN G0): "?" = unknown. cloud_processing is
+# required before any Runpod stage; public_repo before anything leaves the PC.
+[consent]
+lead = { capture = "?", fit_3d = "?", ml_analysis = "?", cloud_processing = true, name_shown = "?", level_shown = "?", publication = "?", public_repo = "?", recorded = "2026-10-24" }
+follow = { capture = "?", fit_3d = "?", ml_analysis = "?", cloud_processing = true, name_shown = "?", level_shown = "?", publication = "?", public_repo = "?", recorded = "2026-10-24" }
+source_rights = "?"   # public videos (Makana Media, Triangle Dancing); processed privately on the owner's instruction 2026-10-25, nothing published
+bystanders = "?"
+
+# Farm chunking: the two-camera profile luiza_paulo (farm/ca_profile.py TwoView LP: ids lp*, HM_FRONT_MASTER = 02, seams placed by evidence).
+[chunks]
+profile = "luiza_paulo"
+mode = "windows"
+chunk_s = 60.0
+overlap_s = 4.0
+
+[export]
+smplx_dir = "smplx_rf2_noslip"
+floor_yaw_deg = 0.0
+camera_names = { "01" = "gimbal", "02" = "tripod" }
+
+# Static-room map (as lucas_luiza: fewer window images per camera, the dense keyframes kept); the world's X axis from the tripod (02).
+# No shared intrinsics: the probe saw both cameras zoom (01 x2.5, 02 x1.18).
+[cameras]
+x_cam = "02"
+map = { win_step_s = 2.0, dense_step_s = 6.0 }
+
+[cameras."01"]              # camera type (Pipeline Monitor / narration tool; block written by dancecap.camera_types)
+file = "facebook-807491717892884.mp4"
+mount = "handheld"          # handheld | tripod                 (user)
+zoom = true                 # true | false, independent of mount (user)
+source = "auto"             # user = confirmed | auto = suggestion, not confirmed yet
+# written by the probe, kept for the record; never overrides the user:
+suggested = { mount = "handheld", zoom = true, confidence = 0.85, by = "probe_a", at = "2026-10-25T06:00:35Z", evidence = { parallax_px = 2.132, jitter_hf = 1.6458, zoom_scale = 2.5233, pan_px = 400.1, windows = 5, hz = 15.0, kf_keyframes = 600, kf_max_step = 1.0056 } }
+
+[cameras."02"]              # camera type (Pipeline Monitor / narration tool; block written by dancecap.camera_types)
+file = "youtube-oAXB3f0w2ck.mp4"
+mount = "tripod"            # handheld | tripod                 (user)
+zoom = true                 # true | false, independent of mount (user)
+source = "auto"             # user = confirmed | auto = suggestion, not confirmed yet
+pans = true                 # agent 2026-10-25: parallax 0.55 px (a fixed centre) with 38 px pans and a 1.18x zoom range: a panning, zooming tripod
+# written by the probe, kept for the record; never overrides the user:
+suggested = { mount = "handheld", zoom = true, confidence = 0.8, by = "probe_a", at = "2026-10-25T06:01:07Z", evidence = { parallax_px = 0.548, jitter_hf = 1.449, zoom_scale = 1.1769, pan_px = 37.8, windows = 5, hz = 15.0, kf_keyframes = 295, kf_max_step = 1.4661 } }

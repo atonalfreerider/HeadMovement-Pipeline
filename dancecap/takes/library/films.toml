@@ -219,31 +219,34 @@ outro = "Applause"
 # heat default (the v4.2 splat-mode rule: 2.7 -> 2.16 m), and every ~26 s the orbit flies into one camera's point of view and back out
 # (film_heat pov_*): the tripod's video under the 3D dancers; the Steadicam's video OVER them while it holds (its pose registers the 3D
 # dancers only approximately: 5.5 % of their height, median). POV windows: pov_table.json (pose ok, both dancers in the picture, Jev's view).
+# 2026-10-25: retargeted from the monocular lucas_luiza_h to the TWO-VIEW take lucas_luiza (owner: "I want the jnj performance rendered as a
+# horizontal recording in rhythm mode"): both cameras are in the fit, so both videos sit UNDER the 3D dancers. The two-view take numbers the
+# cameras the other way round: 01 = the Steadicam (POV only where its room-map pose is verified, 52 % of the dance), 02 = the tripod.
 [lucas_luiza]
 id = "lucas_luiza"
 title = "Lucas + Luiza"
 subtitle = "Jack & Jill heat, Zouk Heat 2024: the whole dance in 3D from a tripod and a Steadicam, with the two songs of the heat"
 capture = "09_LucasLuiza"
-direction = "dancecap/work/lucas_luiza_h/film/direction.json"
-thumbnail = "dancecap/work/lucas_luiza_h/film/review/card_thumb.jpg"
+direction = "dancecap/work/lucas_luiza/film/direction.json"
+thumbnail = "dancecap/work/lucas_luiza/film/review/card_thumb.jpg"
 slowmo_audio = "pitch"
 
 [lucas_luiza.heat]
 name = "lucas_luiza"
-take = "lucas_luiza_h"
-songs = "dancecap/work/lucas_luiza_h/song/segments.json"
+take = "lucas_luiza"
+songs = "dancecap/work/lucas_luiza/song/segments.json"
 avatar_opacity = 0.25
-room = false                # the single-camera take has no room model: the dark floor grid
+room = false                # no room splat model of this ballroom (the SfM map is sparse): the dark floor grid
 skeleton_lines = 1.0
-rhythm_score = true         # work/lucas_luiza_h/rhythm/rhythm.json -> the capture's rhythm layer (score 19.6, confidence low: shown with it)
+rhythm_score = true         # work/lucas_luiza/rhythm/rhythm.json -> the capture's rhythm layer
 radius_m = 2.16             # 0.8 x the heat default 2.7 (v4.2: "in gauss splat mode let's get 20% closer to the dancers when we orbit")
 radius_vertical_m = 1.72
-no_overhead_after_s = 190.0
+no_overhead_after_s = 204.0      # the two-view clock = lucas_luiza_h's + 14.0 s (the closing applause)
 pov_cameras = ["01", "02"]
-pov_table = "dancecap/work/lucas_luiza_h/film/pov_table.json"
+pov_table = "dancecap/work/lucas_luiza/film/pov_table.json"   # film_heat pov-table --take lucas_luiza --cams 01,02 --margin 0
 pov_s = 8.0
 pov_min_ok = 0.85
-pov_composite = { "01" = "3d_over_video", "02" = "video_over_3d" }
+pov_composite = { "01" = "3d_over_video", "02" = "3d_over_video" }
 
 [lucas_luiza.heat.titles]
 intro = "Entrance"

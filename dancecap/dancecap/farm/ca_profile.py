@@ -262,7 +262,20 @@ LL = TwoView(profile="lucas_luiza", dance="lucas_luiza", capture="lucas-luisa-jn
                         "(the watcher's farm_cost counts them), the evidence-placed windows (up to 57 s) put one pod per job's worst case at ~$13.9 "
                         "(farm pods are not counted by the run: analyze.run_pods counts its gateway and tagged sessions only)")
 
-PROFILES = {"carlos_aline": CA, "lucas_luiza": LL}
+# luiza_paulo (LP2V, group-0069, 2026-10-25: "the next candidate video should then be completed in the same process"): 01 = Makana Media's reel (a
+# gimbal moving around the floor, 1080p30), 02 = Triangle Dancing's YouTube video (a panning, zooming tripod, 1080p59.94) = the reference clock. LL's
+# route as it ended: seams placed by evidence, lost dancers re-prompted from the teacher boxes, the Steadicam-style moving camera judged through the
+# dancers. budget: the run 20261024-225940-luiza_paulo has a $20 pod limit (the farm's share below); masks only once a fit shows a camera diverge.
+LP = TwoView(profile="luiza_paulo", dance="luiza_paulo", capture="group-0069_luiza-paulo-2024-2-angles", id_prefix="lp", shape_id="lpshape", final_id="lpfinal",
+             owner="LP2V", cams=("01", "02"), alignment=WORK_ROOT / "luiza_paulo" / "clock" / "alignment.json",
+             alignment_arc="dancecap/work/luiza_paulo/clock/alignment.json", sync_fixed="file", fit_s_per_frame=1.9,
+             extra_env={"HM_TEACHER_EVIDENCE": "1", "HM_FRONT_MASTER": "02", "HM_REANCHOR_LOST": "1"}, shape_t=None, apart_cam="02", force_cams=True,
+             monocular_until_s=None, refine_variants=(("smplx_rf2_slip", "--w-slip 0.5 --slip-max-v 0.15"),), scale_check=True, strict=True,
+             budget_usd=12.0, max_plan_usd=8.0, shape_needs_camera_ok=True, seams_by_evidence=True,
+             budget_why="analysis run 20261024-225940-luiza_paulo's $20 pod limit: the cameras jobs (~$3-5) and the people jobs (~$2) first, the farm's "
+                        "worst case below that (farm pods are not counted by the run: analyze.run_pods counts its gateway and tagged sessions only)")
+
+PROFILES = {"carlos_aline": CA, "lucas_luiza": LL, "luiza_paulo": LP}
 
 
 def load_teachers(P: TwoView = CA) -> dict:
