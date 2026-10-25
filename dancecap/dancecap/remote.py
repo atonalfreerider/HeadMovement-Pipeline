@@ -806,13 +806,15 @@ def stock_in(gpu: str, dc: str) -> bool:
 def _create_option(name: str, gpu: str, cloud: str, image: str, disk_gb: int, min_ram_gb: float | None = None,
                    min_vcpu: float | None = None, volume: dict | None = None, dcs: list[str] | None = None) -> dict:
     """Create the pod of one option -> the create response ({id, costPerHr, ...}). A GPU pod goes through runpodctl, or
-    through REST when the jobs set host minimums (runpodctl has no flag for them); a CPU pod through REST. Port 22/tcp is
+    through REST when the jobs set host minimums (runpodctl has no flag for them) or it is a COMMUNITY pod (runpodctl 3.x
+    has no --public-ip: every community create failed with "unknown flag", 2026-10-25; REST asks supportPublicIp); a CPU
+    pod through REST. Port 22/tcp is
     requested at creation (without it Runpod gives only its ssh proxy, which can't scp). REST pods get a unique name so a
     5xx that created one anyway finds it (_rest_create)."""
     c = parse_cpu_label(gpu)
     vol = volume if cloud == VOL_CLOUD else None
     cloud = "SECURE" if cloud == VOL_CLOUD else cloud
-    if c or min_ram_gb or min_vcpu:
+    if c or min_ram_gb or min_vcpu or cloud == "COMMUNITY":
         body = {"name": f"dancecap-{name}-{_secrets.token_hex(3)}", "imageName": image, "cloudType": cloud,
                 "containerDiskInGb": int(disk_gb), "volumeInGb": 0, "ports": ["22/tcp"]}
         if vol:
@@ -841,8 +843,6 @@ def _create_option(name: str, gpu: str, cloud: str, image: str, disk_gb: int, mi
         return _rest_create(body)
     args = ["pod", "create", "--name", f"dancecap-{name}", "--image", image, "--gpu-id", gpu,
             "--container-disk-in-gb", str(disk_gb), "--cloud-type", cloud, "--ports", "22/tcp"]
-    if cloud == "COMMUNITY":
-        args.append("--public-ip")
     if vol:
         args += ["--data-center-ids", vol["dc"], "--network-volume-id", vol["id"],
                  "--volume-mount-path", vol.get("mount") or VOL_MOUNT]

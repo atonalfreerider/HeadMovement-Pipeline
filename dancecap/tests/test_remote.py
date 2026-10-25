@@ -96,29 +96,42 @@ def test_cap_follows_the_runpod_balance(tmp_path, monkeypatch):
 
 
 def test_create_args_request_direct_ssh(monkeypatch):
-    calls = []
+    calls, bodies = [], []
 
     def fake_ctl(*args, **kw):
         calls.append(args)
         raise RuntimeError("stop after create args")
 
+    def fake_rest(body):
+        bodies.append(body)
+        raise RuntimeError("stop after create body")
+
     monkeypatch.setattr(remote, "_ctl", fake_ctl)
+    monkeypatch.setattr(remote, "_rest_create", fake_rest)
     monkeypatch.setattr(remote, "ensure_ssh_key", lambda: None)
     monkeypatch.setattr(remote, "gpu_price", lambda g, c: 1.0)
     monkeypatch.setattr(remote, "remaining", lambda: 100.0)
-    try:
+    try:   # community: REST with a public IP (runpodctl 3.x has no --public-ip flag)
         with remote.pod_session("t", 5, gpus=["G"], clouds=["COMMUNITY"]):
             pass
     except RuntimeError:
         pass
+    assert bodies and bodies[0]["cloudType"] == "COMMUNITY" and bodies[0]["supportPublicIp"] is True and bodies[0]["ports"] == ["22/tcp"]
+    assert not [a for a in calls if a[:2] == ("pod", "create")]
+    try:   # secure: runpodctl with the ssh port
+        with remote.pod_session("t", 5, gpus=["G"], clouds=["SECURE"]):
+            pass
+    except RuntimeError:
+        pass
     create = next(a for a in calls if a[:2] == ("pod", "create"))
-    assert "--ports" in create and create[create.index("--ports") + 1] == "22/tcp"
-    assert "--public-ip" in create
+    assert "--ports" in create and create[create.index("--ports") + 1] == "22/tcp" and "--public-ip" not in create
 
 
 def test_max_cost_skips_expensive_options(monkeypatch):
     calls = []
     monkeypatch.setattr(remote, "_ctl", lambda *a, **k: calls.append(a) or (_ for _ in ()).throw(RuntimeError("x")))
+    monkeypatch.setattr(remote, "_rest_create", lambda b: calls.append(("pod", "create", "--gpu-id", b["gpuTypeIds"][0]))
+                        or (_ for _ in ()).throw(RuntimeError("x")))
     monkeypatch.setattr(remote, "ensure_ssh_key", lambda: None)
     monkeypatch.setattr(remote, "gpu_price", lambda g, c: {"CHEAP": 1.0, "DEAR": 3.0}[g])
     monkeypatch.setattr(remote, "remaining", lambda: 100.0)
