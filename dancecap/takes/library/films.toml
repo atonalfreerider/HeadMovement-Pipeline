@@ -226,7 +226,7 @@ outro = "Applause"
 id = "lucas_luiza"
 title = "Lucas + Luiza"
 subtitle = "Jack & Jill heat, Zouk Heat 2024: the whole dance in 3D from a tripod and a Steadicam, with the two songs of the heat"
-capture = "09_LucasLuiza"
+capture = "09_LucasLuiza2V"     # the two-view capture (09_LucasLuiza, the monocular one, is kept as it was)
 direction = "dancecap/work/lucas_luiza/film/direction.json"
 thumbnail = "dancecap/work/lucas_luiza/film/review/card_thumb.jpg"
 slowmo_audio = "pitch"
@@ -245,7 +245,9 @@ no_overhead_after_s = 204.0      # the two-view clock = lucas_luiza_h's + 14.0 s
 pov_cameras = ["01", "02"]
 pov_table = "dancecap/work/lucas_luiza/film/pov_table.json"   # film_heat pov-table --take lucas_luiza --cams 01,02 --margin 0
 pov_s = 8.0
-pov_min_ok = 0.85
+pov_min_ok = 0.75           # 2026-10-25: the two-view take's cameras are showable 31 % (Steadicam: pose-verified frames) / 66 % (tripod)
+pov_every_s = 22.0          # the owner's "moving in and out of the POVs of the two videos": more POV shots than the heat default (26 s) ...
+cycle_s = 42.0              # ... and fewer overheads (heat default every 28 s): a POV is never placed next to an overhead
 pov_composite = { "01" = "3d_over_video", "02" = "3d_over_video" }
 
 [lucas_luiza.heat.titles]

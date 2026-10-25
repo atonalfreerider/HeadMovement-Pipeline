@@ -196,6 +196,23 @@ def pov_ok_fraction(table: dict | None, cam: str, a: float, b: float) -> float:
     return float(sum(ok[i0:i1])) / float(int(math.ceil((b - a) / dt)) or 1)
 
 
+POV_POSE_PAD_S = 0.5   # camera_video's POV check wants the camera's pose a little beyond the shot (fly-in / pull-back)
+
+
+def pov_pose_full(table: dict | None, cam: str, a: float, b: float) -> bool:
+    """`cam` has its pose over ALL of [a - pad, b + pad] (pov-table `pose` rows): the 3D eye flies along the camera's own track, so a pose
+    gap anywhere in the shot loses it (camera_video's POV check fails), whatever pov_min_ok allows for the dancers' framing. True for a
+    table without `pose` rows (older tables: ok already implied the pose)."""
+    if not table or cam not in (table.get("cams") or {}):
+        return False
+    c = table["cams"][cam]
+    if "pose" not in c:
+        return True
+    t0, dt, pose = float(c["t0"]), float(c["dt"]), c["pose"]
+    i0, i1 = int(math.floor((a - POV_POSE_PAD_S - t0) / dt)), int(math.ceil((b + POV_POSE_PAD_S - t0) / dt))
+    return i0 >= 0 and i1 <= len(pose) and all(pose[i0:i1])
+
+
 def place_povs(shots: list[dict], film_end: float, cfg: dict, table: dict | None) -> list[dict]:
     """POV shots inserted into an orbit / overhead plan: about every pov_every_s from pov_first_s, each slot moved by up to
     pov_shift_max_s either way (1 s steps, nearest first) and shortened down to pov_min_s until a camera of pov_cameras can show it
@@ -222,7 +239,7 @@ def place_povs(shots: list[dict], film_end: float, cfg: dict, table: dict | None
         return a - prev_end >= min_orbit and next_start - b >= min_orbit
 
     def showable(cam: str, a: float, b: float) -> bool:
-        return pov_ok_fraction(table, cam, a, b) >= float(cfg["pov_min_ok"])
+        return pov_ok_fraction(table, cam, a, b) >= float(cfg["pov_min_ok"]) and pov_pose_full(table, cam, a, b)
 
     turn = 0
     t = float(cfg["pov_first_s"])
@@ -450,6 +467,23 @@ def _wav_seconds(path: Path) -> float:
 # ----------------------------------------------------------------------------------------------- command line
 
 
+def teacher_rows(tp, frame_index, t):
+    """The teacher-track row of every camera frame. The teachers have one row per frame of the take (frames.json), the camera track a native video
+    frame_index each: a two-view take's tripod is sampled every 2nd frame from frame 1007 (lucas_luiza), so frame_index is no row number - map
+    it through the teachers' own frame_index, else the nearest teacher t (<= 50 ms), else (a one-camera take, frame_index = row) as it is."""
+    import numpy as np
+    fi = np.asarray(frame_index, int)
+    if "frame_index" in tp.files and (np.asarray(tp["frame_index"]) >= 0).all():
+        pos = {int(f): i for i, f in enumerate(np.asarray(tp["frame_index"], int))}
+        return np.array([pos.get(int(f), -1) for f in fi], int)
+    if "t" in tp.files:
+        tt = np.asarray(tp["t"], float)
+        j = np.clip(np.searchsorted(tt, t), 1, len(tt) - 1)
+        j = np.where(np.abs(tt[j - 1] - t) < np.abs(tt[j] - t), j - 1, j)
+        return np.where(np.abs(tt[j] - t) <= 0.05, j, -1).astype(int)
+    return np.where(fi < len(tp["box"]), fi, -1).astype(int)
+
+
 def pov_table(take: str, cams: list[str], dt: float = 0.25, margin: float = 0.02, min_conf: float = 0.3, jev_blocked: float = 0.6,
               jev_view: float = 1.5, max_dancer_pct: float = 8.0) -> dict:
     """{take, cams: {cam: {t0, dt, ok: [0/1 ...], share}}}: per dt step of the take's reference clock, whether the camera can be shown in a
@@ -470,8 +504,9 @@ def pov_table(take: str, cams: list[str], dt: float = 0.25, margin: float = 0.02
         if "dancer_pct" in z.files:   # a camera attached through the dancers (cameras.attach_moving): its registration per frame
             ok = ok & (np.nan_to_num(np.asarray(z["dancer_pct"], float), nan=1e9) <= max_dancer_pct)
         W, H = (int(v) for v in np.asarray(tp["size"]).ravel()[:2])
-        box = np.asarray(tp["box"], float)[np.clip(fi, 0, len(tp["box"]) - 1)]
-        conf = np.asarray(tp["conf"], float)[np.clip(fi, 0, len(tp["conf"]) - 1)]
+        rows = teacher_rows(tp, fi, t)
+        box = np.where((rows >= 0)[:, None, None], np.asarray(tp["box"], float)[np.clip(rows, 0, len(tp["box"]) - 1)], np.nan)
+        conf = np.where((rows >= 0)[:, None], np.asarray(tp["conf"], float)[np.clip(rows, 0, len(tp["conf"]) - 1)], 0.0)
         mx, my = margin * W, margin * H
         inside = (np.isfinite(box).all(-1) & (box[..., 0] >= mx) & (box[..., 1] >= my) & (box[..., 2] <= W - mx) & (box[..., 3] <= H - my)
                   & (np.nan_to_num(conf) >= min_conf)).all(-1)
@@ -496,7 +531,9 @@ def pov_table(take: str, cams: list[str], dt: float = 0.25, margin: float = 0.02
         tot = np.bincount(k, minlength=n)
         hit = np.bincount(k, weights=good.astype(float), minlength=n)
         row = [1 if tot[i] and hit[i] / tot[i] >= 0.8 else 0 for i in range(n)]
-        out["cams"][cam] = {"t0": round(t0, 4), "dt": dt, "ok": row, "share": round(sum(row) / max(1, n), 3),
+        hit_pose = np.bincount(k, weights=ok.astype(float), minlength=n)
+        pose = [1 if tot[i] and hit_pose[i] == tot[i] else 0 for i in range(n)]       # every frame of the step has its pose
+        out["cams"][cam] = {"t0": round(t0, 4), "dt": dt, "ok": row, "pose": pose, "share": round(sum(row) / max(1, n), 3),
                             "pose_ok_share": round(float(ok.mean()), 3), "both_inside_share": round(float(inside.mean()), 3),
                             "jev_clear_share": None if jev_share is None else round(jev_share, 3)}
     return out

@@ -204,3 +204,29 @@ def test_a_rarely_showable_camera_still_gets_its_best_window_and_an_overhead_giv
     assert not any(s["kind"] == "overhead" and s["start"] < p02[0]["end"] and s["end"] > p02[0]["start"] for s in shots)
     for a, b in zip(shots, shots[1:]):
         assert abs(a["end"] - b["start"]) < 1e-6
+
+
+def test_teacher_rows_follow_the_teachers_own_frame_index():
+    """lucas_luiza (two-view): the tripod's camera track holds native frame indices 1007, 1009, ... while the teacher track has one row per take
+    frame - indexing the teachers by frame_index read the wrong rows (the tripod looked showable 24 % of the time instead of 66 %)."""
+    import numpy as np
+    from dancecap.film_heat import teacher_rows
+
+    class Npz(dict):
+        @property
+        def files(self):
+            return list(self)
+    tp = Npz(frame_index=np.array([1007, 1009, 1011, 1013]), t=np.array([16.8, 16.833, 16.867, 16.9]), box=np.zeros((4, 2, 4)))
+    assert teacher_rows(tp, [1009, 1013, 1500], np.array([16.833, 16.9, 30.0])).tolist() == [1, 3, -1]
+    tp2 = Npz(t=np.array([0.0, 0.0333, 0.0667]), box=np.zeros((3, 2, 4)))
+    assert teacher_rows(tp2, [5, 6, 7], np.array([0.0, 0.07, 1.0])).tolist() == [0, 2, -1]
+    tp3 = Npz(box=np.zeros((3, 2, 4)))
+    assert teacher_rows(tp3, [0, 2, 3], np.zeros(3)).tolist() == [0, 2, -1]
+
+
+def test_a_pov_shot_needs_the_camera_s_pose_over_all_of_it():
+    """lucas_luiza: with pov_min_ok 0.75 two Steadicam shots ran into pose gaps at their ends (camera_video's POV check failed)."""
+    from dancecap.film_heat import pov_pose_full
+    tab = {"cams": {"01": {"t0": 0.0, "dt": 0.25, "ok": [1] * 40, "pose": [1] * 30 + [0] * 10}, "02": {"t0": 0.0, "dt": 0.25, "ok": [1] * 40}}}
+    assert pov_pose_full(tab, "01", 1.0, 6.0) and not pov_pose_full(tab, "01", 1.0, 7.3) and not pov_pose_full(tab, "01", 0.2, 3.0)
+    assert pov_pose_full(tab, "02", 1.0, 7.0) and not pov_pose_full(tab, "03", 1.0, 2.0)    # no pose rows: older tables pass; no camera: no
