@@ -72,14 +72,16 @@ camera_names = { "01" = "gimbal", "02" = "tripod" }
 # No shared intrinsics: the probe saw both cameras zoom (01 x2.5, 02 x1.18).
 [cameras]
 x_cam = "02"
-map = { win_step_s = 2.0, dense_step_s = 6.0 }
+# 2026-10-25: ONE COLMAP camera for the gimbal (01 has no zoom: focal 1421-1481 px over 1131 verified frames, p95/p5 1.04; the
+# tripod 02 zooms 1.7x). With per-image intrinsics for 01 the map fragmented (A1b: 7 of its 200 images in the main model).
+map = { win_step_s = 2.0, dense_step_s = 6.0, shared_intrinsics = ["01"] }
 
 [cameras."01"]              # camera type (Pipeline Monitor / narration tool; block written by dancecap.camera_types)
 file = "facebook-807491717892884.mp4"
 mount = "handheld"          # handheld | tripod                 (user)
-zoom = true                 # true | false, independent of mount (user)
+zoom = false                # true | false, independent of mount (user)
 source = "user"             # user = confirmed | auto = suggestion, not confirmed yet
-set_at = "2026-10-25T17:21:31Z"
+set_at = "2026-10-27T17:07:42Z"
 # written by the probe, kept for the record; never overrides the user:
 suggested = { mount = "handheld", zoom = true, confidence = 0.85, by = "probe_a", at = "2026-10-25T06:00:35Z", evidence = { parallax_px = 2.132, jitter_hf = 1.6458, zoom_scale = 2.5233, pan_px = 400.1, windows = 5, hz = 15.0, kf_keyframes = 600, kf_max_step = 1.0056 } }
 
