@@ -70,6 +70,17 @@ def cmd_remote(a):
         _cmd_remote_jobs(a)
 
 
+def parse_clouds(text: str | None) -> list[str] | None:
+    """--clouds "SECURE" / "community,secure" -> ["SECURE"] / ["COMMUNITY", "SECURE"]; None or empty = remote.CLOUDS."""
+    if not text:
+        return None
+    clouds = [c.strip().upper() for c in text.split(",") if c.strip()]
+    bad = [c for c in clouds if c not in ("COMMUNITY", "SECURE")]
+    if bad:
+        raise SystemExit(f"--clouds: unknown cloud(s) {bad} (COMMUNITY, SECURE)")
+    return list(dict.fromkeys(clouds)) or None
+
+
 def _cmd_remote_jobs(a):
     from . import remote_jobs as rj
     if a.action == "validate":
@@ -90,16 +101,18 @@ def _cmd_remote_jobs(a):
                                               "build_s")}, indent=1))
         print(json.dumps(rj.estimate_minutes(jobs, man["bytes"]), indent=1))
         return
+    clouds = parse_clouds(getattr(a, "clouds", None))
     if getattr(a, "parallel", False) and a.action == "run" and not a.session:
         # independent job groups on separate pods at the same time (owner 2026-10-21: speed over cost)
         res = rj.run_parallel(jobs, label="batch", max_cost=a.max_cost, gpus=a.gpus.split(",") if a.gpus else None,
                               force=a.force, dry_run=a.dry_run, max_minutes=a.max_minutes, max_pods=a.max_pods,
-                              cpu=True if a.cpu else None, vcpu=a.vcpu)
+                              clouds=clouds, cpu=True if a.cpu else None, vcpu=a.vcpu)
         print(json.dumps(res, indent=1, default=str))
         return
     res = rj.run_session(jobs, sid=a.session, label=a.action if a.action == "validate" else "batch",
                          max_cost=a.max_cost, gpus=a.gpus.split(",") if a.gpus else None, force=a.force,
-                         dry_run=a.dry_run, max_minutes=a.max_minutes, cpu=True if a.cpu else None, vcpu=a.vcpu)
+                         dry_run=a.dry_run, max_minutes=a.max_minutes, clouds=clouds, cpu=True if a.cpu else None,
+                         vcpu=a.vcpu)
     print(json.dumps(res, indent=1, default=str))
 
 
@@ -541,6 +554,9 @@ def main(argv=None):
     sp.add_argument("--cpu", action="store_true",
                     help="run: on a CPU pod (Secure Cloud, CPU torch); default: a CPU pod when every job says \"cpu\": true")
     sp.add_argument("--vcpu", type=int, help="run --cpu: the CPU pod's vCPUs (default remote.DEFAULT_VCPU)")
+    sp.add_argument("--clouds", help="run/validate: comma-separated Runpod clouds to try, in this order (COMMUNITY, "
+                                     "SECURE; default remote.CLOUDS). SECURE when the bundle holds licence-restricted "
+                                     "files (MANO / FLAME)")
     sp.add_argument("--frames", type=int, default=180, help="validate: synthetic MAMMA grid frames")
     sp.set_defaults(fn=cmd_remote)
     sp = sub.add_parser("cameras", help="static-room SfM (ALIKED+LightGlue, COLMAP) + per-frame pose/zoom of every camera")

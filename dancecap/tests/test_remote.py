@@ -445,3 +445,26 @@ def test_job_secrets_are_pushed_and_exported_never_written(tmp_path):
         raise AssertionError("missing key file accepted")
     except FileNotFoundError as e:
         assert "nope.txt" in str(e)
+
+
+def test_remote_run_passes_clouds_to_the_session(monkeypatch):
+    """--clouds SECURE reaches run_session / run_parallel (a bundle holding MANO / FLAME goes to Secure Cloud only)."""
+    import argparse
+    from dancecap import cli
+    assert cli.parse_clouds(None) is None and cli.parse_clouds("") is None
+    assert cli.parse_clouds("secure") == ["SECURE"]
+    assert cli.parse_clouds("community, SECURE,secure") == ["COMMUNITY", "SECURE"]
+    with pytest.raises(SystemExit):
+        cli.parse_clouds("SECURE,cheap")
+    seen = {}
+    monkeypatch.setattr(rj, "resolve_jobs", lambda take, jobs: ["job"])
+    monkeypatch.setattr(rj, "run_session", lambda jobs, **k: seen.setdefault("session", k) and {})
+    monkeypatch.setattr(rj, "run_parallel", lambda jobs, **k: seen.setdefault("parallel", k) and {})
+    base = dict(action="run", take=None, jobs="a.json", session=None, max_cost=3.0, max_minutes=None, gpus=None,
+                force=False, dry_run=True, cpu=False, vcpu=None, max_pods=6)
+    cli._cmd_remote_jobs(argparse.Namespace(**base, parallel=False, clouds="SECURE"))
+    cli._cmd_remote_jobs(argparse.Namespace(**base, parallel=True, clouds="SECURE"))
+    assert seen["session"]["clouds"] == ["SECURE"] and seen["parallel"]["clouds"] == ["SECURE"]
+    seen.clear()
+    cli._cmd_remote_jobs(argparse.Namespace(**base, parallel=False, clouds=None))
+    assert seen["session"]["clouds"] is None
