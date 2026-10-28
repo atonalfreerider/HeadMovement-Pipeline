@@ -100,7 +100,7 @@ POD_ENV = {"LHMPP_COMMIT": CL.LHMPP_COMMIT, "LHMPP_ROOT": "/workspace/lhmpp_cand
            "LHMPP_VENV": "/workspace/lhmpp_cand/venv", "LHMPP_MODEL": CL.MODEL_NAME,
            "TORCH_HOME": "/workspace/lhmpp_cand/torch_home", "HF_HOME": "/workspace/lhmpp_cand/hf_home"}
 EXCLUDE = ["dancecap/work/runpod/pywheels", "dancecap/work/runpod/wheelhouse", "mamma-turing"]
-JOB_MINUTES = 40.0                        # >= install (20) + build (10) timeouts; expected install 2-7.5, build ~2.5, export ~2
+JOB_MINUTES = 60.0                        # >= install (40) + build (10) timeouts; expected install 2-9, build ~2.5, export ~2
 TILE_H = 280
 ROLE_BGR = {"lead": (0, 190, 0), "follow": (0, 0, 230)}
 
@@ -504,7 +504,9 @@ def job_doc(take: str, inp_ws: str, out_ws: str, export: bool = True, max_minute
     """The dancecap.pod_job/1 document (inp_ws / out_ws workspace-relative, no trailing '/'; the commands run in dancecap/)."""
     cin, cout = inp_ws.removeprefix("dancecap/"), out_ws.removeprefix("dancecap/")
     args = f"--input {cin} --out {cout} --renders {cout}/renders"
-    cmds = [{"name": "install", "timeout_min": 20, "cmd": "bash remote/cand_lhmpp/install.sh"},
+    # install 40 min: a slow host compiled the CUDA extensions (diff-gaussian-rasterization, pointops) past 20 min twice
+    # (luiza_paulo 2026-10-28: wheels 316 s vs 117 s on lucas_luiza's pod, which built everything in 535 s)
+    cmds = [{"name": "install", "timeout_min": 40, "cmd": "bash remote/cand_lhmpp/install.sh"},
             {"name": "build", "timeout_min": 10, "cmd": f"{POD_PY} remote/cand_lhmpp/lhmpp_render_pod.py {args}"}]
     if export:
         cmds.append({"name": "export", "timeout_min": 8, "optional": True,
