@@ -1264,6 +1264,8 @@ def _model_errors(model) -> dict[str, list[float]]:
         for p2 in im.points2D:
             if p2.has_point3D():
                 uv = im.camera.img_from_cam(T * model.points3D[p2.point3D_id].xyz)
+                if uv is None:  # a point behind this camera: a degenerate track (luiza_paulo A4, 2026-10-27: its refine mean went to 1e149)
+                    continue
                 errs.append(float(np.linalg.norm(np.asarray(uv) - p2.xy)))
         out.setdefault(im.name.split("/")[1], []).extend(errs)
     return out
