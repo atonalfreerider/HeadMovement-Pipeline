@@ -38,7 +38,8 @@ category = "jack_and_jill"      # demo | lesson | jack_and_jill
 [dancers.lead]
 name = "Paulo"
 pid = 1
-stature_m = 1.78
+stature_m = 1.83   # 2026-10-28: the free-beta shape pass (lpshape, 250.5-280.5 s) measured his rest height 1.853 m incl. a 2.5 cm sole
+#                   (k 1.026 against 1.78) while Luiza matched 1.63 (k 0.998): she anchors the world scale, so he is 1.83 m (as Lucas was)
 shoe_sole_m = 0.025
 description = "mustard yellow t-shirt, light blue ripped jeans, white sneakers, short dark hair"
 
