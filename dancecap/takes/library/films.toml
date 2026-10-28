@@ -294,3 +294,56 @@ music_4 = "Dance, part 4"
 music_5 = "Dance, part 5"
 music_6 = "Dance, part 6"
 outro = "Final pose"
+
+# Paulo + Luiza (group-0069, Zouk Heat 2024-04-06, the same ballroom as lucas_luiza): the second two-view take - a gimbal reel (01, Makana
+# Media) and a panning, zooming tripod (02, Triangle Dancing's YouTube video = the reference clock). ONE song (84 BPM, Calema - Te Amo per the
+# reel's description); the music runs 21.7-276.7 s (song/segments.json pass 2) and the dance window is 22.03-282.37 s. The chapters cut the music
+# every 8 bars (8 x 4 x 60/84 = 22.86 s: round(255 / 22.86) = 11 parts). Looks as lucas_luiza (splat dancers, no room model, the live rhythm score).
+# The opening embrace 22-34 s is a weak stretch of the fit (both views occluded): no overhead before 34 s.
+[luiza_paulo]
+id = "luiza_paulo"
+title = "Paulo + Luiza"
+subtitle = "Jack & Jill heat, Zouk Heat 2024: the whole dance in 3D from a gimbal and a tripod"
+capture = "10_LuizaPaulo2V"
+direction = "dancecap/work/luiza_paulo/film/direction.json"
+thumbnail = "dancecap/work/luiza_paulo/film/review/card_thumb.jpg"
+slowmo_audio = "pitch"
+
+[luiza_paulo.heat]
+name = "luiza_paulo"
+take = "luiza_paulo"
+songs = "dancecap/work/luiza_paulo/song/segments.json"
+avatar_opacity = 0.25
+room = false
+skeleton_lines = 1.0
+rhythm_score = true
+radius_m = 2.16
+radius_vertical_m = 1.72
+no_overhead_before_s = 34.0
+first_overhead_s = 40.0
+no_overhead_after_s = 271.7      # the music ends at 276.7 s
+pov_cameras = ["01", "02"]
+pov_table = "dancecap/work/luiza_paulo/film/pov_table.json"   # film_heat pov-table --take luiza_paulo --cams 01,02 --margin 0
+pov_s = 8.0
+pov_min_ok = 0.75
+pov_every_s = 22.0
+cycle_s = 42.0
+pov_composite = { "01" = "3d_over_video", "02" = "3d_over_video" }
+
+[luiza_paulo.heat.split]
+music = { every_s = 22.86 }
+
+[luiza_paulo.heat.titles]
+intro = "Entrance"
+music_1 = "Dance, part 1"
+music_2 = "Dance, part 2"
+music_3 = "Dance, part 3"
+music_4 = "Dance, part 4"
+music_5 = "Dance, part 5"
+music_6 = "Dance, part 6"
+music_7 = "Dance, part 7"
+music_8 = "Dance, part 8"
+music_9 = "Dance, part 9"
+music_10 = "Dance, part 10"
+music_11 = "Dance, part 11"
+outro = "Final pose and bow"
