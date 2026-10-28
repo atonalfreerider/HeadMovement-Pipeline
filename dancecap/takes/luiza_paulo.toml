@@ -13,7 +13,8 @@ source_dir = "../../../../Videos/Zouk/performances/group-0069_luiza-paulo-2024-2
 alignment = "../work/luiza_paulo/clock/alignment.json"
 exclude = []
 # The Makana reel (01) covers 21.68-286.79 s of 02's clock (audio_sync, 9 inlier anchors): the two-view window; refined after the cameras stage
-window = [21.8, 286.7]
+window = [22.03, 282.37]   # 2026-10-27: inside the gimbal's verified track (cameras.anchored ok 22.03-282.38 s at the fixed -16.16 ms; farm plan check
+#                            both_cams_cover_window_ends); the audio overlap was 21.8-286.7. Never re-ingest after this (frames.json rows = the people / camera rows)
 keyframe_span = [21.8, 286.7]
 keyframe_step = 2.0
 
