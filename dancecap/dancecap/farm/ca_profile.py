@@ -133,6 +133,17 @@ class TwoView:
     shape_needs_camera_ok: bool = False  # the shape window counts a camera only where its track is ok (cameras/<cam>.npz): a moving
     #                                      camera with localisation holes (lucas_luiza's Steadicam: 52 % ok) must not give the
     #                                      free-beta pass a window it does not really see
+    seams_by_evidence: bool = False  # the chunk seams where both cameras see both dancers (chunks.seam_windows on two_view_support), not equal windows
+    seam_view_angle: bool = False  # ... and see them from directions far enough apart (view_angle_factor): two fits of a stretch the cameras see from
+    #                                nearly one direction disagree in depth while both reproject well (lucas_luiza ll2: 22-28 deg, 0.1-0.25 m)
+    generation: str = ""  # a re-planned chunk set: chunk ids id_prefix + generation + g<k> (llg0000 -> ll2g0000), so the volume's chunks/<id>, the takes
+    #                       and state.json keep the superseded set apart (final_id names the generation's own stitch job)
+    cam_masks: tuple = ()  # ((cam, t0, t1, why), ...): master seconds a camera is left out of every fit window that meets them (a `mask` step after
+    #                        `front`, recap_front.step_mask) and of the seam evidence - stretches where a fit diverged on that camera's evidence
+
+    @property
+    def chunk_prefix(self) -> str:
+        return self.id_prefix + self.generation
 
     @property
     def shape_take(self) -> str:
@@ -235,19 +246,47 @@ CA = TwoView(profile=PROFILE, dance=DANCE, capture=CAPTURE, id_prefix=ID_PREFIX,
 
 # lucas_luiza (LL2V, runbook step 12): 01 = the Steadicam (Video-44260.mp4), 02 = the tripod original = the reference clock. The fit rate is carlos's measured two-camera
 # rate (1.65 s/frame for the 900-frame shape, ~1.9 s/frame for a 1548-frame chunk; FARM.md); HM_TEACHER_EVIDENCE=1 because the demo's colour rule is another couple's.
-LL = TwoView(profile="lucas_luiza", dance="lucas_luiza", capture="lucas-luisa-jnj", id_prefix="ll", shape_id="llshape", final_id="llfinal", owner="LL2V",
+# generation 2 (2026-10-25): the first set (llg0000 .. llg4375, llfinal) failed the stitch gate - one seam in a 24 s hole of the Steadicam's track, two where one
+# chunk's SAM tracking had lost a dancer; ll2 places the seams by evidence and re-prompts lost dancers (dancers.DancersConfig.reanchor_lost), llshape is kept
+LL = TwoView(profile="lucas_luiza", dance="lucas_luiza", capture="lucas-luisa-jnj", id_prefix="ll", shape_id="llshape", final_id="llfinal2", owner="LL2V",
              cams=("01", "02"), alignment=WORK_ROOT / "lucas_luiza" / "clock" / "alignment.json", alignment_arc="dancecap/work/lucas_luiza/clock/alignment.json",
-             sync_fixed="file", fit_s_per_frame=1.9, extra_env={"HM_TEACHER_EVIDENCE": "1", "HM_FRONT_MASTER": "02"}, shape_t=None, apart_cam="02", force_cams=True,
+             sync_fixed="file", fit_s_per_frame=1.9, extra_env={"HM_TEACHER_EVIDENCE": "1", "HM_FRONT_MASTER": "02", "HM_REANCHOR_LOST": "1"}, shape_t=None,
+             apart_cam="02", force_cams=True,
              monocular_until_s=None, refine_variants=(("smplx_rf2_slip", "--w-slip 0.5 --slip-max-v 0.15"),), scale_check=True, strict=True,
-             budget_usd=14.0, max_plan_usd=6.0, shape_needs_camera_ok=True,
+             budget_usd=17.0, max_plan_usd=6.0, shape_needs_camera_ok=True, seams_by_evidence=True, generation="2",
+             cam_masks=(("01", 163.0, 176.0, "llg4375 v1 diverged on the Steadicam's evidence (its MAMMA error grew); refit r1 without it: 7.5 / 10.0 px"),
+                        ("01", 206.0, 212.7, "llg4375 v1, the same (to the take's end: mask ends are exclusive, the last grid frame is 212.6 s)")),
              # the Steadicam's verified poses cover 52 % of the take (cameras.anchored, 2026-10-25): its best 30 s window has both cameras on
              # both dancers in 37 % of the instants (~330 two-view frames: plenty for the betas, which G9 then checks against the statures);
              # a Zouk couple is in close embrace most of the time (apart 25 %)
              shape_min_both=0.33, shape_min_apart=0.2,
-             budget_why="the farm's share of analysis run 20261023-100155-lucas_luiza's $25 limit: ~$23.30 left - Job A's --max-cost 7.5 - analyses 1.0 - ~$0.8 reserve "
+             budget_why="generation 2 (2026-10-25): analysis run 20261023-100155-lucas_luiza's pod limit had $17.18 left; generation 1 spent ~$2.8 of farm pods "
+                        "(the watcher's farm_cost counts them), the evidence-placed windows (up to 57 s) put one pod per job's worst case at ~$13.9 "
                         "(farm pods are not counted by the run: analyze.run_pods counts its gateway and tagged sessions only)")
 
-PROFILES = {"carlos_aline": CA, "lucas_luiza": LL}
+# luiza_paulo (LP2V, group-0069, 2026-10-25: "the next candidate video should then be completed in the same process"): 01 = Makana Media's reel (a
+# gimbal moving around the floor, 1080p30), 02 = Triangle Dancing's YouTube video (a panning, zooming tripod, 1080p59.94) = the reference clock. LL's
+# route as it ended: seams placed by evidence, lost dancers re-prompted from the teacher boxes, the Steadicam-style moving camera judged through the
+# dancers. budget: the run 20261024-225940-luiza_paulo has a $20 pod limit (the farm's share below); masks only once a fit shows a camera diverge.
+# The gimbal's offset is FIXED (2026-10-27): cameras.twoview sync measured 01 at -13.5 / -15.0 / -14.4 / -16.16 ms against 02 over the whole window
+# (the last on the anchored track, 102k joints, 10.2 px), but its 30 s sub-windows spread 24-36 ms (a moving gimbal; stable needs < 10 ms) and the piecewise
+# curve did not reproduce, so the scan never wrote an accepted file. sync/offsets.json holds the same value (recap_front.fixed_sync_doc) for the
+# whole-take readers (camera_video, world_scale chain).
+LP_SYNC_FIXED = {"no_measure": True, "offsets_ms": {"01": -16.16, "02": 0.0},
+                 "why": "two-view epipolar scan, whole window on the anchored gimbal track (sub-windows unstable: a moving camera); gauge 02"}
+LP = TwoView(profile="luiza_paulo", dance="luiza_paulo", capture="group-0069_luiza-paulo-2024-2-angles", id_prefix="lp", shape_id="lpshape", final_id="lpfinal",
+             owner="LP2V", cams=("01", "02"), alignment=WORK_ROOT / "luiza_paulo" / "clock" / "alignment.json",
+             alignment_arc="dancecap/work/luiza_paulo/clock/alignment.json", sync_fixed=LP_SYNC_FIXED, fit_s_per_frame=1.9,
+             extra_env={"HM_TEACHER_EVIDENCE": "1", "HM_FRONT_MASTER": "02", "HM_REANCHOR_LOST": "1"}, shape_t=None, apart_cam="02", force_cams=True,
+             monocular_until_s=None, refine_variants=(("smplx_rf2_slip", "--w-slip 0.5 --slip-max-v 0.15"),), scale_check=True, strict=True,
+             budget_usd=20.0, max_plan_usd=8.0, shape_needs_camera_ok=True, seams_by_evidence=True, seam_view_angle=True,
+             shape_min_both=0.5, shape_min_apart=0.35,
+             budget_why="owner 2026-10-28: $20 (was $12) so the strict plan's fleet worst case fits ($19.84: 7 RTX 4090 pods at their limits); "
+                        "the plan expects $7.20 (farm pods are not counted by the run: analyze.run_pods counts its gateway and tagged sessions only)")
+# LP's shape window (2026-10-27 plan on the narrowed window 22.03-282.37 s): both cameras + both dancers 0.553, apart 0.371 (the couple dances
+# close; LL ran at 0.33 / 0.2): the strict profile's 0.6 / 0.5 lowered to 0.5 / 0.35
+
+PROFILES = {"carlos_aline": CA, "lucas_luiza": LL, "luiza_paulo": LP}
 
 
 def load_teachers(P: TwoView = CA) -> dict:
@@ -269,6 +308,57 @@ def load_teachers(P: TwoView = CA) -> dict:
     return out
 
 
+def _on_grid(o: dict, grid: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """A teacher track's nearest frame per grid instant and whether it counts there (within 50 ms, the source covers it, the camera's track is ok)."""
+    j = np.clip(np.searchsorted(o["t"], grid), 1, len(o["t"]) - 1)
+    j = np.where(np.abs(o["t"][j - 1] - grid) < np.abs(o["t"][j] - grid), j - 1, j)
+    return j, (np.abs(o["t"][j] - grid) <= 0.05) & o["ok"][j] & (o["cam_ok"][j] if "cam_ok" in o else True)
+
+
+def two_view_support(tt: dict, grid: np.ndarray) -> np.ndarray:
+    """(G, 2) float per grid instant and dancer (lead, follow): 1 where every camera has that dancer with confidence >= CONF and counts there
+    (_on_grid: the moving camera's track ok when the profile asks for it), else 0."""
+    out = np.ones((len(grid), 2), bool) if tt else np.zeros((len(grid), 2), bool)
+    for o in tt.values():
+        j, good = _on_grid(o, grid)
+        out &= good[:, None] & (o["conf"][j] >= CONF)
+    return out.astype(float)
+
+
+VIEW_ANGLE_DEG = (15.0, 45.0)   # seam evidence: the cameras' rays to the couple this far apart count 0 .. fully (the depth of a two-view triangulation)
+
+
+def view_angle_factor(P: TwoView, grid: np.ndarray) -> np.ndarray | None:
+    """(G,) in [0, 1] per grid instant: how far apart the two cameras see the couple (VIEW_ANGLE_DEG ramp). The couple is at the mean floor (x, z) of
+    both roles in the teacher track of P.apart_cam (people/teachers_<cam>.npz floor, gaps interpolated), 1 m above the floor; the camera centres from
+    cameras/<cam>.npz through cameras/world_from_sfm.json. None when a file is missing or the profile has not exactly two cameras."""
+    from ..cameras.world import apply
+    wf = P.work / "cameras" / "world_from_sfm.json"
+    tp = P.people / f"teachers_{P.apart_cam}.npz"
+    if len(P.cams) != 2 or not wf.is_file() or not tp.is_file() or not all((P.work / "cameras" / f"{c}.npz").is_file() for c in P.cams):
+        return None
+    sim3 = json.loads(wf.read_text(encoding="utf-8"))
+    centres = []
+    for c in P.cams:
+        with np.load(P.work / "cameras" / f"{c}.npz") as z:
+            t, Rc, tv = np.asarray(z["t"], float), np.asarray(z["R"], float), np.asarray(z["tvec"], float)
+        Cw = apply(sim3, -np.einsum("nji,nj->ni", Rc, tv))
+        centres.append(np.stack([np.interp(grid, t, Cw[:, k]) for k in range(3)], 1))
+    with np.load(tp) as z:
+        tt, fl = np.asarray(z["t"], float), np.asarray(z["floor"], float)
+    n = np.isfinite(fl).all(-1)
+    xz = np.where(n[..., None], fl, 0.0).sum(1) / np.maximum(n.sum(1), 1)[:, None]
+    good = n.any(1)
+    if good.sum() < 10:
+        return None
+    D = np.stack([np.interp(grid, tt[good], xz[good, 0]), np.ones(len(grid)), np.interp(grid, tt[good], xz[good, 1])], 1)
+    a, b = centres[0] - D, centres[1] - D
+    cos = (a * b).sum(1) / np.maximum(np.linalg.norm(a, axis=1) * np.linalg.norm(b, axis=1), 1e-9)
+    ang = np.degrees(np.arccos(np.clip(cos, -1.0, 1.0)))
+    lo, hi = VIEW_ANGLE_DEG
+    return np.clip((ang - lo) / (hi - lo), 0.0, 1.0)
+
+
 def shape_window(tt: dict, P: TwoView = CA, frames: int = 900, step_s: float = 2.5, t_min: float | None = None, t_max: float | None = None) -> dict:
     """The 30 s window (900 grid frames) where BOTH cameras see BOTH dancers best and the couple is not in a clinch: per 30 Hz grid instant, the share of the two cameras
     that have both dancers with confidence >= CONF (weight 0.55), the share of instants whose two detections are apart (floor distance in camera P.apart_cam >= 0.9 m,
@@ -282,9 +372,7 @@ def shape_window(tt: dict, P: TwoView = CA, frames: int = 900, step_s: float = 2
     apart = np.zeros(len(grid), bool)
     clear = np.ones(len(grid), bool)
     for n, (c, o) in enumerate(tt.items()):
-        j = np.clip(np.searchsorted(o["t"], grid), 1, len(o["t"]) - 1)
-        j = np.where(np.abs(o["t"][j - 1] - grid) < np.abs(o["t"][j] - grid), j - 1, j)
-        good = (np.abs(o["t"][j] - grid) <= 0.05) & o["ok"][j] & (o["cam_ok"][j] if "cam_ok" in o else True)
+        j, good = _on_grid(o, grid)
         both[:, n] = good & (o["conf"][j] >= CONF).all(1)
         clear &= ~(good & o["merged"][j].any(1)) | ~good
         if c == P.apart_cam:
@@ -362,9 +450,18 @@ def estimate_chunk(chunk: C.Chunk, cam_frames: int | None = None, shape: bool = 
     return e
 
 
-def chunk_steps(chunk: C.Chunk, est: dict, refine_args: str, *, shape: bool, refined_dir: str, P: TwoView = CA) -> list[dict]:
-    """chunk_take -> front -> qa_mask -> [await_pin] -> fit -> [pin -> scale_check | refine -> quality -> (refine_<v> -> quality_<v>)...] -> evidence (RP.chunk_steps
-    with this take's pin and the qa_mask step; the refine variants re-refine the raw fit with the recipe's arguments and the variant's appended: argparse keeps the last)."""
+def window_masks(P: TwoView, t0: float, t1: float) -> list[tuple[str, float, float]]:
+    """The profile's camera masks that meet the window [t0, t1), clipped to it; a sliver under one grid frame is left out (its `:g` text could
+    read a:a, which recap_front.parse_masks refuses on the pod)."""
+    out = [(c, max(a, t0), min(b, t1)) for c, a, b, *_ in P.cam_masks if a < t1 and b > t0]
+    return [(c, a, b) for c, a, b in out if b - a >= 1.0 / HZ]
+
+
+def chunk_steps(chunk: C.Chunk, est: dict, refine_args: str, *, shape: bool, refined_dir: str, P: TwoView = CA,
+                masks: list[tuple[str, float, float]] | None = None) -> list[dict]:
+    """chunk_take -> front -> [mask] -> qa_mask -> [await_pin] -> fit -> [pin -> scale_check | refine -> quality -> (refine_<v> -> quality_<v>)...] -> evidence
+    (RP.chunk_steps with this take's pin and the qa_mask step; the refine variants re-refine the raw fit with the recipe's arguments and the variant's appended: argparse
+    keeps the last). masks: window_masks of the chunk (the `mask` step zeroes those cameras' landmarks in mamma/ma_2d, as for an unregistered frame)."""
     take = chunk.take
     ctx = {"chunk": chunk.id, "take": take}
     w = f"dancecap/work/{take}"
@@ -373,12 +470,16 @@ def chunk_steps(chunk: C.Chunk, est: dict, refine_args: str, *, shape: bool, ref
                      save=[f"{w}/mamma/prepare.json", f"{w}/mamma/ma3d_config.yaml", f"{w}/mamma/ma_2d/", f"{w}/mamma/ma_cap/", f"{w}/sync/offsets.json",
                            f"{w}/cameras/world_from_sfm.json", f"{w}/dancers/roles.json"]),
              C._step("qa_mask", C.fmt("python -m dancecap.recap_front qa-mask {chunk}", **ctx), 10, save=[f"{w}/mamma/ma_2d/", f"{w}/mamma/qa_mask.json"])]
+    if masks:
+        arg = ",".join(f"{c}:{a:g}:{b:g}" for c, a, b in masks)
+        steps.insert(2, C._step("mask", C.fmt("python -m dancecap.recap_front mask {chunk} --mask {m}", m=arg, **ctx), 10,
+                                save=[f"{w}/mamma/ma_2d/", f"{w}/mamma/mask.json"]))
     if not shape:
         steps.append(C._step("await_pin", C.fmt("python -m dancecap.recap_front await-pin {chunk}", **ctx), 130))
     steps.append(C._step("fit", C.fmt("python -m dancecap.recap_front fit {chunk}" + ("" if shape else " --pin"), **ctx), max(30, math.ceil(1.6 * est["fit_min"] + 15)),
                          env=({} if shape else {"MAMMA_FREEZE_BETAS": "1", "MAMMA_INIT_BETAS": "{WS}/" + P.pin_rel}), live=[f"{w}/mamma/ma_3d/"],
                          save=[f"{w}/smplx/", f"{w}/mamma/fits/", f"{w}/mamma/select.json", f"{w}/mamma/report.json"]))
-    stage = {"chunk_take": "front", "front": "front", "qa_mask": "front", "await_pin": "front", "fit": "fit", "pin": "fit", "refine": "refined", "quality": "refined"}
+    stage = {"chunk_take": "front", "front": "front", "mask": "front", "qa_mask": "front", "await_pin": "front", "fit": "fit", "pin": "fit", "refine": "refined", "quality": "refined"}
     if shape:
         steps.append(C._step("pin", C.fmt("python -m dancecap.recap_front pin {chunk}", **ctx), 3, save=[f"dancecap/work/{take}/mamma_pin_betas.json"]))
         if P.scale_check:      # the free-beta rest heights against stature + sole in this world (G9; exit 2 unless ok: optional, the json says why)
@@ -421,7 +522,8 @@ def chunk_outputs(chunk: C.Chunk, *, shape: bool, refined_dir: str, P: TwoView =
 def build_job(chunk: C.Chunk, spec: DanceSpec, *, hash_inputs: bool = True, code: dict | None = None, shape: bool = False, in_tar: dict | None = None,
               P: TwoView = CA, sync_doc: dict | None = None) -> dict:
     est = chunk.estimate if chunk.estimate.get("front_min") is not None and "cam_frames" in chunk.estimate else estimate_chunk(chunk, shape=shape, P=P)
-    steps = chunk_steps(chunk, est, RP.refine_args_recipe(), shape=shape, refined_dir=spec.refined_dir, P=P)
+    steps = chunk_steps(chunk, est, RP.refine_args_recipe(), shape=shape, refined_dir=spec.refined_dir, P=P,
+                        masks=window_masks(P, float(spec.grid.t(chunk.k0)), float(spec.grid.t(chunk.k1 + 1))))
     if hash_inputs:
         inputs, sources = C.source_inputs(spec, chunk.cams)
         inputs.append(in_tar or build_in(P=P))
@@ -504,10 +606,24 @@ def make_plan(spec: DanceSpec, *, hash_inputs: bool = True, code: dict | None = 
                                 f"dancecap.dancers_seed run {P.dance} + dancecap.carlos_aline_inputs prepare --take {P.dance}") + " first")
     sync_doc = P.offsets_doc() if P.sync_fixed == "file" else None
     g = spec.grid
-    chunks, rep = C.plan_windows(spec, kind="full", claimed_ids=claimed_ids, cams_fn=lambda k0, k1: window_cams(tt, g.t(k0), g.t(k1 + 1), P)[0])
+    windows = None
+    if P.seams_by_evidence:
+        p = C.chunk_params(spec)
+        gt = g.t(np.arange(g.k0, g.k1 + 1))
+        sup = two_view_support(tt, gt)
+        va = view_angle_factor(P, gt) if P.seam_view_angle else None
+        if va is not None:
+            sup = sup * va[:, None]
+        masked = np.zeros(len(gt), bool)
+        for _c, a, b, *_ in P.cam_masks:               # a masked camera does not carry a seam: no seam's overlap may touch it
+            masked |= (gt >= a) & (gt < b)
+        sup[masked] = 0.0
+        windows = C.seam_windows(sup, g.hz, p["chunk_s"], p["overlap_s"], forbid=masked)
+    chunks, rep = C.plan_windows(spec, kind="full", claimed_ids=claimed_ids, cams_fn=lambda k0, k1: window_cams(tt, g.t(k0), g.t(k1 + 1), P)[0],
+                                 windows=windows)
     rows = []
     for ch in chunks:
-        ch.id = P.id_prefix + ch.id                     # the volume's chunks/ and queue/ are shared with the class recap (g0000 ...)
+        ch.id = P.chunk_prefix + ch.id                  # the volume's chunks/ and queue/ are shared with the class recap (g0000 ...)
         ch.take = f"{spec.name}_{ch.id}"
         cams, st = window_cams(tt, g.t(ch.k0), g.t(ch.k1 + 1), P)
         ch.cams = cams
@@ -635,6 +751,10 @@ def strict_checks(plan: dict, spec: DanceSpec, P: TwoView) -> dict:
           offsets_ms={j["id"]: ((j.get("chunk") or {}).get("sync_fixed") or {}).get("offsets_ms") for j in fits})
     ends = window_ends(coverage_times(plan.get("_teachers") or load_teachers(P), P), spec.grid, P, doc) if err is None else {"ok": False, "why": err}
     check("both_cams_cover_window_ends", ends["ok"], **{k: v for k, v in ends.items() if k != "ok"})
+    chunks = sorted(plan["_chunks"], key=lambda c: c.k0)        # a seam where a camera is masked is a one-camera seam (llfinal's failure mode)
+    on_mask = [(a.id, b.id, c) for a, b in zip(chunks, chunks[1:]) for c, m0, m1, *_ in P.cam_masks
+               if m0 < float(spec.grid.t(a.k1 + 1)) and m1 > float(spec.grid.t(b.k0))]
+    check("seams_avoid_camera_masks", not on_mask, seams_on_masks=on_mask)
     st = (plan.get("shape") or {}).get("stats") or {}
     check("shape_window_sees_both", float(st.get("both_cameras_both_dancers") or 0.0) >= P.shape_min_both and float(st.get("apart") or 0.0) >= P.shape_min_apart,
           stats=st, need={"both_cameras_both_dancers": P.shape_min_both, "apart": P.shape_min_apart})
@@ -715,9 +835,10 @@ def print_plan(plan: dict, P: TwoView = CA) -> None:
                   "(launch / watch honour it; `launch --budget X` overrides)")
 
 
-def save_budget(dance: str, b: dict) -> dict:
+def save_budget(dance: str, b: dict, prev_plan_usd: float | None = None) -> dict:
     """The plan's budget -> the farm policy in state.json (watch.Policy: budget_usd, hard_minutes, gpus), so `farm launch` and the watcher cap the farm's spent +
-    committed worst cases at it and launch the GPU it is priced on. A lower budget already stored is kept, and so is a GPU list already stored. The pods' hard ceiling
+    committed worst cases at it and launch the GPU it is priced on. A lower budget already stored is kept (a ceiling set by hand) unless it is the one the
+    previous plan wrote (prev_plan_usd: a re-plan whose profile raised its budget, lucas_luiza generation 2), and so is a GPU list already stored. The pods' hard ceiling
     never drops below what a GPU job the watcher still works on needs (its max_minutes + BOOT_SLACK_MIN); the initial kill-switch lead never exceeds it."""
     from . import watch as Wt
     base = Wt.Policy.load(dance)
@@ -729,7 +850,8 @@ def save_budget(dance: str, b: dict) -> dict:
             j = json.loads(p.read_text(encoding="utf-8"))
             if j.get("needs_gpu"):
                 live.append(math.ceil(float(j.get("max_minutes") or 0.0) + BOOT_SLACK_MIN))
-    usd = float(b["usd"]) if base.budget_usd is None else min(float(base.budget_usd), float(b["usd"]))
+    from_plan = prev_plan_usd is not None and base.budget_usd is not None and abs(float(base.budget_usd) - float(prev_plan_usd)) < 1e-6
+    usd = float(b["usd"]) if base.budget_usd is None or from_plan else min(float(base.budget_usd), float(b["usd"]))
     hard = float(max([float(b["hard_minutes"])] + live))
     pol = Wt.Policy.from_dict({"budget_usd": usd, "hard_minutes": hard, "minutes": min(float(base.minutes), hard), "gpus": list(base.gpus or b.get("gpus") or [])},
                               base)
@@ -750,11 +872,11 @@ def cmd_final_only(a, spec: DanceSpec, P: TwoView) -> int:
         print(f"plan --final-only: {P.final_id} is {rec['status']} (queued on the volume / the watcher works on it): refused; plan it again once it is pulled",
               file=sys.stderr)
         return 2
-    cl = sorted((c for cid, c in cur["chunks"].items() if cid.startswith(P.id_prefix + "g") and c.get("origin") == "planned" and "core_k0" in c
+    cl = sorted((c for cid, c in cur["chunks"].items() if cid.startswith(P.chunk_prefix + "g") and c.get("origin") == "planned" and "core_k0" in c
                  and c.get("status") not in ("failed", "cancelled")), key=lambda c: c["k0"])
     g = spec.grid
     if not tiles(cl, g):
-        print(f"plan --final-only: the {P.id_prefix}g* chunks in state.json do not tile k {g.k0}..{g.k1} ({[(c['id'], c['core_k0'], c['core_k1']) for c in cl]}): "
+        print(f"plan --final-only: the {P.chunk_prefix}g* chunks in state.json do not tile k {g.k0}..{g.k1} ({[(c['id'], c['core_k0'], c['core_k1']) for c in cl]}): "
               "run the full `plan` first", file=sys.stderr)
         return 2
     lacking = []
@@ -787,9 +909,32 @@ def busy_jobs(cur: dict, P: TwoView) -> dict:
     done-not-pulled): a full re-plan would reset the shape whose pinned betas the chunks freeze and rebuild the final without the claimed chunks."""
     from .state import CLAIMING
     from .watch import ACTIVE
-    out = {cid: c.get("status") for cid, c in cur["chunks"].items() if cid.startswith(P.id_prefix + "g") and c.get("status") in CLAIMING}
+    out = {cid: c.get("status") for cid, c in cur["chunks"].items() if cid.startswith(P.chunk_prefix + "g") and c.get("status") in CLAIMING}
     out.update({jid: cur["jobs"][jid]["status"] for jid in (P.shape_id, P.final_id) if (cur["jobs"].get(jid) or {}).get("status") in ACTIVE})
     return out
+
+
+def shape_kept(cur: dict, P: TwoView) -> bool:
+    """`plan --keep-shape`: the shape job finished and was pulled with its pinned betas (the chunks' await-pin step finds them on the volume)."""
+    return (cur["jobs"].get(P.shape_id) or {}).get("status") in ("pulled", "stitched") and (P.work.parent / P.shape_take / "mamma_pin_betas.json").is_file()
+
+
+def kept_shape_inputs_differ(dance: str, plan: dict, P: TwoView) -> list[str]:
+    """`plan --keep-shape` on hashed inputs: what the kept shape job was fitted on and the new plan would not be (the in-tar - cameras, teachers,
+    alignment - and the source hashes). Empty = the same inputs; the chunks then freeze betas fitted in their own world."""
+    old_p = jobs_dir(dance) / f"{P.shape_id}.json"
+    if not old_p.is_file():
+        return [f"{P.shape_id}.json missing"]
+    old = json.loads(old_p.read_text(encoding="utf-8"))
+    new = next((j for j in plan["_jobs"] if j["id"] == P.shape_id), None)
+    if new is None:
+        return ["the plan has no shape job"]
+    why = []
+    if (old.get("inputs") or [{}])[-1].get("sha256") != (new.get("inputs") or [{}])[-1].get("sha256"):
+        why.append(f"{P.in_tar_rel}: sha256 {(old.get('inputs') or [{}])[-1].get('sha256')} -> {(new.get('inputs') or [{}])[-1].get('sha256')}")
+    if (old.get("sources") or {}) != (new.get("sources") or {}):
+        why.append("source hashes differ")
+    return why
 
 
 def cmd_plan(a, spec: DanceSpec, P: TwoView = CA) -> int:
@@ -806,8 +951,12 @@ def cmd_plan(a, spec: DanceSpec, P: TwoView = CA) -> int:
             print(msg + ": refused", file=sys.stderr)
             return 2
         print(msg + " (dry run: shown only)", file=sys.stderr)
+    keep = bool(getattr(a, "keep_shape", False))
+    if keep and not shape_kept(cur, P):
+        print(f"plan --keep-shape: {P.shape_id} is not pulled with {P.shape_take}/mamma_pin_betas.json: refused", file=sys.stderr)
+        return 2
     claimed = {cid for cid, c in cur["chunks"].items() if c.get("status") in ("queued", "running", "done", "pulled", "stitched")}
-    claimed |= {cid[len(P.id_prefix):] for cid in claimed if cid.startswith(P.id_prefix)}
+    claimed |= {cid[len(P.chunk_prefix):] for cid in claimed if cid.startswith(P.chunk_prefix + "g")}
     try:
         plan = make_plan(spec, hash_inputs=not a.dry_run, code=C.code_info(), claimed_ids=claimed, P=P)
     except SyncError as e:          # no chunk is planned on an offset that was not measured
@@ -815,6 +964,10 @@ def cmd_plan(a, spec: DanceSpec, P: TwoView = CA) -> int:
         return 2
     public = {k: v for k, v in plan.items() if not k.startswith("_")}
     public["validation"] = validate_plan(plan, spec, P)
+    if keep and not a.dry_run:
+        why = kept_shape_inputs_differ(a.dance, plan, P)
+        public["validation"]["checks"]["kept_shape_has_the_plan_inputs"] = {"ok": not why, "differ": why}
+        public["validation"]["ok"] = public["validation"]["ok"] and not why
     if a.json:
         print(json.dumps(public, default=str))
     else:
@@ -830,23 +983,29 @@ def cmd_plan(a, spec: DanceSpec, P: TwoView = CA) -> int:
         print(f"plan: validation FAILED ({', '.join(bad)}): nothing written (`plan --dry-run --out FILE` has the details)", file=sys.stderr)
         return 2
     shape_rec = cur["jobs"].get(P.shape_id) or {}
-    if P.strict and shape_rec.get("status") not in (None, "planned"):
-        print(f"note: {P.shape_id} was {shape_rec['status']}: this plan sets it back to planned; `queue` runs the shape pass again (new betas) before any chunk")
     jobs = plan["_jobs"]
+    if keep:            # the pulled shape pass stays as it is: its spec, state and pinned betas
+        jobs = [j for j in jobs if j["id"] != P.shape_id]
+        print(f"note: {P.shape_id} kept ({shape_rec.get('status')}): the chunks freeze its pinned betas")
+    elif P.strict and shape_rec.get("status") not in (None, "planned"):
+        print(f"note: {P.shape_id} was {shape_rec['status']}: this plan sets it back to planned; `queue` runs the shape pass again (new betas) before any chunk")
     for j in jobs:
         (A.write_job if j.get("what") == "stitch_analyse" else C.write_job)(j)
     st.put_chunks([c.to_dict() for c in plan["_chunks"]], replace_planned=True)
     for j in jobs:
         st.set_job(j["id"], chunk=j["id"] if j.get("what") != "stitch_analyse" else None, kind=j.get("what") or j["kind"], status="planned", after=j.get("after") or [],
                    written=now_iso(), spec=str(jobs_dir(a.dance) / f"{j['id']}.json"))
+    prev_budget = ((json.loads((farm_dir(a.dance) / "plan.json").read_text(encoding="utf-8")) if (farm_dir(a.dance) / "plan.json").is_file() else {})
+                   .get("budget") or {}).get("usd")      # the ceiling the previous plan wrote (save_budget may raise it; a hand-set one stays)
     atomic_write_json(farm_dir(a.dance) / "plan.json", public)
     atomic_write_json(P.work / "chunks.json", public)
     if public.get("budget"):
-        pol = save_budget(a.dance, public["budget"])
+        pol = save_budget(a.dance, public["budget"], prev_plan_usd=prev_budget)
         print(f"farm policy: budget ${pol['budget_usd']:.2f}, pod hard ceiling {pol['hard_minutes']:g} min, kill-switch lead {pol['minutes']:g} min, "
               f"GPUs {pol['gpus'] or 'pods.GPU_PRIORITY'} (state.json)")
     if P.strict:        # not `farm up`: it loads the policy before its own plan and re-saves that one, dropping the budget written above
-        nxt = (f"python -m dancecap.farm --dance {a.dance} queue --only {P.shape_id}; python -m dancecap.farm --dance {a.dance} launch --pods 1 --gpus 4090 "
+        first = ",".join(c.id for c in plan["_chunks"]) if keep else P.shape_id
+        nxt = (f"python -m dancecap.farm --dance {a.dance} queue --only {first}; python -m dancecap.farm --dance {a.dance} launch --pods 1 --gpus 4090 "
                f"(the same shell: HM_QUEUE_OWNER={P.owner}; not `up`, which re-saves its earlier policy without this budget)")
     else:
         nxt = f"python -m dancecap.farm --dance {a.dance} up --dry-run"

@@ -51,7 +51,11 @@ def refit_spec(base: dict, masks: list[tuple[str, float, float]], ckpt_rel: str,
     missing = [n for n in REFIT_STEPS if n != "mask" and n not in steps]
     if missing:
         raise ValueError(f"{cid}: the base job has no step(s) {missing}")
-    mask = {"name": "mask", "cmd": f"python -m dancecap.recap_front mask {cid} --mask {mask_arg(masks)}", "timeout_min": 10, "optional": False, "stage": "front"}
+    if "mask" in steps:      # the base already masks (a two-view profile's cam_masks): the front checkpoint is from before that step, so keep its masks
+        prev = parse_masks(steps["mask"]["cmd"].split("--mask ", 1)[1].split()[0])
+        masks = prev + [m for m in masks if m not in prev]
+    mask = {"name": "mask", "cmd": f"python -m dancecap.recap_front mask {cid} --mask {mask_arg(masks)}", "timeout_min": 10, "optional": False, "stage": "front",
+            **({"save": steps["mask"]["save"]} if steps.get("mask", {}).get("save") else {})}
     steps["mask"] = mask
     order = [s["name"] for s in base["steps"]]
     after_fit = order[order.index("fit") + 1:]

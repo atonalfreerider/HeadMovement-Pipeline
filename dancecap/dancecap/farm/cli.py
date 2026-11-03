@@ -585,6 +585,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--overlap-s", type=float, default=4.0)
     p.add_argument("--kind", choices=("full", "front", "fit", "refine", "analyse"), default="full")
     p.add_argument("--ignore-s1", action="store_true", help="plan from scratch: do not let the S1 segments a-d claim their frames")
+    p.add_argument("--keep-shape", action="store_true", help="two-camera profiles: keep the pulled shape pass (its pinned betas) instead of planning it again")
     p.add_argument("--no-external", action="store_true")
     p.add_argument("--no-world", action="store_true", help="plan without a published world (specs lack world ids)")
     p.add_argument("--out", metavar="PATH", help="also write the plan document here (with --dry-run: no state or specs change)")
