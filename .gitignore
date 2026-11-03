@@ -110,3 +110,6 @@
 .env.*
 !.env.example
 .hm-forbidden-terms*
+
+# E1 shadow takes of larissa_kadu_38 (dancecap.phone_subsets makes them; their work dirs are ignored too)
+dancecap/takes/larissa_kadu_38_e1?.toml

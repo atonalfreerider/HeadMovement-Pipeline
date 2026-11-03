@@ -2,8 +2,8 @@
 
     python -m dancecap.pose_refine <take> [--src smplx] [--dst smplx_refined] [--mode refine]
                                    [--root-hz 5] [--rot-hz 8] [--w-floor 1] [--floor-mm 5] [--w-feet 1]
-                                   [--w-slip 0] [--slip-max-v 0.15] [--w-anchor 1] [--anchor-mm 10] [--root-xz]
-                                   [--iters 400] [--device cpu|cuda]
+                                   [--w-slip 0] [--slip-max-v 0.15] [--w-contact 0] [--contact-v 0.05,0.25]
+                                   [--w-anchor 1] [--anchor-mm 10] [--root-xz] [--iters 400] [--device cpu|cuda]
 
 MAMMA has no floor term and fuses noisy per-frame evidence, so a fused fit floats / sinks its planted feet by a few cm
 (slow per-dancer drift + pelvis-coupled wobble: scale/floor_diagnosis.json) and carries 4.5-12 Hz rigid root jitter.
@@ -36,6 +36,10 @@ same keys as the source plus 'smoothing' (json str: parameters, per-step magnitu
            the body. Slip: horizontal motion of the loaded sole point between consecutive stance frames, only where
            the filtered loaded point is slower than --slip-max-v (near-static feet; zouk stance feet pivot and slide,
            so pinning every stance frame drags the feet sideways); off by default (--w-slip 0).
+           Contact (2026-11 test E2, off by default: --w-contact 0): the horizontal motion of each frame's contact
+           patch (the sole vertices within 1 cm of the lowest, the same vertices in the next frame: pose_quality's
+           contact point) / 3 mm, weighted per frame pair by stance x a soft speed gate (1 below --contact-v's first
+           value, 0 above its second, m/s). Only the patch centroid is held, so pivots and heel-toe rolls stay free.
            The weights are a TRADE-OFF, not a guarantee: the floor term is a hard pull and costs image agreement on the
            feet where the cameras put a planted foot above / below y = 0. Measure every variant with
            `python -m dancecap.pose_quality <take> --smplx-dir <dst>` (feet-only reprojection, joint displacement vs
@@ -391,14 +395,41 @@ def lowest(y):
     return y.min(dim=-1).values
 
 
+def contact_weights(stance: np.ndarray, speed: np.ndarray | None, contact_v: tuple[float, float]) -> np.ndarray:
+    """(T-1,) weight of each consecutive frame pair for the contact term: stance in both frames, times a soft speed
+    gate on the filtered loaded point (1 below contact_v[0] m/s, 0 above contact_v[1], linear between), the lower of
+    the two frames. A planted foot is held fully; a slow glide only partly; a slide not at all."""
+    st = np.asarray(stance, bool).astype(float)
+    lo, hi = contact_v
+    g = np.ones_like(st) if speed is None else np.clip((hi - np.asarray(speed, float)) / max(hi - lo, 1e-6), 0.0, 1.0)
+    w = st * g
+    return np.minimum(w[1:], w[:-1])
+
+
+def contact_slip(s, w, patch_m: float = 0.01, scale_m: float = 0.003):
+    """Weighted mean of the squared horizontal motion (/ scale_m) of each frame's contact patch from frame t to t+1:
+    the sole vertices within patch_m of frame t's lowest one, the SAME vertices in both frames (pose_quality's contact
+    point). Only the patch centroid is held, so a pivot about it stays free, and a heel-toe roll moves to a new patch
+    instead of being held back. s: (T, n, 3) sole vertices (torch); w: (T-1,) pair weights (torch)."""
+    y = s[..., 1].detach()
+    m = (y[:-1] <= y[:-1].min(-1, keepdim=True).values + patch_m).to(s.dtype)
+    n = m.sum(-1, keepdim=True).clamp_min(1.0)
+    c0 = (m[..., None] * s[:-1]).sum(1) / n
+    c1 = (m[..., None] * s[1:]).sum(1) / n
+    d = (((c1 - c0)[:, [0, 2]] / scale_m) ** 2).sum(-1)
+    return (w * d).sum() / w.sum().clamp_min(1e-6)
+
+
 def refine_dancer(z: dict, role: str, work: Path, stance: dict, iters: int = 400, w_floor: float = 1.0,
                   device: str = "cpu", log=print, w_feet: float = 1.0, slip_max_v: float | None = 0.15,
                   w_slip: float = 0.0, floor_mm: float = 5.0, root_xz: bool = False,
-                  speed: dict | None = None, w_anchor: float = 1.0, anchor_mm: float = 10.0) -> tuple[dict, dict]:
+                  speed: dict | None = None, w_anchor: float = 1.0, anchor_mm: float = 10.0,
+                  w_contact: float = 0.0, contact_v: tuple[float, float] = (0.05, 0.25)) -> tuple[dict, dict]:
     """speed: {foot: (T,) m/s} loaded-point speed of the filtered motion (stance_mask aux); with slip_max_v the slip
     term only acts between consecutive stance frames that are both slower than slip_max_v (None: every stance pair).
     w_anchor: horizontal anchor of the ankles and feet (joints 7, 8, 10, 11) to their filtered input positions, scale
-    anchor_mm: the floor fix is vertical, so sideways foot motion needs the images' (or the slip term's) support."""
+    anchor_mm: the floor fix is vertical, so sideways foot motion needs the images' (or the slip term's) support.
+    w_contact: the contact term (contact_slip, weights contact_weights(stance, speed, contact_v)), 2026-11 test E2."""
     import torch
     prob = Problem(z, role, work, stance, device)
     T = prob.T
@@ -407,12 +438,15 @@ def refine_dancer(z: dict, role: str, work: Path, stance: dict, iters: int = 400
     zero = torch.zeros((T, 1), device=device)
     root = (lambda: dp) if root_xz else (lambda: torch.cat([zero, dp, zero], 1))
     opt = torch.optim.Adam([{"params": [dp], "lr": 1e-3}, {"params": [dr], "lr": 5e-3}])
-    both = {}
+    both, pair_w = {}, {}
     for f in prob.stance:
         m = prob.stance[f]
         if slip_max_v is not None and speed is not None:
             m = m & torch.tensor(np.asarray(speed[f]) < slip_max_v, device=device)
         both[f] = m[1:] & m[:-1]
+        if w_contact:
+            pair_w[f] = torch.tensor(contact_weights(stance[f], None if speed is None else speed[f], contact_v),
+                                     dtype=torch.float32, device=device)
     with torch.no_grad():
         pts0, _, _, P0 = prob.forward(root(), dr)
         d0, per0, perf0 = prob.data_term(pts0, w_feet=w_feet)
@@ -422,7 +456,7 @@ def refine_dancer(z: dict, role: str, work: Path, stance: dict, iters: int = 400
         opt.zero_grad()
         pts, sol, _, P = prob.forward(root(), dr)
         e_data, _, _ = prob.data_term(pts, w_feet=w_feet)
-        e_floor = e_pen = e_slip = torch.zeros((), device=device)
+        e_floor = e_pen = e_slip = e_contact = torch.zeros((), device=device)
         for f, s in sol.items():
             y = lowest(s[..., 1])
             if prob.stance[f].any():
@@ -432,17 +466,21 @@ def refine_dancer(z: dict, role: str, work: Path, stance: dict, iters: int = 400
                 w = torch.softmax(-s[..., 1] / 0.005, dim=-1)
                 c = (w[..., None] * s).sum(1)[:, [0, 2]]
                 e_slip = e_slip + (((c[1:] - c[:-1])[both[f]] / 0.003) ** 2).sum(-1).mean()
+            if w_contact and bool(pair_w[f].sum() > 0):
+                e_contact = e_contact + contact_slip(s, pair_w[f])
         a_p = dp[2:] - 2 * dp[1:-1] + dp[:-2]
         a_r = dr[2:] - 2 * dr[1:-1] + dr[:-2]
         e_smooth = ((a_p / 0.001) ** 2).sum(-1).mean() + ((a_r / 0.01) ** 2).sum(-1).mean()
         e_prior = ((dr / 0.15) ** 2).sum(-1).mean()
         e_anchor = (((P[:, ANCHOR][..., [0, 2]] - A0) / (anchor_mm / 1000.0)) ** 2).sum(-1).mean() if w_anchor             else torch.zeros((), device=device)
-        loss = e_data + w_floor * e_floor + e_pen + w_slip * e_slip + e_smooth + e_prior + w_anchor * e_anchor
+        loss = (e_data + w_floor * e_floor + e_pen + w_slip * e_slip + w_contact * e_contact + e_smooth + e_prior
+                + w_anchor * e_anchor)
         loss.backward()
         opt.step()
         if it % 50 == 0 or it == iters:
             row = {"it": it, "loss": round(float(loss), 4), "data": round(float(e_data), 4),
                    "floor": round(float(e_floor), 4), "pen": round(float(e_pen), 4), "slip": round(float(e_slip), 4),
+                   "contact": round(float(e_contact), 4),
                    "smooth": round(float(e_smooth), 4), "prior": round(float(e_prior), 4),
                    "anchor": round(float(e_anchor), 4), "s": round(time.time() - t0, 1)}
             hist.append(row)
@@ -467,6 +505,8 @@ def refine_dancer(z: dict, role: str, work: Path, stance: dict, iters: int = 400
            "slip_max_v": slip_max_v, "root_xz": root_xz, "w_anchor": w_anchor, "anchor_mm": anchor_mm,
            "device": device, "history": hist,
            "slip_pairs": {f: int(both[f].sum()) for f in both},
+           "w_contact": w_contact, "contact_v": list(contact_v),
+           "contact_pair_weight": {f: round(float(pair_w[f].sum()), 1) for f in pair_w},
            "data_term_before_after": [round(float(d0), 4), round(float(d1), 4)],
            "data_per_cam_before_after": {c: [round(a, 4), round(b, 4)] for c, a, b in zip(prob.cam_names, per0, per1)},
            "feet_data_per_cam_before_after": {c: [round(a, 4), round(b, 4)]
@@ -519,7 +559,7 @@ def run(take: str, src: str = "smplx", dst: str = "smplx_refined", mode: str = "
         rot_hz: float = 8.0, vert_hz: float | None = None, w_floor: float = 1.0, iters: int = 400,
         device: str = "cpu", w_feet: float = 1.0, slip_max_v: float | None = 0.15, w_slip: float = 0.0,
         floor_mm: float = 5.0, root_xz: bool = False, quality: bool = True, w_anchor: float = 1.0,
-        anchor_mm: float = 10.0) -> dict:
+        anchor_mm: float = 10.0, w_contact: float = 0.0, contact_v: tuple[float, float] = (0.05, 0.25)) -> dict:
     if mode not in MODES:
         raise ValueError(f"mode {mode!r} not in {MODES}")
     if dst in ("smplx", src):
@@ -541,7 +581,7 @@ def run(take: str, src: str = "smplx", dst: str = "smplx_refined", mode: str = "
             zf, meta["refine"] = refine_dancer(zf, r, work, st, iters, w_floor, device, w_feet=w_feet,
                                                slip_max_v=slip_max_v, w_slip=w_slip, floor_mm=floor_mm,
                                                root_xz=root_xz, speed=aux.get("speed"), w_anchor=w_anchor,
-                                               anchor_mm=anchor_mm)
+                                               anchor_mm=anchor_mm, w_contact=w_contact, contact_v=contact_v)
         if quality:
             zf = requality(zf, r, work)
             meta["per_frame_quality"] = ("reproj_px, reproj_parts_px, quality, quality_parts recomputed for this "
@@ -577,6 +617,10 @@ def main(argv=None) -> None:
     ap.add_argument("--slip-max-v", type=float, default=0.15,
                     help="slip term only where the filtered loaded sole point is slower than this (m/s); "
                          "<= 0: every stance frame (the first run)")
+    ap.add_argument("--w-contact", type=float, default=0.0,
+                    help="contact-patch term weight (0 = none; 2026-11 test E2 arm B)")
+    ap.add_argument("--contact-v", default="0.05,0.25",
+                    help="contact term speed gate 'full,zero' (m/s): full weight below, none above, linear between")
     ap.add_argument("--root-xz", action="store_true", help="free horizontal root offsets too (first run)")
     ap.add_argument("--w-anchor", type=float, default=1.0,
                     help="horizontal anchor of ankles + feet to the filtered input (0 = none, the first run)")
@@ -593,7 +637,8 @@ def main(argv=None) -> None:
     s = run(a.take, a.src, a.dst, a.mode, a.root_hz, a.rot_hz, a.vert_hz, a.w_floor, a.iters, a.device,
             w_feet=a.w_feet, slip_max_v=a.slip_max_v if a.slip_max_v > 0 else None, w_slip=a.w_slip,
             floor_mm=a.floor_mm, root_xz=a.root_xz, quality=not a.no_quality, w_anchor=a.w_anchor,
-            anchor_mm=a.anchor_mm)
+            anchor_mm=a.anchor_mm, w_contact=a.w_contact,
+            contact_v=tuple(float(x) for x in a.contact_v.split(",")))
     for r, m in s.items():
         brief = {k: v for k, v in m.get("refine", {}).items()
                  if k not in ("history", "data_per_cam_before_after", "feet_data_per_cam_before_after")}

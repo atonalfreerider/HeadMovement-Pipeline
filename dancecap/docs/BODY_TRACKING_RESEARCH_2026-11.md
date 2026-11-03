@@ -391,7 +391,7 @@ The total is about $3-5. E1 and E2 can run side by side, because E2's first two 
   - A: weight 2, with the prior's confidence floored at 0.5 while she is hidden (today's floor is 0.25, at half her
     median mask area). The confidence comes from 2D reliability instead of visible mask area, and her 2D sigmas are
     not halved. Today's turned-down prior already gets her heading right on the hidden frames, but her PA22 there is
-    169 mm, against 172 without the prior.
+    172 mm, against 169 without the prior (and 81 for SAM 3D Body alone).
   - B: arm A with ExMR as the prior. This arm runs only if Step 0 passed and ExMR's per-frame PA22 ties the smoothed 3DB
     control (33/40 at 58-62 s, 32/55 at 44-48 s).
 - Metrics:

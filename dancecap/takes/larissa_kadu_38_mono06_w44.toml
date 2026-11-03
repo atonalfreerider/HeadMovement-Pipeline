@@ -1,0 +1,34 @@
+# DERIVED one-camera take (mono4d track "fitb", 2026-10-20; dancecap.mono4d.cand_fitb --window 44): phone 06 of larissa_kadu_38
+# ALONE over 44.0-48.0 s (reference seconds), the second window for fit B and fit B + SAM 3D Body prior (variant 3db): it confirms
+# the prior weight chosen on 58-62 s (larissa_kadu_38_mono06) on a window it was not tuned on. The lead turns ~300 degrees, the
+# follow ~630 (the end of the one-foot spin) and is mostly hidden behind the lead; phone 06's track is registered on every frame.
+# Built exactly like larissa_kadu_38_mono06 (python -m dancecap.mono4d.cand_fitb derive --window 44): links / copies of
+# larissa_kadu_38's frames/06, dancers/06, roles.json, cameras/06.npz (t moved onto the sync-corrected reference clock, t_raw
+# kept, + world_from_sfm.json) and mamma/ma_2d_native/06.*; hence 'mamma prepare --no-sync' and no sync/offsets.json here.
+name = "larissa_kadu_38_mono06_w44"
+source_dir = "../../dances/Larissa-Kadu-demo"
+alignment = "../../prototype/larissa_kadu/alignment_studio.json"
+exclude = ["08"]
+window = [44.0, 48.0]
+keyframe_span = [44.0, 48.0]
+keyframe_step = 4.0
+
+[derived]
+from = "larissa_kadu_38"
+cams = ["06"]
+purpose = "mono4d fit B + 3db prior: second (unseen) window"
+
+# same dancer facts as larissa_kadu_38.toml (the statures are the owner's; the stature loss of the shape pass uses stature + sole)
+[dancers.lead]
+name = "Kadu"
+pid = 1
+stature_m = 1.727
+description = "black t-shirt, jeans, shaved head"
+shoe_sole_m = 0.025
+
+[dancers.follow]
+name = "Larissa"
+pid = 2
+stature_m = 1.651
+description = "long red hair, white crop top, light ripped jeans, white sneakers"
+shoe_sole_m = 0.025

@@ -90,3 +90,30 @@ def test_min_rot():
     un, vn = u / np.linalg.norm(u, axis=1, keepdims=True), v / np.linalg.norm(v, axis=1, keepdims=True)
     np.testing.assert_allclose(np.einsum("nab,nb->na", Q, un), vn, atol=1e-9)
     np.testing.assert_allclose(pr.min_rot(u, u), np.tile(np.eye(3), (6, 1, 1)), atol=1e-9)
+
+
+def test_contact_weights_hold_planted_feet_and_free_slides():
+    stance = np.array([1, 1, 1, 1, 0, 1], bool)
+    speed = np.array([0.0, 0.04, 0.15, 0.30, 0.0, 0.0])  # m/s: planted, planted, gliding, sliding, swing, planted
+    w = pr.contact_weights(stance, speed, (0.05, 0.25))
+    assert np.allclose(w, [1.0, 0.5, 0.0, 0.0, 0.0])  # each pair takes the lower of its two frames
+
+
+def test_contact_slip_holds_the_patch_but_frees_pivots_and_rolls():
+    import torch
+    rng = np.random.default_rng(0)
+    sole = np.c_[rng.uniform(-0.05, 0.05, 60), np.full(60, 0.03), rng.uniform(-0.12, 0.12, 60)]
+    sole[:6] = np.c_[rng.uniform(-0.004, 0.004, 6), np.zeros(6), rng.uniform(-0.004, 0.004, 6)]  # the planted patch
+    c = sole[:6].mean(0)
+
+    def slip(next_frame):
+        s = torch.tensor(np.stack([sole, next_frame]), dtype=torch.float64)
+        return float(pr.contact_slip(s, torch.ones(1, dtype=torch.float64)))
+
+    assert abs(slip(sole + [0.01, 0, 0]) - (10 / 3) ** 2) < 1e-6  # the patch slid 10 mm: (10 mm / 3 mm)^2
+    pivot = (Rot.from_euler("y", 25, degrees=True).apply(sole - c) + c)  # turning about the patch
+    assert slip(pivot) < 1e-9
+    roll = sole.copy()
+    roll[:6, 1] += 0.02  # the old patch lifts, the foot rolls onto other points: no sideways motion
+    roll[30:36, 1] = -0.001
+    assert slip(roll) < 1e-9
