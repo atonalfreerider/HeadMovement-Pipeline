@@ -207,7 +207,10 @@ def test_take_config_and_alignment_agree_with_the_module():
         pytest.skip("take config / alignment not present")
     t = Take.load(cfg)
     assert t.name == "carlos_aline"
-    assert t.window == (cs.DANCE_SPAN["start_s"], cs.DANCE_SPAN["end_s"])
+    # C3 (2026-10-10) snapped the take's window to the frames both cameras have (3.62 / 197.93, see the take's comment),
+    # inside the danced span the module records by eye (3.6 / 198.0)
+    (w0, w1), span = t.window, cs.DANCE_SPAN
+    assert span["start_s"] <= w0 <= span["start_s"] + 0.1 and span["end_s"] - 0.1 <= w1 <= span["end_s"]
     assert sorted(s.id for s in t.sources) == ["01", "02"]
     assert t.source("01").slope == 1.0 and t.source("01").offset == 0.0
     assert t.source("02").offset == pytest.approx(14.8158, abs=0.01)

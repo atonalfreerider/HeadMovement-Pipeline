@@ -25,6 +25,21 @@ def _no_live_runner_processes(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_live_runpod_rest(monkeypatch):
+    """No test reaches the live Runpod REST API with the real key: after the community GPU route moved to REST
+    (6b62a8d), four runner tests whose fakes covered only runpodctl POSTed real /pods requests (2026-11-03; Runpod
+    answered "no instances", so nothing was created). A test that needs REST patches remote.rest or _rest_create."""
+    try:
+        from dancecap import remote
+    except ImportError:
+        return
+
+    def offline(method, path, *a, **k):
+        raise RuntimeError(f"tests never call the live Runpod REST API ({method} {path}); patch remote.rest")
+    monkeypatch.setattr(remote, "rest", offline)
+
+
+@pytest.fixture(autouse=True)
 def _no_live_runpod_balance(monkeypatch):
     monkeypatch.setenv("DANCECAP_RUNPOD_BALANCE", "off")
     try:

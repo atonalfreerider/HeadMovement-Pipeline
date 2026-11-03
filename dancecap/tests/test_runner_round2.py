@@ -258,6 +258,13 @@ def fake_runpod(tmp_path, monkeypatch):
         env.created.append((g, c, pid))
         return {"id": pid, "costPerHr": env.prices[(g, c)]}
     monkeypatch.setattr(remote, "_ctl", ctl)
+
+    def rest_create(body):   # COMMUNITY GPU pods go through REST since 6b62a8d (runpodctl 3.x has no --public-ip)
+        g, c = body["gpuTypeIds"][0], body["cloudType"]
+        pid = f"pod{len(env.created)}"
+        env.created.append((g, c, pid))
+        return {"id": pid, "costPerHr": env.prices[(g, c)]}
+    monkeypatch.setattr(remote, "_rest_create", rest_create)
     monkeypatch.setattr(remote, "_wait_running", lambda pid, t: {"id": pid})
 
     def pod_ssh(pj):
