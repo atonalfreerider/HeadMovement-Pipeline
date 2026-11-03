@@ -9,7 +9,9 @@ experiments on our own data.
 - five literature sweeps: foot contact and physics, close contact, sparse phones, dance, newest releases;
 - one sweep of this repo's own results;
 - three adversarial verifiers, which re-read the primary sources of the 18 strongest candidates;
-- this synthesis, which re-checked the numbers it relies on.
+- this synthesis, which re-checked the numbers it relies on;
+- a second check the same day: 8 skeptics re-read 36 of the report's decision-driving claims against the repo, the
+  work files, git and the primary pages. 24 were confirmed and 12 corrected in place; none was refuted.
 
 Nothing was run on pods for this report. Every claim about a method links its primary source. Labels:
 - **measured** = our runs, with the file or commit named;
@@ -31,8 +33,10 @@ after about mid-October 2026 may be missing if none of the fetched papers cite i
   - better camera geometry: a well-placed third phone, and a correct camera height for one phone.
 - **The cheapest wins are in our own code.**
   - A soft slip term we already have (`rf2`) cut eight-phone stance slip from 93/119 to 77/113 mm/s with unchanged feet
-    reprojection (7.45/8.39 against 7.43/8.37 px). The shipped recipe has no slip term.
-  - The one-phone fit turns its SAM 3D Body prior off exactly while the follower is hidden.
+    reprojection (7.45/8.39 against 7.43/8.37 px). The shipped recipe has no slip term. The follower's 113 only
+    matches the filter-only fit, so the real gain is the lead's.
+  - The one-phone fit turns its SAM 3D Body prior down to 25-50 % of its weight exactly while the follower is hidden.
+    Her heading is then right, but her hidden-frame error stays about 170 mm.
   - The two-view fit has no pose prior at all.
 - **Released tools worth one test each:**
   - ExMR, a one-phone prior with better feet;
@@ -43,7 +47,7 @@ after about mid-October 2026 may be missing if none of the fetched papers cite i
 - **No paper measures two versus three cameras for a couple.** We can measure it on larissa_kadu_38 by fitting subsets of
   its phones (E1, about $1-1.5). The third phone should go about 120 degrees from the other two, and raised.
 - **One-phone placement is a camera-height problem, not a focal problem.** This was measured this round: on the lk03 cut the
-  focal matches the eight-phone value within 0.3 %, but the couple is placed 9.5 % too far (section 2, finding 6).
+  focal matches the eight-phone value within 0.15 %, but the couple is placed 9.5 % too far (section 2, finding 6).
 - **First experiment: E1**, two against three phones on our eight-phone take. E2, the foot term, can run beside it.
 
 ## 1. The problem in one paragraph
@@ -54,11 +58,14 @@ because the adopted refine recipe `smplx_rf2_noslip` has no slip term, and with 
 per frame inside the stances the video shows, while feet near the floor still move a median 9.3/13.5 mm per frame (p90 about
 64) after the john_lula-only foot lock. **Bodies take awkward positions**: limbs that no camera sees take odd angles, because
 the multi-view and two-view fits have no pose prior, and hands pass through the partner (three contact-solver rounds made
-the arms worse). **Partner relations break**: one phone misjudges the couple's depth gap by 49-118 mm, and two phones only
-22-28 degrees apart leave seams 0.1-0.25 m off. **The hidden follower is the worst case**: when she spins behind the leader
+the arms worse). **Partner relations break**: one phone misjudges the couple's depth gap by 64-132 mm at the recommended
+prior weight (49-118 at weight 0.5, 90-147 without the prior), and a lucas_luiza seam where the two cameras saw the
+couple only 22-28 degrees apart was 0.1-0.25 m off. **The hidden follower is the worst case**: when she spins behind the leader
 (larissa_kadu_38, 44-48 s), every one-phone MAMMA fit is about 170 mm off on the 43 hidden frames, against 81 mm for SAM 3D
-Body alone. **Spins and identity fail last**: without the prior the torso heading is more than 90 degrees off on 19 % of the
-hidden-spin frames, every model under-rotates between front and side, and SAM drops a dancer for 4-5 s in embraces. With one
+Body alone. **Spins and identity fail last**: without the prior the follower's torso heading is more than 90 degrees off on 19 %
+of the 44-48 s spin window (30 % of its hidden frames; none with the prior at weight 2), every model under-rotates
+between front and side, and on lucas_luiza's Steadicam SAM lost a dancer for 4.4-5 s, once in an embrace (the pipeline
+now re-prompts a lost dancer from its box, c2cdc18). With one
 phone the weak axis is depth along the camera ray; with two, any stretch that one phone loses becomes a one-phone stretch;
 with three we do not know yet, because no three-phone take exists.
 
@@ -95,7 +102,8 @@ Sources: the repo baseline in
     foot/hand refiners on SAM 3D Body features, with SMPL-X output.
     - RICH PA-MPJPE: 27.3 mm, against 33.0 for the released SAM 3D Body in the authors' re-run. SAM 3D Body's own paper
       reports 30.9.
-    - Acceleration error: 4.1 against 14.0. MOYO ankle-angle error: 20.0 against 24.4 degrees.
+    - Acceleration error on 3DPW: 4.1 against 14.0 m/s^2 (RICH: 3.6 against 10.6). Against GVHMR the gain is small
+      (5.0 to 4.1). MOYO ankle-angle error: 20.0 against 24.4 degrees.
     - Foot contacts have been in its output since v0.1.5.
   - [FlowHMR](https://arxiv.org/abs/2610.03691) ([code](https://github.com/flowhmr/flowhmr)) is post-trained with a physics
     tracking reward (PHC+) and outputs SMPL-H.
@@ -103,7 +111,8 @@ Sources: the repo baseline in
     - Its ground penetration is 0.06 mm and its float 0.20 mm, but its skate is 2.17 against GVHMR's 1.59.
   - [DuoMo](https://arxiv.org/abs/2603.03265) (CVPR 2026, [code](https://github.com/facebookresearch/DuoMo)) keeps
     generating motion through frames with no visible keypoints. EMDB foot skating: 3.7, against 3.5 for GVHMR.
-- All three take one person per crop and know nothing of the partner. ExMR and FlowHMR take a box, not a mask.
+- All three take one person per crop and know nothing of the partner. ExMR (YOLO11 + ByteTrack boxes, per its README)
+  and FlowHMR take a box, not a mask.
 - For us: these are candidates for the prior inside MAMMA (one phone, and a new prior for two phones), not replacements for
   the fit.
 
@@ -128,8 +137,11 @@ penalises the speed of the contact point inside an optimisation.**
   - They recommend the floor-contact signal for single views, or as a post-process near the floor (s22).
 - Our own refine variants agree (measured, `quality/variants.json` and [`../CONTRACTS.md`](../CONTRACTS.md)):
   - A soft slip term on feet slower than 0.15 m/s (recipe `rf2`) cut slip from 93/119 to 77/113 mm/s. Feet reprojection
-    stayed the same: 7.45/8.39 against 7.43/8.37 px.
-  - Only pinning every stance frame hurt: feet +1.5/+1.0 px, and stance ankles moved 29.5/26.4 mm sideways.
+    stayed the same: 7.45/8.39 against 7.43/8.37 px. Two caveats: the filter-only fit already has 93/113, so for the
+    follower `rf2` only removes the slip the no-slip refine adds; and all-points reprojection rose 0.09/0.10 px.
+  - Pinning every stance frame hurt: feet +1.5/+1.0 px against the raw fit, and stance ankles moved 29.5/26.4 mm
+    sideways. That run also freed the horizontal root and dropped the ankle anchor and the feet term, so pinning alone
+    is not proven to be the cause.
 - For us: switch a soft, contact-weighted term back on in every route. Pin the contact point (heel or ball), not the ankle, so
   pivots stay free.
 
@@ -163,22 +175,24 @@ more than their number.**
 - [OpenCap](https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1011462) used two iPhones at plus and
   minus 45 degrees, one person (stated). Joint-angle error was 4.5 degrees, and "using three cameras did not improve
   accuracy".
-- Ours (measured): two-view seams were 0.1-0.25 m off where lucas_luiza's cameras see the couple 22-28 degrees apart, and
-  16 mm at 68-76 degrees (git 46b8552).
+- Ours (measured, git 46b8552; two seams of one take, not a controlled test): on lucas_luiza one seam was 0.1-0.25 m
+  off where the Steadicam and tripod saw the couple only 22-28 degrees apart. At another, 68-76 degrees apart, the
+  bodies agreed within 16 mm, though the follow's fingers were still 120 mm off.
 - For us: measure it on larissa_kadu_38 phone subsets (E1).
 
 **Finding 6. Camera details turn into apparent foot slip.**
 - **Sync.** [RocSync](https://arxiv.org/abs/2511.14948) measured audio sync of two GoPros at 30 fps (stated).
-  - Audio sync gave an 11.34 px stereo reprojection error, against 1.02 px with its LED clock. The authors blame audio and
-    video being encoded separately.
-  - Interpolating 2D keypoints to sub-frame times halved triangulation error, from 8.80 to 4.40 px.
+  - Audio sync gave an 11.34 px stereo reprojection error, against 3.07 px with its LED clock and 1.02 px with the clock
+    plus sub-frame interpolation. The authors blame audio and video being encoded separately.
+  - In a separate test (four GoPros, hand-annotated hand joints), interpolating 2D keypoints to sub-frame times halved
+    triangulation error, from 8.80 to 4.40 px.
   - We sync by audio, then refine epipolarly. Whether the fit uses time-interpolated landmarks has not been checked.
 - **Lens distortion.** [Kineo](https://arxiv.org/abs/2510.24464) fits Brown-Conrady distortion from people. The sparse
   sweep read its tables as W-MPJPE 410 to 170 mm on EgoHumans with distortion fitted (not re-checked here). Our camera files
   carry one radial coefficient, k1 (SIMPLE_RADIAL, [`../CONTRACTS.md`](../CONTRACTS.md)).
 - **One phone (measured this round).** We compared lk03_cut20b (phone 03 of the demo, 40-60 s on the reference clock) with
   the eight-phone SfM.
-  - The one-phone camera matches the SfM in focal (780.2 against 782.2 px), pitch (-14.3 against -14.5 degrees) and roll
+  - The one-phone camera matches the SfM in focal (780.2 against 781.4 px over the same 40-60 s), pitch (-14.3 against -14.5 degrees) and roll
     (1.4 against 1.3 degrees).
   - Yet it puts the couple 9.5 % too far: 4.93 against 4.50 m, horizontal median, with the camera 1.77 against 1.72 m
     high.
@@ -205,8 +219,8 @@ embrace.**
   four changes our fork lacks:
   - it re-acquires people left without a mask;
   - it gives the SAM 3 tracker non-overlapping memory, so one id cannot slide onto a partner in contact;
-  - it uses robust IRLS triangulation;
-  - it adds an outlier gate against teleports.
+  - it uses robust IRLS triangulation (opt-in: `--tri-irls`);
+  - it adds an outlier gate against teleports (opt-in: `--tri-outlier-gate`).
 - For us: one mask test (E5) and a fork update.
 
 **Finding 8. Real partner-dance ground truth now exists. It is for testing, not for training on zouk.**
@@ -232,10 +246,10 @@ Rank 1 is what to do first in each table.
 
 | Rank | Method / technique | Fixes | Released? Licence | Inputs | Effort | Expected gain | Risk |
 |---|---|---|---|---|---|---|---|
-| 1 | Keep the [SAM 3D Body](https://arxiv.org/abs/2602.15989) prior on while a dancer is hidden: confidence from 2D reliability, not visible mask area, and no halving of her 2D sigmas; prior weight 2 | hidden follower, spin heading | ours (`cand_fitb`, mamma-turing `utils/mono.py`); 3DB is SAM License, gated | phone video, our masks, K | low | hidden-frame follow error from about 170 mm toward 3DB alone (81 mm) (E3) | while she is hidden the crop shows mostly him, but with our masks 3DB had 0 swaps on john_lula |
+| 1 | Keep the [SAM 3D Body](https://arxiv.org/abs/2602.15989) prior at full strength while a dancer is hidden (mask area turns it down to 25-50 % today): confidence from 2D reliability, and her 2D sigmas left unhalved (MAMMA halves them for the whole short window); prior weight 2 | hidden follower, spin heading | ours (`cand_fitb`, mamma-turing `utils/mono.py`); 3DB is SAM License, gated | phone video, our masks, K | low | hidden-frame follow error from about 170 mm toward 3DB alone (81 mm) (E3) | while she is hidden the crop shows mostly him, but with our masks 3DB had 0 swaps on john_lula |
 | 2 | [ExMR](https://github.com/twehrbein/ExMR) as the per-frame prior, A/B against 3DB | jitter, ankle and foot angles; contacts as stance votes | code and [weights](https://huggingface.co/twehrbein/ExMR) (not gated); research / non-profit licence; needs gated 3DB and SMPL-X/MANO | one video, one person per box, focal | low (`remote/cand_hmr/exmr_pod.py`) | smoother and better ankles (stated) (E3 arm B) | box-only crops in the embrace; its gain over 3DB's own published numbers is 0.8-3.6 mm PA |
 | 3 | Generic stance foot lock: generalise `jl_footlock`, with stance by vote (RTMW stillness, MAMMA `floor_contact`, GVHMR or ExMR contacts) | foot slip | ours | any fit folder, RTMW | medium | inside detected stances 6.5-7.6 to 0.6-0.9 mm/frame (john_lula, measured) (E2) | covers only 33/20 % of foot frames today; false contacts in pivots |
-| 4 | Generalise `jl_facing` (image facing evidence plus the `MAMMA_FACING_HINT` refit) | front/back in spins | ours | fit, images | medium | spin agreement 0.870 to 0.942 on john_lula (measured) | front-to-side under-rotation remains in every model |
+| 4 | Generalise `jl_facing` (image facing evidence plus the `MAMMA_FACING_HINT` refit) | front/back in spins | ours | fit, images | medium | agreement with the image-facing posterior during spins 0.870 to 0.942 on john_lula (measured; not independent of the hint, held-out eye labels unchanged at 17/19) | front-to-side under-rotation remains in every model |
 | 5 | Camera height and pitch from the dancers' stance feet over the whole clip; at capture, raise the phone | placement, floor travel | ours | fit, stances | medium | lk03 floor track 82/96 mm toward the 39/46 mm of the best scale (finding 6) | needs reliable stances |
 | 6 | [FlowHMR](https://github.com/flowhmr/flowhmr) per dancer, as prior or stance cue | float, sinking, implausible single-body poses | code Apache-2.0; [weights](https://huggingface.co/fafsaf1/flowhmr-0.46B) non-commercial, not gated; SMPL-H (owner registers) | one video, one person; our boxes and K can be injected | medium | unknown; stated plausibility gains | skates more than GVHMR on Wild-4K; may straighten poses the partner supports |
 | 7 | [DuoMo](https://github.com/facebookresearch/DuoMo) on the hidden span | hidden follower | XRCIA non-commercial; weights partly on Google Drive | one video, static camera; our K, boxes and keypoints pre-written | medium (A100) | keep only if hidden-frame error is 10 mm or more below 81 | follows the leader's keypoints; invents a plausible spin |
@@ -247,11 +261,11 @@ Also possible: one re-run of [SAM-Body4D](https://arxiv.org/abs/2512.08406) on t
 
 | Rank | Method / technique | Fixes | Released? Licence | Inputs | Effort | Expected gain | Risk |
 |---|---|---|---|---|---|---|---|
-| 1 | Place the phones 60-90 degrees apart, never under 45 | seams, partner depth | capture rule | none | none | seams from 0.1-0.25 m to about 16 mm (measured, 46b8552) | venue layout |
+| 1 | Place the phones 60-90 degrees apart, never under 45 | seams, partner depth | capture rule | none | none | one lucas_luiza seam at 22-28 degrees was 0.1-0.25 m off, one at 68-76 degrees 16 mm (measured, 46b8552; two seams) | venue layout |
 | 2 | Turn a soft slip term back on in the farm recipe: `rf2` now, the contact-weighted term after E2 | foot slip | ours (`pose_refine --w-slip`) | fit folder | low | 8 phones: 93/119 to 77/113 mm/s at equal feet reprojection (measured) (E2) | the follower's slip fell only from 119 to 113 mm/s |
 | 3 | Pose prior in the two-view fit: SAM 3D Body per phone and dancer, rotated to the world, taken from the better-seen view each frame, fed through `MAMMA_POSE_PRIOR` | awkward limbs where one phone is blind; a dancer hidden in one view | ours plus 3DB | two views, masks, cameras | low-medium | unknown (E4) | the two views' priors disagree; a crop of the wrong dancer |
 | 4 | Distractor-aware masks: [d4sm](https://github.com/alanlukezic/d4sm) or [SAM 3.1](https://github.com/facebookresearch/sam3) | dancer dropped in the embrace (lucas_luiza seams 0.4-0.6 m) | Apache-2.0 / SAM License (gated) | video, first-frame masks | low | E5 | runs forward only and cannot be re-anchored mid-video |
-| 5 | Update the fork to MAMMA `dev/v1.1.0`, and try the occlusion-aware gating and VPoser our fork already has (off) | teleports, lost masks in contact, odd hidden limbs | [MPI non-commercial](https://raw.githubusercontent.com/cuevhv/mamma/main/LICENSE) | as today | low-medium | fewer seam failures (E1 arm E) | VPoser may pull dips toward standing; merge work |
+| 5 | Update the fork to MAMMA `dev/v1.1.0`, and try the occlusion-aware gating and VPoser our fork already has (off; VPoser weights must first be set up on the pods) | teleports, lost masks in contact, odd hidden limbs | [MPI non-commercial](https://raw.githubusercontent.com/cuevhv/mamma/main/LICENSE) | as today | low-medium | fewer seam failures (E1 arm E) | VPoser may pull dips toward standing; merge work |
 | 6 | Check sub-frame sync, and that the fit reads time-interpolated 2D | apparent slip in fast footwork | ours | none | low | interpolation halved triangulation error in [RocSync](https://arxiv.org/abs/2511.14948) (stated) | none |
 | 7 | Prefer fixed cameras (tripod or gimbal in place) to walking ones | Steadicam registration: only 52 % pose-verified on lucas_luiza (measured) | capture rule | none | none | fewer unregistered stretches | venue |
 
@@ -259,7 +273,7 @@ Also possible: one re-run of [SAM-Body4D](https://arxiv.org/abs/2512.08406) on t
 
 | Rank | Method / technique | Fixes | Released? Licence | Inputs | Effort | Expected gain | Risk |
 |---|---|---|---|---|---|---|---|
-| 1 | Measure two against three phones on larissa_kadu_38 subsets before filming (E1) | decides the capture | ours (`mamma_loo` job) | existing 8-phone inputs | low | a number instead of a guess | best case: eight-phone cameras and sync |
+| 1 | Measure two against three phones on larissa_kadu_38 subsets before filming (E1) | decides the capture | ours (`mamma prepare --set` plus a small driver) | existing 8-phone inputs | low | a number instead of a guess | best case: eight-phone cameras and sync |
 | 2 | Place the three about 120 degrees apart (no pair under 60), one raised 2-2.5 m and tilted 15-30 degrees down; fixed zoom; whole couple in frame | seams, hidden follower, placement, audience | capture rule | none | none | reasoned in section 5 | elevation untested on zouk |
 | 3 | Use the third phone as a held-out check: fit all three for the product, leave one out for acceptance | trust | ours (`mamma_loo`) | none | low | a held-out reprojection per take | three extra fits |
 | 4 | Calibrate from the dancers when the phones share little background ([HSfM](https://github.com/hongsukchoi/HSfM_RELEASE)-style, as our pair calibration does), and fit lens distortion beyond k1 | cameras | HSfM MIT | none | medium | unknown | none known |
@@ -296,7 +310,7 @@ the owner's Ubuntu laptop. If ExMR failed the owner's bar on clips E1 (closed ho
 | E2 | Does a contact-weighted foot term cut slip in every route? | the eight-phone fit, E1's good pair, the mono06 fits | stance contact-point slip (mm/s) | beats `rf2`; -30 % on the two-view and one-phone fits; feet +0.3 px at most | 1x 4090 or A100 | 30-40 | 0.3-0.6 |
 | E3 | Does keeping the prior on fix the hidden follower? | larissa_kadu_38_mono06, 44-48 s (58-62 s as control) | follow PA22 on the 43 hidden frames | 90 mm or less (today about 170); control within 2 mm | 1x 4090 | 40-60 | 0.6-1.0 |
 | E4 | Does a pose prior fix awkward limbs with two phones? | E1's good pair {06, 07}, 40-64 s | PA22, limb-angle error | follow PA22 -15 % overall or -30 % at 44-48 s; held-out reprojection no worse | 1x 4090 | 60-75 | 0.9-1.2 |
-| E5 | Do distractor-aware masks stop drops and swaps in the embrace? | phone 06 at 40-50 and 56-64 s; lucas_luiza camera 02, clip H1 | swaps plus drops | -50 %, with no IoU loss on visible frames | 1x 4090 | 20-30 | 0.2-0.4 |
+| E5 | Do distractor-aware masks stop drops and swaps in the embrace? | phone 06 at 40-50 and 56-64 s; lucas_luiza's Steadicam (camera 01) at 112.7-117.7 and 160.7-165.1 s | swaps plus drops | -50 %, with no IoU loss on visible frames | 1x 4090 | 20-30 | 0.2-0.4 |
 
 The total is about $3-5. E1 and E2 can run side by side, because E2's first two inputs already exist.
 
@@ -308,9 +322,9 @@ The total is about $3-5. E1 and E2 can run side by side, because E2's first two 
   |---|---|---|---|---|
   | 01 | 0 | 1.66 | 4.4 | 480x864 |
   | 02 | 27 | 0.73 | 3.2 | 1080x1920 |
-  | 09 | 51 | 1.37 | 3.8 | about 480 wide |
+  | 09 | 51 | 1.37 | 3.8 | 480x848 |
   | 03 | 64 | 1.71 | 4.4 | 480x848 |
-  | 04 | 72 | 1.57 | 5.0 | about 480 wide |
+  | 04 | 72 | 1.57 | 5.0 | 480x864 |
   | 05 | 165 | 0.99 | 3.8 | 480x640 |
   | 06 | 235 | 0.79 | 3.9 | 1080x1920 |
   | 07 | 312 | 1.54 | 6.8 | 480x848 |
@@ -324,10 +338,12 @@ The total is about $3-5. E1 and E2 can run side by side, because E2's first two 
   - C, third phone across: {04, 06, 07}. Phone 04 bisects the large gap: pairs at 78, 120 and 162 degrees.
   - D, third phone beside: {05, 06, 07}, with pairs at 70, 78 and 148 degrees.
   - E: arm B with `--occlusion-aware-weights --use-vposer`. Both options are already in mamma-turing, and are off today.
+    VPoser needs its weights on the pod first: the bootstrap leaves the package out, and the run fails its preflight.
 - Held out: phone 01 is in no arm. Report its reprojection, all points and feet, for every arm.
-- Code: the `mamma_loo` job already fits "eight minus one camera" on the same inputs (registered in
-  `dancecap/pipeline/registry.py`; `loo/pod_loo.py` per [`../CONTRACTS.md`](../CONTRACTS.md)). It needs a keep-only subset
-  list.
+- Code: keep-only camera sets already exist (`mamma prepare --set tag=02,09`), and `mamma fit` reports held-out
+  residuals. The registered `mamma_loo` stage cannot run E1 as it is. Its script (`work/larissa_kadu/mamma/loo/pod_loo.py`,
+  git-ignored) is a one-off for the 5.8-s larissa_kadu take: it fits eight-minus-one sets and re-promotes `smplx/`. E1
+  needs a small driver that fits the listed sets and promotes nothing.
 - Metrics against the reference, per role, over the whole take plus 44-48 s and 58-62 s:
   - PA22;
   - pelvis error with no alignment;
@@ -372,8 +388,10 @@ The total is about $3-5. E1 and E2 can run side by side, because E2's first two 
 **E3. One phone: the hidden follower.**
 - Arms on larissa_kadu_38_mono06:
   - 0: prior weight 2 as on 85c9f78, which gives 32/78 at 44-48 s.
-  - A: weight 2, with the prior's confidence floored at 0.5 while she is hidden. The confidence comes from 2D reliability
-    instead of visible mask area, and her 2D sigmas are not halved.
+  - A: weight 2, with the prior's confidence floored at 0.5 while she is hidden (today's floor is 0.25, at half her
+    median mask area). The confidence comes from 2D reliability instead of visible mask area, and her 2D sigmas are
+    not halved. Today's turned-down prior already gets her heading right on the hidden frames, but her PA22 there is
+    169 mm, against 172 without the prior.
   - B: arm A with ExMR as the prior. This arm runs only if Step 0 passed and ExMR's per-frame PA22 ties the smoothed 3DB
     control (33/40 at 58-62 s, 32/55 at 44-48 s).
 - Metrics:
@@ -394,7 +412,7 @@ The total is about $3-5. E1 and E2 can run side by side, because E2's first two 
   - Each frame, take the view where the dancer's visible-mask fraction is larger, or the average when both are above 0.8.
   - Write `prior_3db.npz` as (T, 2, 22, 3) with confidence.
 - Add `pose_prior_loss` to the multi-view config stages. Today it sits only in the one-phone configs: the multi-view
-  `ma3d_config.yaml` has a shape prior only. Run weights 0.5 and 2, and compare with E1 arm B.
+  `ma3d_config.yaml` has a shape prior and temporal smoothness terms, but no pose prior. Run weights 0.5 and 2, and compare with E1 arm B.
 - Metrics: PA22 (whole take and 44-48 s), limb-angle error, held-out reprojection in phone 01.
 - Pass: follow PA22 -15 % overall or -30 % at 44-48 s, lead no worse, held-out reprojection no worse.
 
@@ -404,9 +422,10 @@ The total is about $3-5. E1 and E2 can run side by side, because E2's first two 
   - stock SAM 2.1-L, forward from the same start;
   - our production masks, which are re-anchored.
 - Every arm starts from our masks on a clean frame before each window.
-- Data: phone 06 at 40-50 s and 56-64 s; lucas_luiza camera 02, clip H1.
+- Data: phone 06 at 40-50 s and 56-64 s; lucas_luiza's Steadicam (camera 01) at 112.7-117.7 s and 160.7-165.1 s,
+  where SAM dropped a dancer. The lucas_luiza work files are on the owner's Ubuntu laptop.
 - Reference: each dancer's visible silhouette rendered from the eight-phone fit into phone 06 (z-buffered). For lucas_luiza,
-  the two-view fit rendered into camera 02.
+  the two-view fit rendered into camera 01.
 - Metrics per frame:
   - IoU with the right dancer;
   - swaps: higher IoU with the wrong dancer;
@@ -437,11 +456,14 @@ The total is about $3-5. E1 and E2 can run side by side, because E2's first two 
     views 100 % of the time with 2, so identity is not a reason for a third phone.
   - Nobody reports two against three cameras for a couple in contact.
 - From our data (measured):
-  - Two phones 22-28 degrees apart leave seams 0.1-0.25 m off; at 68-76 degrees the seam was 16 mm.
-  - In the 44-48 s window, phone 06 sees less than 0.6 of the follower's median mask area on about 65 % of frames. With
+  - On lucas_luiza a seam where the two cameras were 22-28 degrees apart was 0.1-0.25 m off; one at 68-76 degrees
+    agreed within 16 mm (two seams, not a controlled test).
+  - In the 44-48 s window, phone 06 sees less than 0.6 of the follower's whole-take median mask area on about 65 % of
+    frames. With
     two phones, every frame where the second phone also loses her becomes a one-phone frame, the class of error that is
     about 170 mm today.
-  - The eight phones converge: a 7-phone held-out chunk agrees with the 8-phone fit within 4/8 mm.
+  - The eight phones converge: a 7-phone fit with phone 03 held out agrees with the 8-phone fit to a median PA22 of
+    4/8 mm at 58-62 s (one window; 4-10 mm across metrics). That is a consistency floor, not ground truth.
 - Reasoned. A third phone mostly buys coverage: at every moment, at least one well-separated pair that sees each dancer.
   It also buys a held-out view to check the fit. It adds little where two good views already see everything. How often
   both of two phones lose a dancer at the same time decides the gain, and E1 measures that.
@@ -489,8 +511,10 @@ Verified this round:
   scale drift between SLAM and HMR under fast broadcast cameras, which our metric cameras do not have. Its bodies are
   PromptHMR-Vid or GVHMR, which both lost on john_lula. Its 0.2 m repulsion and its "planted" default for undetected frames
   fight embraces and hidden spins.
-- [PromptHMR / PromptHMR-Vid](https://github.com/yufu-wang/PromptHMR): already measured on john_lula. Facing 65-77 % against
-  79 %, dancers 57-87 cm too near the phone, a weaker contact cue than GVHMR. Nothing new has been released since 3b566b7.
+- [PromptHMR / PromptHMR-Vid](https://github.com/yufu-wang/PromptHMR): already measured on john_lula, spins window. Lula's
+  facing agreement was 65-77 % against the fit's 79 %. The video heads put both dancers 57-87 cm too near the phone, a
+  monocular scale ambiguity the couple refinement fixes, and the contact cue was weaker than GVHMR's. With pose from
+  our keypoint pass the same heads reached 81-83 %, so they lost as a whole route, not in every part. Nothing new has been released since 3b566b7.
 - [MultiPhys](https://github.com/nicolasugrinovic/multiphys): no licence, a broken custom-input path, SMPL-H. It pushes
   partners apart, and its accuracy and smoothness got worse on ExPI Lindy hop.
 - [PHC/PHC+](https://github.com/ZhengyiLuo/PHC) as a fitter: one simulated body, so partner support reads as a fall. It
@@ -501,7 +525,7 @@ Verified this round:
 - [BUDDI](https://github.com/muelea/buddi): per image, trained on hugs and handshakes, CUDA 10.2-era stack. CloseApp, which
   is stronger, only tied on our window.
 - [VolumetricSMPL](https://github.com/markomih/VolumetricSMPL): would duplicate MAMMA's existing person-to-person SDF term
-  (weight 1.0 in our contact config), and the owner's rule is against more collision pressure.
+  (weight 1.0 in the final, limbs-only stage of our contact config), and the owner's rule is against more collision pressure.
 - [DPoser-X](https://github.com/moonbow721/DPoser-X): parked as a diagnostic only. Its gains over older priors are small, and
   its AMASS bias points toward upright poses, against zouk dips.
 
