@@ -13,7 +13,8 @@ experiments on our own data.
 - a second check the same day: 8 skeptics re-read 36 of the report's decision-driving claims against the repo, the
   work files, git and the primary pages. 24 were confirmed and 12 corrected in place; none was refuted.
 
-Nothing was run on pods for this report. Every claim about a method links its primary source. Labels:
+Nothing was run on pods for the research itself. E1 and E2 ran afterwards, the same day (section 4a). Every claim about a
+method links its primary source. Labels:
 - **measured** = our runs, with the file or commit named;
 - **stated** = the authors' own numbers;
 - **reasoned** = our inference, not measured.
@@ -26,6 +27,11 @@ after about mid-October 2026 may be missing if none of the fetched papers cite i
 
 ## In short
 
+- **Results of E1 and E2, 2026-11-03 (section 4a).**
+  - **E1:** a third phone cut the follower's error by 29 % over the take, and by 44 % in the hidden spin when placed in the
+    largest gap. Film three phones. The narrow pair was only 1.1 times worse than the good pair, not twice.
+  - **E2:** the new contact term cut eight-phone slip by more than half but barely moved the two-phone follower or the
+    one-phone fits, because its speed gate switches it off on noisy fits. E2b changes the gate.
 - **No released method reconstructs a couple in close embrace from phone video with grounded feet.** MAMMA stays the
   backbone. The fixes are parts around it:
   - per-person priors where the cameras are blind;
@@ -48,7 +54,8 @@ after about mid-October 2026 may be missing if none of the fetched papers cite i
   its phones (E1, about $1-1.5). The third phone should go about 120 degrees from the other two, and raised.
 - **One-phone placement is a camera-height problem, not a focal problem.** This was measured this round: on the lk03 cut the
   focal matches the eight-phone value within 0.15 %, but the couple is placed 9.5 % too far (section 2, finding 6).
-- **First experiment: E1**, two against three phones on our eight-phone take. E2, the foot term, can run beside it.
+- **First experiments: E1**, two against three phones on our eight-phone take, **and E2**, the foot term, beside it. Both
+  ran on 2026-11-03 (section 4a).
 
 ## 1. The problem in one paragraph
 
@@ -444,6 +451,95 @@ The total is about $3-5. E1 and E2 can run side by side, because E2's first two 
 - Camera-height oracle on lk03: re-fit with the eight-phone camera height and pitch (about $1).
 - MammaEval-Dance at two and three views against true ground truth (about $2-3, plus a download with the owner's account).
 
+## 4a. Results of E1 and E2 (2026-11-03)
+
+Both ran on Runpod the same day, for $3.84 in total: E1 on four pods, one per arm ($0.47-1.90 each), and E2 on one ($0.17).
+- Code: `dancecap/phone_subsets.py` builds the arms and pod jobs. `dancecap/phone_subsets_score.py` scores them into
+  `work/larissa_kadu_38/e1e2/{sheet.md,score.json}`, which is git-ignored.
+- Every arm fit:
+  - used only its own phones, with phone 01 held out;
+  - used the reference's pinned betas;
+  - had the contact (SDF) term on.
+- The scorer reproduces the reference's own numbers: slip 92.5/118.5 mm/s, and phone 01 in-fit at 5.6/7.1 px.
+
+**E1: three phones beat two. Film three, with the third phone in the largest gap** (measured).
+
+| Arm | Phones | Follow PA22 whole | Follow PA22 44-48 s | Lead PA22 whole | Couple vector | Pelvis whole | Slip mm/s | Held-out 01 px |
+|---|---|---|---|---|---|---|---|---|
+| A, narrow pair | 02, 09 (24 deg) | 39.2 | 33.7 | 24.1 | 36.3 | 33.0/34.0 | 172/218 | 6.3/7.7 |
+| B, good pair | 06, 07 (78 deg) | 38.7 | 58.8 | 23.7 | 32.8 | 23.9/31.5 | 131/226 | 9.0/12.2 |
+| C, third across | 04, 06, 07 | 27.6 | 32.9 | 18.4 | 27.0 | 23.6/32.1 | 113/204 | 8.8/12.4 |
+| D, third beside | 05, 06, 07 | 27.3 | 46.6 | 18.5 | 27.4 | 19.8/20.9 | 103/192 | 7.7/9.7 |
+
+How the table was measured:
+- Medians in mm, against the eight-phone fit refined the same way (`smplx_rf2_noslip`).
+- Couple vector: on the frames where every arm sees both dancers in two of its phones.
+- Slip: on the reference's stance frames. The reference has 93/119.
+- Held-out phone 01: all points, refined fit. The reference, which had phone 01 in its fit, has 5.6/7.1.
+
+Findings:
+- **The decision rule fires.** Arm C is 44 % better than B on the follower's 44-48 s PA22 (58.8 to 32.9 mm) and 18 %
+  better on the couple vector. Arm D gains 21 % and 16 %.
+- **Over the whole take both placements cut the follower's PA22 by 29 % and the lead's by 22 %.** They fix different things:
+  - phone 04, across the gap, fixes the hidden follower's pose;
+  - phone 05, beside phone 06, fixes absolute position (follower pelvis 31.5 to 20.9 mm).
+- **A third phone does not fix slip.** The follower's slip is 192-204 mm/s, against 226 with two phones and 119 with
+  eight.
+- **The separation rule did not hold on this take.** The plan expected the narrow pair A to be at least twice as bad as B.
+  - It is 1.1 times as bad on the follower's PA22 (two-view frames) and on the couple vector, and 1.38 times on the lead's
+    pelvis.
+  - At 44-48 s, A is better than B for the follower (33.7 against 58.8) and much worse for the lead (41.2 against 14.5).
+  - So which phones still see a dancer while the partner hides them matters more than the angle between the phones. Keep
+    section 3b's 60-90 degree rule for position (the lead's pelvis above). For pose it matters less than section 5
+    assumed.
+- **Held-out phone 01 ranks the arms differently, with A best.**
+  - Phone 01 stands 27 and 51 degrees from A's phones. Its view therefore rewards a viewpoint close to A's more than 3D
+    accuracy (reasoned).
+  - Among B, C and D it follows the pelvis error.
+  - It does not enter the decision.
+- **Arm E (VPoser) did not run.** Its weights need a download with the owner's SMPL-X account.
+- **Limits, as planned.** This is the best case (the eight-phone take's own calibration and sync), on one take, with no
+  raised phone.
+
+**E2: the contact term works on good fits and fails on sparse ones** (measured).
+
+As built, arm B differs from the plan:
+- Its weight per frame pair is stance (`pose_refine`'s stance mask) times a soft speed gate: full weight below 0.05 m/s
+  of the loaded point's horizontal speed, none above 0.25 m/s.
+- The planned 2-of-3 vote was dropped: on this take it fired on 40-59 % of swing frames, so it would have held sliding
+  feet in place.
+- The term holds the centroid of the sole patch within 1 cm of the lowest point. Pivots and heel-toe rolls stay free.
+- It ran at weights 0.5 and 2.
+
+| Input | Arm 0 slip | `rf2` | Contact 0.5 | Contact 2 | Gate kept | Feet px change (contact 0.5) |
+|---|---|---|---|---|---|---|
+| Eight phones | 92/118 | 76/113 | 34/54 | 21/45 | 37/27 % | +0.05/+0.04 |
+| Two phones (E1 arm B) | 131/226 | 137/229 | 68/210 | 56/215 | 34/19 % | +0.15/+0.16 |
+| One phone, 58-62 s | 302/361 | 304/347 | 272/359 | 271/357 | 13/6 % | +0.05/+0.01 |
+| One phone, 44-48 s | 261/1043 | 269/1045 | 288/1037 | 289/1048 | 11/5 % | +0.31/-0.06 |
+
+How the table was measured:
+- Slip in mm/s, lead/follow, on the reference's stance frames.
+- "Gate kept" is the share of stance frame pairs that the speed gate let through.
+- Stance ankles moved at most 5.7 mm (the plan allows 10). The one exception is the one-phone 44-48 s follower: 14.3 mm,
+  against 14.2 for arm 0, so the filter moves them, not the term.
+
+Findings:
+- **E2 fails the plan's bar.**
+  - Eight phones pass every check: slip falls 63/55 % at weight 0.5 and 77/62 % at weight 2, far more than with `rf2`,
+    and feet reprojection rises only 0.05 px.
+  - The two-phone lead passes, with slip down 48 % at weight 0.5 and 58 % at weight 2.
+  - The two-phone follower fails (slip down only 7 % and 5 %), and so do both one-phone windows (-10 % to +11 %).
+- **`rf2` does not help sparse fits either.** On two phones it raises slip (131 to 137, 226 to 229).
+- **The cause is the speed gate** (measured). On noisy fits even planted feet move faster than 0.25 m/s. The gate keeps
+  27-37 % of stance pairs on eight phones, 19 % for the two-phone follower and 5-13 % on one phone. It switches the term
+  off where it is needed.
+- **Next, E2b, one change.** Gate on the speed of the low-passed sole path, the 1.5 Hz low-pass the foot lock already
+  uses, or on stance alone. Then re-run the two- and one-phone inputs, for about $0.2. On one phone the 10 mm ankle
+  anchor may then become the limit, because holding those feet needs moves of several centimetres (reasoned).
+- **The term is not in the recipe yet.** Weight 0.5 passes on eight phones, but the plan adopts it only once it passes
+  on every route.
+
 ## 5. What a third phone buys over two, and where to put it
 
 **What the evidence says.**
@@ -466,7 +562,9 @@ The total is about $3-5. E1 and E2 can run side by side, because E2's first two 
     4/8 mm at 58-62 s (one window; 4-10 mm across metrics). That is a consistency floor, not ground truth.
 - Reasoned. A third phone mostly buys coverage: at every moment, at least one well-separated pair that sees each dancer.
   It also buys a held-out view to check the fit. It adds little where two good views already see everything. How often
-  both of two phones lose a dancer at the same time decides the gain, and E1 measures that.
+  both of two phones lose a dancer at the same time decides the gain, and E1 measures that. Section 4a has the result: a
+  third phone cut the follower's error by 29 % over the take, and by 44 % in the hidden spin when it went in the
+  largest gap.
 
 **Where to put it (reasoned, with what it rests on).**
 - **Around the couple, about 120 degrees from the other two, no pair under 60 degrees.** If two phones are already placed,

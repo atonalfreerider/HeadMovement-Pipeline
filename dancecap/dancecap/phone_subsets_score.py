@@ -99,6 +99,21 @@ def quality(take: str, tag: str) -> dict:
                 "feet_px": q["reproj_feet_px"]["all_cams_per_frame_median"][r]["median"]} for r in ROLES}
 
 
+def gate_kept(out_dir: Path) -> dict:
+    """Share of the stance frame pairs the contact term's speed gate kept (summed pair weight / stance pairs), per
+    role, both feet pooled; None without the contact term."""
+    rep = json.loads((out_dir / "pose_refine.json").read_text())
+    res = {}
+    for r in ROLES:
+        q, st = rep[r]["refine"], rep[r]["filter"]["stance_frac"]
+        if not q.get("w_contact"):
+            res[r] = None
+            continue
+        n = len(np.load(out_dir / f"{r}.npz")["transl"]) - 1
+        res[r] = round(sum(q["contact_pair_weight"].values()) / max(sum(st.values()) * n, 1.0), 2)
+    return res
+
+
 def ankle_shift(take: str, out_dir: Path, in_dir: Path, tag: str) -> dict:
     """Median horizontal shift (mm) of the ankles against the input fit on the reference's stance frames."""
     fr = np.load(WORK / take / "quality" / f"quality_{tag}_frames.npz")
@@ -151,15 +166,19 @@ def score_e1() -> dict:
     return res
 
 
+def _gone(row: dict) -> bool:
+    return not row or bool(row.get("missing"))
+
+
 def decide(arms: dict) -> dict:
     b = arms.get("b", {})
-    if b.get("missing", True):
+    if _gone(b):
         return {"verdict": "arm b missing"}
     pa_b, cv_b = b["follow"]["44-48"]["pa22"], b["couple_mm"]["whole_2view"]
     gains = {}
     for x in ("c", "d"):
         a = arms.get(x, {})
-        if a.get("missing", True):
+        if _gone(a):
             continue
         gains[x] = {"follow_pa22_44_48": round((pa_b - a["follow"]["44-48"]["pa22"]) / pa_b, 3),
                     "couple_whole": round((cv_b - a["couple_mm"]["whole_2view"]) / cv_b, 3)}
@@ -173,7 +192,7 @@ def decide(arms: dict) -> dict:
     else:
         verdict = f"in between: the best third phone (arm {best[1]}) gains {best[0]:.0%} (10-30 %)"
     a = arms.get("a", {})
-    sep = None if a.get("missing", True) else round(a["follow"]["whole_2view"]["pa22"] / b["follow"]["whole_2view"]["pa22"], 2)
+    sep = None if _gone(a) else round(a["follow"]["whole_2view"]["pa22"] / b["follow"]["whole_2view"]["pa22"], 2)
     return {"gains_vs_b": gains, "verdict": verdict, "narrow_pair_a_over_b_follow_pa22": sep}
 
 
@@ -200,7 +219,7 @@ def score_e2() -> dict:
                 rows[arm] = {"missing": True}
                 continue
             row = {"quality": quality(spec["take"], tag), "ankle_shift_mm": ankle_shift(spec["take"], out, spec["input"],
-                                                                                         tag)}
+                                                                                         tag), "gate_kept": gate_kept(out)}
             if spec["held"]:
                 gt, lm, f0 = spec["held"]
                 row["held_out_01"] = held_out(out, gt, lm, frame0=f0)
@@ -215,7 +234,7 @@ def e2_pass(res: dict) -> dict:
     for b in ("e2_b05", "e2_b2"):
         checks, ok = {}, True
         for name, rows in res.items():
-            if not isinstance(rows, dict) or any(rows.get(k, {}).get("missing", True) for k in ("e2_0", "e2_a", b)):
+            if not isinstance(rows, dict) or any(_gone(rows.get(k, {})) for k in ("e2_0", "e2_a", b)):
                 ok = False
                 checks[name] = "missing"
                 continue
@@ -241,16 +260,17 @@ def sheet(e1: dict, e2: dict) -> str:
     g = d.get("gains_vs_b", {})
     if g:
         best = max(g, key=lambda x: max(g[x].values()))
-        L.append(f"1. Best third phone (arm {best}, phones {','.join(ARMS[best])}) vs the good pair b: follow 44-48 s PA22 "
-                 f"{g[best]['follow_pa22_44_48']:+.0%}, couple vector {g[best]['couple_whole']:+.0%}. {d['verdict']}.")
+        L.append(f"1. Best third phone (arm {best}, phones {','.join(ARMS[best])}) vs the good pair b: error cut "
+                 f"{g[best]['follow_pa22_44_48']:.0%} on the follow's 44-48 s PA22, {g[best]['couple_whole']:.0%} on the "
+                 f"couple vector. {d['verdict']}.")
     if d.get("narrow_pair_a_over_b_follow_pa22") is not None:
         L.append(f"2. Narrow pair a ({','.join(ARMS['a'])}, 24 deg) over good pair b: follow PA22 x"
                  f"{d['narrow_pair_a_over_b_follow_pa22']} (whole take, two-view frames).")
     p = e2.get("pass", {})
     for b in ("e2_b05", "e2_b2"):
-        cuts = [f"{n}: {c[r]['slip_cut']:+.0%}" for n, c in p.get(b, {}).get("checks", {}).items()
-                if isinstance(c, dict) for r in ROLES[1:]]
-        L.append(f"3. Contact term {b[3:]}: follow slip vs arm 0 - {'; '.join(cuts)} -> "
+        cuts = [f"{n} {-c['lead']['slip_cut']:+.0%} / {-c['follow']['slip_cut']:+.0%}"
+                for n, c in p.get(b, {}).get("checks", {}).items() if isinstance(c, dict)]
+        L.append(f"3. Contact term {b[3:]}: slip change vs arm 0 (lead / follow) - {'; '.join(cuts)} -> "
                  f"{'PASS' if p.get(b, {}).get('pass') else 'fail'}.")
     L += ["", "## E1: phone subsets against the eight-phone fit (median mm; px)", "",
           "| arm | phones | role | PA22 whole | PA22 2-view | PA22 44-48 | PA22 58-62 | pelvis whole | couple 2-view | "
@@ -265,19 +285,21 @@ def sheet(e1: dict, e2: dict) -> str:
                      f"{a[r]['44-48']['pa22']} | {a[r]['58-62']['pa22']} | {a[r]['whole']['pelvis']} | "
                      f"{a['couple_mm']['whole_2view']} | {a['quality'][r]['slip_mm_s']} | "
                      f"{a['held_out_raw'][r]:.1f} -> {ho['all_px']} / {ho['feet_px']} |")
-    L += ["", "## E2: foot terms (slip mm/s on the reference's stance frames; feet px; ankle shift mm; held-out 01 feet px)",
-          "", "| input | arm | role | slip | feet px | ankle shift | held-out 01 feet |", "|---|---|---|---|---|---|---|"]
+    L += ["", "## E2: foot terms (slip mm/s on the reference's stance frames; feet px; ankle shift mm; held-out 01 feet px; "
+          "share of stance frame pairs the contact term's speed gate kept)", "",
+          "| input | arm | role | slip | feet px | ankle shift | held-out 01 feet | gate kept |", "|---|---|---|---|---|---|---|---|"]
     for name, rows in e2.items():
         if name == "pass":
             continue
         for arm, row in rows.items():
             if row.get("missing"):
-                L.append(f"| {name} | {arm} | - | missing | | | |")
+                L.append(f"| {name} | {arm} | - | missing | | | | |")
                 continue
             for r in ROLES:
                 ho = row.get("held_out_01", {}).get(r, {}).get("feet_px", "-")
+                kept = row.get("gate_kept", {}).get(r)
                 L.append(f"| {name} | {arm} | {r} | {row['quality'][r]['slip_mm_s']} | {row['quality'][r]['feet_px']} | "
-                         f"{row['ankle_shift_mm'][r]} | {ho} |")
+                         f"{row['ankle_shift_mm'][r]} | {ho} | {'-' if kept is None else f'{kept:.0%}'} |")
     return "\n".join(L) + "\n"
 
 
