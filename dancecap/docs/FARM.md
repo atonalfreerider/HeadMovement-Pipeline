@@ -57,7 +57,8 @@ manifests hold hashes and paths only.
   spans); cores may stretch to 24-36 s so a gap of any length is covered by ceil(gap/30) equal chunks. Existing
   S1 segments a-d (37-43 s) are accepted as chunks as they are.
 - Job kinds: `front` (ingest, detect, labels/SAM, localisation vs the world's room map, ma_2d, sync, prepare),
-  `fit` (MAMMA full fit, betas pinned from the world), `refine` (pose_refine, recipe `smplx_rf2_noslip`), `analyse`
+  `fit` (MAMMA full fit, betas pinned from the world), `refine` (pose_refine, recipe `smplx_rf2_noslip`; from 2026-11-03 plus the contact term on fits from two or more
+  phones, `chunks.CONTACT`, except in a world whose recipe has no `contact` block), `analyse`
   (timing/physics on the stitched result; local or pod), `full` = front + fit + refine.
 - Job spec (JSON, `farm/jobs/<chunk>.json` locally and `/workspace/hm/queue/<chunk>.json` on the volume):
   `{"schema": "dancecap.farm.job/1", "id", "dance", "kind", "chunk": {...}, "world_id", "world_sha256",
@@ -72,7 +73,8 @@ manifests hold hashes and paths only.
 It contains, each with a sha256: the **room model** (SfM sparse model, cached features, keyframes), `world_from_sfm.json`
 (gravity, floor, scale), the camera clocks (`alignment_studio.json`) and per-camera **types** (mount, zoom),
 the per-dancer **betas** (`mamma_pin_betas.json`), the **skeleton configuration** (SMPL-X joint set, the MAMMA
-ma_3d config template, the refine recipe parameters), the **avatar configuration** (shape edits, texture/groom
+ma_3d config template, the refine recipe parameters, with a `contact` block when the reference's refine asked for the
+contact term), the **avatar configuration** (shape edits, texture/groom
 file hashes, shoe config - references, never copies into tracked paths). `world_id` = first 12 hex of the sha256
 of the sorted member hashes. v1 = larissa_kadu_38's solved room + world frame + scale + betas (the 38 s take is the
 reference). A take/chunk TOML names its world (`[world] dance = ..., id = ...`). Rules: a job refuses to run if the

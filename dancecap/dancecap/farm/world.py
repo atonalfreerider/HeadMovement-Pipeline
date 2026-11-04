@@ -222,6 +222,27 @@ def model_files() -> dict[str, Path]:
         return {}
 
 
+def refine_recipe(r0: dict, reference: str) -> dict:
+    """shared/refine_recipe.json from one role's record in the reference's smplx_rf2_noslip/pose_refine.json: the filter and
+    refine parameters, plus a 'contact' block when the reference's refine asked for the contact term (adopted 2026-11-03 for
+    fits from two or more phones; chunks.refine_args turns the block into pose_refine flags). Without it the bytes are the
+    pre-2026-11 recipe's, so existing worlds rebuild to the same ids."""
+    refine = {"schema": SCHEMA + "/refine_recipe", "name": "smplx_rf2_noslip", "tool": "dancecap.pose_refine",
+              "src": "smplx", "dst": "smplx_rf2_noslip", "mode": r0["mode"],
+              "filter": {k: r0["filter"][k] for k in ("mode", "root_hz", "rot_hz")},
+              "refine": {k: r0["refine"][k] for k in ("iters", "w_floor", "floor_mm", "w_feet", "w_slip", "slip_max_v",
+                                                      "root_xz", "w_anchor", "anchor_mm")},
+              "margin_s": 2.0, "device": "cuda", "reference": f"{reference}/smplx_rf2_noslip/pose_refine.json"}
+    rc = r0["refine"]
+    rule = rc.get("contact_rule") or {}
+    asked = rule.get("w_contact_asked", rc.get("w_contact"))
+    if asked:   # what the reference asked for: a one-phone reference records w_contact 0 with its rule
+        refine["contact"] = {"w_contact": asked, "contact_v": list(rc.get("contact_v") or (0.05, 0.25)),
+                             "contact_hz": rc.get("contact_hz") or 0, "contact_path": rc.get("contact_path") or "loaded",
+                             "contact_min_cams": rule.get("min_cams", 0)}
+    return refine
+
+
 def member_specs(spec) -> list[Member]:
     """The members of the dance's world, from its reference take's solved outputs and the dance TOML (spec: timeline.DanceSpec)."""
     import numpy as np
@@ -298,13 +319,7 @@ def member_specs(spec) -> list[Member]:
     # ---- skeleton configuration ----
     from .. import mamma_dyn as md
     rr = json.loads((ref / "smplx_rf2_noslip" / "pose_refine.json").read_text())
-    r0 = rr["lead"]
-    refine = {"schema": SCHEMA + "/refine_recipe", "name": "smplx_rf2_noslip", "tool": "dancecap.pose_refine",
-              "src": "smplx", "dst": "smplx_rf2_noslip", "mode": r0["mode"],
-              "filter": {k: r0["filter"][k] for k in ("mode", "root_hz", "rot_hz")},
-              "refine": {k: r0["refine"][k] for k in ("iters", "w_floor", "floor_mm", "w_feet", "w_slip", "slip_max_v",
-                                                      "root_xz", "w_anchor", "anchor_mm")},
-              "margin_s": 2.0, "device": "cuda", "reference": f"{spec.reference}/smplx_rf2_noslip/pose_refine.json"}
+    refine = refine_recipe(rr["lead"], spec.reference)
     add("refine_recipe", POSE_SCOPE, "pose_refine parameters of the accepted recipe (smplx_rf2_noslip)",
         [Entry("shared/refine_recipe.json", data=_json_bytes(refine))], _rel_ws(ref / "smplx_rf2_noslip" / "pose_refine.json"))
     z = np.load(ref / "smplx_rf2_noslip" / "lead.npz", allow_pickle=False)

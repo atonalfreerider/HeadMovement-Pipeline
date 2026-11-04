@@ -159,6 +159,20 @@ class FakeWorld:
                            "root_xz": False, "w_anchor": 1.0, "anchor_mm": 10.0}}
 
 
+def test_refine_args_add_the_adopted_contact_term_unless_a_world_recipe_says_otherwise():
+    a = C.refine_args(None)
+    assert a.startswith("--mode refine") and a.endswith("--device cuda")  # variants append their own flags after it
+    assert ("--iters 400 --w-contact 0.5 --contact-v 0.05,0.25 --contact-hz 1.5 --contact-path loaded "
+            "--contact-min-cams 2 --device cuda") in a  # pose_refine applies it from two cameras up
+    rec = FakeWorld().load_json("shared/refine_recipe.json")
+    assert "--w-contact" not in C.refine_args(rec, contact=None) and "--w-contact 0.5" in C.refine_args(rec)
+    own = {**rec, "contact": {"w_contact": 2.0, "contact_v": [0.05, 0.25], "contact_hz": 0, "contact_path": "lock",
+                              "contact_min_cams": 3}}
+    for b in (C.refine_args(own), C.refine_args(own, contact=None)):  # a recipe's own block wins
+        assert "--w-contact 2.0 --contact-v 0.05,0.25 --contact-hz 0 --contact-path lock --contact-min-cams 3" in b
+    assert "--w-contact" not in C.refine_args({**rec, "contact": {"w_contact": 0.0}})
+
+
 def test_job_spec_of_a_planned_chunk_has_every_stage_and_resolved_commands():
     spec = full_spec()
     ch = C.Chunk(id="g2146", k0=1028, k1=2141, core_k0=1148, core_k1=2021, cams=["01", "02"], take="d_g2146", world_id="w")
@@ -174,6 +188,7 @@ def test_job_spec_of_a_planned_chunk_has_every_stage_and_resolved_commands():
     cmd = {s["name"]: s for s in job["steps"]}
     assert "front_full run --segs g2146" in cmd["front"]["cmd"] and "chunk-fit g2146" in cmd["fit"]["cmd"]
     assert "--src smplx --dst smplx_rf2_noslip" in cmd["refine"]["cmd"] and "--root-hz 5.0 --rot-hz 8.0" in cmd["refine"]["cmd"]
+    assert "--w-contact" not in cmd["refine"]["cmd"]  # a world's recipe without a contact block: its pose id pins no term
     assert cmd["fit"]["env"]["MAMMA_FREEZE_BETAS"] == "1"
     assert cmd["fit"]["env"]["MAMMA_INIT_BETAS"] == "{WS}/dancecap/work/worlds/d/" + "w" * 12 + "/shared/betas.json"
     assert any(p.endswith("/smplx/") for p in cmd["fit"]["save"]) and "dancecap/work/d_g2146/" in cmd["fit"]["save"][0]

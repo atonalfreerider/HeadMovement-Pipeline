@@ -2,6 +2,7 @@
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 from scipy.spatial.transform import Rotation as Rot
 
 from dancecap import physics_body as pb
@@ -119,6 +120,27 @@ def test_contact_gate_on_the_foot_lock_path_keeps_a_step_out_of_the_planted_runs
     short = np.r_[np.zeros(20), np.ones(5), np.zeros(35)].astype(bool)
     wobble = np.c_[0.01 * np.sin(np.arange(60.0)), np.zeros(60)]
     assert np.all(pr.lock_speed(wobble, short, t, 1.5) == 0.0)  # a run under 8 frames is held still, as the lock does
+
+
+def test_the_adopted_contact_term_needs_two_cameras_in_the_fits_grid_set(tmp_path):
+    work = tmp_path / "tk"
+    gt, lm = work / "mamma" / "ma_cap" / "tk_c2" / "gt", work / "mamma" / "ma_2d" / "tk_c2"
+    gt.mkdir(parents=True)
+    lm.mkdir(parents=True)
+    (work / "mamma" / "select.json").write_text('{"chosen": "c2"}')
+    for name in ("cam06.npz", "cam07.npz", "global.npz"):
+        np.savez(gt / name, cam_int=np.eye(3))
+    seen = np.zeros((4, 2, 5, 3))
+    seen[2, 1, 0, :2] = [310.0, 220.0]  # one landmark of the follow, frame 2
+    vis = np.zeros((4, 2, 5))
+    vis[2, 1, 0] = 0.9
+    np.savez(lm / "cam06.npz", landmarks=seen, visibilities=vis)
+    np.savez(lm / "cam07.npz", landmarks=np.zeros((4, 2, 5, 3)), visibilities=np.zeros((4, 2, 5)))  # masked out
+    assert pr.fit_cams(work) == 1  # global.npz is not a camera, and a camera without evidence is not a phone
+    assert pr.contact_weight(0.5, 2, 1) == 0.0 and pr.contact_weight(0.5, 2, 2) == 0.5  # one phone off, two on
+    assert pr.contact_weight(0.5, 0, None) == 0.5 and pr.contact_weight(0.0, 2, None) == 0.0  # no rule / no term
+    with pytest.raises(ValueError):
+        pr.contact_weight(0.5, 2, 0)  # an empty grid set is an error, not a one-phone fit
 
 
 def test_contact_slip_holds_the_patch_but_frees_pivots_and_rolls():

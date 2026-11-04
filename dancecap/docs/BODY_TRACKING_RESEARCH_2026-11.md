@@ -33,10 +33,12 @@ after about mid-October 2026 may be missing if none of the fetched papers cite i
   - **E2:** the new contact term cut eight-phone slip by more than half but barely moved the two-phone follower or the
     one-phone fits, because its speed gate switches it off on noisy fits. E2b changes the gate.
   - **E2b:** with the gate on a 1.5 Hz low-passed foot path, the term at weight 0.5 cuts sparse-fit slip by 40-68 %
-    (all but the hidden one-phone follower), but no gate passes on every route. Only the whole-take loaded-point gate passes on two phones. The foot lock's path cuts
-    more slip but costs the two-phone follower's feet 0.40 px in the fitted views. On sparse fits it cuts the median, not
-    the tail, and the hidden one-phone follower is a position error. Proposed for fits from two or more phones (tested
-    on two and eight), pending the owner's go.
+    (all but the hidden one-phone follower), but no gate passes on every route. Only the whole-take loaded-point gate
+    passes on two phones. The foot lock's path cuts more slip but costs the two-phone follower's feet 0.40 px in the
+    fitted views. On sparse fits it cuts the median, not the tail, and the hidden one-phone follower is a position error.
+  - **Adopted 2026-11-03:** the loaded-point term at weight 0.5 for fits from two or more phones, off for one phone
+    (tested on two and eight). New planner-built refines get it; the sealed larissa_kadu_full world and everything
+    already refined stay as they were (section 4a).
 - **No released method reconstructs a couple in close embrace from phone video with grounded feet.** MAMMA stays the
   backbone. The fixes are parts around it:
   - per-person priors where the cameras are blind;
@@ -546,7 +548,7 @@ Findings:
   anchor may then become the limit, because holding those feet needs moves of several centimetres (reasoned). E2b ran
   the same evening; results below.
 - **The term is not in the recipe yet.** Weight 0.5 passes on eight phones, but the plan adopts it only once it passes
-  on every route.
+  on every route. (After E2b the owner adopted it from two phones up: see the end of this section.)
 
 **E2b: gate on the slow foot path. More slip goes, but no gate passes on every route** (measured, $0.51 on two pods).
 
@@ -581,7 +583,8 @@ Slip is the median in mm/s on the reference's stance frames, lead/follow. At wei
 | One phone, 44-48 s | +0.22/-0.40 | +0.06/-0.11 | 10.9/30.8, 11.0/30.8, 11.1/30.8 |
 
 Findings:
-- **No arm passes on every route, so under the plan the term stays out of the recipe.** Route by route:
+- **No arm passes on every route, so under the plan's rule the term would stay out of the recipe.** The owner adopted
+  it route by route instead (below). Route by route:
   - **Eight phones:** both gates pass at weight 0.5. The foot lock cuts slip 62/55 %, the loaded point 62/47 %.
   - **Two phones:** only the loaded point at weight 0.5 passes (slip down 45/40 %, feet +0.19/+0.25 px).
     - The foot lock cuts more (56/50 %), but the follower's feet rise 0.40 px, over the 0.3 bar.
@@ -627,12 +630,26 @@ Findings:
     gate leaves them alone by design.
   - On eight phones the foot lock also cuts the p95, by 36/40 %.
   - Stance alone cuts the lead's p95 on the sparse fits by 21-61 %, but fails on cost (above).
-- **Proposal.** For fits from two or more phones, take the loaded point at weight 0.5 (`--w-contact 0.5 --contact-hz
-  1.5`). It is the only arm that passed on both the two- and the eight-phone fit; three to seven phones are untested.
-  Keep the term off for one phone.
+- **Adopted 2026-11-03, on the owner's go: the loaded point at weight 0.5 for fits from two or more phones, off for one
+  phone** (`--w-contact 0.5 --contact-hz 1.5 --contact-min-cams 2`). It is the only arm that passed on both the two-
+  and the eight-phone fit; three to seven phones are untested.
+  - How it is wired:
+    - `pose_refine --contact-min-cams 2` switches the term off when the fit's grid set has fewer than two cameras.
+      `refine.contact_rule` in `pose_refine.json` records the count.
+    - `farm/chunks.refine_args` adds the block (`chunks.CONTACT`) to every refine command a planner builds. The recap
+      profile (4-6 phones) and the two-view profiles (2) get the term. The mono route and john_lula (1 phone) carry
+      the flags but keep the term off at run time.
+  - Pinned worlds keep their recipe. A world's jobs take the term only from the world recipe's own `contact` block.
+    - larissa_kadu_full's sealed world 612dfea3d607 has none, so its chunks stay as they were.
+    - Using the term there first needs larissa_kadu_38 re-refined with it in place, because `farm/world.py` reads the
+      recipe only from that folder's `pose_refine.json`. That overwrites the motion adopted for larissa_kadu_38's
+      viewer, which larissa_kadu_full reuses verbatim. Then publish a new pose world (`world publish
+      --new-pose-world`) and re-refine the chunks. `--new-pose-world` alone changes nothing.
+    - `farm/world.py` writes the block into the recipe of any future world whose reference's refine asked for the term.
+  - Nothing already refined is re-run by this change. pose_refine's defaults keep the term off, so commands written before (fit_full,
+    the E1/E2 jobs, the frozen fix templates) still mean what they did. The output folder stays `smplx_rf2_noslip`.
   - The foot lock is the stronger candidate for three phones, the setup E1 chose. A run on E1 arm C's three-phone fit
     (about $0.1) would show whether it stays under the bar there.
-  - The plan adopts the term only once it passes on every route, so a per-route rule needs the owner's go.
   - The tail needs a different tool: better foot positions (E3-E5, FECO contacts), not a stronger foot term.
 
 ## 5. What a third phone buys over two, and where to put it

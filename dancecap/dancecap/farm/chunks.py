@@ -677,15 +677,29 @@ STAGE_OUTPUTS: dict[str, list[tuple[str, bool]]] = {   # (path under the chunk's
 }
 
 
-def refine_args(recipe: dict | None) -> str:
-    """pose_refine's command line from the world's refine recipe (smplx_rf2_noslip = these values)."""
+# pose_refine's contact term as ADOPTED 2026-11-03 (docs/BODY_TRACKING_RESEARCH_2026-11.md section 4a, E2b): weight 0.5, the
+# speed gate on the loaded sole point's 1.5 Hz low-pass; pose_refine applies it only when the fit's grid set has two or more
+# cameras, so one-phone fits stay without it (E2b failed its bar there).
+CONTACT = {"w_contact": 0.5, "contact_v": [0.05, 0.25], "contact_hz": 1.5, "contact_path": "loaded", "contact_min_cams": 2}
+
+
+def refine_args(recipe: dict | None, contact: dict | None = CONTACT) -> str:
+    """pose_refine's command line from the world's refine recipe (smplx_rf2_noslip = these values), plus the contact term:
+    the recipe's own 'contact' block, else `contact` (CONTACT; None = no contact flags, which is what a world's jobs pass:
+    the world's recipe is a pose member, so its pose id keeps meaning the refine its chunks got)."""
     r = recipe or {}
     f, x = r.get("filter") or {}, r.get("refine") or {}
     a = [f"--mode {r.get('mode', 'refine')}", f"--root-hz {f.get('root_hz', 5.0)}", f"--rot-hz {f.get('rot_hz', 8.0)}",
          f"--w-floor {x.get('w_floor', 1.0)}", f"--floor-mm {x.get('floor_mm', 5.0)}", f"--w-feet {x.get('w_feet', 1.0)}",
          f"--w-slip {x.get('w_slip', 0.0)}", f"--slip-max-v {x.get('slip_max_v', 0.15)}",
          f"--w-anchor {x.get('w_anchor', 1.0)}", f"--anchor-mm {x.get('anchor_mm', 10.0)}",
-         f"--iters {x.get('iters', 400)}", "--device cuda"]
+         f"--iters {x.get('iters', 400)}"]
+    c = r.get("contact", contact)
+    if c and c.get("w_contact"):
+        lo, hi = c.get("contact_v") or (0.05, 0.25)
+        a += [f"--w-contact {c['w_contact']}", f"--contact-v {lo},{hi}", f"--contact-hz {c.get('contact_hz') or 0}",
+              f"--contact-path {c.get('contact_path') or 'loaded'}", f"--contact-min-cams {c.get('contact_min_cams') or 0}"]
+    a.append("--device cuda")
     if x.get("root_xz"):
         a.append("--root-xz")
     return " ".join(a)
@@ -812,7 +826,7 @@ def build_job(chunk: Chunk, spec: DanceSpec, world: "W.World | None" = None, kin
     est = chunk.estimate or estimate(chunk, spec)
     recipe = world.load_json("shared/refine_recipe.json") if world else None
     ctx = {"chunk": chunk.id, "take": chunk.take, "dance": spec.name, "world_id": world.id if world else chunk.world_id,
-           "refined_dir": spec.refined_dir, "refine_args": refine_args(recipe),
+           "refined_dir": spec.refined_dir, "refine_args": refine_args(recipe, contact=None) if world else refine_args(recipe),
            "front_min": max(30, math.ceil(2.0 * est["front_min"] + 20)), "fit_min": max(30, math.ceil(1.6 * est["fit_min"] + 15)),
            "refine_min": max(10, math.ceil(2 * est["refine_min"] + 5))}
     steps = []

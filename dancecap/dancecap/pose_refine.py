@@ -3,7 +3,7 @@
     python -m dancecap.pose_refine <take> [--src smplx] [--dst smplx_refined] [--mode refine]
                                    [--root-hz 5] [--rot-hz 8] [--w-floor 1] [--floor-mm 5] [--w-feet 1]
                                    [--w-slip 0] [--slip-max-v 0.15] [--w-contact 0] [--contact-v 0.05,0.25]
-                                   [--contact-hz 0] [--contact-path loaded] [--w-anchor 1] [--anchor-mm 10] [--root-xz] [--iters 400] [--device cpu|cuda]
+                                   [--contact-hz 0] [--contact-path loaded] [--contact-min-cams 0] [--w-anchor 1] [--anchor-mm 10] [--root-xz] [--iters 400] [--device cpu|cuda]
 
 MAMMA has no floor term and fuses noisy per-frame evidence, so a fused fit floats / sinks its planted feet by a few cm
 (slow per-dancer drift + pelvis-coupled wobble: scale/floor_diagnosis.json) and carries 4.5-12 Hz rigid root jitter.
@@ -43,7 +43,12 @@ same keys as the source plus 'smoothing' (json str: parameters, per-step magnitu
            default; with --contact-hz a slower one (test E2b, 1.5 Hz: at 6 Hz the noise of a two- or one-phone fit
            shut the gate on most planted frames, E2), of the loaded point over the whole take (--contact-path
            loaded) or of the foot lock's path, the sole centre inside each stance run (--contact-path lock).
-           Only the patch centroid is held, so pivots and heel-toe rolls stay free.
+           Only the patch centroid is held, so pivots and heel-toe rolls stay free. --contact-min-cams N switches the
+           term off for a fit whose grid set has fewer than N cameras (refine.contact_rule records the count).
+           ADOPTED 2026-11-03 for fits from two or more phones (E2b): --w-contact 0.5 --contact-hz 1.5 (loaded)
+           --contact-min-cams 2. The defaults below keep it off, so commands written before stay as they were;
+           planner-built jobs get it from farm/chunks.refine_args (CONTACT), and a world's jobs only through its own
+           recipe's 'contact' block (the sealed larissa_kadu_full world 612dfea3d607 has none).
            The weights are a TRADE-OFF, not a guarantee: the floor term is a hard pull and costs image agreement on the
            feet where the cameras put a planted foot above / below y = 0. Measure every variant with
            `python -m dancecap.pose_quality <take> --smplx-dir <dst>` (feet-only reprojection, joint displacement vs
@@ -321,6 +326,28 @@ def grid_seq(work: Path) -> str:
     return f"{work.name}_{sel['chosen']}"
 
 
+def fit_cams(work: Path) -> int:
+    """Phones of the fit: the chosen grid set's cameras (ma_cap/<seq>/gt/cam*.npz; global.npz is not one) whose ma_2d holds
+    a visible landmark on some frame, Problem's own test. A camera masked out of the whole fit (recap_front mask /
+    qa-mask zero ma_2d, never gt) is not a phone of it."""
+    seq = grid_seq(work)
+    n = 0
+    for f in (work / "mamma" / "ma_cap" / seq / "gt").glob("cam*.npz"):
+        lm = np.load(work / "mamma" / "ma_2d" / seq / f.name)
+        n += bool(((lm["visibilities"] > 0.5) & (np.abs(lm["landmarks"][..., :2]).sum(-1) > 0)).any())
+    return n
+
+
+def contact_weight(w_contact: float, min_cams: int, cams: int | None) -> float:
+    """The contact term's weight on a fit with `cams` cameras: w_contact, or 0 when min_cams is set and the fit has fewer
+    (adopted 2026-11-03 for fits from two or more phones: test E2b failed its bar on one phone). Refuses 0 cameras."""
+    if not w_contact or not min_cams:
+        return w_contact
+    if not cams:
+        raise ValueError("--contact-min-cams: the fit's grid set has no cameras")
+    return w_contact if cams >= min_cams else 0.0
+
+
 class Problem:
     """Root + leg offsets of one dancer against the grid landmarks of every camera of the chosen fit set."""
 
@@ -590,7 +617,7 @@ def run(take: str, src: str = "smplx", dst: str = "smplx_refined", mode: str = "
         device: str = "cpu", w_feet: float = 1.0, slip_max_v: float | None = 0.15, w_slip: float = 0.0,
         floor_mm: float = 5.0, root_xz: bool = False, quality: bool = True, w_anchor: float = 1.0,
         anchor_mm: float = 10.0, w_contact: float = 0.0, contact_v: tuple[float, float] = (0.05, 0.25),
-        contact_hz: float | None = None, contact_path: str = "loaded") -> dict:
+        contact_hz: float | None = None, contact_path: str = "loaded", contact_min_cams: int = 0) -> dict:
     if mode not in MODES:
         raise ValueError(f"mode {mode!r} not in {MODES}")
     if dst in ("smplx", src):
@@ -598,6 +625,13 @@ def run(take: str, src: str = "smplx", dst: str = "smplx_refined", mode: str = "
     work = PACKAGE_ROOT / "work" / take
     out = work / dst
     out.mkdir(parents=True, exist_ok=True)
+    w_use, rule = w_contact, None
+    if mode == "refine" and w_contact and contact_min_cams:  # the contact term only on fits from contact_min_cams+ cameras
+        cams = fit_cams(work)
+        w_use = contact_weight(w_contact, contact_min_cams, cams)
+        rule = {"min_cams": contact_min_cams, "cams": cams, "w_contact_asked": w_contact, "applied": bool(w_use)}
+        if not w_use:
+            print(f"[pose_refine] contact term off: the fit's grid set has {cams} camera(s), fewer than {contact_min_cams}")
     summary = {}
     for r in ROLES:
         z = dict(np.load(work / src / f"{r}.npz", allow_pickle=True))
@@ -617,8 +651,10 @@ def run(take: str, src: str = "smplx", dst: str = "smplx_refined", mode: str = "
             zf, meta["refine"] = refine_dancer(zf, r, work, st, iters, w_floor, device, w_feet=w_feet,
                                                slip_max_v=slip_max_v, w_slip=w_slip, floor_mm=floor_mm,
                                                root_xz=root_xz, speed=aux.get("speed"), w_anchor=w_anchor,
-                                               anchor_mm=anchor_mm, w_contact=w_contact, contact_v=contact_v,
+                                               anchor_mm=anchor_mm, w_contact=w_use, contact_v=contact_v,
                                                contact_speed=gate, contact_hz=contact_hz, contact_path=contact_path)
+            if rule:
+                meta["refine"]["contact_rule"] = rule
         if quality:
             zf = requality(zf, r, work)
             meta["per_frame_quality"] = ("reproj_px, reproj_parts_px, quality, quality_parts recomputed for this "
@@ -664,6 +700,9 @@ def main(argv=None) -> None:
     ap.add_argument("--contact-path", default="loaded", choices=("loaded", "lock"),
                     help="with --contact-hz: 'loaded' = the loaded sole point over the whole take; 'lock' = the foot "
                          "lock's path, the sole centre inside each stance run (runs under 8 frames held still)")
+    ap.add_argument("--contact-min-cams", type=int, default=0,
+                    help="contact term only when the fit's grid set has at least this many cameras (0 = always; the "
+                         "adopted recipe, farm/chunks.CONTACT: 2, so one-phone fits stay without it)")
     ap.add_argument("--root-xz", action="store_true", help="free horizontal root offsets too (first run)")
     ap.add_argument("--w-anchor", type=float, default=1.0,
                     help="horizontal anchor of ankles + feet to the filtered input (0 = none, the first run)")
@@ -682,7 +721,7 @@ def main(argv=None) -> None:
             floor_mm=a.floor_mm, root_xz=a.root_xz, quality=not a.no_quality, w_anchor=a.w_anchor,
             anchor_mm=a.anchor_mm, w_contact=a.w_contact,
             contact_v=tuple(float(x) for x in a.contact_v.split(",")), contact_hz=a.contact_hz or None,
-            contact_path=a.contact_path)
+            contact_path=a.contact_path, contact_min_cams=a.contact_min_cams)
     for r, m in s.items():
         brief = {k: v for k, v in m.get("refine", {}).items()
                  if k not in ("history", "data_per_cam_before_after", "feet_data_per_cam_before_after")}

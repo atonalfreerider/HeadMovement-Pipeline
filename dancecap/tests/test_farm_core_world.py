@@ -194,6 +194,21 @@ def test_volume_path_and_header(env):
 REAL = Path(__file__).resolve().parents[1] / "worlds" / "larissa_kadu_full" / "CURRENT.json"
 
 
+def test_refine_recipe_carries_a_contact_block_only_when_the_reference_asked_for_the_term():
+    r0 = {"mode": "refine", "filter": {"mode": "filter", "root_hz": 5.0, "rot_hz": 8.0, "stance_frac": {"left": 0.5}},
+          "refine": {"iters": 400, "w_floor": 1.0, "floor_mm": 5.0, "w_feet": 1.0, "w_slip": 0.0, "slip_max_v": 0.15,
+                     "root_xz": False, "w_anchor": 1.0, "anchor_mm": 10.0, "history": []}}
+    plain = W.refine_recipe(r0, "ref")
+    assert "contact" not in plain and plain["refine"]["iters"] == 400 and plain["reference"] == "ref/smplx_rf2_noslip/pose_refine.json"
+    assert "contact" not in W.refine_recipe({**r0, "refine": {**r0["refine"], "w_contact": 0.0}}, "ref")   # E2-era records
+    used = {**r0["refine"], "w_contact": 0.5, "contact_v": [0.05, 0.25], "contact_hz": 1.5, "contact_path": "loaded",
+            "contact_rule": {"min_cams": 2, "cams": 8, "w_contact_asked": 0.5, "applied": True}}
+    want = {"w_contact": 0.5, "contact_v": [0.05, 0.25], "contact_hz": 1.5, "contact_path": "loaded", "contact_min_cams": 2}
+    assert W.refine_recipe({**r0, "refine": used}, "ref")["contact"] == want
+    off = {**used, "w_contact": 0.0, "contact_rule": {"min_cams": 2, "cams": 1, "w_contact_asked": 0.5, "applied": False}}
+    assert W.refine_recipe({**r0, "refine": off}, "ref")["contact"] == want   # what a one-phone reference asked for
+
+
 @pytest.mark.skipif(not REAL.exists(), reason="world v1 not built on this machine")
 def test_the_real_world_v1_is_consistent():
     cur = json.loads(REAL.read_text())

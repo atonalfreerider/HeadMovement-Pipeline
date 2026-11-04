@@ -1202,8 +1202,18 @@ work/<take>/<dst>/{lead,follow}.npz     [pose_refine] the smplx/ contract (same 
                                           m/s) + horizontal ankle/foot anchor to the filtered input (--w-anchor 1,
                                           --anchor-mm 10) + second differences + offset prior; torch, --device cuda on a
                                           pod). The first run's energy = --w-feet 0 --slip-max-v 0 --w-anchor 0 --root-xz.
+                                          Contact term (2026-11, off by default): --w-contact holds each stance frame
+                                          pair's sole contact patch (the vertices within 1 cm of the lowest), weighted
+                                          by stance x a soft speed gate (--contact-v, m/s) on a foot speed (the loaded
+                                          point's 6 Hz low-pass, or a slower one: --contact-hz, --contact-path);
+                                          --contact-min-cams N = off when the fit's grid set has fewer than N cameras.
+                                          ADOPTED 2026-11-03 from two phones up: farm/chunks.CONTACT (0.5, 1.5 Hz loaded
+                                          point, 2 cameras) in every planner-built refine; a world's jobs only through
+                                          its recipe's 'contact' block (612dfea3d607 has none).
                                           refine metadata adds floor_mm, w_feet, w_slip, slip_max_v, root_xz, w_anchor,
-                                          anchor_mm, slip_pairs, feet_data_per_cam_before_after. Every mode RECOMPUTES
+                                          anchor_mm, slip_pairs, feet_data_per_cam_before_after (2026-11: w_contact,
+                                          contact_v, contact_hz, contact_path, contact_pair_weight, contact_rule
+                                          {min_cams, cams, w_contact_asked, applied}). Every mode RECOMPUTES
                                           reproj_px, reproj_parts_px, quality, quality_parts for the new motion
                                           (pose_refine.requality = export_smplx's definition; --no-quality drops them);
                                           contact, floor_contact, repaired, suspect, reproj_px_raw are the source's
