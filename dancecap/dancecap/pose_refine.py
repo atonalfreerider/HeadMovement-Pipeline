@@ -3,7 +3,7 @@
     python -m dancecap.pose_refine <take> [--src smplx] [--dst smplx_refined] [--mode refine]
                                    [--root-hz 5] [--rot-hz 8] [--w-floor 1] [--floor-mm 5] [--w-feet 1]
                                    [--w-slip 0] [--slip-max-v 0.15] [--w-contact 0] [--contact-v 0.05,0.25]
-                                   [--w-anchor 1] [--anchor-mm 10] [--root-xz] [--iters 400] [--device cpu|cuda]
+                                   [--contact-hz 0] [--contact-path loaded] [--w-anchor 1] [--anchor-mm 10] [--root-xz] [--iters 400] [--device cpu|cuda]
 
 MAMMA has no floor term and fuses noisy per-frame evidence, so a fused fit floats / sinks its planted feet by a few cm
 (slow per-dancer drift + pelvis-coupled wobble: scale/floor_diagnosis.json) and carries 4.5-12 Hz rigid root jitter.
@@ -39,7 +39,11 @@ same keys as the source plus 'smoothing' (json str: parameters, per-step magnitu
            Contact (2026-11 test E2, off by default: --w-contact 0): the horizontal motion of each frame's contact
            patch (the sole vertices within 1 cm of the lowest, the same vertices in the next frame: pose_quality's
            contact point) / 3 mm, weighted per frame pair by stance x a soft speed gate (1 below --contact-v's first
-           value, 0 above its second, m/s). Only the patch centroid is held, so pivots and heel-toe rolls stay free.
+           value, 0 above its second, m/s) on a foot speed: the loaded point's 6 Hz low-pass (the stance speed) by
+           default; with --contact-hz a slower one (test E2b, 1.5 Hz: at 6 Hz the noise of a two- or one-phone fit
+           shut the gate on most planted frames, E2), of the loaded point over the whole take (--contact-path
+           loaded) or of the foot lock's path, the sole centre inside each stance run (--contact-path lock).
+           Only the patch centroid is held, so pivots and heel-toe rolls stay free.
            The weights are a TRADE-OFF, not a guarantee: the floor term is a hard pull and costs image agreement on the
            feet where the cameras put a planted foot above / below y = 0. Measure every variant with
            `python -m dancecap.pose_quality <take> --smplx-dir <dst>` (feet-only reprojection, joint displacement vs
@@ -131,23 +135,43 @@ def soles(body, R, p, idx) -> dict:
     return {f: pb.lbs_points(body, R, p, idx[f]) for f in ("left", "right")}
 
 
+def path_speed(xz: np.ndarray, t: np.ndarray, hz: float) -> np.ndarray:
+    """(T,) m/s: speed of a (T, 2) horizontal path after a zero-phase low-pass at hz."""
+    fs = 1.0 / float(np.median(np.diff(t)))
+    return np.linalg.norm(np.gradient(lowpass(xz, hz, fs), t, axis=0), axis=1)
+
+
+def lock_speed(xz: np.ndarray, stance: np.ndarray, t: np.ndarray, hz: float) -> np.ndarray:
+    """(T,) m/s of the foot lock's path (step 4): inside each stance run of 8+ frames the speed of the path's low-pass
+    at hz; shorter runs are held still (0), as the foot lock holds them at their mean; 0 outside stance. A low-pass
+    over the whole take would smear each swing into the planted frames beside it."""
+    fs = 1.0 / float(np.median(np.diff(t)))
+    v = np.zeros(len(t))
+    for a, b in runs_of(np.asarray(stance, bool), 3):
+        if b - a + 1 >= 8:
+            v[a:b + 1] = np.linalg.norm(np.gradient(lowpass(xz[a:b + 1], hz, fs), t[a:b + 1], axis=0), axis=1)
+    return v
+
+
 def stance_mask(z, body, R, p, idx, t, aux: dict | None = None) -> tuple[dict, dict]:
     """Stance per foot (see the module doc, step 2). aux (optional) receives 'speed': {foot: (T,) m/s} of the
-    6 Hz low-passed loaded sole point."""
+    6 Hz low-passed loaded sole point, 'loaded': {foot: (T, 2) its horizontal path before that low-pass} and
+    'centre': {foot: (T, 2) the sole centre's horizontal path, the one the foot lock low-passes}."""
     from .physics import mamma_foot_contact
     sp_ = soles(body, R, p, idx)
     low = {f: sp_[f][..., 1].min(1) for f in sp_}
     lower = np.minimum(low["left"], low["right"])
     mc = mamma_foot_contact(z, body)
-    fs = 1.0 / float(np.median(np.diff(t)))
     st = {}
     for k, f in enumerate(("left", "right")):
         pts = sp_[f]
         w = (pts[..., 1] <= low[f][:, None] + 0.01).astype(float)  # loaded point: within 1 cm of the lowest
         cen = (pts * w[..., None]).sum(1) / w.sum(1)[:, None]
-        v = np.linalg.norm(np.gradient(lowpass(cen[:, [0, 2]], 6.0, fs), t, axis=0), axis=1)
+        v = path_speed(cen[:, [0, 2]], t, 6.0)
         if aux is not None:
             aux.setdefault("speed", {})[f] = v
+            aux.setdefault("loaded", {})[f] = cen[:, [0, 2]]
+            aux.setdefault("centre", {})[f] = pts.mean(1)[:, [0, 2]]
         con = (mc[:, k] > 0.5) if mc is not None else np.ones(len(t), bool)
         m = median_filter((con & (low[f] < lower + 0.03) & (v < CONTACT_V)).astype(np.uint8), size=3,
                           mode="nearest").astype(bool)
@@ -424,12 +448,16 @@ def refine_dancer(z: dict, role: str, work: Path, stance: dict, iters: int = 400
                   device: str = "cpu", log=print, w_feet: float = 1.0, slip_max_v: float | None = 0.15,
                   w_slip: float = 0.0, floor_mm: float = 5.0, root_xz: bool = False,
                   speed: dict | None = None, w_anchor: float = 1.0, anchor_mm: float = 10.0,
-                  w_contact: float = 0.0, contact_v: tuple[float, float] = (0.05, 0.25)) -> tuple[dict, dict]:
+                  w_contact: float = 0.0, contact_v: tuple[float, float] = (0.05, 0.25),
+                  contact_speed: dict | None = None, contact_hz: float | None = None,
+                  contact_path: str | None = None) -> tuple[dict, dict]:
     """speed: {foot: (T,) m/s} loaded-point speed of the filtered motion (stance_mask aux); with slip_max_v the slip
     term only acts between consecutive stance frames that are both slower than slip_max_v (None: every stance pair).
     w_anchor: horizontal anchor of the ankles and feet (joints 7, 8, 10, 11) to their filtered input positions, scale
     anchor_mm: the floor fix is vertical, so sideways foot motion needs the images' (or the slip term's) support.
-    w_contact: the contact term (contact_slip, weights contact_weights(stance, speed, contact_v)), 2026-11 test E2."""
+    w_contact: the contact term (contact_slip, weights contact_weights(stance, speed, contact_v)), 2026-11 test E2;
+    contact_speed: the gate's speed instead of speed (test E2b), low-passed at contact_hz along contact_path (both
+    reported only)."""
     import torch
     prob = Problem(z, role, work, stance, device)
     T = prob.T
@@ -445,7 +473,8 @@ def refine_dancer(z: dict, role: str, work: Path, stance: dict, iters: int = 400
             m = m & torch.tensor(np.asarray(speed[f]) < slip_max_v, device=device)
         both[f] = m[1:] & m[:-1]
         if w_contact:
-            pair_w[f] = torch.tensor(contact_weights(stance[f], None if speed is None else speed[f], contact_v),
+            cs = speed if contact_speed is None else contact_speed
+            pair_w[f] = torch.tensor(contact_weights(stance[f], None if cs is None else cs[f], contact_v),
                                      dtype=torch.float32, device=device)
     with torch.no_grad():
         pts0, _, _, P0 = prob.forward(root(), dr)
@@ -505,7 +534,8 @@ def refine_dancer(z: dict, role: str, work: Path, stance: dict, iters: int = 400
            "slip_max_v": slip_max_v, "root_xz": root_xz, "w_anchor": w_anchor, "anchor_mm": anchor_mm,
            "device": device, "history": hist,
            "slip_pairs": {f: int(both[f].sum()) for f in both},
-           "w_contact": w_contact, "contact_v": list(contact_v),
+           "w_contact": w_contact, "contact_v": list(contact_v), "contact_hz": contact_hz,
+           "contact_path": contact_path if contact_hz else None,
            "contact_pair_weight": {f: round(float(pair_w[f].sum()), 1) for f in pair_w},
            "data_term_before_after": [round(float(d0), 4), round(float(d1), 4)],
            "data_per_cam_before_after": {c: [round(a, 4), round(b, 4)] for c, a, b in zip(prob.cam_names, per0, per1)},
@@ -559,7 +589,8 @@ def run(take: str, src: str = "smplx", dst: str = "smplx_refined", mode: str = "
         rot_hz: float = 8.0, vert_hz: float | None = None, w_floor: float = 1.0, iters: int = 400,
         device: str = "cpu", w_feet: float = 1.0, slip_max_v: float | None = 0.15, w_slip: float = 0.0,
         floor_mm: float = 5.0, root_xz: bool = False, quality: bool = True, w_anchor: float = 1.0,
-        anchor_mm: float = 10.0, w_contact: float = 0.0, contact_v: tuple[float, float] = (0.05, 0.25)) -> dict:
+        anchor_mm: float = 10.0, w_contact: float = 0.0, contact_v: tuple[float, float] = (0.05, 0.25),
+        contact_hz: float | None = None, contact_path: str = "loaded") -> dict:
     if mode not in MODES:
         raise ValueError(f"mode {mode!r} not in {MODES}")
     if dst in ("smplx", src):
@@ -578,10 +609,16 @@ def run(take: str, src: str = "smplx", dst: str = "smplx_refined", mode: str = "
         meta = {"source": f"work/{take}/{src}/{r}.npz", "mode": mode, "filter": frep,
                 "created": time.strftime("%Y-%m-%dT%H:%M:%S"), "tool": "dancecap.pose_refine"}
         if mode == "refine":
+            gate = None
+            if contact_hz:  # the contact gate on a slower speed than the stance's 6 Hz one
+                tz = np.asarray(zf["t"], float)
+                gate = ({f: lock_speed(aux["centre"][f], st[f], tz, contact_hz) for f in st} if contact_path == "lock"
+                        else {f: path_speed(aux["loaded"][f], tz, contact_hz) for f in st})
             zf, meta["refine"] = refine_dancer(zf, r, work, st, iters, w_floor, device, w_feet=w_feet,
                                                slip_max_v=slip_max_v, w_slip=w_slip, floor_mm=floor_mm,
                                                root_xz=root_xz, speed=aux.get("speed"), w_anchor=w_anchor,
-                                               anchor_mm=anchor_mm, w_contact=w_contact, contact_v=contact_v)
+                                               anchor_mm=anchor_mm, w_contact=w_contact, contact_v=contact_v,
+                                               contact_speed=gate, contact_hz=contact_hz, contact_path=contact_path)
         if quality:
             zf = requality(zf, r, work)
             meta["per_frame_quality"] = ("reproj_px, reproj_parts_px, quality, quality_parts recomputed for this "
@@ -621,6 +658,12 @@ def main(argv=None) -> None:
                     help="contact-patch term weight (0 = none; 2026-11 test E2 arm B)")
     ap.add_argument("--contact-v", default="0.05,0.25",
                     help="contact term speed gate 'full,zero' (m/s): full weight below, none above, linear between")
+    ap.add_argument("--contact-hz", type=float, default=0.0,
+                    help="contact gate speed: a foot path low-passed at this cutoff (Hz); 0 = the stance speed's 6 Hz "
+                         "(test E2); 1.5 = the foot lock's cutoff (test E2b)")
+    ap.add_argument("--contact-path", default="loaded", choices=("loaded", "lock"),
+                    help="with --contact-hz: 'loaded' = the loaded sole point over the whole take; 'lock' = the foot "
+                         "lock's path, the sole centre inside each stance run (runs under 8 frames held still)")
     ap.add_argument("--root-xz", action="store_true", help="free horizontal root offsets too (first run)")
     ap.add_argument("--w-anchor", type=float, default=1.0,
                     help="horizontal anchor of ankles + feet to the filtered input (0 = none, the first run)")
@@ -638,7 +681,8 @@ def main(argv=None) -> None:
             w_feet=a.w_feet, slip_max_v=a.slip_max_v if a.slip_max_v > 0 else None, w_slip=a.w_slip,
             floor_mm=a.floor_mm, root_xz=a.root_xz, quality=not a.no_quality, w_anchor=a.w_anchor,
             anchor_mm=a.anchor_mm, w_contact=a.w_contact,
-            contact_v=tuple(float(x) for x in a.contact_v.split(",")))
+            contact_v=tuple(float(x) for x in a.contact_v.split(",")), contact_hz=a.contact_hz or None,
+            contact_path=a.contact_path)
     for r, m in s.items():
         brief = {k: v for k, v in m.get("refine", {}).items()
                  if k not in ("history", "data_per_cam_before_after", "feet_data_per_cam_before_after")}

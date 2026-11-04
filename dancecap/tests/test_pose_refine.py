@@ -99,6 +99,28 @@ def test_contact_weights_hold_planted_feet_and_free_slides():
     assert np.allclose(w, [1.0, 0.5, 0.0, 0.0, 0.0])  # each pair takes the lower of its two frames
 
 
+def test_contact_gate_speed_at_1p5_hz_ignores_fit_noise_on_a_planted_foot_but_not_a_slide():
+    t = np.arange(120) / 30.0
+    planted = 0.01 * np.c_[np.sin(2 * np.pi * 3.5 * t), np.cos(2 * np.pi * 3.5 * t + 1.0)]  # 10 mm of 3.5 Hz noise
+    slide = np.c_[0.4 * t, np.zeros_like(t)]  # a real 0.4 m/s slide
+    mid = slice(20, 100)
+    assert np.median(pr.path_speed(planted, t, 6.0)[mid]) > 0.15  # the stance speed (E2's gate): mostly shut
+    assert np.median(pr.path_speed(planted, t, 1.5)[mid]) < 0.03  # E2b's gate: open
+    np.testing.assert_allclose(pr.path_speed(slide, t, 1.5)[mid], 0.4, atol=0.01)  # the slide keeps its speed
+
+
+def test_contact_gate_on_the_foot_lock_path_keeps_a_step_out_of_the_planted_runs_beside_it():
+    t = np.arange(60) / 30.0
+    x = np.r_[np.zeros(20), np.linspace(0.0, 0.4, 10), np.full(30, 0.4)]  # planted, a 0.4 m step in 10 frames, planted
+    xz = np.c_[x, np.zeros(60)]
+    stance = np.r_[np.ones(20), np.zeros(10), np.ones(30)].astype(bool)
+    assert np.all(pr.lock_speed(xz, stance, t, 1.5)[stance] < 1e-9)  # both runs still: the gate stays open
+    assert (pr.path_speed(xz, t, 1.5)[stance] > 0.05).sum() >= 6  # a whole-take low-pass smears the step into them
+    short = np.r_[np.zeros(20), np.ones(5), np.zeros(35)].astype(bool)
+    wobble = np.c_[0.01 * np.sin(np.arange(60.0)), np.zeros(60)]
+    assert np.all(pr.lock_speed(wobble, short, t, 1.5) == 0.0)  # a run under 8 frames is held still, as the lock does
+
+
 def test_contact_slip_holds_the_patch_but_frees_pivots_and_rolls():
     import torch
     rng = np.random.default_rng(0)

@@ -6,8 +6,13 @@ against the eight-phone fit. Phone 01 is in no arm, so it is a held-out view for
 E2: does the contact-patch term (pose_refine --w-contact) cut stance slip where rf2 did not? Four refine arms (0 = the
 shipped recipe, a = rf2, b05 / b2 = contact term at weight 0.5 / 2) on the eight-phone fit, on E1 arm b's two-phone fit
 and on the two one-phone windows (phone 06 with the SAM 3D Body prior at weight 2, 44-48 s and 58-62 s).
+E2b: the two contact arms again, one change: the gate reads a 1.5 Hz low-passed foot speed (--contact-hz 1.5), not the
+loaded point's 6 Hz one, which the noise of the two- and one-phone fits pushed over the gate on most planted frames (E2):
+first run (job e2b) the loaded point over the whole take, plus the doc's other option, stance alone (weight 0.5, no
+speed gate); second run (job e2b2) the foot lock's own path (--contact-path lock), which the doc named. Same four inputs.
 
     python -m dancecap.phone_subsets make     # shadow takes, glue and pod jobs (no pod, no upload)
+    python -m dancecap.phone_subsets make-e2b --run e2b2  # an E2b pod job (after make: it reuses E1 arm b's fit)
     python -m dancecap remote run --jobs <the printed list> --parallel --max-cost 2.5
     python -m dancecap.phone_subsets score    # -> work/larissa_kadu_38/e1e2/{score.json, sheet.md}
 
@@ -41,6 +46,13 @@ RECIPE = ("--mode refine --root-hz 5.0 --rot-hz 8.0 --w-floor 1.0 --floor-mm 5.0
           "--slip-max-v 0.15 --w-anchor 1.0 --anchor-mm 10.0 --iters 400")
 E2 = {"e2_0": "", "e2_a": " --w-slip 0.5 --slip-max-v 0.15", "e2_b05": " --w-contact 0.5 --contact-v 0.05,0.25",
       "e2_b2": " --w-contact 2.0 --contact-v 0.05,0.25"}
+E2B = {"e2b_b05": E2["e2_b05"] + " --contact-hz 1.5", "e2b_b2": E2["e2_b2"] + " --contact-hz 1.5",
+       "e2b_s05": " --w-contact 0.5 --contact-v 99,100",  # the doc's other E2b option, stance alone (no speed gate)
+       "e2b_l05": E2["e2_b05"] + " --contact-hz 1.5 --contact-path lock",
+       "e2b_l2": E2["e2_b2"] + " --contact-hz 1.5 --contact-path lock"}
+# b05 / b2 (first run): the loaded point low-passed over the whole take, which smears each swing into the planted frames
+# beside it; l05 / l2 (second run): the foot lock's own path, the sole centre inside each stance run, as the doc named it.
+E2B_RUNS = {"e2b": ("e2b_b05", "e2b_b2", "e2b_s05"), "e2b2": ("e2b_l05", "e2b_l2")}
 MONO = {"larissa_kadu_38_mono06": (836, 956), "larissa_kadu_38_mono06_w44": (416, 536)}  # reference grid rows
 MONO_BRANCH = "claude/vigilant-moser-a1afa5"
 WINDOWS = {"whole": None, "44-48": (44.0, 48.0), "58-62": (58.0, 62.0)}
@@ -151,9 +163,9 @@ def _slice_npz(src: Path, dst: Path, a: int, b: int) -> None:
     np.savez_compressed(dst, **out)
 
 
-def make_e2(max_minutes: int = 45) -> Path:
-    """Glue for the one-phone windows (select.json naming their grid set, the eight-phone fit sliced onto their grid
-    as pose_quality's reference, the w44 take file from the unmerged branch) and one pod job for every E2 refine."""
+def _e2_glue() -> None:
+    """Glue for the one-phone windows: select.json naming their grid set, the eight-phone fit sliced onto their grid
+    as pose_quality's reference, the w44 take file from the unmerged branch."""
     for mono, (a, b) in MONO.items():
         m = WORK / mono / "mamma"
         sel = m / "select.json"
@@ -165,6 +177,23 @@ def make_e2(max_minutes: int = 45) -> Path:
             text = subprocess.run(["git", "show", f"{MONO_BRANCH}:dancecap/takes/{mono}.toml"], capture_output=True,
                                   text=True, check=True, cwd=PACKAGE_ROOT).stdout
             _toml(mono, text=text)
+
+
+def _e2_inputs() -> list[str]:
+    """The eight-phone fit and grid, and each one-phone window's fit, grid and sliced reference."""
+    w = f"dancecap/work/{REF}"
+    inputs = [f"{w}/smplx/", f"{w}/mamma/select.json", f"{w}/mamma/prepare.json", f"{w}/mamma/ma_cap/{REF}_c8/",
+              f"{w}/mamma/ma_2d/{REF}_c8/", *ALIGNMENT]
+    for mono in MONO:
+        mw = f"dancecap/work/{mono}"
+        inputs += [f"{mw}/mamma/select.json", f"{mw}/mamma/prepare.json", f"{mw}/mamma/ma_cap/{mono}_m06/",
+                   f"{mw}/mamma/ma_2d/{mono}_m06/", f"{mw}/mamma/fits/3db/smplx/", f"{mw}/ref8/"]
+    return inputs
+
+
+def make_e2(max_minutes: int = 45) -> Path:
+    """The one-phone glue and one pod job for every E2 refine."""
+    _e2_glue()
     commands, outputs = [], []
     w = f"dancecap/work/{REF}"
     for d, extra in E2.items():
@@ -182,17 +211,49 @@ def make_e2(max_minutes: int = 45) -> Path:
             outputs.append(f"dancecap/work/{mono}/{d}/")
         outputs.append(f"dancecap/work/{mono}/quality/")
     outputs += [f"{w}/quality/quality_{d}.json" for d in E2] + [f"{w}/quality/quality_{d}_frames.npz" for d in E2]
-    inputs = [f"{w}/smplx/", f"{w}/mamma/select.json", f"{w}/mamma/prepare.json", f"{w}/mamma/ma_cap/{REF}_c8/",
-              f"{w}/mamma/ma_2d/{REF}_c8/", *ALIGNMENT]
-    for mono in MONO:
-        mw = f"dancecap/work/{mono}"
-        inputs += [f"{mw}/mamma/select.json", f"{mw}/mamma/prepare.json", f"{mw}/mamma/ma_cap/{mono}_m06/",
-                   f"{mw}/mamma/ma_2d/{mono}_m06/", f"{mw}/mamma/fits/3db/smplx/", f"{mw}/ref8/"]
-    return _job(WORK / REF / "e1e2" / "pod_job_e2.json", REF, "e2", commands, inputs, outputs,
+    return _job(WORK / REF / "e1e2" / "pod_job_e2.json", REF, "e2", commands, _e2_inputs(), outputs,
                 verify=[f"{w}/smplx_e2_b05/follow.npz", f"dancecap/work/{list(MONO)[1]}/e2_b05/follow.npz"],
                 max_minutes=max_minutes, vram=16,
                 notes="E2 refine arms (0 / rf2 / contact 0.5 / contact 2) on the eight-phone fit and the two one-phone "
                       "windows; pose_quality against the eight-phone fit's stance frames")
+
+
+def make_e2b(run: str = "e2b", max_minutes: int = 45) -> Path:
+    """One pod job for one E2b run's refines (E2B_RUNS[run]) on the four E2 inputs: the eight-phone fit, E1 arm b's
+    two-phone fit (refined in its shadow take, as in E1: its grid set only), and the two one-phone windows. Arm 0 and
+    rf2 are E2's."""
+    _e2_glue()
+    w, b = f"dancecap/work/{REF}", f"dancecap/work/{REF}_e1b"
+    arms = {d: E2B[d] for d in E2B_RUNS[run]}
+    commands, outputs = [], []
+    for d, extra in arms.items():
+        commands += [(f"refine8_{d}", 15, f"python -m dancecap.pose_refine {REF} --src smplx --dst smplx_{d} {RECIPE}"
+                                          f"{extra} --device cuda"),
+                     (f"quality8_{d}", 15, f"python -m dancecap.pose_quality {REF} --smplx-dir smplx_{d} --tag {d} "
+                                           f"--ref-dir smplx"),
+                     (f"refine2_{d}", 15, f"python -m dancecap.pose_refine {REF}_e1b --src smplx --dst {d} {RECIPE}"
+                                          f"{extra} --device cuda"),
+                     (f"quality2_{d}", 15, f"python -m dancecap.pose_quality {REF}_e1b --smplx-dir {d} --tag {d} "
+                                           f"--ref-dir ../{REF}/smplx")]
+        outputs += [f"{w}/smplx_{d}/", f"{b}/{d}/"]
+        for mono in MONO:
+            commands += [(f"refine_{mono[-3:]}_{d}", 10, f"python -m dancecap.pose_refine {mono} --src "
+                                                         f"mamma/fits/3db/smplx --dst {d} {RECIPE}{extra} --device cuda"),
+                         (f"quality_{mono[-3:]}_{d}", 10, f"python -m dancecap.pose_quality {mono} --smplx-dir {d} "
+                                                          f"--tag {d} --ref-dir ref8")]
+            outputs.append(f"dancecap/work/{mono}/{d}/")
+    for take in (REF, f"{REF}_e1b", *MONO):
+        outputs += [f"dancecap/work/{take}/quality/quality_{d}{s}" for d in arms for s in (".json", "_frames.npz")]
+    inputs = _e2_inputs() + [f"{b}/smplx/", f"{b}/mamma/select.json", f"{b}/mamma/prepare.json",
+                             f"{b}/mamma/ma_cap/{REF}_e1b_e1b/", f"{b}/mamma/ma_2d/{REF}_e1b_e1b/"]
+    first, last = list(arms)[0], list(arms)[-1]
+    return _job(WORK / REF / "e1e2" / f"pod_job_{run}.json", REF, run, commands, inputs, outputs,
+                verify=[f"{w}/smplx_{first}/follow.npz", f"{b}/{first}/follow.npz",
+                        f"dancecap/work/{list(MONO)[1]}/{last}/follow.npz"],
+                max_minutes=max_minutes, vram=16,
+                notes=f"E2b run {run}: contact arms {', '.join(arms)} (the gate on a 1.5 Hz low-passed foot speed, or "
+                      "stance alone) on the eight-phone, two-phone (E1 b) and one-phone fits; pose_quality against the "
+                      "eight-phone fit's stance frames")
 
 
 def main(argv=None) -> None:
@@ -200,10 +261,12 @@ def main(argv=None) -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("make", help="shadow takes, glue and pod jobs (no pod)")
     p.add_argument("--arms", default="abcd")
+    p = sub.add_parser("make-e2b", help="one E2b run's pod job (no pod)")
+    p.add_argument("--run", default="e2b", choices=tuple(E2B_RUNS))
     sub.add_parser("score", help="score the returned fits -> work/larissa_kadu_38/e1e2/")
     a = ap.parse_args(argv)
-    if a.cmd == "make":
-        jobs = [*make_e1(a.arms), make_e2()]
+    if a.cmd in ("make", "make-e2b"):
+        jobs = [*make_e1(a.arms), make_e2()] if a.cmd == "make" else [make_e2b(a.run)]
         print("jobs: " + ",".join(str(j.relative_to(PACKAGE_ROOT.parent)).replace("\\", "/") for j in jobs))
     else:
         from .phone_subsets_score import score

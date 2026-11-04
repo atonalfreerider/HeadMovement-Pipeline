@@ -13,7 +13,7 @@ experiments on our own data.
 - a second check the same day: 8 skeptics re-read 36 of the report's decision-driving claims against the repo, the
   work files, git and the primary pages. 24 were confirmed and 12 corrected in place; none was refuted.
 
-Nothing was run on pods for the research itself. E1 and E2 ran afterwards, the same day (section 4a). Every claim about a
+Nothing was run on pods for the research itself. E1, E2 and E2b ran afterwards, the same day (section 4a). Every claim about a
 method links its primary source. Labels:
 - **measured** = our runs, with the file or commit named;
 - **stated** = the authors' own numbers;
@@ -27,11 +27,16 @@ after about mid-October 2026 may be missing if none of the fetched papers cite i
 
 ## In short
 
-- **Results of E1 and E2, 2026-11-03 (section 4a).**
+- **Results of E1, E2 and E2b, 2026-11-03 (section 4a).**
   - **E1:** a third phone cut the follower's error by 29 % over the take, and by 44 % in the hidden spin when placed in the
     largest gap. Film three phones. The narrow pair was only 1.1 times worse than the good pair, not twice.
   - **E2:** the new contact term cut eight-phone slip by more than half but barely moved the two-phone follower or the
     one-phone fits, because its speed gate switches it off on noisy fits. E2b changes the gate.
+  - **E2b:** with the gate on a 1.5 Hz low-passed foot path, the term at weight 0.5 cuts sparse-fit slip by 40-68 %
+    (all but the hidden one-phone follower), but no gate passes on every route. Only the whole-take loaded-point gate passes on two phones. The foot lock's path cuts
+    more slip but costs the two-phone follower's feet 0.40 px in the fitted views. On sparse fits it cuts the median, not
+    the tail, and the hidden one-phone follower is a position error. Proposed for fits from two or more phones (tested
+    on two and eight), pending the owner's go.
 - **No released method reconstructs a couple in close embrace from phone video with grounded feet.** MAMMA stays the
   backbone. The fixes are parts around it:
   - per-person priors where the cameras are blind;
@@ -55,7 +60,7 @@ after about mid-October 2026 may be missing if none of the fetched papers cite i
 - **One-phone placement is a camera-height problem, not a focal problem.** This was measured this round: on the lk03 cut the
   focal matches the eight-phone value within 0.15 %, but the couple is placed 9.5 % too far (section 2, finding 6).
 - **First experiments: E1**, two against three phones on our eight-phone take, **and E2**, the foot term, beside it. Both
-  ran on 2026-11-03 (section 4a).
+  ran on 2026-11-03, and E2b after them (section 4a).
 
 ## 1. The problem in one paragraph
 
@@ -451,9 +456,10 @@ The total is about $3-5. E1 and E2 can run side by side, because E2's first two 
 - Camera-height oracle on lk03: re-fit with the eight-phone camera height and pitch (about $1).
 - MammaEval-Dance at two and three views against true ground truth (about $2-3, plus a download with the owner's account).
 
-## 4a. Results of E1 and E2 (2026-11-03)
+## 4a. Results of E1, E2 and E2b (2026-11-03)
 
-Both ran on Runpod the same day, for $3.84 in total: E1 on four pods, one per arm ($0.47-1.90 each), and E2 on one ($0.17).
+Both ran on Runpod the same day, for $3.85 in total: E1 on four pods, one per arm ($0.47-1.90 each), and E2 on one ($0.17).
+E2b followed on two more pods ($0.35 and $0.16), for $4.36 in all.
 - Code: `dancecap/phone_subsets.py` builds the arms and pod jobs. `dancecap/phone_subsets_score.py` scores them into
   `work/larissa_kadu_38/e1e2/{sheet.md,score.json}`, which is git-ignored.
 - Every arm fit:
@@ -513,14 +519,15 @@ As built, arm B differs from the plan:
 
 | Input | Arm 0 slip | `rf2` | Contact 0.5 | Contact 2 | Gate kept | Feet px change (contact 0.5) |
 |---|---|---|---|---|---|---|
-| Eight phones | 92/118 | 76/113 | 34/54 | 21/45 | 37/27 % | +0.05/+0.04 |
-| Two phones (E1 arm B) | 131/226 | 137/229 | 68/210 | 56/215 | 34/19 % | +0.15/+0.16 |
-| One phone, 58-62 s | 302/361 | 304/347 | 272/359 | 271/357 | 13/6 % | +0.05/+0.01 |
-| One phone, 44-48 s | 261/1043 | 269/1045 | 288/1037 | 289/1048 | 11/5 % | +0.31/-0.06 |
+| Eight phones | 92/118 | 76/113 | 34/54 | 21/45 | 39/28 % | +0.05/+0.04 |
+| Two phones (E1 arm B) | 131/226 | 137/229 | 68/210 | 56/215 | 36/20 % | +0.15/+0.16 |
+| One phone, 58-62 s | 302/361 | 304/347 | 272/359 | 271/357 | 14/7 % | +0.05/+0.01 |
+| One phone, 44-48 s | 261/1043 | 269/1045 | 288/1037 | 289/1048 | 11/6 % | +0.31/-0.06 |
 
 How the table was measured:
 - Slip in mm/s, lead/follow, on the reference's stance frames.
-- "Gate kept" is the share of stance frame pairs that the speed gate let through.
+- "Gate kept" is the share of stance frame pairs that the speed gate let through. (Corrected after the E2b review: the
+  first version divided by stance frames, not pairs, and read up to 2 points low.)
 - Stance ankles moved at most 5.7 mm (the plan allows 10). The one exception is the one-phone 44-48 s follower: 14.3 mm,
   against 14.2 for arm 0, so the filter moves them, not the term.
 
@@ -532,13 +539,101 @@ Findings:
   - The two-phone follower fails (slip down only 7 % and 5 %), and so do both one-phone windows (-10 % to +11 %).
 - **`rf2` does not help sparse fits either.** On two phones it raises slip (131 to 137, 226 to 229).
 - **The cause is the speed gate** (measured). On noisy fits even planted feet move faster than 0.25 m/s. The gate keeps
-  27-37 % of stance pairs on eight phones, 19 % for the two-phone follower and 5-13 % on one phone. It switches the term
+  28-39 % of stance pairs on eight phones, 20 % for the two-phone follower and 6-14 % on one phone. It switches the term
   off where it is needed.
 - **Next, E2b, one change.** Gate on the speed of the low-passed sole path, the 1.5 Hz low-pass the foot lock already
   uses, or on stance alone. Then re-run the two- and one-phone inputs, for about $0.2. On one phone the 10 mm ankle
-  anchor may then become the limit, because holding those feet needs moves of several centimetres (reasoned).
+  anchor may then become the limit, because holding those feet needs moves of several centimetres (reasoned). E2b ran
+  the same evening; results below.
 - **The term is not in the recipe yet.** Weight 0.5 passes on eight phones, but the plan adopts it only once it passes
   on every route.
+
+**E2b: gate on the slow foot path. More slip goes, but no gate passes on every route** (measured, $0.51 on two pods).
+
+As built, each arm is one change from E2's arm B. Same ramp as E2 (full weight below 0.05 m/s, none above 0.25):
+- **Run 1 ($0.35).** The gate reads the loaded point's speed after a 1.5 Hz zero-phase low-pass over the whole take
+  (`pose_refine --contact-hz 1.5`), at weights 0.5 and 2. Also the other option, stance alone, at weight 0.5: the gate
+  never closes (`--contact-v 99,100`).
+- **Run 2 ($0.16).** The code review after run 1 found that run 1's low-pass is not the foot lock's. The foot lock
+  low-passes the sole centre inside each stance run, while a whole-take low-pass smears each step into the planted
+  frames beside it. Run 2 uses the foot lock's own path (`--contact-path lock`), at weights 0.5 and 2.
+- The same four inputs. Arm 0 and `rf2` are E2's runs.
+- The pair weights the scorer recomputes from the input fits match the pods' to 0.15 per foot, in 28 of 28 runs.
+- The review also fixed two scorer details, without changing E2's verdict:
+  - "gate kept" now divides by stance pairs (E2's figures above are corrected by up to 2 points);
+  - the ankle check now measures what the term moved, against arm 0's output. The filter alone moves the hidden
+    one-phone follower's ankles 14 mm.
+
+| Input | Arm 0 | Foot lock 0.5 | Foot lock 2 | Loaded point 0.5 | Loaded point 2 | Stance alone 0.5 |
+|---|---|---|---|---|---|---|
+| Eight phones | 92/118 | 35/54 | 22/40 | 35/63 | 24/52 | 43/63 |
+| Two phones (E1 arm B) | 131/226 | 58/112 | 41/94 | 72/136 | 57/122 | 63/112 |
+| One phone, 58-62 s | 302/361 | 105/133 | 82/108 | 98/177 | 59/137 | 104/122 |
+| One phone, 44-48 s | 261/1043 | 115/1042 | 85/1050 | 122/1038 | 99/1039 | 114/1254 |
+
+Slip is the median in mm/s on the reference's stance frames, lead/follow. At weight 0.5:
+
+| Input | Feet px change, foot lock | Feet px change, loaded point | Held-out 01 feet px: arm 0, foot lock, loaded point |
+|---|---|---|---|
+| Eight phones | +0.06/+0.07 | +0.03/+0.05 | - |
+| Two phones (E1 arm B) | +0.17/+0.40 | +0.19/+0.25 | 9.7/12.4, 9.7/12.3, 9.6/12.4 |
+| One phone, 58-62 s | -0.17/+0.32 | +0.19/+0.42 | 17.9/11.3, 19.0/11.5, 19.0/11.2 |
+| One phone, 44-48 s | +0.22/-0.40 | +0.06/-0.11 | 10.9/30.8, 11.0/30.8, 11.1/30.8 |
+
+Findings:
+- **No arm passes on every route, so under the plan the term stays out of the recipe.** Route by route:
+  - **Eight phones:** both gates pass at weight 0.5. The foot lock cuts slip 62/55 %, the loaded point 62/47 %.
+  - **Two phones:** only the loaded point at weight 0.5 passes (slip down 45/40 %, feet +0.19/+0.25 px).
+    - The foot lock cuts more (56/50 %), but the follower's feet rise 0.40 px, over the 0.3 bar.
+    - That rise is in the two fitted phones only. In the held-out phone 01 her feet stay at 12.3-12.4 px under arm 0
+      and both gates.
+  - **One phone:** no arm passes.
+    - At 58-62 s both gates cut slip by half or more (foot lock 65/63 %, loaded point 68/51 %; E2: 10/0 %).
+    - Both cost the follower's feet more than the bar in the one fitted view: +0.32 px (foot lock) and +0.42 px (loaded
+      point).
+    - In the held-out phone 01 the lead's feet rise 1.1 px with either gate.
+  - **The hidden follower at 44-48 s** keeps her slip under every arm. Her "planted" feet move at about 1 m/s because
+    her hidden fit is wrong, not because they slide on the floor:
+    - her pelvis moves at 0.93 m/s (median), against 0.31 in the eight-phone fit, and drifts up to 1 m from it;
+    - her legs are wrong too: with her pelvis moved onto the eight-phone path, her feet would still move at 0.79 m/s on
+      the reference's stance frames (0.10 in the eight-phone fit);
+    - those are position errors, not slip, and no foot term reaches them. Her fit's own stance covers only 39 % of the
+      reference's stance pairs.
+- **Weight 2 cuts more but costs too much.** With the foot lock, two-phone slip falls 68/58 %, but the feet rise up to
+  0.68 px.
+- **Stance alone fails.** With no gate, the term also holds 19-39 % of the reference's swing pairs. Feet reprojection
+  rises up to 1.3 px, and the term moves the ankles up to 13 mm.
+- **Why the slower gates work** (measured: `phone_subsets_score.gate_cover`, in `score.json`):
+  - At 6 Hz the gate opened on frames that already slipped about half as much as the median. On the two-phone
+    follower, its weighted arm-0 slip averaged 123 mm/s, against a median of 226.
+  - At 1.5 Hz the gate also opens on planted feet that jitter. Those frames slip about as much as the median one: on
+    the two-phone follower a weighted 183 mm/s, and 196 under the foot lock. So the median falls, but most of arm 0's
+    slip stays outside every gate. Share of arm 0's slip that it covers:
+
+    | Gate | Two-phone follower | One phone (58-62 s and the 44-48 s lead) |
+    |---|---|---|
+    | 6 Hz | 5 % | at most 6 % |
+    | Loaded point | 10 % | 17-25 % |
+    | Foot lock | 17 % | 21-27 % |
+
+  - On the two-phone follower, the foot lock's share of the reference's stance pairs is 34 %, against 22 % for the
+    loaded point and 17 % for 6 Hz. It still holds only 4-9 % of the swing pairs.
+  - Frames the term holds slip 0.13-0.55 times as much as before.
+  - Frames it leaves free slip up to 21 % more, and 57 % more for the eight-phone lead under the foot lock.
+- **On sparse fits it fixes the median, not the tail** (measured).
+  - On the two- and one-phone fits the p95 slip does not fall with either gate at weight 0.5 (0 to +11 %; at weight 2,
+    -3 to +13 %).
+  - Their big stance-frame jumps (p95 up to 1.6 m/s on two phones) are foot-position errors that move fast. A speed
+    gate leaves them alone by design.
+  - On eight phones the foot lock also cuts the p95, by 36/40 %.
+  - Stance alone cuts the lead's p95 on the sparse fits by 21-61 %, but fails on cost (above).
+- **Proposal.** For fits from two or more phones, take the loaded point at weight 0.5 (`--w-contact 0.5 --contact-hz
+  1.5`). It is the only arm that passed on both the two- and the eight-phone fit; three to seven phones are untested.
+  Keep the term off for one phone.
+  - The foot lock is the stronger candidate for three phones, the setup E1 chose. A run on E1 arm C's three-phone fit
+    (about $0.1) would show whether it stays under the bar there.
+  - The plan adopts the term only once it passes on every route, so a per-route rule needs the owner's go.
+  - The tail needs a different tool: better foot positions (E3-E5, FECO contacts), not a stronger foot term.
 
 ## 5. What a third phone buys over two, and where to put it
 
