@@ -118,7 +118,7 @@ def cmd_job(args) -> None:
                 "TQDM_DISABLE": "1", "HF_HUB_DISABLE_PROGRESS_BARS": "1", "UV_LINK_MODE": "hardlink"},
         "commands": [
             {"name": "install", "timeout_min": 30, "cmd": "bash remote/cand_fda/install.sh"},
-            {"name": "inputs", "timeout_min": 6, "cmd": "python -m dancecap.fda_test inputs"},
+            {"name": "inputs", "timeout_min": 20, "cmd": "python -m dancecap.fda_test inputs"},
             {"name": "bodymodels", "timeout_min": 2, "cmd": f"{py} {pod} place-models"},
             {"name": "smoke", "timeout_min": 20, "cmd": f"{py} {pod} run --inputs {I} --out {R} --only {smoke} --require-all"},
             {"name": "run", "timeout_min": args.run_minutes,
@@ -210,11 +210,11 @@ def cmd_inputs(args) -> None:
                 im = Image.fromarray(f).transform((OUT_W, OUT_H), Image.Transform.AFFINE,
                                                   data=(1 / s, 0, ox, 0, 1 / s, oy), resample=Image.Resampling.BICUBIC,
                                                   fillcolor=(128, 128, 128))
-                im.save(fdir / f"{i:04d}.png")
+                im.save(fdir / f"{i:04d}.jpg", quality=97)
             num, den = FPS_NUM[cam]
             mp4 = vd / "clip.mp4"
-            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-framerate", f"{num}/{den}", "-i", str(fdir / "%04d.png"),
-                           "-c:v", "libx264", "-crf", "12", "-preset", "slow", "-pix_fmt", "yuv420p", str(mp4)], check=True)
+            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-framerate", f"{num}/{den}", "-i", str(fdir / "%04d.jpg"),
+                           "-c:v", "libx264", "-crf", "12", "-preset", "fast", "-pix_fmt", "yuv420p", str(mp4)], check=True)
             for r in ROLES:
                 rd = root / run_name(cam, c, r)
                 rd.mkdir(exist_ok=True)
