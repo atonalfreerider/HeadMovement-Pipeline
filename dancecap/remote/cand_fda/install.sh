@@ -39,7 +39,11 @@ clone https://github.com/zju3dv/GVHMR.git "$REPO/third_party/GVHMR" "$GVHMR_COMM
 if ! command -v uv >/dev/null 2>&1; then
   pip install -q uv || { echo "[install] uv install failed"; exit 5; }
 fi
-[ -x "$VENV/bin/python" ] || uv venv -q --python 3.11 "$VENV" || { echo "[install] venv failed"; exit 5; }
+# uv's managed CPython (python-build-standalone ships tkinter): a GVHMR module has a stray `from turtle import forward`,
+# and the image's system python 3.11 has no tkinter (session 20261105-123351: the motion worker died on it)
+[ -x "$VENV/bin/python" ] || uv venv -q --python 3.11 --python-preference only-managed "$VENV" || {
+  echo "[install] venv failed"; exit 5; }
+"$VENV/bin/python" -c "import turtle" || { echo "[install] tkinter / turtle missing in the venv python"; exit 5; }
 echo "[install] venv $($VENV/bin/python -V) ($(el))"
 ( cd "$REPO" && uv pip install -q --python "$VENV/bin/python" -r requirements.txt ) || {
   echo "[install] requirements failed"; exit 6; }
