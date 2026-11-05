@@ -9,6 +9,7 @@
 #   - fda_pod.py patch: the GVHMR tracker reads OUR dancer boxes when FDA_BOXES is set (one dancer per run).
 # SMPL-X neutral (the owner's licence) is linked from the bundle by fda_pod.py place-models. Weights stay on the pod.
 set -uo pipefail
+HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=${FDA_ROOT:-/workspace/fda}
 FDA_COMMIT=${FDA_COMMIT:-6dcf626d74bd95c42792f86b1d55e3841075c10c}
 GVHMR_COMMIT=${GVHMR_COMMIT:-6ec3ca39336c50492c0fae65fba2fb831fc7d866}
@@ -54,5 +55,5 @@ EOF
   tail -20 "$ROOT/download_model.log"; echo "[install] model download failed"; exit 8; }
 du -sh "$REPO/models" 2>/dev/null | sed 's/^/[install] models /'
 echo "[install] weights ($(el))"
-"$VENV/bin/python" "$(dirname "$0")/fda_pod.py" patch || { echo "[install] tracker patch failed"; exit 9; }
+"$VENV/bin/python" "$HERE/fda_pod.py" patch || { echo "[install] tracker patch failed"; exit 9; }
 echo "[install] done ($(el))"
