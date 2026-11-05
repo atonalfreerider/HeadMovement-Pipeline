@@ -266,7 +266,77 @@ def _carlos_aline() -> Profile:
         preview_label="LHM++ splats (take avatars)")
 
 
-PROFILES = {"larissa_kadu_recap": lambda: RECAP, "recap": lambda: RECAP, "carlos_aline": _carlos_aline}
+def _larissa_kadu_demo() -> Profile:
+    """The demo dance (capture 05_LarissaKaduFull, take larissa_kadu_full) in its own clothes, NOT the class recap's: the crops come
+    from larissa_kadu_38 (the same eight demo phones, 30-68 s, whose motion larissa_kadu_full reuses verbatim, so the same betas),
+    the splats go to 05_LarissaKaduFull (owner 2026-11-05: "I want LHM++ splats for the dance recap. make sure you use runpod").
+    Its cameras come from `world-cams` (cameras/<cam>.npz in the SfM frame + frames/<cam>/frames.json pts -> <cam>_world.npz)."""
+    names = _toml_names("larissa_kadu_38")
+    return Profile(
+        take="larissa_kadu_38", capture="05_LarissaKaduFull", cams=("01", "02", "03", "04", "05", "06", "07", "09"),
+        hires=("06", "02"), hires_in_order=True, names=names, portrait_cams=(),
+        offsets_file="work/larissa_kadu_38/sync/offsets.json", students=False, window=None,
+        # a 38-s close-hold demo: the recap's gate (partner <= 1 %, speed <= 0.45 m/s) keeps 51 candidates over 8 phones
+        # (2026-11-05); the competition heat's relaxed gate, SAM score and frontal extras (carlos_aline) apply here too
+        gate={**GATE, "occ_partner": 0.05, "v_med": 0.8}, sel={**SEL, "sam_score": 0.60},
+        front_extra=6, front_gate={**GATE, "occ_partner": 0.15, "v_med": 1.2},
+        per_cam=10, caps={"06": 4, "02": 4, "01": 1, "03": 1, "04": 1, "05": 1, "07": 1, "09": 1}, cap_default=1, min_sharp=120.0,
+        preview_window=(50.0, 60.0), a2_cams=("06", "02"), prev_cams=("06", "02"), a2_span=(31.0, 67.0),
+        film=None, hair_rule="red",
+        hair_notes={"lead": f"{names['lead']}: shaved head, no hair Gaussians (by design)"}, colour="ref:06", white_role=None,
+        # by eye (2026-11-05, refs_<role>.jpg of the first pick)
+        veto={
+            ("lead", "01_00216"): "her hand and forearm inside his mask at his hip",
+            ("follow", "02_02184"): "his arm across her back inside her mask",
+            ("follow", "06_01112"): "her hair flying across her face in a turn",
+        },
+        legacy_jobs=False, sam_job_name="larissa_kadu_demo_lhmpp_sam", lhm_job_name="larissa_kadu_demo_lhmpp",
+        sam_notes=f"SAM 2.1 masks (three candidates each) of both dancers ({names['lead']} lead, {names['follow']} follow) on the "
+                  "frames chosen by recap_splatav frames --take larissa_kadu_demo (the eight demo phones); likeness data goes to "
+                  "our own pod only (owner consent 2026-10-19, open collaboration)",
+        lhm_notes=f"LHM++ (LHMPP-700M-PixelShuffle @ 906b5d9, CC BY-NC 4.0 weights) avatars of {names['lead']} (lead) and "
+                  f"{names['follow']} (follow) in their demo clothes from 12 crops each of the eight demo phones, shape ref "
+                  "(larissa_kadu_38 fit betas[:10]); export of the canonical zero-pose Gaussians + LHM++'s own LBS weights "
+                  "(SPLAT_AVATAR_FORMAT.md), the A2 check on phones 06 / 02, and a 10 s preview on phones 06 / 02; weights stay "
+                  "on the pod; crops go to our own pod only (owner consent 2026-10-19)",
+        preview_label="LHM++ splats (demo avatars)")
+
+
+def world_cams() -> list[str]:
+    """cameras/<cam>.npz (SfM frame, one row per extracted frame) + world_from_sfm.json + frames/<cam>/frames.json -> the
+    cameras/<cam>_world.npz tracks (room world frame, metres, pts / frame_index per row) and cameras/recap_cams.json (display
+    size, rotation 0: the extracted frames and K are already in display pixels) this module reads."""
+    from ..mamma_dyn import world_cameras
+    cdir = P.work / "cameras"
+    sim3 = json.loads((cdir / "world_from_sfm.json").read_text())
+    meta, done = {}, []
+    for cam in P.cams:
+        fj = json.loads((P.work / "frames" / cam / "frames.json").read_text())
+        with np.load(cdir / f"{cam}.npz") as z:
+            d = {k: z[k] for k in z.files}
+        ft = np.array([f["t"] for f in fj["frames"]], float)
+        fp = np.array([f["pts"] for f in fj["frames"]], float)
+        t = np.asarray(d["t"], float)
+        k = np.clip(np.searchsorted(ft, t), 1, len(ft) - 1)
+        k = np.where(np.abs(ft[k - 1] - t) <= np.abs(ft[k] - t), k - 1, k)
+        if float(np.abs(ft[k] - t).max()) > 1e-3:
+            raise ValueError(f"camera {cam}: camera rows do not match frames.json times (max {np.abs(ft[k] - t).max():.4f} s)")
+        R_w, t_w = world_cameras(np.asarray(d["R"], float), np.asarray(d["tvec"], float), sim3)
+        C = -np.einsum("fji,fj->fi", R_w, t_w)
+        np.savez(cdir / f"{cam}_world.npz", t=t, K=d["K"], R=R_w, tvec=t_w, C=C, dist=d.get("dist", np.zeros(len(t))),
+                 ok=d.get("ok", np.ones(len(t), bool)), pts=fp[k], frame_index=k.astype(np.int64),
+                 interpolated=np.zeros(len(t), bool), note=np.array("recap_splatav world-cams: SfM -> world_from_sfm"))
+        K0 = np.asarray(d["K"], float)[0]
+        meta[cam] = {"id": cam, "file": fj["source"], "width": int(round(2 * K0[0, 2] + 1)), "height": int(round(2 * K0[1, 2] + 1)),
+                     "rotation": 0, "avg_fps": fj.get("fps_median"), "frames_rotation": fj.get("rotation")}
+        done.append(cam)
+        log(f"world-cams {cam}: {len(t)} rows, display {meta[cam]['width']} x {meta[cam]['height']}")
+    (cdir / "recap_cams.json").write_text(json.dumps({"cams": meta, "source": "recap_splatav world-cams"}, indent=1))
+    return done
+
+
+PROFILES = {"larissa_kadu_recap": lambda: RECAP, "recap": lambda: RECAP, "carlos_aline": _carlos_aline,
+            "larissa_kadu_demo": _larissa_kadu_demo, "larissa_kadu_38": _larissa_kadu_demo}
 P: Profile = RECAP          # the active profile (use())
 
 
@@ -1203,7 +1273,7 @@ def pick(rows: list[dict] | None = None, colour: bool | str = True) -> dict:
         opts = chk["options"] if chk else colour_options(rows)
         if mode not in opts:
             raise SystemExit(f"pick: colour option {mode!r} unknown ({', '.join(opts)})")
-        maps = opts[mode]["maps"]
+        maps = opts[mode]["maps"] if chk else opts[mode]   # colour_options gives the maps themselves (no white-top test)
         colour_rec = {"option": mode, "requested": P.colour if colour is True else str(colour), "maps": maps,
                       "applied": bool(maps),
                       "white_top_test": ({k: {kk: v[kk] for kk in ("chroma_mean", "camera_spread_dE", "score", "cams")}
@@ -1974,6 +2044,7 @@ def main(argv=None) -> int:
     common.add_argument("--take", default=None, help="take profile (default: the class recap, larissa_kadu_recap)")
     common.add_argument("--out-dir", default=None, help="write work/<take>/lhmpp outputs here instead (regression runs)")
     sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("world-cams", parents=[common])
     sub.add_parser("survey", parents=[common])
     sub.add_parser("frames", parents=[common])
     sub.add_parser("sam-job", parents=[common])
@@ -1990,7 +2061,9 @@ def main(argv=None) -> int:
     im.add_argument("--no-preview", action="store_true")
     a = ap.parse_args(argv)
     use(a.take, **({"out_dir": a.out_dir} if a.out_dir else {}))
-    if a.cmd == "survey":
+    if a.cmd == "world-cams":
+        world_cams()
+    elif a.cmd == "survey":
         survey()
     elif a.cmd == "frames":
         frames()

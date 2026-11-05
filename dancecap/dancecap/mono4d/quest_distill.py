@@ -61,7 +61,7 @@ BUNDLE = WORK / "bundle"
 POD_OUT = WORK / "pod_out"
 SA = WORKSPACE / "head-movement" / "Assets" / "StreamingAssets"
 LESSONS = {"recap": "06_LarissaKaduRecap", "john_lula": "08_JohnLula", "carlos_aline": "07_CarlosAline",
-           "gui_julissa": "09_GuiJulissa"}
+           "gui_julissa": "09_GuiJulissa", "demo": "05_LarissaKaduFull", "larissa_kadu_38": "05_LarissaKaduFull"}
 ROLES = ("lead", "follow")
 SIZES = (40000, 25000, 15000)
 SH_C0 = 0.28209479177387814

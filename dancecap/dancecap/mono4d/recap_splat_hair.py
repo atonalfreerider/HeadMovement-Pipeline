@@ -154,6 +154,8 @@ class HairProfile:
 HAIR_PROFILES = {"larissa_kadu_recap": HairProfile(TAKE, CAPTURE, "grey"),
                  "carlos_aline": HairProfile("carlos_aline", "07_CarlosAline", "black", look=HAIR_LOOK_BLACK)}
 HAIR_PROFILES["recap"] = HAIR_PROFILES["larissa_kadu_recap"]
+# the demo dance (2026-11-05): the same red hair as the recap, crops from larissa_kadu_38, splats into 05_LarissaKaduFull
+HAIR_PROFILES["larissa_kadu_demo"] = HAIR_PROFILES["larissa_kadu_38"] = HairProfile("larissa_kadu_38", "05_LarissaKaduFull", "grey")
 HP: HairProfile = HAIR_PROFILES[TAKE]
 
 
