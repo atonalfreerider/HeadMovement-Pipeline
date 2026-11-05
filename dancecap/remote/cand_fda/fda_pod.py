@@ -41,6 +41,47 @@ PATCH_NEW = ("            _fda = os.environ.get(\"FDA_BOXES\")\n"
              "            else:\n"
              "                bbx_xyxy = tracker.get_one_track(video_path).float()\n")
 HIT = "[fda] GVHMR boxes from"
+# 4DAnyone renders each view's skeleton video one after another in numpy on one core (~45 s per view at 1080x1920,
+# 18 views per 12-view run: 14 min before generation starts, session 20261105-124614). The same function, the same
+# arguments, run in forked worker processes (CPU only: numpy + PyAV), serial again if the pool fails.
+PAR_OLD_T = ("    target_paths = tuple(\n"
+             "        render_skeleton(camera, skeleton_root / f\"{camera.camera_id:02d}.mp4\") for camera in raw_target_cameras\n"
+             "    )\n")
+PAR_NEW_T = ("    target_paths = _fda_parallel(render_skeleton, [(camera, skeleton_root / f\"{camera.camera_id:02d}.mp4\")\n"
+             "                                                   for camera in raw_target_cameras])\n")
+PAR_OLD_R = ("        rcp_paths = tuple(\n"
+             "            render_skeleton(camera, rcp_root / f\"{camera.camera_id:02d}.mp4\") for camera in raw_rcp_cameras\n"
+             "        )\n")
+PAR_NEW_R = ("        rcp_paths = _fda_parallel(render_skeleton, [(camera, rcp_root / f\"{camera.camera_id:02d}.mp4\")\n"
+             "                                                    for camera in raw_rcp_cameras])\n")
+PAR_HELPER = '''
+
+_FDA_RENDER = None
+
+
+def _fda_call(job):
+    return _FDA_RENDER(*job)
+
+
+def _fda_parallel(fn, jobs):
+    """[fda] the skeleton videos in forked processes (dancecap remote/cand_fda/fda_pod.py patch)."""
+    global _FDA_RENDER
+    import concurrent.futures
+    import multiprocessing
+    import os
+    import time as _t
+    t0 = _t.time()
+    _FDA_RENDER = fn
+    try:
+        n = max(1, min(len(jobs), int(os.environ.get("FDA_RENDER_WORKERS", "16"))))
+        with concurrent.futures.ProcessPoolExecutor(n, mp_context=multiprocessing.get_context("fork")) as ex:
+            out = tuple(ex.map(_fda_call, jobs))
+        print(f"[fda] {len(jobs)} skeleton videos in {n} processes, {_t.time() - t0:.0f} s", flush=True)
+        return out
+    except Exception as e:  # noqa: BLE001
+        print(f"[fda] parallel skeleton render failed ({e!r}); serial", flush=True)
+        return tuple(fn(*j) for j in jobs)
+'''
 
 
 def log(msg: str) -> None:
@@ -57,6 +98,20 @@ def cmd_patch(args) -> None:
         raise SystemExit(f"patch target found {s.count(PATCH_OLD)} times in {p} (want 1)")
     p.write_text(s.replace(PATCH_OLD, PATCH_NEW))
     log(f"tracker patch applied to {p}")
+
+
+def cmd_patch_render(args) -> None:
+    p = REPO / "fdanyone" / "skeleton" / "pipeline.py"
+    s = p.read_text()
+    if "_fda_parallel(render_skeleton" in s:
+        log("render patch already applied")
+        return
+    for old in (PAR_OLD_T, PAR_OLD_R):
+        if s.count(old) != 1:
+            raise SystemExit(f"render patch target found {s.count(old)} times in {p} (want 1)")
+    s = s.replace(PAR_OLD_T, PAR_NEW_T).replace(PAR_OLD_R, PAR_NEW_R).rstrip("\n") + "\n" + PAR_HELPER
+    p.write_text(s)
+    log(f"render patch applied to {p}")
 
 
 def cmd_place_models(args) -> None:
@@ -246,6 +301,7 @@ def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("patch")
+    sub.add_parser("patch-render")
     sub.add_parser("place-models")
     p = sub.add_parser("run")
     p.add_argument("--inputs", required=True)
@@ -264,7 +320,7 @@ def main(argv=None) -> None:
     p.add_argument("--every", type=int, default=4)
     p.add_argument("--weights", default="yolo11x-pose.pt")
     a = ap.parse_args(argv)
-    {"patch": cmd_patch, "place-models": cmd_place_models, "run": cmd_run, "extract": cmd_extract,
+    {"patch": cmd_patch, "patch-render": cmd_patch_render, "place-models": cmd_place_models, "run": cmd_run, "extract": cmd_extract,
      "detect": cmd_detect}[a.cmd](a)
 
 

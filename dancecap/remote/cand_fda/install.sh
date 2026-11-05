@@ -60,4 +60,5 @@ EOF
 du -sh "$REPO/models" 2>/dev/null | sed 's/^/[install] models /'
 echo "[install] weights ($(el))"
 "$VENV/bin/python" "$HERE/fda_pod.py" patch || { echo "[install] tracker patch failed"; exit 9; }
+"$VENV/bin/python" "$HERE/fda_pod.py" patch-render || { echo "[install] render patch failed"; exit 9; }
 echo "[install] done ($(el))"

@@ -120,7 +120,7 @@ def cmd_job(args) -> None:
             {"name": "install", "timeout_min": 30, "cmd": "bash remote/cand_fda/install.sh"},
             {"name": "inputs", "timeout_min": 20, "cmd": "python -m dancecap.fda_test inputs"},
             {"name": "bodymodels", "timeout_min": 2, "cmd": f"{py} {pod} place-models"},
-            {"name": "smoke", "timeout_min": 20, "cmd": f"{py} {pod} run --inputs {I} --out {R} --only {smoke} --require-all"},
+            {"name": "smoke", "timeout_min": 35, "cmd": f"{py} {pod} run --inputs {I} --out {R} --only {smoke} --require-all"},
             {"name": "run", "timeout_min": args.run_minutes,
              "cmd": f"{py} {pod} run --inputs {I} --out {R} --only {rest} --budget-min {args.run_minutes - 4}"},
             {"name": "extract", "timeout_min": 10, "cmd": f"{py} {pod} extract --inputs {I} --out {R}"},
@@ -551,8 +551,8 @@ def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("job")
-    p.add_argument("--max-minutes", type=int, default=150)
-    p.add_argument("--run-minutes", type=int, default=75)
+    p.add_argument("--max-minutes", type=int, default=210)
+    p.add_argument("--run-minutes", type=int, default=120)
     sub.add_parser("inputs")
     sub.add_parser("score")
     a = ap.parse_args(argv)
