@@ -47,6 +47,7 @@ fi
 echo "[install] venv $($VENV/bin/python -V) ($(el))"
 ( cd "$REPO" && uv pip install -q --python "$VENV/bin/python" -r requirements.txt ) || {
   echo "[install] requirements failed"; exit 6; }
+uv pip install -q --python "$VENV/bin/python" lpips==0.1.4 || { echo "[install] lpips failed"; exit 6; }
 echo "[install] requirements ($(el))"
 "$VENV/bin/python" - <<'EOF' || { echo "[install] import check failed"; exit 7; }
 import torch, torchvision, av, smplx, ultralytics
