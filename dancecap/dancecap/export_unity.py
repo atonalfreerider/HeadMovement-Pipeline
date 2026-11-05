@@ -30,8 +30,6 @@ Files written (all little-endian):
   dancer as splats): <role>_albedo.png / smplx_<role>_face.bin (/ shoes.json with both roles) go to the take's archive instead
   (archive_mesh_avatars; `python -m dancecap.export_unity archive-avatars --capture <capture> [--restore]`).
 
-  <role>_albedo.png       photoreal albedo (copy of work/<take>/avatar/<role>_albedo.png, SMPL-X UV layout) when the
-                          texture stage ran; the skin is split at the UV seams so it can carry it (skin version 2)
   room_mesh.bin           static room for Quest ("DCXR"): textured triangle mesh already in Unity coordinates (world =
                           world_from_sfm @ SfM, then (x, y, -z)), submeshes "room"/"floor" -> room_tex.png/floor_tex.png
   splat_quest.ply         Quest Gaussian splat of the room (SfM frame) + capture.json environment_splat.scene_to_unity
@@ -1410,7 +1408,6 @@ def export(take: str, capture: str | None = None, model: Path | None = None, aud
     if shape_edits:
         from . import shape_edits as se
         edit_cfg = se.config_for(take)
-    albedo = {}
     for r, fig in zip(ROLES, ("figure1.json", "figure2.json")):
         d = data[r]
         joints_u = to_unity_points(np.asarray(d["joints"], float)[:, :N_JOINTS])
@@ -1440,20 +1437,10 @@ def export(take: str, capture: str | None = None, model: Path | None = None, aud
                                 "skin_vertices": int(len(skin_u.vertices)), "uv_split": skin_u.uv is not None}
         if edit_rep is not None:
             report["dancers"][r]["shape_edits"] = edit_rep
-        tex = work / "avatar" / f"{r}_albedo.png"
-        if textures and skin_u.uv is not None and tex.exists():
-            shutil.copy2(tex, out / f"{r}_albedo.png")
-            albedo[r] = f"{r}_albedo.png"
         if fk_err > 0.01:
             print(f"[export] WARNING {r}: FK of the exported rotations misses the npz joints by {fk_err * 1000:.1f} mm "
                   f"(model mismatch? pass --model)")
-    if albedo:
-        manifest["smplx_albedo"] = albedo
-        rep_path = work / "avatar" / "report.json"
-        if rep_path.exists():
-            fr = json.loads(rep_path.read_text()).get("smplx_freshness", {})
-            if fr.get("stale"):
-                warnings.append("avatar albedo was baked on a stale smplx/ (avatar/report.json smplx_freshness)")
+    # no <role>_albedo.png: the version-1 mesh avatars are retired (owner 2026-11-05); the viewer draws the dancers as LHM++ splats
     if faces and (work / "smplx_face").exists():
         from .face_export import add_faces
         report["faces"] = add_faces(work, out, manifest, face_albedo, warnings)

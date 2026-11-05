@@ -203,10 +203,12 @@ def validate(cap: Path, take: Take, report: dict | None = None) -> dict:
         n = len(json.loads((cap / fig).read_text())) if ok else 0
         check(f"{fig} frames", ok and n == T, f"{n}")
     edit_cfg = se.config_for(take.name, take.cfg)
-    from .export_unity import archived_from
-    # owner rule 2026-10-23: the mesh-only files of a dancer with splats (albedo, face, the shared shoes) are archived, not missing
-    # (export_unity.archive_mesh_avatars, work/<take>/archive/mesh_avatars_2026-10-23/): checked there by sha256
+    from .export_unity import archived_from, splat_roles
+    # owner rule 2026-10-23: the mesh-only files of a dancer with splats (face, the shared shoes) are archived, not missing
+    # (export_unity.archive_mesh_avatars): checked there by sha256. Owner 2026-11-05: the mesh avatars are retired and their
+    # archives deleted, so a splat dancer's missing mesh-only file is fine; the albedo is no longer exported or checked.
     archived = archived_from(cap, take.name)
+    splats = set(splat_roles(cap))
     for r in ROLES:
         mp, sp = cap / f"smplx_{r}.bin", cap / f"smplx_{r}_skin.bin"
         if not check(f"{r} motion + skin present", mp.exists() and sp.exists()):
@@ -222,18 +224,11 @@ def validate(cap: Path, take: Take, report: dict | None = None) -> dict:
         has = bool(h.get("shape_edits"))
         check(f"{r} shape edits as configured", want == has,
               {"configured": edit_cfg.get(r), "recorded": h.get("shape_edits")})
-        alb = (man.get("smplx_albedo") or {}).get(r)
-        if alb and not (cap / alb).exists() and Path(alb).name in archived:
-            check(f"{r} albedo", True, f"{alb} archived (splat dancers): {archived[Path(alb).name]['to']}")
-        elif alb:
-            sz = _png_size(cap / alb) if (cap / alb).exists() else None
-            check(f"{r} albedo", sz is not None and min(sz) >= 512 and h.get("version", 1) >= 2,
-                  f"{alb} {sz} variant {(man.get('smplx_albedo_variant') or {}).get(r, 'bake')}")
-        else:
-            check(f"{r} albedo", False, "no smplx_albedo entry (untextured avatar)")
         face = (man.get("smplx_face") or {}).get(r)
         if face and not (cap / face).exists() and Path(face).name in archived:
             check(f"{r} face frames", True, f"{face} archived (splat dancers)")
+        elif face and not (cap / face).exists() and r in splats:
+            check(f"{r} face frames", True, f"{face} retired with the mesh avatars (splat dancer)")
         elif face:
             _, fh, _ = read_blob(cap / face)
             check(f"{r} face frames", fh.get("frames") == T, f"{fh.get('frames')}")
@@ -261,6 +256,8 @@ def validate(cap: Path, take: Take, report: dict | None = None) -> dict:
                             for r in ROLES if r in s.get("dancers", {})})
     elif "shoes.json" in archived:
         check("shoes", True, f"shoes.json archived (splat dancers): {archived['shoes.json']['to']}")
+    elif splats == set(ROLES):
+        check("shoes", True, "shoes.json retired with the mesh avatars (splat dancers)")
     else:
         check("shoes", not (take.work / "avatar" / "shoes.json").exists(), "shoes.json missing")
     if man.get("audio"):

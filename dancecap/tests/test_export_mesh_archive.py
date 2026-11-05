@@ -184,55 +184,36 @@ def _synthetic_splat_capture(tmp_path: Path, monkeypatch) -> tuple[Path, Path, P
 
 
 @needs_synthetic
-def test_export_into_a_splat_capture_never_installs_the_albedo(tmp_path, monkeypatch):
+def test_export_never_writes_an_albedo(tmp_path, monkeypatch):
+    """owner 2026-11-05: the version-1 mesh avatars are retired - the export writes no <role>_albedo.png and no smplx_albedo entry"""
     work, sa, cap = _synthetic_splat_capture(tmp_path, monkeypatch)
-    root = work.parent.parent
-    (cap / "lead_albedo.png").write_bytes(b"installed earlier")           # an older install, not yet archived
     rep = eu.export("synthetic", cap.name, install=True, streaming_assets=sa, room=False, faces=False, shape_edits=False)
-    textured = "mesh_avatars_archived" in rep and rep["mesh_avatars_archived"]["files"]
-    if not textured:
-        pytest.skip("the model has no UVs here: the export wrote no albedo to route")
-    assert not any((cap / f"{r}_albedo.png").exists() for r in eu.ROLES)        # never back in the splat capture
-    assert not any((Path(rep["out"]) / f"{r}_albedo.png").exists() for r in eu.ROLES)
-    assert (cap / "splats" / "lead.json").exists() and (cap / "smplx_lead_skin.bin").exists() and (cap / "capture.json").exists()
-    assert "lead_albedo.png" not in rep["files"]
-    adir = eu.mesh_archive_dir(cap.name, "synthetic")
-    assert adir.is_relative_to(root / "work" / "synthetic" / "archive")
-    assert (adir / "export" / "lead_albedo.png").read_bytes() == b"lead albedo"
-    assert (adir / "StreamingAssets" / "lead_albedo.png").read_bytes() == b"lead albedo"   # the copy the install would have made
-    rec = json.loads((adir / "archive.json").read_text())
-    assert len(rec["superseded"]) == 1                                         # the older installed copy is kept beside it
-    # the restore gives both folders their albedo back
-    eu.restore_mesh_avatars(cap, take="synthetic")
-    assert (cap / "lead_albedo.png").read_bytes() == b"lead albedo"
-    assert (Path(rep["out"]) / "follow_albedo.png").read_bytes() == b"follow albedo"
+    for folder in (cap, Path(rep["out"])):
+        assert not any((folder / f"{r}_albedo.png").exists() for r in eu.ROLES)
+        assert "smplx_albedo" not in json.loads((folder / "capture.json").read_text())
+    assert not any(f.endswith("_albedo.png") for f in rep["files"])
+    assert (cap / "splats" / "lead.json").exists() and (cap / "smplx_lead_skin.bin").exists()
 
 
 @needs_synthetic
-def test_validator_counts_archived_files_as_present(tmp_path, monkeypatch):
-    """demo_export.validate (behind recap_export / carlos_aline_export / jl_export --validate-only) on an exported + archived synthetic
-    splat capture: the albedo and shoes checks pass as 'archived (splat dancers)' instead of failing as missing (fix round 1, M1); with the
-    splats taken away a missing albedo fails again."""
+def test_validator_counts_archived_shoes_as_present(tmp_path, monkeypatch):
+    """demo_export.validate on an exported + archived synthetic splat capture: the shoes check passes as 'archived (splat dancers)'
+    instead of failing as missing; there is no albedo check any more (owner 2026-11-05); with the splats taken away missing shoes fail."""
     from types import SimpleNamespace
     from dancecap import demo_export as de
     work, sa, cap = _synthetic_splat_capture(tmp_path, monkeypatch)
     (work / "avatar" / "shoes.json").write_text("{}")                 # the take has shoes: without the archive 'shoes' would fail
     (cap / "shoes.json").write_text('{"version": 1}')                 # installed earlier: swept into the archive by the export
-    rep = eu.export("synthetic", cap.name, install=True, streaming_assets=sa, room=False, faces=False, shape_edits=False)
-    if not (rep.get("mesh_avatars_archived") or {}).get("files"):
-        pytest.skip("the model has no UVs here: the export wrote no albedo to route")
-    assert not (cap / "shoes.json").exists() and not (cap / "lead_albedo.png").exists()
-    assert json.loads((cap / "capture.json").read_text())["smplx_albedo"] == {r: f"{r}_albedo.png" for r in eu.ROLES}
+    eu.export("synthetic", cap.name, install=True, streaming_assets=sa, room=False, faces=False, shape_edits=False)
+    assert not (cap / "shoes.json").exists()
     take = SimpleNamespace(name="synthetic", work=work, cfg={})
-    out = Path(rep["out"])
-    for folder, names in ((cap, ("lead albedo", "follow albedo", "shoes")), (out, ("lead albedo", "follow albedo"))):
-        checks = {c["name"]: c for c in de.validate(folder, take)["checks"]}
-        for n in names:
-            assert checks[n]["ok"] and "archived (splat dancers)" in str(checks[n]["detail"]), (folder.name, checks[n])
-        assert checks["lead motion + skin present"]["ok"]
-    shutil.rmtree(cap / "splats")                                      # no splats: the mesh avatars are the dancers again
     checks = {c["name"]: c for c in de.validate(cap, take)["checks"]}
-    assert not checks["lead albedo"]["ok"] and not checks["shoes"]["ok"]
+    assert checks["shoes"]["ok"] and "archived (splat dancers)" in str(checks["shoes"]["detail"]), checks["shoes"]
+    assert not any("albedo" in n for n in checks)
+    assert checks["lead motion + skin present"]["ok"]
+    shutil.rmtree(cap / "splats")                                      # no splats: missing shoes fail again
+    checks = {c["name"]: c for c in de.validate(cap, take)["checks"]}
+    assert not checks["shoes"]["ok"]
 
 
 def test_archived_from_lists_only_what_left_this_folder(tmp_path, monkeypatch):
@@ -279,15 +260,15 @@ def test_restore_cli_prints_archive_to_original(tmp_path, monkeypatch, capsys):
 @pytest.mark.parametrize("capture,take", [("06_LarissaKaduRecap", "larissa_kadu_recap"), ("07_CarlosAline", "carlos_aline"),
                                           ("08_JohnLula", "john_lula")])
 def test_installed_splat_captures_validate(capture, take):
-    """the real captures' validator (read-only): their archived albedo / shoes count as present"""
+    """the real captures' validator (read-only): their retired shoes count as present, no albedo is checked"""
     from dancecap import demo_export as de
     from dancecap.take import Take
     cap = eu.UNITY_STREAMING / capture
     if not (cap / "capture.json").exists() or not eu.splat_roles(cap):
         pytest.skip("capture data not in this checkout (git-ignored likeness data)")
     checks = {c["name"]: c for c in de.validate(cap, Take.load(take))["checks"]}
-    for n in ("lead albedo", "follow albedo", "shoes"):
-        assert checks[n]["ok"], (n, checks[n])
+    assert checks["shoes"]["ok"], checks["shoes"]
+    assert not any("albedo" in n for n in checks)
 
 
 @pytest.mark.parametrize("capture,take", [("06_LarissaKaduRecap", "larissa_kadu_recap"), ("07_CarlosAline", "carlos_aline"),
@@ -299,10 +280,7 @@ def test_installed_splat_captures_are_archived(capture, take):
     roles = eu.splat_roles(cap)
     left = sorted(p.name for p in cap.iterdir() if p.is_file() and eu.mesh_only_kind(p.name.removesuffix(".meta"), roles))
     assert left == [], f"mesh-only files still in {capture}: {left}"
-    rec = json.loads((eu.mesh_archive_dir(capture, take) / "archive.json").read_text())
-    assert rec["state"] == "archived"
-    for e in rec["files"]:
-        assert eu._abs(e["to"]).exists() and eu._sha256(eu._abs(e["to"])) == e["sha256"], e["to"]
+    assert not (eu.mesh_archive_dir(capture, take) / "archive.json").exists()   # owner 2026-11-05: the archive was deleted
 
 
 # ------------------------------------------------------------------------------- the film library's posters
