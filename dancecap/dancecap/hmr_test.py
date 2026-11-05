@@ -81,11 +81,13 @@ F_SPREAD_MAX = 0.005      # K02 focal within a clip: |f / median - 1| (no zoom s
 DIAG_MM = float(np.hypot(36.0, 24.0))   # ExMR's f_mm: full-frame (36 x 24 mm) equivalent over the image diagonal
 SHEET_FRACTIONS = (0.25, 0.5, 0.75)
 SHEET_SEARCH = 15         # frames either side of a sheet time to find a localised camera-01 row
-METHODS = ("B0", "B1", "B2", "exmr", "flowhmr")
-CANDIDATES = ("exmr", "flowhmr")
-LABEL = {"B0": "B0 two-view", "B1": "B1 mono fit", "B2": "B2 SAM 3D Body", "exmr": "ExMR", "flowhmr": "FlowHMR"}
-COLOR = {"B0": (255, 255, 255), "B1": (0, 255, 255), "B2": (255, 255, 0), "exmr": (0, 255, 0), "flowhmr": (255, 0, 255)}
-COLOR_NAME = {"B0": "white", "B1": "yellow", "B2": "cyan", "exmr": "green", "flowhmr": "magenta"}   # BGR above
+METHODS = ("B0", "B1", "B2", "exmr", "flowhmr", "fda")
+CANDIDATES = ("exmr", "flowhmr", "fda")
+LABEL = {"B0": "B0 two-view", "B1": "B1 mono fit", "B2": "B2 SAM 3D Body", "exmr": "ExMR", "flowhmr": "FlowHMR",
+         "fda": "4DAnyone (its GVHMR skeleton)"}
+COLOR = {"B0": (255, 255, 255), "B1": (0, 255, 255), "B2": (255, 255, 0), "exmr": (0, 255, 0), "flowhmr": (255, 0, 255),
+         "fda": (0, 128, 255)}
+COLOR_NAME = {"B0": "white", "B1": "yellow", "B2": "cyan", "exmr": "green", "flowhmr": "magenta", "fda": "orange"}   # BGR above
 NOT_RUN = {"flowhmr": "not run (owner 2026-10-27: no SMPL-H neutral model; FlowHMR is not run now)"}
 COCO = sorted(COCO_TO_SMPLX)
 SMX = [COCO_TO_SMPLX[c] for c in COCO]
@@ -668,7 +670,8 @@ def candidate_status(od: Path, method: str) -> tuple[str, dict]:
 
 
 def load_candidate(ref: Ref, od: Path, method: str, role: str) -> tuple[np.ndarray, np.ndarray]:
-    """exmr: <clip>_<role>/results.npz (joints_incam, K_fullimg); flowhmr: <clip>_<role>/joints_cam02.npz (J_c, K)."""
+    """exmr: <clip>_<role>/results.npz (joints_incam, K_fullimg); flowhmr / fda: <clip>_<role>/joints_cam02.npz (J_c, K;
+    fda: dancecap.fda_test, NaN outside its 121-frame window)."""
     Jc = np.full((ref.NG, NJ, 3), np.nan)
     K = np.full((ref.NG, 3, 3), np.nan)
     for c in CLIPS:
@@ -680,7 +683,7 @@ def load_candidate(ref: Ref, od: Path, method: str, role: str) -> tuple[np.ndarr
         if method == "exmr" and (d / "results.npz").exists():
             with np.load(d / "results.npz") as z:
                 J, KK = z["joints_incam"][:, :NJ].astype(float), z["K_fullimg"].astype(float)
-        elif method == "flowhmr" and (d / "joints_cam02.npz").exists():
+        elif method in ("flowhmr", "fda") and (d / "joints_cam02.npz").exists():
             with np.load(d / "joints_cam02.npz") as z:
                 J, KK = z["J_c"][:, :NJ].astype(float), z["K"].astype(float)
         else:
@@ -717,7 +720,7 @@ def m4_clip(ref: Ref, Jw_a: np.ndarray, Jw_b: np.ndarray, role: str, fr: np.ndar
 
 def cmd_score(args) -> None:
     od = out_dir(args.take)
-    sd = od / "score"
+    sd = od / args.out_sub
     sd.mkdir(parents=True, exist_ok=True)
     methods = [m.strip() for m in args.methods.split(",") if m.strip()]
     for m in ("B0", "B1", "B2"):
@@ -971,7 +974,7 @@ def draw_contact(times: list[dict], images: list, pts: dict, cam: str, methods: 
 def cmd_sheet(args) -> None:
     import cv2
     od = out_dir(args.take)
-    sd = od / "score"
+    sd = od / args.out_sub
     res = json.loads((sd / "score.json").read_text())
     with np.load(sd / "per_frame.npz") as z:
         per = {k: z[k] for k in z.files}
@@ -1096,8 +1099,10 @@ def main(argv=None) -> None:
     p = sub.add_parser("score", help="pod: every method's metrics, the self-check, the sheet points")
     p.add_argument("--take", default=TAKE)
     p.add_argument("--methods", default=",".join(METHODS))
+    p.add_argument("--out-sub", default="score", help="output folder under hmr_test/ (fda_test: fda_score)")
     p = sub.add_parser("sheet", help="pod: sheet.md / sheet.json / contact sheets from score/")
     p.add_argument("--take", default=TAKE)
+    p.add_argument("--out-sub", default="score")
     args = ap.parse_args(argv)
     if args.take != TAKE:
         raise SystemExit(f"only {TAKE} has a reference (luiza_paulo: later, with per-frame K and R for its camera 02)")
