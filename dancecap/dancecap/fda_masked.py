@@ -142,6 +142,25 @@ def canvas_crop(img: np.ndarray, m: np.ndarray, box: np.ndarray) -> tuple[np.nda
     return rgb, mm
 
 
+def write_held(path: Path, om: list, oframes: list, orows: np.ndarray, otau: np.ndarray, tau: np.ndarray) -> np.ndarray:
+    """The held-out camera's real frames of one dancer (masked, letterboxed on the canvas) + the mask's box in that
+    camera's pixels (the LHM++ baseline crops its render at the real camera with the same box)."""
+    from .jl_fitcheck import frame_map
+    j, _ = frame_map(tau, otau, max_dt=0.05)
+    crops = np.zeros((len(orows), CANVAS[1], CANVAS[0], 3), np.uint8)
+    cm = np.zeros((len(orows), CANVAS[1], CANVAS[0]), bool)
+    okh = np.zeros(len(orows), bool)
+    boxes = np.full((len(orows), 4), np.nan)
+    for i in range(len(orows)):
+        if om[i] is None or om[i].sum() < 2000:
+            continue
+        boxes[i] = mask_box(om[i])
+        crops[i], cm[i] = canvas_crop(oframes[i], om[i], boxes[i])
+        okh[i] = True
+    np.savez_compressed(path, crops=crops, masks=cm, ok=okh, otau=otau, tau=tau, j=j, boxes=boxes, rows=orows)
+    return okh
+
+
 def cmd_inputs(args) -> None:
     import cv2
     from . import mamma_dyn as md
@@ -176,6 +195,10 @@ def cmd_inputs(args) -> None:
         gi = np.clip(np.round((tau - tg[0]) * 30).astype(int), 0, len(tg) - 1)
         for role in ROLES:
             name = rname(cam, clip, role)
+            if getattr(args, "held_only", False):
+                write_held(held / f"{name}.npz", omasks[role], oframes, orows, otau, tau)
+                log(f"{name}: held-out crops only")
+                continue
             rd = root / name
             (rd / "frames").mkdir(parents=True, exist_ok=True)
             ms = fill_masks(masks[role])
@@ -223,17 +246,7 @@ def cmd_inputs(args) -> None:
                 transl=F["transl"][gi], joints=F["joints"][gi, :NJ], betas=F["betas"], R=Rc, t=tc,
                 K=cams[cam]["K"][rows], crop=np.array([s, ox, oy]), held_centre=held_c[j], grid_index=gi,
                 dt_ms=(tau - tg[gi]) * 1000)
-            # held-out real frames of this dancer for B's appearance score
-            om = omasks[role]
-            crops = np.zeros((len(orows), CANVAS[1], CANVAS[0], 3), np.uint8)
-            cm = np.zeros((len(orows), CANVAS[1], CANVAS[0]), bool)
-            okh = np.zeros(len(orows), bool)
-            for i in range(len(orows)):
-                if om[i] is None or om[i].sum() < 2000:
-                    continue
-                crops[i], cm[i] = canvas_crop(oframes[i], om[i], mask_box(om[i]))
-                okh[i] = True
-            np.savez_compressed(held / f"{name}.npz", crops=crops, masks=cm, ok=okh, otau=otau, tau=tau, j=j)
+            okh = write_held(held / f"{name}.npz", omasks[role], oframes, orows, otau, tau)
             rep[name] = {"boxes_filled": nfill, "mask_frames": info[role]["frames_with_mask"], "held_ok": int(okh.sum()),
                          "fit_dt_ms_max": float(np.abs((tau - tg[gi]) * 1000).max())}
             log(f"{name}: crop x {ox:.0f} y {oy:.0f} {cw:.0f}x{ch:.0f}; masks {info[role]['frames_with_mask']}/121 "
@@ -447,6 +460,7 @@ def main(argv=None) -> None:
     p.add_argument("--run-minutes", type=int, default=120)
     p = sub.add_parser("inputs")
     p.add_argument("--cam", required=True, choices=["02", "01"])
+    p.add_argument("--held-only", action="store_true", help="only heldout/<run>.npz (the LHM++ baseline job)")
     p = sub.add_parser("score")
     p.add_argument("--cam", required=True, choices=["02", "01"])
     sub.add_parser("merge")
