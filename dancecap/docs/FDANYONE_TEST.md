@@ -72,6 +72,87 @@ frames where every method scored:
 | lead | 55 | 49 | 46 |
 | follow | 53 | 47 | 46 |
 
+## Round 2: each dancer isolated with SAM, and our two-view pose as the skeleton (2026-11-05)
+
+Owner, after round 1: "why aren't we using SAM to isolate the follow and the lead and then running 4DAnyone so there is no
+overlap. we also have room data for triangulation" -> "yes do E1+E2". Code: `dancecap/fda_masked.py`, `dancecap/fda_lhmpp.py`,
+`remote/cand_fda/` (`pipeline`, `inject`, `appearance`, `lhmpp_score.py`). Results: `work/lucas_luiza/fda_test/score_m/`
+(`sheet.md`, `held_pairs_E1.jpg`, `appearance_E1.jpg`), `work/lucas_luiza/fda_test/lhmpp/score.json`,
+`work/lucas_luiza/hmr_test/fdam_score/`.
+
+### Verdict
+
+**Isolation fixes the merging. Our pose fixes the skeleton. Neither makes 4DAnyone worth adopting.**
+
+- **Isolation works.** With the partner masked out, every generated frame holds exactly one person (100 %, against 2-29 %
+  two people in round 1), and it is the right dancer. In the merged figures of round 1, the partner had been the cause.
+- **4DAnyone's own pose gets no better, and the follow's gets worse.** Variant A (masked input, its own GVHMR skeleton),
+  hmr_test on the 139 / 141 common frames:
+  - lead: PA-MPJPE 50 mm (round 1: 51);
+  - follow: 93 mm (round 1: 62).
+
+  Where the lead is in front of her, her mask has holes and GVHMR loses her. ExMR (36 / 48 mm) and SAM 3D Body stay ahead.
+- **The room data is used best by giving 4DAnyone our triangulated pose.** Triangulating its generated views would only
+  return its own one-camera skeleton, because the views follow that skeleton exactly. Variant B swaps in our two-view
+  fit: 10 body-shape values reproduce the fit's joints to 5 mm, and the pose lands on 4DAnyone's own 2D keypoints at
+  18-27 px. View 0 was aimed at the other, held-out real camera, and landed within 1-9 degrees of it (median per run).
+- **Appearance, against the real held-out camera.** Scored inside the real dancer mask, 8 runs, about 27 frames each:
+
+  | | LPIPS (lower is better) | colour-matched PSNR |
+  |---|---|---|
+  | 4DAnyone B, view 0 | 0.187 | 14.4 dB |
+  | our LHM++ avatar posed by the fit, at the same camera | 0.262 | 15.4 dB |
+  | our LHM++ avatar posed by the fit, at the real camera | **0.156** | **18.0 dB** |
+
+  - 4DAnyone's generated texture beats the LHM++ avatar at the same camera on LPIPS in 6 of 8 runs; PSNR ties or goes
+    the other way.
+  - It cannot render at the real camera: it only renders its own ring of up to 48 fixed cameras around one dancer.
+  - What the input camera never saw is invented. The back print of the lead's shirt is not his.
+- **Cost of use.** About 6.5 min of L40S per 4-second window, per dancer, for 6 views. That works out to about 20 GPU
+  hours ($22) for a 3-minute couple.
+  - The output is still videos, not a 3D model. Rendering at any camera, or in VR, would need a 4DGS trained on each
+    window (FreeTimeGS; not integrated in 4DAnyone's repo yet).
+  - Each 4-second window is generated on its own, so there are seams between windows.
+
+  The LHM++ avatars already render at any camera, for the whole dance, posed by the same two-view fit.
+
+### What ran
+
+- **Inputs:**
+  - E1 and E2 (the same 121-frame windows), both cameras, both dancers.
+  - Each dancer's SAM 2.1 mask comes from the single-camera takes (`lucas_luiza_h` / `lucas_luiza_v` `people/masks_01.npz`).
+    The frame map is found by box IoU: tripod offset 0, Steadicam source index -55, IoU 0.83-0.90. The slot is chosen per
+    frame against the two-view teacher box.
+  - Everything outside the dilated mask is set to grey.
+- **Variants:** A = 4DAnyone as published on the isolated clip. B = the same clip with our fit injected as its motion,
+  ring rotated so view 0 faces the held-out camera. 6 views.
+- **Runs:** 16 of 16 OK, on two L40S pods in parallel (one per camera), $2.63. The LHM++ baseline ran on a third pod
+  ($0.24): the same avatars and the same cameras, the same score (`lhmpp_score.py`).
+
+| run | A: PA mm (round 1) | B: LPIPS / PSNR dB | LHM++ same camera | LHM++ real camera |
+|---|---|---|---|---|
+| tripod E1 lead | 55 (52) | 0.207 / 11.8 | 0.310 / 13.6 | 0.189 / 17.5 |
+| tripod E1 follow | 100 (53) | 0.178 / 10.7 | 0.291 / 10.6 | 0.159 / 14.8 |
+| tripod E2 lead | 65 (60) | 0.228 / 11.8 | 0.266 / 15.1 | 0.209 / 17.4 |
+| tripod E2 follow | 94 (73) | 0.187 / 11.6 | 0.265 / 11.6 | 0.178 / 14.8 |
+| Steadicam E1 lead | 58 (37) | 0.188 / 18.6 | 0.178 / 19.1 | 0.153 / 19.6 |
+| Steadicam E1 follow | 67 (48) | 0.179 / 17.2 | 0.259 / 16.8 | 0.127 / 19.1 |
+| Steadicam E2 lead | 59 (58) | 0.202 / 18.8 | 0.178 / 20.5 | 0.143 / 22.2 |
+| Steadicam E2 follow | 65 (-) | 0.174 / 17.0 | 0.224 / 15.7 | 0.127 / 18.6 |
+
+**Caveats:**
+- The view-0 camera is 4DAnyone's: a different focal length and distance from the real one, 1-9 degrees off in
+  direction. Both crops are therefore letterboxed to a common canvas, and the silhouettes do not coincide (the grey and
+  black areas in `appearance_E1.jpg`). That costs 4DAnyone B and LHM++-at-the-same-camera alike, which is why the
+  real-camera column is the production comparison.
+- Raw PSNR is low across the board because the real crops keep the partner's occlusion holes.
+
+### What would be worth trying
+
+4DAnyone B's texture (variant B: our pose, the dancer isolated) beat our LHM++ avatar at the same camera on LPIPS. Its
+views could serve as extra reference images for the LHM++ avatar, covering sides the input camera saw least. Expect the
+invented details too (the back print). That is a separate, small test, not a reason to put 4DAnyone in the pipeline.
+
 ## If revisited
 
 Re-run only if 4DAnyone (or a successor) states multi-person support. Single-dancer solo footage would be the one fit.
