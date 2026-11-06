@@ -78,7 +78,8 @@ def cmd_prep(args) -> None:
                 otau = md.apply_offset(cams[oc]["t"][orows], offs.get(oc))
                 from .jl_fitcheck import frame_map
                 j, _ = frame_map(tau, otau, max_dt=0.05)
-                hi = j[det_frames]
+                hi = np.unique(j[det_frames])   # two clip frames can share a held-out frame: one render each
+                n = len(hi)
                 k1 = len(times)
                 times += list(otau[hi])
                 owner += ["both"] * n
