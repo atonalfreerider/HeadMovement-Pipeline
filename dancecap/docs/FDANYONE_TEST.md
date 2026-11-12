@@ -147,6 +147,21 @@ overlap. we also have room data for triangulation" -> "yes do E1+E2". Code: `dan
   real-camera column is the production comparison.
 - Raw PSNR is low across the board because the real crops keep the partner's occlusion holes.
 
+**Correction (2026-11-12, found during the Uthana test):** the round-2 masks had two defects.
+- **Shared masks.** Each dancer picked its SAM mask slot on its own, by box overlap, so both took the same mask on some
+  frames: E1 6 %, and in Uthana's clips H1 38 % and H3 7 %. E2 was not measured.
+- **Stale masks.** Where the people stage had no mask (for example 2 s of H3, where it lost the lead), the nearest
+  frame's mask was reused, a dancer-shaped hole in the wrong place.
+
+`fda_masked.role_masks` now assigns both slots jointly per frame and rejects spilled masks. The Uthana test re-segments
+with SAM 2.1 instead.
+
+The round-2 conclusions are probably unaffected, but this is untested:
+- isolation still gave exactly one person in every generated frame;
+- variant B's pose came from our fit, not from the masks.
+
+Variant A's pose (above all the follow's 93 mm) and the B appearance numbers may be somewhat pessimistic for E1.
+
 ### What would be worth trying
 
 4DAnyone B's texture (variant B: our pose, the dancer isolated) beat our LHM++ avatar at the same camera on LPIPS. Its

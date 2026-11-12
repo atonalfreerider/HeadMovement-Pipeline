@@ -197,12 +197,11 @@ def cmd_job(args) -> None:
            "exclude": ["dancecap/work/runpod/pywheels", "dancecap/work/runpod/wheelhouse", "mamma-turing"],
            "commands": [
                {"name": "sam_prep", "timeout_min": 8, "cmd": "python -m dancecap.uthana_test sam-prep"},
-               {"name": "sam_ckpt", "timeout_min": 5, "cmd": "mkdir -p /workspace/sam2w && cd /workspace/sam2w && "
-                "[ -s sam2.1_hiera_large.pt ] || curl -sSfL -o sam2.1_hiera_large.pt "
-                "https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt"},
+               {"name": "sam_ckpt", "timeout_min": 6,   # the people stage's fetcher (sha256-checked; curl hit an SSL error)
+                "cmd": "python -c 'from dancecap.front_pod import fetch_sam2; fetch_sam2()'"},
                *[{"name": f"sam_{c}", "timeout_min": 12,
                   "cmd": f"python dancecap/jl_people_sam.py work/{TAKE}/uthana/sam/sam_{c}.mp4 work/{TAKE}/uthana/sam/anchors_{c}.json "
-                         f"work/{TAKE}/uthana/sam/sam_{c}.npz --ckpt /workspace/sam2w/sam2.1_hiera_large.pt "
+                         f"work/{TAKE}/uthana/sam/sam_{c}.npz --ckpt /workspace/HeadMovement/mamma/data/weights/sam2/sam2.1_hiera_large.pt "
                          f"--frames /workspace/sam_frames_{c}"} for c in UCLIPS],
                {"name": "inputs", "timeout_min": 15, "cmd": "python -m dancecap.uthana_test inputs --sam"}],
            "outputs": [f"dancecap/work/{TAKE}/uthana/inputs/", f"dancecap/work/{TAKE}/uthana/sam/anchors_E1.json",
