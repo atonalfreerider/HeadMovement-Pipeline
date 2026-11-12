@@ -222,7 +222,7 @@ def cmd_job(args) -> None:
 J15 = [0, 1, 2, 4, 5, 7, 8, 12, 15, 16, 17, 18, 19, 20, 21]
 TORSO = [0, 1, 2, 12, 16, 17]          # for the arm check: Procrustes on the torso only
 ARM = [18, 19, 20, 21]                 # elbows, wrists
-PARTNER_TORSO = [0, 3, 6, 9, 12, 16, 17]
+PARTNER_TORSO = [0, 12, 16, 17]   # pelvis, neck, shoulders: joints every method here has (Uthana's UE5 rig has no SMPL spine joints)
 CONTACT_M = 0.15
 # BVH joint name candidates -> SMPL index (Mixamo / UE / generic names; the first one found wins)
 BVH_NAMES = {0: ["Hips", "hips", "pelvis", "Pelvis", "root"], 1: ["LeftUpLeg", "LeftThigh", "thigh_l", "l_hip", "LeftHip"],
