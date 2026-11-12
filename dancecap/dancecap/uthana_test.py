@@ -54,6 +54,87 @@ def clip_rows() -> dict:
     return out
 
 
+ANCHOR_STEP = 15          # frames between SAM anchors (0.5 s)
+KP_TORSO = (5, 6, 11, 12)  # COCO shoulders, hips
+
+
+def cmd_sam_prep(args) -> None:
+    """Per clip: the raw tripod clip (sam_<clip>.mp4) and SAM 2.1 anchors (anchors_<clip>.json, jl_people_sam's format with
+    john = lead, lula = follow): frames where both dancers have a clean SAM mask from lucas_luiza_h (joint slot, sanity
+    filter), their teacher boxes and the masks barely overlap, at least ANCHOR_STEP frames apart. Prompt = the dancer's own
+    mask box + positive points on its own torso keypoints (inside its mask) + negative points on the partner's torso."""
+    import cv2
+    ll = WORK / TAKE
+    c2 = dict(np.load(ll / "cameras" / f"{CAM}.npz"))
+    T = dict(np.load(ll / "people" / f"teachers_{CAM}.npz"))
+    M = np.load(WORK / "lucas_luiza_h" / "people" / "masks_01.npz")
+    from .fda_masked import mask_box
+    out = OD / "sam"
+    out.mkdir(parents=True, exist_ok=True)
+    rep = {}
+    for clip, rows in clip_rows().items():
+        rows = np.array(rows)
+        masks, info = role_masks(CAM, rows, M, T, c2)
+        ls = T["lead_slot"][rows].astype(int)
+        slot = {"lead": ls, "follow": 1 - ls}
+        tmp = out / f"_raw_{clip}"
+        tmp.mkdir(exist_ok=True)
+        for i, r in enumerate(rows):
+            (tmp / f"{i:05d}.jpg").write_bytes((OD / "frames" / f"{r:06d}.jpg").read_bytes())
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-framerate", "30000/1001", "-i", str(tmp / "%05d.jpg"),
+                        "-c:v", "libx264", "-crf", "10", "-pix_fmt", "yuv420p", str(out / f"sam_{clip}.mp4")], check=True)
+        subprocess.run(["rm", "-rf", str(tmp)], check=True)
+        anchors, last = [], -10 ** 9
+        for i in range(len(rows)):
+            ml, mf = masks["lead"][i], masks["follow"][i]
+            if ml is None or mf is None or i - last < ANCHOR_STEP:
+                continue
+            if (ml & mf).sum() > 0.02 * min(ml.sum(), mf.sum()):
+                continue
+            a = {"frame": i}
+            ok = True
+            for role, key, other in (("lead", "john", "follow"), ("follow", "lula", "lead")):
+                m = masks[role][i]
+                kp = T["kp"][rows[i], slot[role][i]]
+                kq = T["kp"][rows[i], slot[other][i]]
+                pos = [[float(x), float(y)] for x, y, cf in kp[list(KP_TORSO)]
+                       if cf >= 0.5 and 0 <= int(y) < m.shape[0] and 0 <= int(x) < m.shape[1] and m[int(y), int(x)]]
+                neg = [[float(x), float(y)] for x, y, cf in kq[list(KP_TORSO)]
+                       if cf >= 0.5 and 0 <= int(y) < m.shape[0] and 0 <= int(x) < m.shape[1] and not m[int(y), int(x)]]
+                if len(pos) < 2:
+                    ok = False
+                    break
+                a[key] = {"box": mask_box(m).tolist(), "pos": pos, "neg": neg}
+            if ok:
+                anchors.append(a)
+                last = i
+        gaps = np.diff([0] + [a["frame"] for a in anchors] + [len(rows) - 1])
+        (out / f"anchors_{clip}.json").write_text(json.dumps(anchors))
+        rep[clip] = {"frames": len(rows), "anchors": len(anchors), "max_gap_frames": int(gaps.max())}
+        log(f"SAM prep {clip}: {len(anchors)} anchors, longest gap {gaps.max()} frames")
+    (out / "sam_prep.json").write_text(json.dumps(rep, indent=1))
+
+
+def sam_masks(clip: str, n: int) -> dict:
+    """jl_people_sam output -> {role: [bool mask per frame]}: each frame takes the run from its NEAREST anchor (forward run of
+    the anchor before, backward run of the anchor after); the partner's mask (dilated 7 px) is removed from the dancer's."""
+    import cv2
+    z = np.load(OD / "sam" / f"sam_{clip}.npz")
+    runs = json.loads(str(z["runs"]))
+    anchors = sorted({r["anchor"] for r in runs})
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+    out = {r: [] for r in ROLES}
+    for i in range(n):
+        a = min(anchors, key=lambda x: abs(x - i))
+        d = "f" if i >= a else "b"
+        if i == a:
+            d = "f" if f"m_{a}_f_{i}_0" in z.files else "b"
+        m = {o: cv2.imdecode(z[f"m_{a}_{d}_{i}_{o}"], cv2.IMREAD_GRAYSCALE) > 127 for o in (0, 1)}
+        out["lead"].append(m[0] & ~cv2.dilate(m[1].astype(np.uint8), k).astype(bool))
+        out["follow"].append(m[1] & ~cv2.dilate(m[0].astype(np.uint8), k).astype(bool))
+    return out
+
+
 def cmd_inputs(args) -> None:
     import cv2
     from . import mamma_dyn as md
@@ -70,6 +151,12 @@ def cmd_inputs(args) -> None:
         rows = np.array(rows)
         frames = [cv2.imread(str(fdir / f"{r:06d}.jpg")) for r in rows]
         masks, info = role_masks(CAM, rows, M, T, c2)
+        if args.sam:   # the SAM 2.1 re-segmentation (anchored propagation) replaces the people stage's masks
+            sm = sam_masks(clip, len(rows))
+            for r in ROLES:
+                info[r] = {**info[r], "source": "sam2.1 anchored propagation (uthana_test sam-prep + jl_people_sam)",
+                           "frames_with_mask": int(sum(m.sum() > 500 for m in sm[r]))}
+            masks = {r: [m if m.sum() > 500 else None for m in sm[r]] for r in ROLES}
         for role in ROLES:
             name = f"{clip}_{role}"
             tmp = out / f"_{name}"
@@ -106,10 +193,21 @@ def cmd_job(args) -> None:
               f"dancecap/work/{TAKE}/sync/offsets.json", f"dancecap/work/{TAKE}/clock/alignment.json",
               f"dancecap/work/{TAKE}/people/teachers_{CAM}.npz", "dancecap/work/lucas_luiza_h/people/masks_01.npz"]
     job = {"schema": "dancecap.pod_job/1", "name": "lucas_luiza_uthana_inputs", "take": TAKE, "cwd": "dancecap",
-           "max_minutes": 25, "needs": ["ffmpeg"], "base": True, "cpu": True, "inputs": inputs + frames,
+           "max_minutes": 45, "needs": ["ffmpeg", "dancers"], "base": True, "min_vram_gb": 24, "inputs": inputs + frames,
            "exclude": ["dancecap/work/runpod/pywheels", "dancecap/work/runpod/wheelhouse", "mamma-turing"],
-           "commands": [{"name": "inputs", "timeout_min": 15, "cmd": "python -m dancecap.uthana_test inputs"}],
-           "outputs": [f"dancecap/work/{TAKE}/uthana/inputs/"],
+           "commands": [
+               {"name": "sam_prep", "timeout_min": 8, "cmd": "python -m dancecap.uthana_test sam-prep"},
+               {"name": "sam_ckpt", "timeout_min": 5, "cmd": "mkdir -p /workspace/sam2w && cd /workspace/sam2w && "
+                "[ -s sam2.1_hiera_large.pt ] || curl -sSfL -o sam2.1_hiera_large.pt "
+                "https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt"},
+               *[{"name": f"sam_{c}", "timeout_min": 12,
+                  "cmd": f"python dancecap/jl_people_sam.py work/{TAKE}/uthana/sam/sam_{c}.mp4 work/{TAKE}/uthana/sam/anchors_{c}.json "
+                         f"work/{TAKE}/uthana/sam/sam_{c}.npz --ckpt /workspace/sam2w/sam2.1_hiera_large.pt "
+                         f"--frames /workspace/sam_frames_{c}"} for c in UCLIPS],
+               {"name": "inputs", "timeout_min": 15, "cmd": "python -m dancecap.uthana_test inputs --sam"}],
+           "outputs": [f"dancecap/work/{TAKE}/uthana/inputs/", f"dancecap/work/{TAKE}/uthana/sam/anchors_E1.json",
+                       f"dancecap/work/{TAKE}/uthana/sam/anchors_H1.json", f"dancecap/work/{TAKE}/uthana/sam/anchors_H3.json",
+                       f"dancecap/work/{TAKE}/uthana/sam/sam_prep.json"],
            "verify": [f"dancecap/work/{TAKE}/uthana/inputs/inputs.json"],
            "notes": ["Uthana test (dancecap.uthana_test): SAM-isolated one-dancer tripod clips of E1 / H1 / H3 for upload "
                      "to Uthana's web app (owner's account, owner's go 2026-11-12)."]}
@@ -122,9 +220,11 @@ def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("job")
-    sub.add_parser("inputs")
+    p = sub.add_parser("inputs")
+    p.add_argument("--sam", action="store_true", help="use sam/sam_<clip>.npz (the SAM 2.1 re-segmentation)")
+    sub.add_parser("sam-prep")
     a = ap.parse_args(argv)
-    {"job": cmd_job, "inputs": cmd_inputs}[a.cmd](a)
+    {"job": cmd_job, "inputs": cmd_inputs, "sam-prep": cmd_sam_prep}[a.cmd](a)
 
 
 if __name__ == "__main__":
