@@ -90,9 +90,15 @@ def role_masks(cam: str, rows: np.ndarray, M, T: dict, c: dict) -> tuple[dict, d
     off = best[1]
     f = base + off
     out, info = {}, {"offset": off, "iou_mean": best[0]}
+    # one joint assignment per frame: lead and follow never share a mask (each role alone picked the same slot on 6-38 %
+    # of frames in close holds, 2026-11-12: the partner's pixels went into the dancer's clip)
+    iou = {r: np.nan_to_num(np.stack([box_iou(tb[r], B[f, o]) for o in (0, 1)], 1), nan=0.0) for r in ROLES}
+    straight = iou["lead"][:, 0] + iou["follow"][:, 1] >= iou["lead"][:, 1] + iou["follow"][:, 0]
+    slots = {"lead": np.where(straight, 0, 1), "follow": np.where(straight, 1, 0)}
+    info["assignment"] = "joint per frame (2x2, max summed box IoU)"
     for r in ROLES:
-        ious = np.stack([box_iou(tb[r], B[f, o]) for o in (0, 1)], 1)
-        slot = np.nanargmax(np.nan_to_num(ious, nan=-1), 1)
+        ious = iou[r]
+        slot = slots[r]
         ms, n_ok = [], 0
         for i in range(len(rows)):
             k = f"m_{f[i]}_{slot[i]}"
@@ -101,8 +107,21 @@ def role_masks(cam: str, rows: np.ndarray, M, T: dict, c: dict) -> tuple[dict, d
                 n_ok += 1
             else:
                 ms.append(None)
+        # sanity: SAM sometimes returns a mask that spills over the room (lucas_luiza_h H3 row 5211: the lead's mask covers
+        # the whole frame). Keep a mask only when its area is 0.35-1.8 x the role's median in this window and its own
+        # tight box overlaps the dancer's teacher box (IoU >= 0.3); the rest are filled from the nearest kept frame.
+        areas = np.array([m.sum() if m is not None else np.nan for m in ms], float)
+        med = np.nanmedian(areas) if np.isfinite(areas).any() else np.nan
+        n_bad = 0
+        for i, m in enumerate(ms):
+            if m is None:
+                continue
+            ok = 0.35 * med <= areas[i] <= 1.8 * med and np.nan_to_num(box_iou(tb[r][i], mask_box(m))) >= 0.3
+            if not ok:
+                ms[i] = None
+                n_bad += 1
         out[r] = ms
-        info[r] = {"frames_with_mask": n_ok, "slot0_share": float((slot == 0).mean())}
+        info[r] = {"frames_with_mask": n_ok - n_bad, "rejected_masks": n_bad, "slot0_share": float((slot == 0).mean())}
     return out, info
 
 
