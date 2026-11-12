@@ -46,6 +46,9 @@ from . import progress as _progress  # dancecap.progress/1 (stdlib; no-op unless
 from .take import PACKAGE_ROOT, WORKSPACE, Take
 
 SAM2_URL = "https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt"
+# the same file on Hugging Face (facebook/sam2.1-hiera-large @ 665f8e2, lfs sha256 = SAM2_SHA256, checked 2026-11-12)
+SAM2_URL_HF = ("https://huggingface.co/facebook/sam2.1-hiera-large/resolve/665f8e2ad61cf5f53d65644ff27c8ee525124610/"
+               "sam2.1_hiera_large.pt")
 SAM2_SHA256 = "2647878d5dfa5098f2f8649825738a9345572bae2d4350a2468587ece47dd318"  # the local checkpoint (2026-10-06)
 MA2D_STRIPPED = "dancecap/work/runpod/weights/ma_2d/mamma_mask_full_cvpr.ckpt"  # state_dict only (540 MB, not 1.6 GB)
 TORCH_HOME_REL = "dancecap/work/runpod/torch_home"  # ALIKED + LightGlue weights (uploaded from the local hub cache)
@@ -1041,7 +1044,14 @@ def fetch_sam2() -> None:
     CHECKPOINT.parent.mkdir(parents=True, exist_ok=True)
     tmp = CHECKPOINT.with_suffix(".part")
     t0 = time.time()
-    urllib.request.urlretrieve(SAM2_URL, tmp)
+    for url in (SAM2_URL, SAM2_URL_HF):   # Meta's CDN served an expired certificate on 2026-11-12; the HF copy is byte-identical
+        try:
+            urllib.request.urlretrieve(url, tmp)
+            break
+        except OSError as e:
+            print(f"[front] SAM 2.1 download from {url.split('/')[2]} failed: {e}")
+    else:
+        raise SystemExit("[front] SAM 2.1 checkpoint: every source failed")
     h = _sha256(tmp)
     if h != SAM2_SHA256:
         tmp.unlink(missing_ok=True)
