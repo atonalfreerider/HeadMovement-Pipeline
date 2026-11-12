@@ -29,7 +29,7 @@ import numpy as np
 
 from .fda_masked import fill_masks, role_masks, soft
 from .fda_test import TAKE, WORK, log
-from .hmr_test import CLIPS, ROLES
+from .hmr_test import CLIP_NOTE, CLIPS, ROLES, interp_grid
 
 UCLIPS = ("E1", "H1", "H3")
 CAM = "02"
@@ -215,6 +215,228 @@ def cmd_job(args) -> None:
     log(f"job {p}: {len(frames)} frames")
 
 
+# ------------------------------------------------------------------------------------------------ BVH + score (pod)
+
+# SMPL body joints scored for every method (the 15 that every rig here defines): pelvis, hips, knees, ankles, neck, head,
+# shoulders, elbows, wrists
+J15 = [0, 1, 2, 4, 5, 7, 8, 12, 15, 16, 17, 18, 19, 20, 21]
+TORSO = [0, 1, 2, 12, 16, 17]          # for the arm check: Procrustes on the torso only
+ARM = [18, 19, 20, 21]                 # elbows, wrists
+PARTNER_TORSO = [0, 3, 6, 9, 12, 16, 17]
+CONTACT_M = 0.15
+# BVH joint name candidates -> SMPL index (Mixamo / UE / generic names; the first one found wins)
+BVH_NAMES = {0: ["Hips", "hips", "pelvis", "Pelvis", "root"], 1: ["LeftUpLeg", "LeftThigh", "thigh_l", "l_hip", "LeftHip"],
+             2: ["RightUpLeg", "RightThigh", "thigh_r", "r_hip", "RightHip"], 4: ["LeftLeg", "LeftShin", "calf_l", "l_knee", "LeftKnee"],
+             5: ["RightLeg", "RightShin", "calf_r", "r_knee", "RightKnee"], 7: ["LeftFoot", "foot_l", "l_ankle", "LeftAnkle"],
+             8: ["RightFoot", "foot_r", "r_ankle", "RightAnkle"], 12: ["Neck", "neck", "neck_01", "Neck1"],
+             15: ["Head", "head"], 16: ["LeftArm", "upperarm_l", "l_shoulder", "LeftUpperArm"],
+             17: ["RightArm", "upperarm_r", "r_shoulder", "RightUpperArm"], 18: ["LeftForeArm", "lowerarm_l", "l_elbow", "LeftLowerArm"],
+             19: ["RightForeArm", "lowerarm_r", "r_elbow", "RightLowerArm"], 20: ["LeftHand", "hand_l", "l_wrist", "LeftWrist"],
+             21: ["RightHand", "hand_r", "r_wrist", "RightWrist"]}
+
+
+def read_bvh(path: Path) -> tuple[list[str], np.ndarray, float]:
+    """BVH -> (joint names, world positions (F, J, 3) in the file's units, frame time). Euler channels in their listed
+    order (intrinsic: R = R_c1 R_c2 R_c3), position channels where present (root, sometimes all)."""
+    from scipy.spatial.transform import Rotation as Rot
+    tok = path.read_text().split()
+    i, names, parents, offsets, chans, stack = 0, [], [], [], [], []
+    last = -1
+    while tok[i] != "MOTION":
+        t = tok[i]
+        if t in ("ROOT", "JOINT"):
+            names.append(tok[i + 1]); parents.append(stack[-1] if stack else -1); last = len(names) - 1; i += 2
+        elif t == "End":
+            names.append(names[last] + "_end"); parents.append(last); last = len(names) - 1; i += 2
+        elif t == "{":
+            stack.append(last); i += 1
+        elif t == "}":
+            stack.pop(); last = stack[-1] if stack else -1; i += 1
+        elif t == "OFFSET":
+            offsets.append([float(x) for x in tok[i + 1:i + 4]]); i += 4
+            if len(chans) < len(names):
+                chans.append([])
+        elif t == "CHANNELS":
+            n = int(tok[i + 1]); chans[-1] = tok[i + 2:i + 2 + n]; i += 2 + n
+        else:
+            i += 1
+    nf = int(tok[i + 2]); ft = float(tok[i + 5]); vals = np.array(tok[i + 6:], float).reshape(nf, -1)
+    J = len(names)
+    pos = np.zeros((nf, J, 3)); Rg = np.zeros((nf, J, 3, 3)); col = 0
+    for j in range(J):
+        ch = chans[j] if j < len(chans) else []
+        p = np.tile(np.asarray(offsets[j], float), (nf, 1)); R = np.tile(np.eye(3), (nf, 1, 1))
+        rot_axes, rot_cols = "", []
+        for c in ch:
+            if c.endswith("position"):
+                p[:, "XYZ".index(c[0])] = vals[:, col] + (0 if parents[j] >= 0 else 0)
+            else:
+                rot_axes += c[0]; rot_cols.append(col)
+            col += 1
+        if rot_axes:
+            R = Rot.from_euler(rot_axes, vals[:, rot_cols], degrees=True).as_matrix()   # uppercase = intrinsic
+        if parents[j] < 0:
+            Rg[:, j] = R; pos[:, j] = p
+        else:
+            P = parents[j]
+            pos[:, j] = pos[:, P] + np.einsum("fij,fj->fi", Rg[:, P], p); Rg[:, j] = Rg[:, P] @ R
+    return names, pos, ft
+
+
+def bvh_to_smpl(names: list[str], pos: np.ndarray) -> tuple[np.ndarray, dict]:
+    """(F, 22, 3) with the BVH joints mapped onto SMPL indices (NaN where no name matched) + the mapping used."""
+    out = np.full((pos.shape[0], 22, 3), np.nan)
+    used = {}
+    low = {n.lower().split(":")[-1]: k for k, n in enumerate(names)}
+    for j, cands in BVH_NAMES.items():
+        for c in cands:
+            k = low.get(c.lower())
+            if k is not None:
+                out[:, j] = pos[:, k]; used[j] = names[k]; break
+    return out, used
+
+
+def sim3(src: np.ndarray, dst: np.ndarray) -> tuple[float, np.ndarray, np.ndarray]:
+    from .mono4d.rig import umeyama
+    ok = np.isfinite(src).all(-1) & np.isfinite(dst).all(-1)
+    u = umeyama(src[ok], dst[ok], with_scale=True)
+    return float(u["s"]), np.array(u["R"]), np.array(u["t"])
+
+
+def procrustes_err(X: np.ndarray, Y: np.ndarray, fit: list, eval_: list) -> float:
+    """Similarity fitted on the `fit` joints only, error (mm) on the `eval_` joints."""
+    from .mono4d.rig import umeyama
+    u = umeyama(X[fit], Y[fit], with_scale=True)
+    Z = float(u["s"]) * X @ np.array(u["R"]).T + np.array(u["t"])
+    return float(np.linalg.norm(Z[eval_] - Y[eval_], axis=1).mean() * 1000)
+
+
+def clip_metrics(J: np.ndarray, B: dict, role: str, stance: np.ndarray) -> dict:
+    """One method, one dancer, one clip, on the grid frames where J is finite. J (F, 22, 3) in the method's own frame;
+    B = {role: (F, 22, 3) two-view world joints}. Placed by ONE Sim3 per clip onto B0's dancer (every method alike)."""
+    from .hmr_test import pa_mpjpe
+    Y = B[role]
+    ok = np.isfinite(J[:, J15]).all((1, 2)) & np.isfinite(Y[:, J15]).all((1, 2))
+    if ok.sum() < 10:
+        return {"frames": int(ok.sum())}
+    s, R, t = sim3(J[ok][:, J15].reshape(-1, 3), Y[ok][:, J15].reshape(-1, 3))
+    W = s * J @ R.T + t
+    out = {"frames": int(ok.sum()), "scale": s}
+    out["pa_mm"] = float(np.median([pa_mpjpe(J[i, J15], Y[i, J15]) for i in np.flatnonzero(ok)]))
+    out["root_traj_cm"] = float(np.median(np.linalg.norm(W[ok, 0] - Y[ok, 0], axis=1)) * 100)
+    out["arm_mm"] = float(np.median([procrustes_err(J[i], Y[i], TORSO, ARM) for i in np.flatnonzero(ok)]))
+    # feet: ankle skate on the reference's stance frames (cm/s, horizontal), and how high the stance ankle floats above
+    # this method's own lowest ankle level in the clip (cm, median)
+    sk, fl = [], []
+    floor = np.nanpercentile(W[ok][:, [7, 8], 1], 5)
+    for side, j in ((0, 7), (1, 8)):
+        both = stance[:-1, side] & stance[1:, side] & ok[:-1] & ok[1:]
+        v = np.linalg.norm(W[1:, j][:, [0, 2]] - W[:-1, j][:, [0, 2]], axis=1) * 30 * 100
+        sk.append(v[both])
+        st = stance[:, side] & ok
+        fl.append((W[st, j, 1] - floor) * 100)
+    sk, fl = np.concatenate(sk), np.concatenate(fl)
+    out["skate_cm_s"] = float(np.median(sk)) if len(sk) else None
+    out["skate_p90_cm_s"] = float(np.percentile(sk, 90)) if len(sk) else None
+    out["stance_float_cm"] = float(np.median(fl)) if len(fl) else None
+    out["_W"] = W
+    return out
+
+
+def contact_metrics(Wm: dict, B: dict) -> dict:
+    """Hands on the partner: per dancer and hand, frames where the two-view fit has the wrist within CONTACT_M of the
+    partner's torso joints; the method (each dancer placed by its own clip Sim3) -> recall (also within CONTACT_M) and the
+    median |d_method - d_ref| (cm) over those frames."""
+    out = {}
+    for role, other in (("lead", "follow"), ("follow", "lead")):
+        if role not in Wm or other not in Wm:
+            continue
+        for hand, j in (("left", 20), ("right", 21)):
+            d0 = np.linalg.norm(B[role][:, j][:, None] - B[other][:, PARTNER_TORSO], axis=-1).min(1)
+            dm = np.linalg.norm(Wm[role][:, j][:, None] - Wm[other][:, PARTNER_TORSO], axis=-1).min(1)
+            c = (d0 < CONTACT_M) & np.isfinite(dm)
+            if c.sum() < 5:
+                continue
+            out[f"{role}_{hand}"] = {"contact_frames": int(c.sum()), "recall": float((dm[c] < CONTACT_M).mean()),
+                                     "dist_err_cm": float(np.median(np.abs(dm[c] - d0[c])) * 100)}
+    return out
+
+
+def cmd_score(args) -> None:
+    from .hmr_test import (Ref, load_b1, load_b2, load_candidate, out_dir, placement_b, to_world)
+    ref = Ref(TAKE)
+    od = out_dir(TAKE)
+    res = {"schema": "dancecap.uthana_test/1", "clips": {}, "bvh": {}}
+    meths = {}
+    for r in ROLES:   # every baseline as world joints on the grid (placement B, the hmr_test convention)
+        for m, loader in (("B1 mono fit", lambda: load_b1(ref, r)), ("B2 SAM 3D Body", lambda: load_b2(ref, r)),
+                          ("ExMR", lambda: load_candidate(ref, od, "exmr", r))):
+            Jc, K = loader()
+            fin = np.isfinite(Jc).all((1, 2)) & np.isfinite(K).all((1, 2))
+            Jc[~fin], K[~fin] = np.nan, np.nan
+            Jw = np.full((ref.NG, 22, 3), np.nan)
+            Jw[:, :22] = to_world(placement_b(Jc, K, ref.K02, ref.zB0[r]), ref.R02, ref.t02)[:, :22]
+            meths.setdefault(m, {})[r] = Jw
+    # Uthana: BVH per clip and dancer, frame i at clip start + i * frame_time, onto the grid (+ a +-6 frame lag search)
+    U = {}
+    for clip in UCLIPS:
+        for r in ROLES:
+            p = OD / "out" / f"{clip}_{r}.bvh"
+            if not p.exists():
+                continue
+            meta = json.loads((OD / "inputs" / f"lucas_luiza_{clip}_{r}.json").read_text())
+            names, pos, ft = read_bvh(p)
+            J, used = bvh_to_smpl(names, pos)
+            tq = meta["tau"][0] + np.arange(len(J)) * ft
+            fr = ref.frames[clip]
+            best = None
+            for lag in range(-6, 7):
+                x = (ref.tg[fr] - (tq[0] + lag / 30.0)) / ft
+                i0 = np.clip(np.floor(x).astype(int), 0, len(J) - 2)
+                w = np.clip(x - i0, 0, 1)[:, None, None]
+                Jg = J[i0] * (1 - w) + J[i0 + 1] * w
+                Jg[(x < 0) | (x > len(J) - 1)] = np.nan
+                Y = ref.B0[r]["joints"][fr, :22]
+                from .hmr_test import pa_mpjpe
+                ok = np.isfinite(Jg[:, J15]).all((1, 2))
+                if ok.sum() < 10:
+                    continue
+                e = float(np.median([pa_mpjpe(Jg[i, J15], Y[i, J15]) for i in np.flatnonzero(ok)[::3]]))
+                if best is None or e < best[0]:
+                    best = (e, lag, Jg)
+            U.setdefault(r, np.full((ref.NG, 22, 3), np.nan))[fr] = best[2]
+            res["bvh"][f"{clip}_{r}"] = {"frames": len(J), "frame_time": ft, "joints_mapped": {str(k): v for k, v in used.items()},
+                                        "n_bvh_joints": len(names), "lag_frames": best[1]}
+    meths["Uthana VTM 3.0"] = U
+    for clip in UCLIPS:
+        fr = ref.frames[clip]
+        B = {r: ref.B0[r]["joints"][fr, :22].astype(float) for r in ROLES}
+        res["clips"][clip] = {"note": CLIP_NOTE[clip], "frames": int(len(fr)), "methods": {}}
+        ref_row = {}
+        for r in ROLES:
+            st = np.asarray(ref.B0[r]["stance"], bool)[fr]
+            ref_row[r] = clip_metrics(B[r].copy(), B, r, st)
+        res["clips"][clip]["methods"]["B0 two-view (reference)"] = {r: {k: v for k, v in ref_row[r].items() if k != "_W"} for r in ROLES}
+        for m, D in meths.items():
+            row, Wm = {}, {}
+            for r in ROLES:
+                if r not in D:
+                    continue
+                st = np.asarray(ref.B0[r]["stance"], bool)[fr]
+                cm = clip_metrics(D[r][fr], B, r, st)
+                if "_W" in cm:
+                    Wm[r] = cm.pop("_W")
+                row[r] = cm
+            row["contact"] = contact_metrics(Wm, B)
+            res["clips"][clip]["methods"][m] = row
+        log(f"{clip}: " + "; ".join(f"{m}: " + ", ".join(f"{r} PA {v[r].get('pa_mm', float('nan')):.0f} skate {v[r].get('skate_cm_s') or float('nan'):.1f}"
+                                               for r in ROLES if r in v) for m, v in res["clips"][clip]["methods"].items()))
+    sd = OD / "score"
+    sd.mkdir(parents=True, exist_ok=True)
+    (sd / "score.json").write_text(json.dumps(res, indent=1, default=float))
+    log(f"score: {sd / 'score.json'}")
+
+
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -222,8 +444,9 @@ def main(argv=None) -> None:
     p = sub.add_parser("inputs")
     p.add_argument("--sam", action="store_true", help="use sam/sam_<clip>.npz (the SAM 2.1 re-segmentation)")
     sub.add_parser("sam-prep")
+    sub.add_parser("score")
     a = ap.parse_args(argv)
-    {"job": cmd_job, "inputs": cmd_inputs, "sam-prep": cmd_sam_prep}[a.cmd](a)
+    {"job": cmd_job, "inputs": cmd_inputs, "sam-prep": cmd_sam_prep, "score": cmd_score}[a.cmd](a)
 
 
 if __name__ == "__main__":
