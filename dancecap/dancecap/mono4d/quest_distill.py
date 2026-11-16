@@ -619,7 +619,8 @@ def distill_one(d: Dancer, n: int, iters: int, renderer, args, seed: int = 0) ->
                             {"params": [log_s], "lr": 5e-3, "name": "s"}, {"params": [logit], "lr": 3e-2, "name": "o"},
                             {"params": [rgb], "lr": 2.5e-3, "name": "c"}], eps=1e-15)
     j4, w4, near, _ = transfer_weights(mu, d)
-    cap = args.cap_m if args.cap_m > 0 else {40000: 0.012, 25000: 0.016, 15000: 0.02}.get(n, 0.02)
+    cap = args.cap_m if args.cap_m > 0 else {40000: 0.012, 25000: 0.016, 15000: 0.02, 10000: 0.024,
+                                                    8000: 0.027}.get(n, 0.02)
     lk, rest_g = look_params(d.header), rest_guides(d.header)
     tb_np = (d.rec["strand"] >= 0) & (d.rec["hair"] != 0)
     if lk is not None and rest_g is not None and tb_np.any():      # the teacher's strand look (module doc)

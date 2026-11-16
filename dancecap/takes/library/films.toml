@@ -6,62 +6,64 @@
 # soundtrack is speech (the viewer fades it out below 1x, the captions stay); a film without dialogue says what its music does with `slowmo_audio`:
 # "pitch" (default: the music slows with the picture, as before) or "mute". Both are optional; docs/FILM_LIBRARY.md section 7.
 
+# The demo plays as PURE DANCE (owner 2026-11-15: "let's not have any narration ... just the playback of the pure dance itself, with no
+# programmed slowdowns or direction to steps"): `python -m dancecap.film_pure build --preset demo` writes direction_dance.json from the
+# [demo.pure] block (ONE segment "dance" at 1x, film 0 = audio 0, the capture's song as the mix; no narration, call-outs or cards), then
+# `python -m dancecap.film_library build --demo`. The narrated overview (direction.json) stays on disk, out of the library.
 [demo]
 id = "demo"
 title = "Kadu + Larissa × Ficar Sem Você"
 subtitle = "The counterbalance demo, rebuilt in 3D from the class's phone videos"
 capture = "05_LarissaKaduFull"
-direction = "dancecap/work/larissa_kadu_full/film/direction.json"
+direction = "dancecap/work/larissa_kadu_full/film/direction_dance.json"
 thumbnail = "head-movement/Recordings/05_LarissaKaduFull_thumbnail_vertical.jpg"
 slowmo_audio = "pitch"   # music: it slows with the picture (set "mute" to silence it in slow motion)
 
-[[demo.chapters]]
-title = "Intro"
-segment = "open_title"
+[demo.pure]
+name = "kadu_larissa_dance"   # a NEW name: no narration timeline of the narrated film (kadu_larissa_overview_full) matches it
+take = "larissa_kadu_full"
 
+# The chapters in FILM seconds of the pure-dance film (offset_s into its one segment "dance"): the narrated film's chapters remapped through
+# their dance times (film = dance + 3.1312644 s), the tiny and narration-only ones merged. Titles are the owner's to change.
 [[demo.chapters]]
-title = "Filmed by the class"
-segment = "cameras_overview"
+title = "Opening"
+segment = "dance"
+offset_s = 0.0
 
 [[demo.chapters]]
 title = "The exit step"
-segment = "lp1_approach"
+segment = "dance"
+offset_s = 28.131
 
 [[demo.chapters]]
 title = "Floor craft"
-segment = "floorcraft"
+segment = "dance"
+offset_s = 35.431
 
 [[demo.chapters]]
 title = "The counterbalance"
-segment = "cb2_setup"
-
-[[demo.chapters]]
-title = "The step around her"
-segment = "lp2_feet_in"
+segment = "dance"
+offset_s = 59.631
 
 [[demo.chapters]]
 title = "A path through the moves"
-segment = "graph_in"
-
-[[demo.chapters]]
-title = "Physics view"
-segment = "physics_in"
-
-[[demo.chapters]]
-title = "The exit again"
-segment = "lp3_feet_in"
+segment = "dance"
+offset_s = 71.031
 
 [[demo.chapters]]
 title = "Head movement"
-segment = "head_movement"
+segment = "dance"
+offset_s = 121.531
 
 [[demo.chapters]]
 title = "The last counterbalance"
-segment = "orbit_mid"
+segment = "dance"
+offset_s = 149.131
 
 [[demo.chapters]]
-title = "Rhythm and thanks"
-segment = "rhythm"
+title = "Finale"
+segment = "dance"
+offset_s = 160.731
 
 # The class recap: a card in the library from the start ("Processing" and not playable) until its capture folder and its film exist.
 # Its chapters come from the direction itself (segments with a "chapter" field) or from a plan added here once the film is directed.
